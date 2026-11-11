@@ -29,7 +29,6 @@ import type {
   MoveThreadResult,
   NoticeText,
   NotificationPrefs,
-  PersonStats,
   PersonSuggestion,
   PrepareResult,
   PromptBadge,
@@ -123,13 +122,6 @@ export interface SuggestPeopleRequest {
   readonly requestId: RequestId;
   readonly prefix: string;
   readonly limit: number;
-}
-
-/** What the index knows of one person, by address (ADR 0078). */
-export interface GetPersonRequest {
-  readonly type: "getPerson";
-  readonly requestId: RequestId;
-  readonly address: string;
 }
 
 /** Files received in mail whose name contains `text`, for the search panel (ADR 0074). */
@@ -1022,7 +1014,6 @@ export type BackendRequest =
   | SetGeneralImagesRequest
   | ImportImageAddressesRequest
   | SuggestPeopleRequest
-  | GetPersonRequest
   | SearchFilesRequest
   | ListViewsRequest
   | SaveViewRequest
@@ -1119,14 +1110,6 @@ export interface SuggestPeopleResponse {
   readonly ok: true;
   /** Most messages first; the user's own addresses are left out. */
   readonly people: readonly PersonSuggestion[];
-}
-
-export interface GetPersonResponse {
-  readonly type: "getPerson";
-  readonly requestId: RequestId;
-  readonly ok: true;
-  /** Absent when the index holds no mail for the address. */
-  readonly person?: PersonStats;
 }
 
 export interface SearchFilesResponse {
@@ -1955,7 +1938,6 @@ export type BackendResponse =
   | SetGeneralImagesResponse
   | ImportImageAddressesResponse
   | SuggestPeopleResponse
-  | GetPersonResponse
   | SearchFilesResponse
   | ListViewsResponse
   | SaveViewResponse

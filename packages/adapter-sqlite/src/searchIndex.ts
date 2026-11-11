@@ -6,7 +6,6 @@ import type {
   ParsedQuery,
   Participant,
   PeoplePort,
-  PersonStats,
   PersonSuggestion,
   QueryNode,
   RankedMessage,
@@ -176,22 +175,6 @@ export class SqliteSearchIndex implements SearchIndexPort, RankedSearchPort, Peo
           "SELECT address, name, count FROM people INDEXED BY people_rank ORDER BY count DESC, last_ms DESC, address LIMIT ?",
         ).iterate(PEOPLE_WALK) as Iterable<PersonRow>);
     return this.people_(rows, words, want);
-  }
-
-  /** ADR 0078. One primary-key read, then the same "does mail still name them" check as `suggest`. */
-  async person(address: string): Promise<PersonStats | undefined> {
-    const row = this.statement(
-      "SELECT address, name, count, last_ms FROM people WHERE address = ?",
-    ).get(address.trim().toLowerCase()) as
-      | { address: string; name: string | null; count: number; last_ms: number }
-      | undefined;
-    if (row === undefined || !this.hasMail(row.address)) return undefined;
-    return {
-      address: row.address,
-      ...(row.name === null ? {} : { name: row.name }),
-      count: row.count,
-      lastMs: row.last_ms,
-    };
   }
 
   /** ADR 0074. Read-only: the index of names is written with the files of a message. */

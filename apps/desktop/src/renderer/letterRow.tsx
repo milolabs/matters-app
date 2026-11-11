@@ -24,8 +24,8 @@ export function Avatar(props: {
   initials: string;
   /** The person's hue (ADR 0078, `personTint`); without it the avatar is neutral. */
   tint?: number;
-  /** 28 px by default; 32 in the list, 48 in the reader's header. */
-  size?: 28 | 32 | 48;
+  /** 28 px by default; 32 in the list. */
+  size?: 28 | 32;
   /** The account's colour and the ink on it, for the person's own messages. */
   own?: { readonly fill: string; readonly ink: string };
 }): JSX.Element {
@@ -33,7 +33,7 @@ export function Avatar(props: {
     <span
       aria-hidden="true"
       class="avatar"
-      classList={{ "avatar-32": props.size === 32, "avatar-48": props.size === 48 }}
+      classList={{ "avatar-32": props.size === 32 }}
       data-initials={props.initials}
       data-tint={props.own === undefined ? props.tint : undefined}
       data-own={props.own === undefined ? undefined : ""}

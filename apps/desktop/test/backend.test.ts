@@ -102,30 +102,6 @@ describe("handle", () => {
     expect(bad.type).toBe("listLabels");
   });
 
-  it("reads one person by address (ADR 0078)", async () => {
-    const d = emptyDeps();
-    await d.index.indexMessages([
-      makeDocument({
-        from: person("Jan Kowalski", "jan@lodz.pl"),
-        to: [person("Me", "me@example.com")],
-        dateMs: 5_000,
-      }),
-    ]);
-    const r = await handle(d, { type: "getPerson", requestId: "g", address: "Jan@Lodz.pl" });
-    if (r.type !== "getPerson") throw new Error("unexpected");
-    expect(r.person).toEqual({
-      address: "jan@lodz.pl",
-      name: "Jan Kowalski",
-      count: 1,
-      lastMs: 5_000,
-    });
-    const none = await handle(d, { type: "getPerson", requestId: "g", address: "x@y.z" });
-    if (none.type !== "getPerson") throw new Error("unexpected");
-    expect(none.person).toBeUndefined();
-    const bad = await handle(d, { type: "getPerson", requestId: "g", address: 4 } as never);
-    expect(bad.type).toBe("error");
-  });
-
   it("suggests people, without the user's own addresses (ADR 0028)", async () => {
     const d = emptyDeps();
     await d.accountStore.add({

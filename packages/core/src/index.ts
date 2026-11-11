@@ -42,7 +42,6 @@ export * from "./usecases/applySyncBatch.ts";
 export * from "./usecases/attachments.ts";
 export * from "./usecases/countMatches.ts";
 export * from "./usecases/fileText.ts";
-export * from "./usecases/getPerson.ts";
 export * from "./usecases/imageRules.ts";
 export * from "./usecases/ingestDocuments.ts";
 export * from "./usecases/mailCounts.ts";

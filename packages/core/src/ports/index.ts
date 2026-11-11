@@ -676,20 +676,6 @@ export interface PersonSuggestion {
   readonly count: number;
 }
 
-/** What the index knows of one person (ADR 0078). */
-export interface PersonStats {
-  /** Lowercased. */
-  readonly address: string;
-  readonly name?: string;
-  /**
-   * Messages that named the address as sender, recipient or cc (the `count` of ADR 0028): a hint,
-   * since re-indexing can raise it and removing mail does not lower it.
-   */
-  readonly count: number;
-  /** Date of the newest message that named the address, not of the last one the user wrote. */
-  readonly lastMs: number;
-}
-
 /**
  * People for query suggestions (ADR 0028). The adapter folds `prefix` itself (`tokenize`):
  * the first word is a prefix of a word of the name or the address, every further word is a
@@ -700,11 +686,6 @@ export interface PeoplePort {
   suggest(prefix: string, limit: number): Promise<readonly PersonSuggestion[]>;
   /** The same ranking with nothing typed yet (ADR 0029). */
   frequent(limit: number): Promise<readonly PersonSuggestion[]>;
-  /**
-   * One person by address (ADR 0078), folded like the index does. `undefined` when the index
-   * holds no mail naming the address any more.
-   */
-  person(address: string): Promise<PersonStats | undefined>;
 }
 
 /**

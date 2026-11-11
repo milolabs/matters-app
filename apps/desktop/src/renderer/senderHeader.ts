@@ -1,4 +1,4 @@
-import type { Participant, PersonStats, SenderAuth } from "@matters/core";
+import type { Participant, SenderAuth } from "@matters/core";
 import { displayName, isReallyOwn } from "./format.ts";
 import { type PersonMark, personMark } from "./personMark.ts";
 
@@ -59,13 +59,6 @@ export function counterpart(
     : { person: first.from, role: "self", verified: false, failed: false };
 }
 
-/** The name on line 1: "You" for the person, an arrow before someone they wrote to. */
-export function headName(c: Counterpart): string {
-  if (c.role === "self") return "You";
-  const name = displayName(c.person);
-  return c.role === "recipient" ? `→ ${name}` : name;
-}
-
 /** The domain after the `@`, lower case; null when the address has none. */
 export function addressDomain(address: string): string | null {
   const at = address.lastIndexOf("@");
@@ -99,46 +92,6 @@ export function failedBadge(c: Counterpart): string | null {
   if (c.role !== "sender" || !c.failed) return null;
   const domain = addressDomain(c.person.address);
   return domain === null ? "Not verified" : `Not verified · ${domain}`;
-}
-
-const DAY_MS = 86_400_000;
-
-/** How long ago, by calendar day in the local time zone: today, yesterday, 5 days ago, 3 months ago. */
-export function daysAgo(thenMs: number, nowMs: number): string {
-  const start = (ms: number) => new Date(ms).setHours(0, 0, 0, 0);
-  const days = Math.max(0, Math.round((start(nowMs) - start(thenMs)) / DAY_MS));
-  if (days === 0) return "today";
-  if (days === 1) return "yesterday";
-  if (days < 30) return `${days} days ago`;
-  if (days < 365) {
-    const months = Math.floor(days / 30);
-    return months === 1 ? "1 month ago" : `${months} months ago`;
-  }
-  const years = Math.floor(days / 365);
-  return years === 1 ? "1 year ago" : `${years} years ago`;
-}
-
-/**
- * What the index knows (ADR 0078). `count` is the messages that name the person as sender,
- * recipient or cc, so the line says "In 14 messages", not "14 messages together" or "you
- * wrote": it does not know who wrote. `lastMs` is the newest such message, so it is "last mail",
- * not "you last wrote".
- */
-export function relationLine(stats: Pick<PersonStats, "count" | "lastMs">, nowMs: number): string {
-  const n = stats.count;
-  return `${n === 1 ? "In 1 message" : `In ${n} messages`} · last mail ${daysAgo(stats.lastMs, nowMs)}`;
-}
-
-/**
- * Line 2 of the header: the address at once, the relationship when the index has answered. The
- * line is always there, so its arrival moves nothing.
- */
-export function headLine(
-  address: string,
-  stats: Pick<PersonStats, "count" | "lastMs"> | undefined,
-  nowMs: number,
-): string {
-  return stats === undefined ? address : `${address} · ${relationLine(stats, nowMs)}`;
 }
 
 /**

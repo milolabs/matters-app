@@ -54,7 +54,6 @@ function indexHarness(
     matchesAmong: (query, keys) => storage.index.matchesAmong(query, keys),
     suggest: (prefix, limit) => storage.index.suggest(prefix, limit),
     frequent: (limit) => storage.index.frequent(limit),
-    person: (address) => storage.index.person(address),
   };
 }
 
@@ -86,7 +85,6 @@ describePeopleContract("sqlite, walking in rank order", () => {
     matchesAmong: (query, keys) => index.matchesAmong(query, keys),
     suggest: (prefix, limit) => index.suggest(prefix, limit),
     frequent: (limit) => index.frequent(limit),
-    person: (address) => index.person(address),
   };
   return { instance: harness, cleanup: () => db.close() };
 });

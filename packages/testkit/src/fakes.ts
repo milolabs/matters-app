@@ -28,7 +28,6 @@ import type {
   MessageStorePort,
   ParsedQuery,
   PeoplePort,
-  PersonStats,
   PersonSuggestion,
   Placement,
   QueryNode,
@@ -1013,19 +1012,6 @@ export class InMemorySearchIndex
 
   async frequent(limit: number): Promise<readonly PersonSuggestion[]> {
     return this.ranked([], limit);
-  }
-
-  async person(address: string): Promise<PersonStats | undefined> {
-    const wanted = address.trim().toLowerCase();
-    const found = this.rankedRaw([], Number.MAX_SAFE_INTEGER).find((p) => p.address === wanted);
-    return found === undefined
-      ? undefined
-      : {
-          address: found.address,
-          ...(found.name === undefined ? {} : { name: found.name }),
-          count: found.count,
-          lastMs: found.lastMs,
-        };
   }
 
   /** ADR 0074, from the files the store holds: the same matching, order and dedupe as SQLite. */

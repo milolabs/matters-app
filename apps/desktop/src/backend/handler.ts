@@ -50,7 +50,6 @@ import type {
 import {
   chooseImages,
   failureDetailOf,
-  getPerson,
   isMessageKey,
   isPartId,
   MAX_IMAGE_RULE_VALUE,
@@ -895,10 +894,6 @@ function parseRequest(raw: unknown): BackendRequest | string {
         return "prefix and an integer limit are required";
       if (raw.prefix.length > MAX_PREFIX) return "prefix is too long";
       return { type, requestId, prefix: raw.prefix, limit: pageLimit };
-    case "getPerson":
-      if (typeof raw.address !== "string" || raw.address.length > MAX_PREFIX)
-        return "address must be a string";
-      return { type, requestId, address: raw.address };
     case "searchFiles": {
       if (typeof raw.text !== "string") return "text is required";
       if (raw.text.length > MAX_PREFIX) return "text is too long";
@@ -1408,15 +1403,6 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
             request.limit,
           ),
         };
-      case "getPerson": {
-        const person = await getPerson({ people: deps.people }, request.address);
-        return {
-          type: "getPerson",
-          requestId,
-          ok: true,
-          ...(person === undefined ? {} : { person }),
-        };
-      }
       case "searchFiles":
         return {
           type: "searchFiles",

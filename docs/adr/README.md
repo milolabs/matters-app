@@ -86,7 +86,7 @@ Format: copy [`template.md`](template.md).
 | [0076](0076-live-search-under-cmd-k.md) | Live search under ⌘K | Accepted |
 | [0077](0077-showing-what-was-found.md) | Showing what was found | Accepted |
 | [0078](0078-the-sender-leads.md) | The sender leads | Accepted |
-| [0079](0079-a-sender-that-failed-and-matters-leads-with-the-sender.md) | A sender that failed shows it, and Matters leads with the sender too | Superseded by 0117 |
+| [0079](0079-a-sender-that-failed-and-matters-leads-with-the-sender.md) | A sender that failed shows it, and Matters leads with the sender too | Accepted |
 | [0080](0080-the-agent-follows-the-trail.md) | The agent follows the trail (amends 0064) | Accepted |
 | [0081](0081-finding-what-the-question-means.md) | Finding what the question means (amends 0080) | Accepted |
 | [0082](0082-what-the-plan-asks-for-is-not-put-behind.md) | What the plan asks for is not put behind (amends 0080) | Accepted |
@@ -124,4 +124,4 @@ Format: copy [`template.md`](template.md).
 | [0114](0114-a-refused-sign-in-says-why.md) | A refused sign-in says why (amends 0023) | Accepted |
 | [0115](0115-every-window-hears-a-changed-status.md) | Every window hears a changed status (amends 0052, 0112) | Accepted |
 | [0116](0116-a-prompt-is-a-filter.md) | A prompt is a filter (builds on 0025, 0027, 0051, 0064) | Proposed |
-| [0117](0117-matters-is-a-view-with-a-prompt.md) | Matters is a view with a prompt (supersedes 0052, 0075; amends 0063, 0071, 0116) | Proposed |
+| [0117](0117-matters-is-a-view-with-a-prompt.md) | Matters is a view with a prompt (supersedes 0052, 0075; amends 0063, 0071, 0078, 0079, 0116) | Proposed |

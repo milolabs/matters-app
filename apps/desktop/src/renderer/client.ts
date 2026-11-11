@@ -45,7 +45,6 @@ import type {
   GetImageChoiceResponse,
   GetMessageHtmlResponse,
   GetMessagesResponse,
-  GetPersonResponse,
   GetStorageResponse,
   ImportImageAddressesResponse,
   ListAccountsResponse,
@@ -105,7 +104,6 @@ import type {
   MoveTarget,
   MoveThreadResult,
   NotificationPrefs,
-  PersonStats,
   PersonSuggestion,
   PrepareResult,
   PromptBadge,
@@ -219,8 +217,6 @@ export interface Backend {
   /** People matching what is typed, never the user's own addresses (ADR 0028). */
   suggestPeople(prefix: string, limit: number): Promise<readonly PersonSuggestion[]>;
   /** Files received in mail whose name contains the text, newest first (ADR 0074). */
-  /** What the index knows of one person: messages naming them, the newest date (ADR 0078). */
-  getPerson(address: string): Promise<PersonStats | undefined>;
   searchFiles(text: string, limit?: number, accountId?: string): Promise<readonly FileHit[]>;
   discoverServers(domain: string): Promise<DiscoverServersResponse>;
   listAccounts(): Promise<ListAccountsResponse>;
@@ -511,8 +507,6 @@ export function createBackend(port: MessagePort): Backend {
     listLabels: () => request<ListLabelsResponse>({ type: "listLabels" }),
     suggestPeople: async (prefix, limit) =>
       (await request<SuggestPeopleResponse>({ type: "suggestPeople", prefix, limit })).people,
-    getPerson: async (address) =>
-      (await request<GetPersonResponse>({ type: "getPerson", address })).person,
     searchFiles: async (text, limit, accountId) =>
       (
         await request<SearchFilesResponse>({

@@ -1134,16 +1134,11 @@ mark.hit {
 .avatar::before {
   content: attr(data-initials);
 }
-/* Sizes of the same avatar (ADR 0078): the list's 32 px and the reader header's 48 px. */
+/* The list's size of the same avatar (ADR 0078): 32 px. */
 .avatar-32 {
   width: 32px;
   height: 32px;
   font-size: 12px;
-}
-.avatar-48 {
-  width: 48px;
-  height: 48px;
-  font-size: 16px;
 }
 /* A person's own hue (ADR 0078): a 24 % wash of the hue on the page, and the hue pulled 30 % toward
    the ink as the letters. Both are opaque, so a selected row does not show through. Contrast of the

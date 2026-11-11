@@ -3536,19 +3536,6 @@ export function describePeopleContract(
       expect(await index().frequent(0)).toEqual([]);
     });
 
-    it("reads one person by address: count, newest date, latest name (ADR 0078)", async () => {
-      await index().indexMessages([mail(1, jan, [anna]), mail(5, anna, [jan]), mail(3, jan)]);
-      expect(await index().person("Jan@Lodz.PL ")).toEqual({
-        address: "jan@lodz.pl",
-        name: "Jan Kowalski",
-        count: 3,
-        lastMs: day(5),
-      });
-      expect((await index().person("anna@example.com"))?.count).toBe(2);
-      expect(await index().person("nobody@nowhere.org")).toBeUndefined();
-      expect(await index().person("")).toBeUndefined();
-    });
-
     it("finds a person by a prefix of a word of the name or of the address", async () => {
       await index().indexMessages([mail(1, jan, [anna])]);
       expect(await addresses("kow")).toEqual(["jan@lodz.pl"]);

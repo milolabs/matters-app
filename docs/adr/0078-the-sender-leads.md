@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-11-08
+- Amended by: [0117](0117-matters-is-a-view-with-a-prompt.md) (the sender header went with the reader that showed it)
 - Builds on: [0028](0028-people-in-suggestions.md), [0048](0048-trusting-authentication-results.md), [0073](0073-the-thread-on-one-grid.md)
 
 ## Context

@@ -6,13 +6,14 @@
   ([0053](0053-reading-that-shows-itself.md) to [0062](0062-the-list-holds-still-after-you-act.md),
   [0065](0065-a-closing-covers-only-its-own-ask.md) to
   [0068](0068-who-writes-what-you-refuse-what-comes-from-an-office.md),
-  [0079](0079-a-sender-that-failed-and-matters-leads-with-the-sender.md),
   [0075](0075-promises-under-the-message.md),
   [0109](0109-the-badge-counts-what-is-in-matters.md))
 - Amends: [0063](0063-the-agent-in-ordinary-threads.md) (no stored reading in a thread),
   [0116](0116-a-prompt-is-a-filter.md) (rules 3 and 10: reading in the background, a
   badge), [0071](0071-notifications.md) (what the badge counts, the notice kind for the agent's
-  list)
+  list), [0078](0078-the-sender-leads.md) (the sender header went with the reader),
+  [0079](0079-a-sender-that-failed-and-matters-leads-with-the-sender.md) (its reader is gone; the
+  warning on a sender that failed stays)
 - Builds on: [0027](0027-saved-views.md), [0051](0051-agents-on-the-users-own-plans.md),
   [0093](0093-a-tab-number-is-always-unread.md)
 

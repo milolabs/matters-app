@@ -3,12 +3,8 @@ import { MAILBOX_BIT } from "@matters/core";
 import { describe, expect, it } from "vitest";
 import {
   counterpart,
-  daysAgo,
   failedBadge,
   type HeadMessage,
-  headLine,
-  headName,
-  relationLine,
   rowPerson,
   verifiedBadge,
 } from "../src/renderer/senderHeader.ts";
@@ -46,7 +42,6 @@ describe("counterpart (ADR 0078)", () => {
     );
     expect(c?.role).toBe("recipient");
     expect(c?.person.address).toBe("anna@firma.pl");
-    expect(headName(c as NonNullable<typeof c>)).toBe("→ Anna Nowak");
     expect(c?.verified).toBe(false);
   });
 
@@ -64,7 +59,6 @@ describe("counterpart (ADR 0078)", () => {
   it("falls back to the person when nobody else is in the thread", () => {
     const c = counterpart([msg(me, [], { senderAuth: "pass" })], own);
     expect(c?.role).toBe("self");
-    expect(headName(c as NonNullable<typeof c>)).toBe("You");
     expect(counterpart([], own)).toBeUndefined();
   });
 });
@@ -115,33 +109,6 @@ describe("failedBadge (ADR 0079)", () => {
     const c = counterpart([msg(me, [anna], { senderAuth: "fail" })], own);
     expect(c?.role).toBe("sender");
     expect(failedBadge(c as NonNullable<typeof c>)).toBe("Not verified · example.com");
-  });
-});
-
-describe("the relationship line", () => {
-  const day = 86_400_000;
-  const now = new Date(2026, 10, 8, 15, 0).getTime();
-
-  it("words the count as messages that name the person, not as mail together", () => {
-    expect(relationLine({ count: 14, lastMs: now - 5 * day }, now)).toBe(
-      "In 14 messages · last mail 5 days ago",
-    );
-    expect(relationLine({ count: 1, lastMs: now }, now)).toBe("In 1 message · last mail today");
-  });
-
-  it("counts calendar days", () => {
-    expect(daysAgo(now - day, now)).toBe("yesterday");
-    expect(daysAgo(now - 45 * day, now)).toBe("1 month ago");
-    expect(daysAgo(now - 100 * day, now)).toBe("3 months ago");
-    expect(daysAgo(now - 800 * day, now)).toBe("2 years ago");
-    expect(daysAgo(now + day, now)).toBe("today");
-  });
-
-  it("is the address alone until the index answers", () => {
-    expect(headLine("anna@firma.pl", undefined, now)).toBe("anna@firma.pl");
-    expect(headLine("anna@firma.pl", { count: 2, lastMs: now }, now)).toBe(
-      "anna@firma.pl · In 2 messages · last mail today",
-    );
   });
 });
 

@@ -1,7 +1,9 @@
 # 0079. A sender that failed shows it, and Matters leads with the sender too
 
-- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
+- Status: Accepted
 - Date: 2026-11-08
+- Amended by: [0117](0117-matters-is-a-view-with-a-prompt.md) (the reader of Matters is gone; the
+  warning on a sender that failed stays)
 - Builds on: [0048](0048-trusting-authentication-results.md), [0078](0078-the-sender-leads.md)
 
 ## Context
