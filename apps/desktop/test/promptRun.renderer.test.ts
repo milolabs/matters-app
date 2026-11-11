@@ -936,8 +936,9 @@ describe("a saved view that holds a prompt (rule 10)", () => {
     updatedMs: 1,
   });
 
-  it("has no badge and is not counted, and tells when it is opened", async () => {
+  it("counts its badge from verdicts, not its filters, and tells when it is opened (ADR 0117, rule 4)", async () => {
     const counted: string[] = [];
+    const badged: string[] = [];
     const backend = {
       async listNewest() {
         return { messages: [] };
@@ -952,6 +953,10 @@ describe("a saved view that holds a prompt (rule 10)", () => {
         counted.push(args.query);
         return { count: 3 };
       },
+      async agentPromptBadge(query: string) {
+        badged.push(query);
+        return { ai: "on", unread: 2 };
+      },
     } as unknown as Backend;
     const store = createMailStore(backend);
     const views = createViewsStore(backend, store, { delay: async () => {} });
@@ -960,7 +965,8 @@ describe("a saved view that holds a prompt (rule 10)", () => {
     await views.load();
     await tick(20);
     expect(counted).toEqual(["is:unread", "from:office"]);
-    expect(views.badge("a")).toBeUndefined();
+    expect(badged).toEqual([QUERY]);
+    expect(views.badge("a")).toBe("2");
     expect(views.badge("b")).toBe("3");
     views.select("a");
     expect(store.query()).toBe(QUERY);
@@ -973,5 +979,51 @@ describe("a saved view that holds a prompt (rule 10)", () => {
     expect(views.changed()).toBe(false);
     expect(holdsPrompt(QUERY)).toBe(true);
     expect(holdsPrompt("from:office")).toBe(false);
+  });
+});
+
+describe("a saved view's reading in the background (ADR 0117, rule 3)", () => {
+  it("reads the rows again for the prompt shown, and takes no part in a run's progress", async () => {
+    const r = rig();
+    const t = timers();
+    const p = createPromptRun(r.backend, { schedule: t.schedule });
+    p.setQuery(QUERY, true);
+    r.setVerdicts(list([row(1, 2)], { found: 1, read: 1, fits: 1, toRead: 0 }));
+    await p.open();
+    await tick();
+    const reads = () => r.calls.filter((c) => c.startsWith("verdicts")).length;
+    const before = reads();
+    // Another prompt's reading is not ours.
+    r.push({
+      type: "agentPromptProgress",
+      promptKey: "other",
+      phase: "reading",
+      done: 10,
+      total: 10,
+      finished: false,
+      background: true,
+    });
+    t.fire();
+    await tick();
+    expect(reads()).toBe(before);
+    // Ours: the rows are read again once, after the quiet time; no progress is shown.
+    r.setVerdicts(list([row(2, 3), row(1, 2)], { found: 2, read: 2, fits: 2, toRead: 0 }));
+    for (const done of [0, 3]) {
+      r.push({
+        type: "agentPromptProgress",
+        promptKey: KEY,
+        phase: "reading",
+        done,
+        total: 3,
+        finished: done === 3,
+        background: true,
+      });
+    }
+    expect(p.progress()).toBeNull();
+    t.fire();
+    await tick();
+    expect(reads()).toBe(before + 1);
+    expect(p.rows()?.map((x) => x.threadId)).toEqual(["t2", "t1"]);
+    p.dispose();
   });
 });

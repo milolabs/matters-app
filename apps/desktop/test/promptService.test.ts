@@ -12,6 +12,8 @@ import {
   AgentRunError,
   MAX_FOLLOW_KEEP,
   MAX_PROMPT_BATCH_THREADS,
+  MAX_VIEWS,
+  NEEDS_YOU_VIEW,
   PROMPT_ASK_ABOVE,
   PROMPT_INSTRUCTIONS,
   PROMPT_SEARCH_INSTRUCTIONS,
@@ -163,7 +165,10 @@ const subjectsOf = (request: AgentRunRequest) =>
 
 let seq = 0;
 
-async function build(runtime: { id: string } & Partial<Responder> = new Responder()) {
+async function build(
+  runtime: { id: string } & Partial<Responder> = new Responder(),
+  options: { readonly starterViews?: boolean } = {},
+) {
   const storage = createInMemoryStorage();
   const clock = new ManualClock();
   await clock.advance(NOW);
@@ -172,6 +177,7 @@ async function build(runtime: { id: string } & Partial<Responder> = new Responde
   await storage.accounts.add(account("acc1", "me@example.com"));
   await storage.accounts.add(account("acc2", "other@example.com"));
   const progress: PromptProgress[] = [];
+  const viewsChanged: number[] = [];
   const service = new AgentService({
     runtime: runtime as Responder,
     store: storage.store,
@@ -189,6 +195,9 @@ async function build(runtime: { id: string } & Partial<Responder> = new Responde
     visibleText,
     onChanged: () => {},
     onPromptProgress: (p) => progress.push(p),
+    ...(options.starterViews === true
+      ? { starterViews: storage.views, onViewsChanged: () => viewsChanged.push(1) }
+      : {}),
   });
 
   async function addMail(
@@ -244,7 +253,35 @@ async function build(runtime: { id: string } & Partial<Responder> = new Responde
     await service.testRuntime();
   }
 
-  return { storage, clock, insights, settings, service, progress, addMail, addFiller, ready };
+  /** A saved view, as the person keeps one (ADR 0027). */
+  async function addView(id: string, query: string): Promise<void> {
+    await storage.views.put({ id, name: id, query, position: 0, createdMs: 0, updatedMs: 0 });
+  }
+
+  /** The person's pause ends and the pass of new mail runs to its end (ADR 0117, rule 3). */
+  async function pass(): Promise<void> {
+    if ((await settings.get()).readingPaused === true) await service.resumeReading();
+    else {
+      service.kick();
+      await clock.advance(5000);
+    }
+    await service.idle();
+  }
+
+  return {
+    storage,
+    clock,
+    insights,
+    settings,
+    service,
+    progress,
+    viewsChanged,
+    addMail,
+    addFiller,
+    addView,
+    pass,
+    ready,
+  };
 }
 
 type ToolCall = (name: string, args: unknown) => Promise<string>;
@@ -1069,5 +1106,269 @@ describe("the demo runtime (ADR 0116)", () => {
     expect(first.rows[0]?.quote?.text).toBe("The invoice is due on Friday.");
     await settle();
     expect((await h.service.promptVerdicts(query)).rows).toEqual(first.rows);
+  });
+});
+
+describe("a view with a prompt reads in the background (ADR 0117)", () => {
+  /** The threads every verdict turn sent, in order of the turns. */
+  const judged = (runtime: Responder) => runtime.of("verdicts").flatMap((c) => subjectsOf(c));
+
+  it("reads only new threads with no verdict, only for views run once, with no search (rule 3)", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addView("asks", PROMPT);
+    await h.addView("never", 'prompt:"invoices to pay"');
+    await h.addView("plain", "from:robin");
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    expect(runtime.of("plan")).toHaveLength(1);
+    expect(judged(runtime)).toEqual(["Subject a"]);
+    const key = (await h.service.promptCount(PROMPT)).promptKey;
+    expect((await h.insights.getPromptSearch(key, ""))?.readAtMs).toBe(NOW);
+
+    // New mail the kept query finds, and old mail that only now came (a backfill) that it finds too.
+    await h.addMail("c", ["Please decide by Sunday"], { dayOffset: 0 });
+    await h.addMail("old", ["Please decide by Easter"], { dayOffset: 300 });
+    await h.clock.advance(60_000);
+    h.progress.length = 0;
+    await h.pass();
+    // No search and no plan, and nothing for the view never run.
+    expect(runtime.of("plan")).toHaveLength(1);
+    expect(runtime.of("follow")).toHaveLength(1);
+    expect(judged(runtime)).toEqual(["Subject a", "Subject c"]);
+    expect(h.progress.every((p) => p.background === true && p.phase === "reading")).toBe(true);
+    expect(h.progress.at(-1)).toMatchObject({ promptKey: key, finished: true, background: true });
+    expect((await h.insights.listLedger(10)).filter((l) => l.purpose === "prompt")).toHaveLength(3);
+    expect((await h.insights.getPromptSearch(key, ""))?.readAtMs).toBe(NOW + 60_000);
+
+    // Nothing new: another pass costs nothing. The old thread is the person's to read.
+    await h.pass();
+    expect(runtime.of("verdicts")).toHaveLength(2);
+    expect(await h.service.promptCount(PROMPT)).toMatchObject({ found: 3, read: 2 });
+
+    // ADR 0117, rule 4: the number is the unread threads that show; none for a view never run.
+    expect(await h.service.promptBadge(PROMPT)).toEqual({ ai: "on", unread: 2 });
+    expect(await h.service.promptBadge('prompt:"invoices to pay"')).toEqual({
+      ai: "on",
+      unread: null,
+    });
+  });
+
+  it("counts the badge from verdicts: read threads and threads that do not fit are not counted (rule 4)", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addMail("b", ["Please decide by Monday"], { dayOffset: 2 });
+    await h.addMail("no", ["Can you decide on lunch"], { dayOffset: 2 });
+    await h.ready();
+    expect(await h.service.promptBadge(PROMPT)).toEqual({ ai: "on", unread: null });
+    await h.service.promptRun(PROMPT);
+    expect(await h.service.promptBadge(PROMPT)).toEqual({ ai: "on", unread: 2 });
+    // Under `limit:1` only one shows, so one counts.
+    expect(await h.service.promptBadge(`${PROMPT} limit:1`)).toEqual({ ai: "on", unread: 1 });
+    await h.service.disable();
+    expect(await h.service.promptBadge(PROMPT)).toEqual({ ai: "off", unread: null });
+  });
+
+  it("stops for the person's pause, waits while the plan says no, and reads at most PROMPT_ASK_ABOVE a pass", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addView("asks", PROMPT);
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    const n = PROMPT_ASK_ABOVE + 5;
+    for (let i = 0; i < n; i++) {
+      await h.addMail(`n${String(i).padStart(3, "0")}`, ["Please decide by Friday"], {
+        dayOffset: 0,
+        from: `p${i}@example${i}.org`,
+      });
+    }
+    // Paused: a sync's kick reads nothing.
+    h.service.kick();
+    await h.clock.advance(5000);
+    await h.service.idle();
+    expect(runtime.of("verdicts")).toHaveLength(1);
+
+    // The plan is nearly used up: background work waits (ADR 0051, rule 7).
+    const resetsAtMs = NOW + DAY;
+    await h.settings.update({
+      limits: {
+        session: { usedPercent: 95, resetsAtMs },
+        week: { usedPercent: 10, resetsAtMs },
+        usingOverage: false,
+        seenAtMs: NOW,
+      },
+    });
+    await h.pass();
+    expect(runtime.of("verdicts")).toHaveLength(1);
+
+    await h.settings.update({
+      limits: {
+        session: { usedPercent: 5, resetsAtMs },
+        week: { usedPercent: 10, resetsAtMs },
+        usingOverage: false,
+        seenAtMs: NOW,
+      },
+    });
+    h.service.kick();
+    await h.clock.advance(5000);
+    await h.service.idle();
+    expect(judged(runtime).length - 1).toBe(PROMPT_ASK_ABOVE);
+    // The last reading stays where it was until every new thread is read: the next pass reads on.
+    h.service.kick();
+    await h.clock.advance(5000);
+    await h.service.idle();
+    expect(judged(runtime).length - 1).toBe(n);
+    expect(await h.service.promptCount(PROMPT)).toMatchObject({ found: n + 1, read: n + 1 });
+  });
+
+  it("gives way to a run the person starts, which waits for its turn: nothing is sent twice", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addView("asks", PROMPT);
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    await h.addMail("c", ["Please decide by Sunday"], { dayOffset: 0 });
+    await h.addMail("d", ["Please decide by Monday"], { dayOffset: 0, from: "d@other.example" });
+    // The background's first turn waits until the test lets it answer.
+    let started: (() => void) | undefined;
+    const inFlight = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let armed = true;
+    runtime.answer = async (request) => {
+      if (kindOf(request) === "verdicts" && armed) {
+        armed = false;
+        started?.();
+        await held;
+      }
+      return { value: judgeAll(request) };
+    };
+    await h.service.resumeReading();
+    await inFlight;
+    const run = h.service.promptRun(PROMPT);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The person's run waits for the turn already sent; it sends nothing meanwhile.
+    expect(runtime.of("verdicts")).toHaveLength(2);
+    release?.();
+    const result = await run;
+    await h.service.idle();
+    expect(result.rows.map((r) => r.threadId).sort()).toEqual(["a", "c", "d"]);
+    expect(judged(runtime).slice(1).sort()).toEqual(["Subject c", "Subject d"]);
+    expect(runtime.of("verdicts")).toHaveLength(2);
+    await h.pass();
+    expect(runtime.of("verdicts")).toHaveLength(2);
+  });
+
+  it("never starts beside a run the person started (rule 3)", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addView("asks", PROMPT);
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    await h.addMail("c", ["Please decide by Sunday"], { dayOffset: 0 });
+    let started: (() => void) | undefined;
+    const inFlight = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let armed = true;
+    runtime.answer = async (request) => {
+      if (kindOf(request) === "verdicts" && armed) {
+        armed = false;
+        started?.();
+        await held;
+      }
+      return { value: judgeAll(request) };
+    };
+    // The person's run is reading; the pass of new mail comes and finds it.
+    const run = h.service.promptRun(PROMPT);
+    await inFlight;
+    await h.service.resumeReading();
+    await h.service.idle();
+    expect(runtime.of("verdicts")).toHaveLength(2);
+    expect(h.progress.some((p) => p.background === true)).toBe(false);
+    release?.();
+    await run;
+    expect(judged(runtime)).toEqual(["Subject a", "Subject c"]);
+    await h.pass();
+    expect(runtime.of("verdicts")).toHaveLength(2);
+  });
+});
+
+describe("the starter view (ADR 0117, rule 2)", () => {
+  it("is added in front once AI is on with consent, and never again once deleted", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime, { starterViews: true });
+    await h.addView("mine", "from:robin");
+    // AI off: nothing at the start.
+    await h.service.start();
+    expect((await h.storage.views.list()).map((v) => v.id)).toEqual(["mine"]);
+    await h.ready();
+    const views = await h.storage.views.list();
+    expect(views.map((v) => [v.id, v.name, v.query])).toEqual([
+      [NEEDS_YOU_VIEW.id, "Needs you", 'after:-30d prompt:"mail that needs my reply or decision"'],
+      ["mine", "mine", "from:robin"],
+    ]);
+    expect(h.viewsChanged).toHaveLength(1);
+    expect((await h.settings.get()).needsYouAdded).toBe(true);
+
+    await h.storage.views.remove(NEEDS_YOU_VIEW.id);
+    await h.service.disable();
+    await h.ready();
+    await h.service.start();
+    expect((await h.storage.views.list()).map((v) => v.id)).toEqual(["mine"]);
+    expect(h.viewsChanged).toHaveLength(1);
+  });
+
+  it("is added at the start when AI is already on, and not with no account agreed to", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime, { starterViews: true });
+    await h.settings.update({ enabled: true, runtimeId: runtime.id });
+    await h.service.start();
+    expect(await h.storage.views.list()).toEqual([]);
+    await h.settings.grantConsent("acc1", runtime.id, NOW);
+    await h.service.start();
+    expect((await h.storage.views.list()).map((v) => v.id)).toEqual([NEEDS_YOU_VIEW.id]);
+    await h.service.stop();
+  });
+
+  it("waits for room in a full list, and counts a view of that name as added", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime, { starterViews: true });
+    for (let i = 0; i < MAX_VIEWS; i++) await h.addView(`v${i}`, `from:p${i}`);
+    await h.ready();
+    expect((await h.storage.views.list()).some((v) => v.id === NEEDS_YOU_VIEW.id)).toBe(false);
+    expect((await h.settings.get()).needsYouAdded).toBeUndefined();
+    await h.storage.views.remove("v0");
+    await h.service.start();
+    expect((await h.storage.views.list())[0]?.id).toBe(NEEDS_YOU_VIEW.id);
+
+    const other = await build(new Responder(), { starterViews: true });
+    await other.storage.views.put({
+      id: "x",
+      name: "needs YOU",
+      query: "is:unread",
+      position: 0,
+      createdMs: 0,
+      updatedMs: 0,
+    });
+    await other.ready();
+    expect((await other.storage.views.list()).map((v) => v.id)).toEqual(["x"]);
+    expect((await other.settings.get()).needsYouAdded).toBe(true);
+    await other.storage.views.remove("x");
+    await other.service.start();
+    expect(await other.storage.views.list()).toEqual([]);
   });
 });

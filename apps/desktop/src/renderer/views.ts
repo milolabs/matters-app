@@ -1,4 +1,4 @@
-import { parseQuery, type SavedView } from "@matters/core";
+import { NEEDS_YOU_VIEW, parseQuery, type SavedView } from "@matters/core";
 import { batch, createSignal } from "solid-js";
 import type { Backend } from "./client.ts";
 import type { MailStore } from "./store.ts";
@@ -129,14 +129,24 @@ export function createViewsStore(backend: Backend, store: MailStore, options: Vi
    * unread mail like any view (ADR 0093): every tab's number means the same thing.
    */
   async function countAll(mine: number) {
-    // A view with a prompt has no badge (ADR 0116, rule 10): its filters alone are not what it shows.
-    const asking = saved().filter((v) => holdsPrompt(v.query));
-    for (const view of asking) setCount(view.id, undefined);
-    const counted = [
-      { id: ALL_MAIL_ID, query: "is:unread" },
-      ...saved().filter((v) => !holdsPrompt(v.query)),
-    ];
+    const counted = [{ id: ALL_MAIL_ID, query: "is:unread" }, ...saved()];
     for (const view of counted) {
+      if (holdsPrompt(view.query)) {
+        // ADR 0117, rule 4: the unread threads among those the view shows, from its verdicts.
+        // A view never run, or AI off, shows none.
+        let n: number | undefined;
+        try {
+          const b = await backend.agentPromptBadge(view.query);
+          n = b.ai === "on" && b.unread !== null ? Math.min(b.unread, BADGE_CAP) : undefined;
+        } catch {
+          n = undefined;
+        }
+        if (mine !== generation) return;
+        setCount(view.id, n);
+        await delay(gapMs);
+        if (mine !== generation) return;
+        continue;
+      }
       let total = 0;
       let before: number | undefined;
       for (;;) {
@@ -382,6 +392,25 @@ export function createViewsStore(backend: Backend, store: MailStore, options: Vi
           setActiveId(ALL_MAIL_ID);
         }
       });
+    },
+    /**
+     * ADR 0117, rule 2: opens `Needs you` while the person has neither chosen a tab nor typed, as
+     * `setMattersAvailable` opens Matters; true when it did. Not wired while Matters exists.
+     */
+    openStarter(): boolean {
+      if (chose || store.query() !== "") return false;
+      const view = saved().find((v) => v.id === NEEDS_YOU_VIEW.id);
+      if (view === undefined) return false;
+      if (activeId() !== view.id) {
+        batch(() => {
+          setActiveId(view.id);
+          setNaming(null);
+          setProblem("");
+        });
+        setText(view.query);
+        for (const listener of openedListeners) listener(view);
+      }
+      return true;
     },
     /** Stops counting; the next trigger starts it again. */
     stop: () => {

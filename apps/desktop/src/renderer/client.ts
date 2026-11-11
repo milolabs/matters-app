@@ -14,6 +14,7 @@ import type {
   AgentMatchActResponse,
   AgentPreparedResponse,
   AgentPrepareResponse,
+  AgentPromptBadgeResponse,
   AgentPromptCountResponse,
   AgentPromptRunResponse,
   AgentPromptVerdictsResponse,
@@ -112,6 +113,7 @@ import type {
   PersonSuggestion,
   PreparedWork,
   PrepareResult,
+  PromptBadge,
   PromptCount,
   PromptList,
   PromptRunResult,
@@ -410,6 +412,8 @@ export interface Backend {
   agentPromptCount(query: string): Promise<PromptCount>;
   /** ADR 0116, rule 7: the verdicts kept for the prompt in `query`, as the list shows them. */
   agentPromptVerdicts(query: string): Promise<PromptList>;
+  /** ADR 0117, rule 4: the number on the tab of a view with a prompt, from stored verdicts. */
+  agentPromptBadge(query: string): Promise<PromptBadge>;
   /**
    * ADR 0116, rules 3 and 4: runs the prompt in `query`, its search first when none is kept or
    * `again` asks for a new one, then what it found and has not read; progress is pushed. Above
@@ -787,6 +791,8 @@ export function createBackend(port: MessagePort): Backend {
       (await request<AgentPromptCountResponse>({ type: "agentPromptCount", query })).count,
     agentPromptVerdicts: async (query) =>
       (await request<AgentPromptVerdictsResponse>({ type: "agentPromptVerdicts", query })).list,
+    agentPromptBadge: async (query) =>
+      (await request<AgentPromptBadgeResponse>({ type: "agentPromptBadge", query })).badge,
     agentPromptRun: async (query, again, readAll) =>
       (
         await request<AgentPromptRunResponse>({

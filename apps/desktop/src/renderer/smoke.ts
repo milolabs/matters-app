@@ -275,21 +275,23 @@ const ARCHIVE_SAMPLES = 10;
  * next one and puts the line in the tray in the next frame; ⌘Z brings the thread back. Each sample
  * is undone inside its window, so nothing leaves the account.
  */
-async function measureArchive(store: MailStore) {
+async function measureArchive(store: MailStore, views?: ViewsStore) {
   const frames: number[] = [];
   let lineShown = true;
   let selectedNext = true;
   let restored = true;
   const press = (init: KeyboardEventInit) =>
     document.body.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, ...init }));
-  // The Inbox tab is the second (key 2): the view, not the store, owns the query text. The text
-  // changes at once and the list only when the answer is in, so it is the answer that is awaited:
-  // a row read before it is a row of the list being replaced.
+  // The Inbox tab's digit: the view, not the store, owns the query text. It is the second tab
+  // unless a view went in front of it (`Needs you`, ADR 0117, rule 2, on a run after AI was on).
+  // The text changes at once and the list only when the answer is in, so it is the answer that
+  // is awaited: a row read before it is a row of the list being replaced.
+  const inbox = views?.views().findIndex((v) => v.query === "in:inbox") ?? -1;
   let settled = false;
   const stop = store.onSettled((query) => {
     if (query === "in:inbox") settled = true;
   });
-  press({ key: "2" });
+  press({ key: String(inbox >= 0 && inbox < 9 ? inbox + 1 : 2) });
   await until(() => settled && store.messages().length > ARCHIVE_SAMPLES * 2, 10_000);
   stop();
   await frame();
@@ -1869,7 +1871,7 @@ export async function runSmoke(
     report.senderHead = await measureSenderHead(store);
     report.rowToLetter = await measureRowToLetter(store);
     report.markRead = await measureMarkRead(store);
-    report.archive = await measureArchive(store);
+    report.archive = await measureArchive(store, extras?.views);
     if (extras) report.composer = await measureComposer(store, extras.compose, frameViolations);
     if (extras) {
       report.attach = await measureAttach(store, extras.compose, extras.backend);

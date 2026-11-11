@@ -1224,8 +1224,8 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
       this.db
         .prepare(
           `INSERT OR REPLACE INTO agent_prompt_searches
-             (prompt_key, filters, queries_json, threads_json, at_ms, whole)
-             VALUES (?, ?, ?, ?, ?, ?)`,
+             (prompt_key, filters, queries_json, threads_json, at_ms, whole, read_at_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           search.promptKey,
@@ -1234,6 +1234,7 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
           JSON.stringify(search.threadIds),
           search.atMs,
           search.whole === true ? 1 : 0,
+          search.readAtMs ?? null,
         );
     });
   }
@@ -1242,7 +1243,13 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
     const row = this.db
       .prepare("SELECT * FROM agent_prompt_searches WHERE prompt_key = ? AND filters = ?")
       .get(promptKey, filters) as
-      | { queries_json: string; threads_json: string; at_ms: number; whole: number }
+      | {
+          queries_json: string;
+          threads_json: string;
+          at_ms: number;
+          whole: number;
+          read_at_ms: number | null;
+        }
       | undefined;
     if (row === undefined) return null;
     const strings = (json: string): string[] => {
@@ -1256,6 +1263,7 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
       threadIds: strings(row.threads_json),
       atMs: row.at_ms,
       ...(row.whole === 1 ? { whole: true } : {}),
+      ...(row.read_at_ms === null ? {} : { readAtMs: row.read_at_ms }),
     };
   }
 }

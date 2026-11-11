@@ -1,4 +1,4 @@
-import type { SavedView } from "@matters/core";
+import { NEEDS_YOU_VIEW, type SavedView } from "@matters/core";
 import { describe, expect, it } from "vitest";
 import { type Backend, BackendError } from "../src/renderer/client.ts";
 import { createMailStore } from "../src/renderer/store.ts";
@@ -53,6 +53,16 @@ function rig(initial: SavedView[], counts: Record<string, number[]> = {}) {
       const rest = list.filter((v) => v.id !== id);
       rest.splice(to, 0, list.find((v) => v.id === id) as SavedView);
       list = rest;
+    },
+    async agentPromptBadge(query: string) {
+      calls.push({ query, cap: 0 });
+      if (failing.has(query)) throw new Error("boom");
+      const n = counts[query]?.[0];
+      return n === undefined
+        ? { ai: "on", unread: null }
+        : n < 0
+          ? { ai: "off", unread: null }
+          : { ai: "on", unread: n };
     },
     async countMatches(args: { query: string; cap: number; beforeKey?: number }) {
       calls.push(args);
@@ -344,5 +354,53 @@ describe("views store: badges", () => {
     expect(views.badge("a")).toBeUndefined();
     expect(views.badge("b")).toBe("4");
     expect(calls.filter((x) => x.query === "faktura")).toHaveLength(1);
+  });
+});
+
+describe("views store: views with a prompt and the starter view (ADR 0117)", () => {
+  const asks = view("p", "Decide", 'prompt:"what needs my decision"', 0);
+  const never = view("q", "Never", 'prompt:"never run"', 1);
+  const off = view("r", "Off", 'from:x prompt:"ai is off"', 2);
+
+  it("counts a view with a prompt by its own call, in the same paced loop, capped at 99", async () => {
+    const {
+      views,
+      calls,
+      clock: c,
+    } = await setup([asks, never, off], {
+      [asks.query]: [150],
+      [off.query]: [-1],
+      "is:unread": [1],
+    });
+    await c.drain();
+    expect(calls.map((x) => x.query)).toEqual(["is:unread", asks.query, never.query, off.query]);
+    expect(views.badge("p")).toBe("99+");
+    // Never run, or AI off: no number.
+    expect(views.badge("q")).toBeUndefined();
+    expect(views.badge("r")).toBeUndefined();
+  });
+
+  it("opens Needs you while the person has neither chosen a tab nor typed, and only then", async () => {
+    const starter = view(NEEDS_YOU_VIEW.id, NEEDS_YOU_VIEW.name, NEEDS_YOU_VIEW.query, 0);
+    const first = await setup([starter, ...two]);
+    const opened: string[] = [];
+    first.views.onOpened((v) => opened.push(v.id));
+    expect(first.views.openStarter()).toBe(true);
+    expect(first.views.active().id).toBe(NEEDS_YOU_VIEW.id);
+    expect(first.store.query()).toBe(NEEDS_YOU_VIEW.query);
+    expect(opened).toEqual([NEEDS_YOU_VIEW.id]);
+
+    const chose = await setup([starter, ...two]);
+    chose.views.select("a");
+    expect(chose.views.openStarter()).toBe(false);
+    expect(chose.views.active().id).toBe("a");
+
+    const typed = await setup([starter, ...two]);
+    typed.store.setQuery("from:anna");
+    expect(typed.views.openStarter()).toBe(false);
+
+    const without = await setup(two);
+    expect(without.views.openStarter()).toBe(false);
+    expect(without.views.active().id).toBe("all");
   });
 });

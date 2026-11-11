@@ -12,6 +12,7 @@ import type {
   PreparedGuidance,
   PreparedWork,
   PrepareResult,
+  PromptBadge,
   PromptCount,
   PromptList,
   PromptRunResult,
@@ -181,6 +182,11 @@ export interface AgentApi {
   promptCount(query: string): Promise<PromptCount>;
   /** The verdicts kept for the prompt of `query`, as the list shows them (rule 7). No model. */
   promptVerdicts(query: string): Promise<PromptList>;
+  /**
+   * The number on the tab of a saved view with a prompt (ADR 0117, rule 4): the unread threads
+   * among those it shows, from stored verdicts. No model; none for a view never run.
+   */
+  promptBadge(query: string): Promise<PromptBadge>;
   /**
    * Runs the prompt of `query` (rule 3): the agent's search first when none is kept or `again`
    * asks for a new one (rule 4), then the threads found with no verdict yet, in `P0` batches, each

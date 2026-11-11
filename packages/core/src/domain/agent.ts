@@ -904,6 +904,11 @@ export interface AgentSettings {
    * of ADR 0080. Experimental; absent reads as off.
    */
   readonly talkLoop?: boolean;
+  /**
+   * `Needs you` was added to the saved views, or a view of that name was there already (ADR 0117,
+   * rule 2): it is never added again, renamed, edited or deleted. Absent: not yet.
+   */
+  readonly needsYouAdded?: boolean;
 }
 
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {

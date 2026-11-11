@@ -26,6 +26,7 @@ import {
   planDueNotices,
   planMattersNotices,
   planNotices,
+  planPromptNotices,
   quietEndsAt,
   readNotificationPrefs,
   readWatchState,
@@ -97,9 +98,32 @@ describe("notification settings (ADR 0071, rule 6)", () => {
       source: "matters",
       style: "dot",
     });
-    for (const source of ["matters", "notified", "inbox", "off"] as const) {
+    for (const source of ["matters", "view", "notified", "inbox", "off"] as const) {
       expect(readNotificationPrefs({ badge: { source } }).badge.source).toBe(source);
     }
+  });
+
+  it("keeps the view a badge of `view` counts, and only for that source (ADR 0117, rule 5)", () => {
+    expect(readNotificationPrefs({ badge: { source: "view", viewId: "v1" } }).badge).toEqual({
+      source: "view",
+      viewId: "v1",
+      style: "count",
+    });
+    // No view, or a broken one: still `view`, which counts the Inbox until one is chosen.
+    expect(readNotificationPrefs({ badge: { source: "view" } }).badge).toEqual({
+      source: "view",
+      style: "count",
+    });
+    expect(readNotificationPrefs({ badge: { source: "view", viewId: 7 } }).badge).toEqual({
+      source: "view",
+      style: "count",
+    });
+    expect(readNotificationPrefs({ badge: { source: "inbox", viewId: "v1" } }).badge).toEqual({
+      source: "inbox",
+      style: "count",
+    });
+    // This stage keeps `matters` as it is.
+    expect(readNotificationPrefs({ badge: { source: "matters" } }).badge.source).toBe("matters");
   });
 
   it("is quiet while paused and inside quiet hours, also across midnight", () => {
@@ -894,5 +918,128 @@ describe("NewMailWatch keeps deadlines and checks banners (ADR 0108)", () => {
     await empty.start();
     expect(await empty.recount([])).toEqual({ notified: 0, also: [] });
     expect(emptyDeps.store.getByKeys).not.toHaveBeenCalled();
+  });
+});
+
+describe("views with a prompt (ADR 0117, rule 6)", () => {
+  const none = { banner: false, inApp: false, badge: false };
+  const all = { banner: true, inApp: true, badge: true };
+  const withView = prefs({ views: { v1: all } });
+
+  it("rings through the view's channels the mail did not go through, and never twice", () => {
+    const anna = msg({ from: { name: "Anna", address: "anna@x.example" }, subject: "Lease" });
+    const quiet = planPromptNotices(
+      withView,
+      [{ message: anna, told: none, views: ["v1"] }],
+      false,
+      0,
+    );
+    expect(quiet.banners).toEqual([expect.objectContaining({ title: "Anna", body: "Lease" })]);
+    expect(quiet.inApp).toHaveLength(1);
+    expect(quiet.badged).toEqual([anna.key]);
+    expect(quiet.told).toEqual([{ key: anna.key, channels: all }]);
+    const already = planPromptNotices(
+      withView,
+      [{ message: anna, told: all, views: ["v1"] }],
+      false,
+      0,
+    );
+    expect(already.banners).toEqual([]);
+    expect(already.inApp).toEqual([]);
+    expect(already.badged).toEqual([]);
+    // A view that does not notify adds nothing; read mail never rings.
+    expect(
+      planPromptNotices(prefs(), [{ message: anna, told: none, views: ["v1"] }], false, 0).banners,
+    ).toEqual([]);
+    const read = { ...anna, flags: { ...anna.flags, seen: true } };
+    expect(
+      planPromptNotices(withView, [{ message: read, told: none, views: ["v1"] }], false, 0).banners,
+    ).toEqual([]);
+  });
+
+  it("keeps what a view waits for in the watch's file, defended like the rest", () => {
+    const state = readWatchState({
+      lookedAtMs: 1,
+      marks: [],
+      badged: [],
+      told: [
+        { key: 1, threadId: "t", atMs: 1, channels: none, decided: true, waiting: ["v1", 3, "v1"] },
+        { key: 2, threadId: "t", atMs: 1, channels: none, decided: true, waiting: [] },
+        { key: 3, threadId: "t", atMs: 1, channels: none, decided: true, waiting: "v1" },
+      ],
+      dues: {},
+    });
+    expect(state?.told.map((t) => t.waiting)).toEqual([["v1"], undefined, undefined]);
+  });
+
+  it("holds new mail a prompt view's filters match, a prompt alone holding all of it", async () => {
+    let now = 1_000_000;
+    const store = new Map<number, Message>();
+    let top = 0;
+    const uids = new Map<number, number>();
+    const deps: NewMailDeps = {
+      index: {
+        searchChunk: async () => ({ keys: [] }),
+        matchesAmong: async (_q: unknown, keys: readonly number[]) =>
+          keys.filter((k) => store.get(k)?.subject.includes("faktura")),
+      } as unknown as NewMailDeps["index"],
+      store: {
+        getByKeys: async (keys) =>
+          keys.map((k) => store.get(k)).filter((m): m is Message => m !== undefined),
+        getThread: async () => null,
+      },
+      arrivals: {
+        marks: async () => [{ accountId: "a1", folderId: "INBOX", uidValidity: "1", uid: top }],
+        unreadIn: async (spans) =>
+          [...uids]
+            .filter(([, uid]) => spans.some((s) => uid > s.afterUid && uid <= s.upToUid))
+            .map(([key]) => key),
+      },
+      views: {
+        list: async () =>
+          [
+            { id: "plain", query: "faktura" },
+            { id: "asks", query: 'faktura prompt:"to pay"' },
+            { id: "alone", query: 'prompt:"needs me"' },
+          ].map((v) => ({ ...v, name: v.id, position: 0, createdMs: 0, updatedMs: 0 })),
+      },
+      accounts: {
+        list: async () => [{ id: "a1", address: "me@example.com", displayName: "Me" }] as never,
+      },
+      now: () => now,
+    };
+    const watch = new NewMailWatch(deps);
+    await watch.start();
+    const add = (m: Message) => {
+      store.set(m.key, m);
+      uids.set(m.key, ++top);
+    };
+    const bill = msg({ subject: "faktura 3" });
+    const hello = msg({ subject: "hello" });
+    const mine = msg({ subject: "faktura 4", from: { name: "Me", address: "me@example.com" } });
+    add(bill);
+    add(hello);
+    add(mine);
+    const found = await watch.look(["plain", "asks", "alone"]);
+    const byKey = new Map(found.map((f) => [f.message.key, f]));
+    // The plain view notifies now; the views with a prompt hold it.
+    expect(byKey.get(bill.key)).toMatchObject({ views: ["plain"], prompted: ["asks", "alone"] });
+    expect(byKey.get(hello.key)).toMatchObject({ views: [], prompted: ["alone"] });
+    // Your own mail waits for nothing.
+    expect(watch.waiting().map((t) => [t.key, t.waiting])).toEqual([
+      [hello.key, ["alone"]],
+      [bill.key, ["asks", "alone"]],
+    ]);
+    watch.settle(bill.key, ["asks"]);
+    expect(watch.waiting().find((t) => t.key === bill.key)?.waiting).toEqual(["alone"]);
+    watch.settle(bill.key, ["alone"]);
+    expect(watch.waiting().map((t) => t.key)).toEqual([hello.key]);
+    // Kept across a restart; let go with the mail after 48 hours.
+    const again = new NewMailWatch(deps);
+    await again.start(watch.snapshot());
+    expect(again.waiting().map((t) => t.key)).toEqual([hello.key]);
+    now += 49 * 60 * 60_000;
+    await again.look([]);
+    expect(again.waiting()).toEqual([]);
   });
 });

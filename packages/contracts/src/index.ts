@@ -33,6 +33,7 @@ import type {
   PersonSuggestion,
   PreparedWork,
   PrepareResult,
+  PromptBadge,
   PromptCount,
   PromptList,
   PromptProgress,
@@ -953,6 +954,16 @@ export interface AgentPromptVerdictsRequest {
 }
 
 /**
+ * The number on the tab of a saved view whose text holds a prompt (ADR 0117, rule 4): unread
+ * threads among those it shows, from stored verdicts. No model; none for a view never run.
+ */
+export interface AgentPromptBadgeRequest {
+  readonly type: "agentPromptBadge";
+  readonly requestId: RequestId;
+  readonly query: string;
+}
+
+/**
  * Runs the prompt of `query` (ADR 0116, rule 3): `↵` in the query bar, or opening a saved view
  * that holds a prompt. The agent searches first when no search is kept for the prompt and its mail
  * filters, or when `again` asks for a new one (rule 4); then the threads found with no verdict are
@@ -984,6 +995,7 @@ export type BackendRequest =
   | AgentStatusRequest
   | AgentPromptCountRequest
   | AgentPromptVerdictsRequest
+  | AgentPromptBadgeRequest
   | AgentPromptRunRequest
   | AgentPromptStopRequest
   | AgentThingsRequest
@@ -1948,6 +1960,13 @@ export interface AgentPromptVerdictsResponse {
   readonly list: PromptList;
 }
 
+export interface AgentPromptBadgeResponse {
+  readonly type: "agentPromptBadge";
+  readonly requestId: RequestId;
+  readonly ok: true;
+  readonly badge: PromptBadge;
+}
+
 export interface AgentPromptRunResponse {
   readonly type: "agentPromptRun";
   readonly requestId: RequestId;
@@ -1965,6 +1984,7 @@ export type BackendResponse =
   | AgentStatusResponse
   | AgentPromptCountResponse
   | AgentPromptVerdictsResponse
+  | AgentPromptBadgeResponse
   | AgentPromptRunResponse
   | AgentPromptStopResponse
   | AgentThingsResponse
@@ -2229,8 +2249,17 @@ export interface AgentPromptProgressEvent extends PromptProgress {
   readonly type: "agentPromptProgress";
 }
 
+/**
+ * The saved views changed without a window asking (ADR 0117, rule 2: `Needs you` was added): the
+ * windows read the list again.
+ */
+export interface ViewsChangedEvent {
+  readonly type: "viewsChanged";
+}
+
 export type BackendEvent =
   | NoticesEvent
+  | ViewsChangedEvent
   | AgentPromptProgressEvent
   | NotificationPrefsChangedEvent
   | NotificationTestFailedEvent

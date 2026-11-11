@@ -4717,6 +4717,11 @@ export function describeAgentInsightStoreContract(
       };
       await store().putPromptSearch(whole);
       expect(await store().getPromptSearch("k1", "label:x")).toEqual(whole);
+      // ADR 0117, rule 3: when the prompt last read it comes back as it went.
+      await store().putPromptSearch({ ...whole, readAtMs: 3000 });
+      expect(await store().getPromptSearch("k1", "label:x")).toEqual({ ...whole, readAtMs: 3000 });
+      await store().putPromptSearch(whole);
+      expect(await store().getPromptSearch("k1", "label:x")).toEqual(whole);
       await store().removeForThreads(["t1"]);
       expect((await store().getPromptSearch("k1", "from:office"))?.threadIds).toEqual(["t2"]);
       // Old, no view holds it and no verdict is left: it goes. A verdict of its prompt keeps it.

@@ -1351,6 +1351,21 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 53,
+    // ADR 0117, rule 3: a view with a prompt reads new mail in the background, and only mail newer
+    // than its last reading. When that was is kept with the search; NULL reads as `at_ms`, the
+    // time of the search. A column, after 52, as there.
+    sql: "",
+    run: (db) => {
+      const columns = db.prepare("PRAGMA table_info(agent_prompt_searches)").all() as {
+        name: string;
+      }[];
+      if (!columns.some((c) => c.name === "read_at_ms")) {
+        db.exec("ALTER TABLE agent_prompt_searches ADD COLUMN read_at_ms INTEGER");
+      }
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

@@ -108,6 +108,7 @@ export interface SqliteReadPorts {
     | "listTalk"
     | "getTalk"
     | "listTalks"
+    | "getPromptVerdicts"
   >;
   readonly agentSettings: Pick<AgentSettingsPort, "get" | "listConsents" | "getRuntimeRecord">;
   /** What the database holds, for Settings › Storage (ADR 0089). */

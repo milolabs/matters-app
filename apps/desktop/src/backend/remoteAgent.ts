@@ -12,6 +12,7 @@ import type {
   PreparedGuidance,
   PreparedWork,
   PrepareResult,
+  PromptBadge,
   PromptCount,
   PromptList,
   PromptRunResult,
@@ -286,6 +287,11 @@ export class RemoteAgent implements AgentApi {
   /** Read-only, on the worker for the same reason; it never waits for a model (ADR 0051, rule 10). */
   promptVerdicts(query: string): Promise<PromptList> {
     return this.host.command({ name: "agentPromptVerdicts", query });
+  }
+
+  /** Read-only, on the worker: the kept search is walked as for the verdicts (ADR 0117, rule 4). */
+  promptBadge(query: string): Promise<PromptBadge> {
+    return this.host.command({ name: "agentPromptBadge", query });
   }
 
   /** Goes to the worker, which searches and reads there; progress comes back as pushes. */

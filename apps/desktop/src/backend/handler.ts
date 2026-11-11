@@ -708,6 +708,7 @@ function parseAgentRequest(
     case "agentMatchAct":
     case "agentPromptCount":
     case "agentPromptVerdicts":
+    case "agentPromptBadge":
       return typeof raw.query === "string" && raw.query.length <= MAX_VIEW_TEXT
         ? { type, requestId, query: raw.query }
         : "query must be a short string";
@@ -2024,6 +2025,13 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           requestId,
           ok: true,
           list: await needAgent(deps).promptVerdicts(request.query),
+        };
+      case "agentPromptBadge":
+        return {
+          type: "agentPromptBadge",
+          requestId,
+          ok: true,
+          badge: await needAgent(deps).promptBadge(request.query),
         };
       case "agentPromptRun":
         return {

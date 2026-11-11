@@ -13,6 +13,7 @@ import {
   DEFAULT_NOTIFICATION_PREFS,
   IN_APP_SECONDS,
   isPaused,
+  NEEDS_YOU_VIEW,
   type PauseChoice,
   parseClock,
   pausedText,
@@ -55,6 +56,7 @@ const CONTENT: readonly { value: BannerContent; label: string }[] = [
 
 const BADGE: readonly { value: BadgeSource; label: string }[] = [
   { value: "matters", label: "What is in Matters" },
+  { value: "view", label: "The number of a view" },
   { value: "notified", label: "Mail you were told about" },
   { value: "inbox", label: "All unread in the Inbox" },
   { value: "off", label: "Nothing" },
@@ -314,11 +316,20 @@ export function NotificationsSection(props: { backend: Backend; accounts: Accoun
             <select
               aria-label="What the badge counts"
               class="h-[26px] cursor-default rounded-[7px] bg-fill px-2 text-[12.5px] outline-none focus:ring-1 focus:ring-edge"
-              onChange={(e) =>
+              onChange={(e) => {
+                const source = e.currentTarget.value as BadgeSource;
+                // A view's number starts with `Needs you` when it is there, else the first view.
+                const viewId =
+                  p().badge.viewId ??
+                  (views().find((v) => v.id === NEEDS_YOU_VIEW.id) ?? views()[0])?.id;
                 patch({
-                  badge: { ...p().badge, source: e.currentTarget.value as BadgeSource },
-                })
-              }
+                  badge: {
+                    ...p().badge,
+                    source,
+                    ...(source === "view" && viewId !== undefined ? { viewId } : {}),
+                  },
+                });
+              }}
             >
               <For each={BADGE}>
                 {(b) => (
@@ -328,6 +339,26 @@ export function NotificationsSection(props: { backend: Backend; accounts: Accoun
                 )}
               </For>
             </select>
+            <Show when={p().badge.source === "view"}>
+              <select
+                aria-label="The view the badge counts"
+                class="h-[26px] cursor-default rounded-[7px] bg-fill px-2 text-[12.5px] outline-none focus:ring-1 focus:ring-edge"
+                onChange={(e) => patch({ badge: { ...p().badge, viewId: e.currentTarget.value } })}
+              >
+                <Show when={!views().some((v) => v.id === p().badge.viewId)}>
+                  <option value="" selected>
+                    Choose a view
+                  </option>
+                </Show>
+                <For each={views()}>
+                  {(v) => (
+                    <option value={v.id} selected={p().badge.viewId === v.id}>
+                      {v.name}
+                    </option>
+                  )}
+                </For>
+              </select>
+            </Show>
             <Show when={p().badge.source !== "off"}>
               <span>as</span>
               <Segmented
@@ -344,11 +375,13 @@ export function NotificationsSection(props: { backend: Backend; accounts: Accoun
           <p class={`${hint} mt-2`}>
             {p().badge.source === "matters"
               ? "The same number as the Matters tab: what is still on you."
-              : p().badge.source === "notified"
-                ? "The mail ticked in the Badge column, until you read it."
-                : p().badge.source === "inbox"
-                  ? "Every unread message in the Inbox, up to 999."
-                  : "The icon stays clean."}
+              : p().badge.source === "view"
+                ? "The same number as that view's tab. With no view, or AI off for a view with a prompt, the unread in the Inbox."
+                : p().badge.source === "notified"
+                  ? "The mail ticked in the Badge column, until you read it."
+                  : p().badge.source === "inbox"
+                    ? "Every unread message in the Inbox, up to 999."
+                    : "The icon stays clean."}
           </p>
         </div>
 

@@ -27,10 +27,18 @@ export interface NoticeChannels {
 /** What a system banner may say; the lock screen and a shared screen can read it. */
 export type BannerContent = "full" | "subject" | "minimal";
 /**
- * What the icon counts: what is in Matters (the Matters tab's own number, ADR 0109), unread mail
- * you were told about, all unread in the Inbox, or nothing.
+ * What the icon counts: what is in Matters (the Matters tab's own number, ADR 0109), the number
+ * of one saved view (`view`, ADR 0117, rule 5), unread mail you were told about, all unread in
+ * the Inbox, or nothing.
  */
-export type BadgeSource = "matters" | "notified" | "inbox" | "off";
+export type BadgeSource = "matters" | "view" | "notified" | "inbox" | "off";
+export const BADGE_SOURCES: readonly BadgeSource[] = [
+  "matters",
+  "view",
+  "notified",
+  "inbox",
+  "off",
+];
 export type BadgeStyle = "count" | "dot";
 
 export interface NotificationPrefs {
@@ -58,6 +66,11 @@ export interface NotificationPrefs {
   };
   readonly badge: {
     readonly source: BadgeSource;
+    /**
+     * With `view`: the saved view whose tab number the icon shows (ADR 0117, rule 5). Gone, absent,
+     * or a view with a prompt while AI is off: the icon counts the Inbox.
+     */
+    readonly viewId?: string;
     readonly style: BadgeStyle;
   };
   /** Every day, in local minutes after midnight; `from` after `to` runs across midnight. */
@@ -160,10 +173,7 @@ export function readNotificationPrefs(raw: unknown): NotificationPrefs {
       together: oneOf(banner.together, BANNERS_TOGETHER, d.banner.together),
     },
     inApp: { seconds: oneOf(inApp.seconds, IN_APP_SECONDS, d.inApp.seconds) },
-    badge: {
-      source: oneOf(badge.source, ["matters", "notified", "inbox", "off"], d.badge.source),
-      style: oneOf(badge.style, ["count", "dot"], d.badge.style),
-    },
+    badge: badgeOf(badge, d.badge),
     quiet: {
       on: bool(quiet.on, d.quiet.on),
       fromMin: minute(quiet.fromMin, d.quiet.fromMin),
@@ -172,6 +182,21 @@ export function readNotificationPrefs(raw: unknown): NotificationPrefs {
     pausedUntilMs:
       typeof paused === "number" && Number.isFinite(paused) && paused > 0 ? paused : null,
   };
+}
+
+/**
+ * What the icon counts, defended like the rest. This is the one place a stored source is read:
+ * when the built-in `Matters` tab goes (ADR 0117, rule 5), the default becomes
+ * `{ source: "view", viewId: NEEDS_YOU_VIEW.id }` and a stored `matters` is read as that, here.
+ */
+function badgeOf(
+  badge: Record<string, unknown>,
+  d: NotificationPrefs["badge"],
+): NotificationPrefs["badge"] {
+  const source = oneOf(badge.source, BADGE_SOURCES, d.source);
+  const style = oneOf(badge.style, ["count", "dot"], d.style);
+  const viewId = text(badge.viewId, 200);
+  return source === "view" && viewId !== null ? { source, viewId, style } : { source, style };
 }
 
 /**
@@ -280,6 +305,11 @@ export interface NewMail {
   readonly youWrote: boolean;
   /** The ids of the saved views it belongs to, among those that notify. */
   readonly views: readonly string[];
+  /**
+   * The saved views with a prompt that notify and whose mail filters match it (ADR 0117, rule 6).
+   * They do not notify now: each waits for the verdict of the reading in the background.
+   */
+  readonly prompted?: readonly string[];
 }
 
 /** The kind of a message in the Inbox by its headers; null outside it. */
@@ -646,6 +676,69 @@ export function planMattersNotices(
   };
 }
 
+// --- Views with a prompt (ADR 0117, rule 6) ---
+
+/** A message whose thread a view with a prompt was given a verdict for after it came, and fits. */
+export interface PromptMail {
+  readonly message: Message;
+  /** The channels it already went through, by its kind or another view. */
+  readonly told: NoticeChannels;
+  /** The views with a prompt that notify and that it fits. */
+  readonly views: readonly string[];
+}
+
+/**
+ * The notices for mail that fits a view with a prompt, once its verdict came. Each goes through
+ * the channels of those views it did not already go through: a message never notifies twice
+ * through one channel, whichever kind or view told it first. Read mail, your own, that of a muted
+ * account and old mail that moved never notify; `quiet` drops banners and sound.
+ */
+export function planPromptNotices(
+  prefs: NotificationPrefs,
+  mails: readonly PromptMail[],
+  quiet: boolean,
+  nowMs: number,
+): NoticePlan {
+  const newest = [...mails].sort((a, b) => b.message.key - a.message.key);
+  const banner: Message[] = [];
+  const inApp: Message[] = [];
+  const badged: number[] = [];
+  const told: Told[] = [];
+  for (const mail of newest) {
+    if (silenced(prefs, mail.message, false, nowMs)) continue;
+    const want = mail.views.flatMap((id) => {
+      const c = prefs.views[id];
+      return c === undefined ? [] : [c];
+    });
+    const c: NoticeChannels = {
+      banner: want.some((w) => w.banner) && !mail.told.banner,
+      inApp: want.some((w) => w.inApp) && !mail.told.inApp,
+      badge: want.some((w) => w.badge) && !mail.told.badge,
+    };
+    if (c.banner && !quiet) banner.push(mail.message);
+    if (c.inApp) inApp.push(mail.message);
+    if (c.badge) badged.push(mail.message.key);
+    told.push(toldOf(mail.message.key, c, quiet));
+  }
+  const { content, together, sound, whenFront } = prefs.banner;
+  const banners = grouped(
+    banner,
+    together,
+    (m) => bannerText(m, content),
+    (rest, more) => summary(rest, content, more),
+  );
+  const shown = inApp.slice(0, MAX_IN_APP).map(fullText);
+  const rest = inApp.slice(MAX_IN_APP);
+  return {
+    banners,
+    sound: !quiet && sound && banners.length > 0,
+    whenFront,
+    inApp: rest.length > 0 ? [...shown, summary(rest, "full", true)] : shown,
+    badged,
+    told,
+  };
+}
+
 /** A promise or an ask of the person that is due today: announced once. */
 export interface DueSoon {
   /** The thread and the day: what is kept so that it is said once. */
@@ -837,6 +930,11 @@ export interface ToldMail {
   readonly channels: NoticeChannels;
   /** The agent's reading after it came was looked at: `matters` will not ask again. */
   readonly decided: boolean;
+  /**
+   * Views with a prompt that still wait for a verdict of its thread (ADR 0117, rule 6). Absent or
+   * empty: none waits. They wait as long as the mail is kept (48 hours), as `matters` does.
+   */
+  readonly waiting?: readonly string[];
 }
 
 /** What the watch keeps in its file next to the database. */
@@ -908,6 +1006,7 @@ export function readWatchState(raw: unknown): WatchState | null {
       atMs,
       channels: channels(t.channels, NONE),
       decided: bool(t.decided, true),
+      ...waitingOf(t.waiting),
     });
   }
   const ends = (value: unknown) => {
@@ -923,6 +1022,14 @@ export function readWatchState(raw: unknown): WatchState | null {
     Object.entries(ends(v.duesHeld)).filter(([id]) => dues[id] === undefined),
   );
   return { lookedAtMs, marks, badged, told, dues, duesHeld };
+}
+
+function waitingOf(value: unknown): { readonly waiting?: readonly string[] } {
+  if (!Array.isArray(value)) return {};
+  const ids = [
+    ...new Set(value.map((id) => text(id, 200)).filter((id): id is string => id !== null)),
+  ].slice(0, MAX_VIEW_ENTRIES);
+  return ids.length === 0 ? {} : { waiting: ids };
 }
 
 /** What the icon shows for a count: nothing at zero, a dot, or the number up to 999. */

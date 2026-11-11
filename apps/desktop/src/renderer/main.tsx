@@ -55,6 +55,12 @@ backend.onEvent((event) => {
   if (event.type === "changes") {
     void store.applyChanges(event);
     views.noteChanges();
+  } else if (event.type === "viewsChanged") {
+    // `Needs you` was added (ADR 0117, rule 2): the tabs read the list again.
+    views.load().catch(() => {});
+  } else if (event.type === "agentPromptProgress" && (event.finished || event.background)) {
+    // Verdicts landed: the number of a view with a prompt may have moved (ADR 0117, rule 4).
+    views.noteChanges();
   }
 });
 render(

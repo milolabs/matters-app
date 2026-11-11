@@ -136,3 +136,43 @@ describe("migration 51 (ADR 0116, rule 4)", () => {
     db.close();
   });
 });
+
+// ADR 0117, rule 3: when a prompt last read what its search finds comes with migration 53.
+describe("migration 53 (ADR 0117, rule 3)", () => {
+  it("keeps the searches over a database at 52, with no reading time, which reads as the search's", async () => {
+    const path = databaseAt(52);
+    const old = new DatabaseSync(path);
+    old
+      .prepare(
+        "INSERT INTO agent_prompt_searches (prompt_key, filters, queries_json, threads_json, at_ms, whole) VALUES ('k', 'from:x', '[]', '[]', 7, 1)",
+      )
+      .run();
+    old.close();
+    const storage = createSqliteStorage(path);
+    try {
+      const kept = await storage.agent.getPromptSearch("k", "from:x");
+      expect(kept).toEqual({
+        promptKey: "k",
+        filters: "from:x",
+        queries: [],
+        threadIds: [],
+        atMs: 7,
+        whole: true,
+      });
+      await storage.agent.putPromptSearch({ ...(kept as NonNullable<typeof kept>), readAtMs: 9 });
+      expect((await storage.agent.getPromptSearch("k", "from:x"))?.readAtMs).toBe(9);
+    } finally {
+      storage.close();
+    }
+  });
+
+  it("runs again over a database rolled back to 52", () => {
+    const path = databaseAt(53);
+    const old = new DatabaseSync(path);
+    old.prepare("DELETE FROM schema_version WHERE version >= 53").run();
+    old.close();
+    const db = openDatabase(path);
+    expect(schemaVersion(db)).toBe(LATEST_SCHEMA_VERSION);
+    db.close();
+  });
+});

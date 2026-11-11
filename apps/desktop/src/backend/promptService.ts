@@ -5,12 +5,14 @@
 // with no verdict go to the batches of rule 9. The candidates are everything those queries match
 // (promptCandidates.ts); above `PROMPT_ASK_ABOVE` to read, the reading waits for the person.
 // Under `limit:` they are read in the order of `sort:` and the reading stops once that many fit
-// (rules 4a and 4b); the order is never part of a key. Nothing here logs mail text, subjects,
-// addresses or the prompt: errors carry fixed sentences only.
-import { createHash } from "node:crypto";
+// (rules 4a and 4b); the order is never part of a key. A saved view with a prompt that was run
+// once also reads its new mail in the background (ADR 0117, rule 3): `readInBackground`, with no
+// search and no question. Nothing here logs mail text, subjects, addresses or the prompt: errors
+// carry fixed sentences only.
 import type {
   AccountStorePort,
   AgentInsightStorePort,
+  AgentPriority,
   AgentRequestBody,
   AgentRunResult,
   AgentRuntimePort,
@@ -19,6 +21,7 @@ import type {
   MessageStorePort,
   ParsedQuery,
   PlanLimits,
+  PromptBadge,
   PromptCandidate,
   PromptCount,
   PromptList,
@@ -63,14 +66,13 @@ import { AgentUnavailableError, InvalidAgentSettingError } from "./agentApi.ts";
 import { consentedAccounts } from "./agentReads.ts";
 import { type MailToolsContext, openMailTools } from "./mailTools.ts";
 import { PromptCandidates, type PromptCandidateThread } from "./promptCandidates.ts";
+import { sha256Hex } from "./promptFits.ts";
 import { followTrail } from "./talkTrail.ts";
 import type { PoolContext } from "./trailPool.ts";
 
 const DAY_MS = 86_400_000;
 
-/** SHA-256 of the folded prompt (ADR 0116, rule 5). */
-export const sha256Hex = (text: string): string =>
-  createHash("sha256").update(text, "utf8").digest("hex");
+export { sha256Hex };
 
 /** Fixed sentences for the person; none holds mail. */
 const NO_PROMPT = "There is no prompt in this query.";
@@ -151,6 +153,26 @@ interface Running {
   fits?: number;
   /** Once the search is known: all candidates, so the list does not search again meanwhile. */
   candidates: readonly Candidate[] | null;
+  /** A reading in the background for a saved view (ADR 0117, rule 3): no window waits for it. */
+  readonly background?: true;
+}
+
+/** How `readBatches` goes: `P0` for what the person asked, unless told otherwise. */
+interface BatchOptions {
+  /** Under a limit (rule 4a): after each batch, whether that many fit; then no batch more starts. */
+  readonly enough?: (tried: readonly string[], accepted: readonly PromptVerdict[]) => boolean;
+  /** The priority each batch is gated at (ADR 0051, rule 7). */
+  readonly priority?: AgentPriority;
+  /** Checked before each batch: true, and no batch more starts (the person's pause). */
+  readonly stopWhen?: () => boolean;
+}
+
+/** What the reading in the background is told by the pass it runs in (ADR 0117, rule 3). */
+export interface BackgroundOptions {
+  /** Mail of this many days is `P1`, older `P3` (ADR 0051, rule 7), as for the reading of a window. */
+  readonly recentDays: number;
+  /** True once the person paused reading or the pass ends: no batch more starts. */
+  readonly stopWhen: () => boolean;
 }
 
 /** How the search ended: what it wrote, or why nothing is kept. */
@@ -158,6 +180,14 @@ type Searched =
   | { readonly kind: "found"; readonly queries: readonly string[]; readonly threadIds: string[] }
   | { readonly kind: "stopped" }
   | { readonly kind: "problem"; readonly problem: string };
+
+/** A thread the background sent this often with no verdict back is left until it changes. */
+const BACKGROUND_TRIES = 2;
+/** Threads the background remembers trying: more than a pass ever sends. */
+const MAX_TRIED = 5000;
+
+const triedKey = (key: string, c: Pick<Candidate, "threadId" | "lastMessageKey">): string =>
+  `${key}\n${c.threadId}\n${c.lastMessageKey}`;
 
 /** The candidates in the order they are read in (rule 4a). */
 const inReadingOrder = (all: readonly Candidate[], sort: QuerySortValue): readonly Candidate[] =>
@@ -184,6 +214,16 @@ const OFF: PromptList = {
 export class PromptService {
   private readonly deps: PromptServiceDeps;
   private running: Running | null = null;
+  /**
+   * The reading in the background, if one goes on (ADR 0117, rule 3). It never runs beside a run
+   * the person started: it does not start while one goes on, and once one starts it starts no
+   * batch more. The run joins it: it waits for the turns already sent to answer, keeps their
+   * verdicts, and only then looks at what is left to read. So no thread is sent twice, and one
+   * prompt never has two readings at once. Turning AI off stops both at once.
+   */
+  private back: { readonly done: Promise<void> } | null = null;
+  /** Threads the background sent and got no verdict for, by prompt, thread and last message. */
+  private readonly tried = new Map<string, number>();
   private readonly candidates: PromptCandidates;
 
   constructor(deps: PromptServiceDeps) {
@@ -203,6 +243,19 @@ export class PromptService {
   /** The stored verdicts for a query, ordered as the list shows them (rule 7). No model. */
   async verdicts(query: string): Promise<PromptList> {
     return this.list(query, true);
+  }
+
+  /**
+   * The number on the tab of a view with a prompt (ADR 0117, rule 4): the unread threads among
+   * those the list shows, so under the view's mail filters, fit 2 or 3, and within its `limit:`
+   * as the list keeps it. From stored verdicts and the kept search, no model. A view never run
+   * has no kept search and shows none (`unread` null).
+   */
+  async badge(query: string): Promise<PromptBadge> {
+    const l = await this.list(query, true);
+    if (l.ai === "off") return { ai: "off", unread: null };
+    if (!l.searched) return { ai: "on", unread: null };
+    return { ai: "on", unread: l.rows.filter((r) => r.unread > 0).length };
   }
 
   /**
@@ -236,6 +289,7 @@ export class PromptService {
       candidates: null,
     };
     this.running = mine;
+    const startedAt = this.deps.now();
     let stopped = false;
     let problem: string | undefined;
     let rejected = 0;
@@ -251,6 +305,8 @@ export class PromptService {
       gated = true;
     };
     try {
+      // A reading in the background gives way: its turns answer before anything is counted here.
+      await this.joinBackground();
       await this.prune();
       const signal = AbortSignal.any([mine.stop.signal, this.deps.stopAll()]);
       let search = again
@@ -335,10 +391,23 @@ export class PromptService {
                   mine.fits = now.fitting.length;
                   return now.reached;
                 };
-          const outcome = await this.readBatches(todo, asked, s, consented, signal, mine, enough);
+          const outcome = await this.readBatches(todo, asked, s, consented, signal, mine, {
+            ...(enough === undefined ? {} : { enough }),
+          });
           rejected = outcome.rejected;
           problem = outcome.problem;
           stopped = signal.aborted && problem === undefined;
+        }
+        // ADR 0117, rule 3: all it set out to read is read, so the background goes on from here.
+        if (
+          search !== null &&
+          !ask &&
+          !stopped &&
+          problem === undefined &&
+          rejected === 0 &&
+          todo.length === window.todo.length
+        ) {
+          await this.deps.insights.putPromptSearch({ ...search, readAtMs: startedAt });
         }
       }
     } finally {
@@ -663,14 +732,16 @@ export class PromptService {
     consented: ReadonlySet<string>,
     signal: AbortSignal,
     mine: Running,
-    /** Under a limit (rule 4a): after each batch, whether that many fit; then no batch more starts. */
-    enough?: (tried: readonly string[], accepted: readonly PromptVerdict[]) => boolean,
-  ): Promise<{ rejected: number; problem?: string }> {
+    options: BatchOptions = {},
+  ): Promise<{ rejected: number; answered: readonly string[]; problem?: string }> {
+    const { enough, priority = "P0", stopWhen } = options;
     const { runtime, insights, settings } = this.deps;
     const queue = [...todo];
     /** Threads loaded for a batch that did not fit in it wait at the front for the next. */
     const waiting: { c: Candidate; loaded: LoadedThread }[] = [];
     let rejected = 0;
+    /** Threads that went in a turn that answered, whether the code accepted the answer or not. */
+    const answered: string[] = [];
     let problem: string | undefined;
     // The limit is reached: the turns under way finish and are kept, and none more starts.
     let full = false;
@@ -692,7 +763,7 @@ export class PromptService {
 
     const worker = async (): Promise<void> => {
       for (;;) {
-        if (turnSignal.aborted || full) return;
+        if (turnSignal.aborted || full || stopWhen?.() === true) return;
         const batch = await nextBatch();
         if (batch.length === 0 || turnSignal.aborted) return;
         if (full) {
@@ -700,10 +771,11 @@ export class PromptService {
           waiting.unshift(...batch);
           return;
         }
-        // Each turn is `P0` on the windows the last turn saw (ADR 0051, rule 7).
+        // Each turn is gated at its priority on the windows the last turn saw (ADR 0051, rule 7):
+        // `P0` for what the person asked, `P1` or `P3` in the background (ADR 0117, rule 3).
         const now = await settings.get();
         const gate = mayRun(
-          "P0",
+          priority,
           now.limits,
           { weekSharePercent: now.weekSharePercent, usedByUsPercent: now.usedByUsPercent },
           this.deps.now(),
@@ -728,6 +800,7 @@ export class PromptService {
             { signal: turnSignal },
           );
           await this.deps.noteRun(result.limits, before);
+          answered.push(...went.map((b) => b.c.threadId));
           const accepted = acceptVerdicts(
             result.value,
             went.map((b) => ({
@@ -780,7 +853,7 @@ export class PromptService {
     };
 
     await Promise.all(Array.from({ length: MAX_PARALLEL_TURNS }, () => worker()));
-    return { rejected, ...(problem === undefined ? {} : { problem }) };
+    return { rejected, answered, ...(problem === undefined ? {} : { problem }) };
   }
 
   /** Rule 12: prompts no saved view holds, not run for `PROMPT_KEEP_DAYS`, go. Never fails a run. */
@@ -809,6 +882,135 @@ export class PromptService {
       ...(mine.step === undefined ? {} : { step: mine.step }),
       ...(mine.fits === undefined ? {} : { fits: mine.fits }),
       finished,
+      ...(mine.background === true ? { background: true as const } : {}),
     });
+  }
+
+  // --- In the background (ADR 0117, rule 3) ---
+
+  /**
+   * Waits for the reading in the background, if one goes on: with a run of the person's set, it
+   * starts nothing more, and the turns it sent answer and are kept.
+   */
+  private async joinBackground(): Promise<void> {
+    await this.back?.done.catch(() => {});
+  }
+
+  /**
+   * Reads new mail for the saved views that hold a prompt and were run at least once (ADR 0117,
+   * rule 3). For each such view, with no model: its candidates as a return visit finds them (the
+   * mail filters' whole match, or what its kept queries match under the filters), of those the
+   * ones a run would read now (`promptWindow`: so never more than the foreground would, a
+   * `limit:` included), and of those the ones with mail newer than the view's last reading, less
+   * `recentDays` for mail that comes late. At most `PROMPT_ASK_ABOVE` of them per view and pass,
+   * the last days first at `P1`, the rest at `P3`. It never searches and never asks: a kept
+   * whole match that grew past the line stands no more, and waits for the person. The last
+   * reading moves on only when every new thread was read. Never runs beside a run the person
+   * started; AI being on, consent, the runtime and the pause are the caller's gates, and are
+   * checked again here where they can change.
+   */
+  async readInBackground(options: BackgroundOptions): Promise<void> {
+    if (this.running !== null || this.back !== null || this.deps.views === undefined) return;
+    let release = () => {};
+    const done = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.back = { done };
+    try {
+      await this.backgroundPass(options);
+    } finally {
+      this.back = null;
+      release();
+    }
+  }
+
+  private async backgroundPass(options: BackgroundOptions): Promise<void> {
+    const views = (await this.deps.views?.list()) ?? [];
+    const signal = this.deps.stopAll();
+    const over = () => signal.aborted || this.running !== null || options.stopWhen();
+    const seen = new Set<string>();
+    for (const view of views) {
+      if (over()) return;
+      if (parseQuery(view.query).prompt === undefined) continue;
+      const s = await this.deps.settings.get();
+      const consented = await this.consented(s);
+      if (consented.size === 0) return;
+      const asked = await this.ask(view.query);
+      // Two views with the same prompt and filters read once.
+      const name = `${asked.key}\n${asked.filters}`;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const search = await this.deps.insights.getPromptSearch(asked.key, asked.filters);
+      // Never run: it stays unread until the person opens it.
+      if (search === null) continue;
+      const startedAt = this.deps.now();
+      const candidates = await this.candidatesOf(asked, search, consented);
+      if (candidates === null || over()) continue;
+      const ordered = inReadingOrder(candidates, asked.sort);
+      const known = await this.known(asked.key, ordered);
+      const window = promptWindow(ordered, known, asked.limit, asked.sort);
+      const since = (search.readAtMs ?? search.atMs) - options.recentDays * DAY_MS;
+      const fresh = window.todo.filter(
+        (c) =>
+          c.newest.dateMs > since &&
+          (this.tried.get(triedKey(asked.key, c)) ?? 0) < BACKGROUND_TRIES,
+      );
+      if (fresh.length === 0) {
+        // Nothing new: the next pass looks from here.
+        await this.deps.insights.putPromptSearch({ ...search, readAtMs: startedAt });
+        continue;
+      }
+      const recentSince = startedAt - options.recentDays * DAY_MS;
+      const recent = fresh.filter((c) => c.newest.dateMs >= recentSince);
+      const older = fresh.filter((c) => c.newest.dateMs < recentSince);
+      const take = PROMPT_ASK_ABOVE;
+      const groups: [AgentPriority, readonly Candidate[]][] = [
+        ["P1", recent.slice(0, take)],
+        ["P3", older.slice(0, Math.max(0, take - recent.length))],
+      ];
+      const mine: Running = {
+        key: asked.key,
+        filters: asked.filters,
+        stop: new AbortController(),
+        phase: "reading",
+        done: 0,
+        total: Math.min(fresh.length, take),
+        candidates,
+        background: true,
+      };
+      let complete = fresh.length <= take;
+      const answered: string[] = [];
+      for (const [priority, todo] of groups) {
+        if (todo.length === 0) continue;
+        if (over()) {
+          complete = false;
+          break;
+        }
+        const outcome = await this.readBatches(todo, asked, s, consented, signal, mine, {
+          priority,
+          stopWhen: () => this.running !== null || options.stopWhen(),
+        });
+        answered.push(...outcome.answered);
+        if (outcome.problem !== undefined || outcome.rejected > 0 || over()) complete = false;
+        // Refused or failed at this priority: the older mail of this view waits for a later pass.
+        if (outcome.problem !== undefined) break;
+      }
+      this.progress(mine, true);
+      // A thread a turn went with and did not answer is tried once more, then left until it
+      // changes: the background never spends turn after turn on the same thread.
+      const read = await this.known(asked.key, fresh);
+      const went = new Set(answered);
+      for (const c of fresh) {
+        if (!went.has(c.threadId) || read.has(c.threadId)) continue;
+        const k = triedKey(asked.key, c);
+        this.tried.set(k, (this.tried.get(k) ?? 0) + 1);
+      }
+      while (this.tried.size > MAX_TRIED) {
+        const first = this.tried.keys().next().value;
+        if (first === undefined) break;
+        this.tried.delete(first);
+      }
+      if (complete) await this.deps.insights.putPromptSearch({ ...search, readAtMs: startedAt });
+    }
   }
 }

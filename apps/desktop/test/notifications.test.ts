@@ -13,7 +13,7 @@ import {
 } from "@matters/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { handle } from "../src/backend/handler.ts";
-import { type MattersSource, Notifier } from "../src/backend/notifier.ts";
+import { type MattersSource, Notifier, type PromptSource } from "../src/backend/notifier.ts";
 import {
   bundleIdOf,
   bundleOf,
@@ -177,6 +177,8 @@ interface RigOptions {
   readonly countGapMs?: number;
   /** Without the agent's readings at all. */
   readonly noThings?: boolean;
+  /** The verdicts of views with a prompt (ADR 0117). */
+  readonly prompts?: PromptSource;
 }
 
 function rig(prefsPath: string | null = null, minute = 12 * 60, more: RigOptions = {}) {
@@ -193,6 +195,7 @@ function rig(prefsPath: string | null = null, minute = 12 * 60, more: RigOptions
     statePath: more.statePath ?? null,
     prefs: more.prefs ?? NOTIFIED,
     ...(more.noThings === true ? {} : { things: brain.things }),
+    ...(more.prompts === undefined ? {} : { prompts: more.prompts }),
     ...(more.countGapMs === undefined ? {} : { countGapMs: more.countGapMs }),
     toMain: (e) => toMain.push(e),
     broadcast: (e) => events.push(e),
@@ -1206,5 +1209,184 @@ describe("the stack of notices in the window (ADR 0071, rule 7)", () => {
     const forever = push(EMPTY, [text(9)], 0);
     expect(tick(forever, 60_000)).toBe(forever);
     expect(dismiss(forever, forever.notices[0]?.id ?? 0).notices).toEqual([]);
+  });
+});
+
+describe("Notifier, views with a prompt (ADR 0117, rules 5 and 6)", () => {
+  const ALL = { banner: true, inApp: true, badge: true };
+  const NONE = { banner: false, inApp: false, badge: false };
+  const view = (id: string, query: string) => ({
+    id,
+    name: id,
+    query,
+    position: 0,
+    createdMs: 0,
+    updatedMs: 0,
+  });
+
+  /** A mailbox with saved views, and verdicts the test sets by thread. */
+  function promptRig(prefs: NotificationPrefs, views = [view("v1", 'prompt:"needs me"')]) {
+    const box = mailbox();
+    const list = { views };
+    const withViews = { ...box, read: { ...box.read, views: { list: async () => list.views } } };
+    const fits = new Map<string, number>();
+    const asked: string[] = [];
+    const badge = { ai: "on" as "on" | "off", unread: 0 as number | null };
+    const prompts: PromptSource = {
+      fits: async (query, threadIds) => {
+        asked.push(query);
+        return new Map(threadIds.flatMap((id) => (fits.has(id) ? [[id, fits.get(id) ?? 0]] : [])));
+      },
+      badge: async () => ({ ...badge }),
+    };
+    const r = rig(null, 12 * 60, { box: withViews as never, prefs, prompts });
+    return { ...r, fits, asked, badge, list };
+  }
+
+  async function verdicts(r: ReturnType<typeof promptRig>) {
+    r.notifier.promptsChanged();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await r.notifier.idle();
+  }
+
+  it("holds the mail a prompt view matches until its verdict, then rings once if it fits", async () => {
+    const r = promptRig({ ...NOTIFIED, views: { v1: ALL } });
+    await r.notifier.start();
+    await r.notifier.idle();
+    // A list's mail: its kind says nothing, and the view with a prompt holds it.
+    const list = msg({ automated: true, from: { name: "Shop", address: "shop@x.example" } });
+    r.box.deliver(list);
+    await settle(r);
+    expect(bannersOf(r)).toEqual([]);
+    // No verdict yet: it keeps waiting.
+    await verdicts(r);
+    expect(bannersOf(r)).toEqual([]);
+    r.fits.set(list.threadId, 3);
+    await verdicts(r);
+    expect(bannersOf(r)).toEqual([expect.objectContaining({ title: "Shop", alone: true })]);
+    expect(noticesOf(r)).toHaveLength(1);
+    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "1" });
+    // Decided: neither another verdict nor the next commit rings again.
+    await verdicts(r);
+    await settle(r);
+    expect(bannersOf(r)).toHaveLength(1);
+    r.notifier.stop();
+  });
+
+  it("does not ring for a fit of 1, nor twice for mail its kind already rang for", async () => {
+    const r = promptRig({ ...NOTIFIED, views: { v1: ALL } });
+    await r.notifier.start();
+    await r.notifier.idle();
+    const person = msg({ from: { name: "Anna", address: "anna@x.example" } });
+    const list = msg({ automated: true });
+    r.box.deliver(person);
+    r.box.deliver(list);
+    await settle(r);
+    // People ring by their kind at once.
+    expect(bannersOf(r)).toHaveLength(1);
+    r.fits.set(person.threadId, 3);
+    r.fits.set(list.threadId, 1);
+    await verdicts(r);
+    expect(bannersOf(r)).toHaveLength(1);
+    expect(noticesOf(r)).toHaveLength(1);
+    // The fit of 1 was looked at: a later fit for it rings nothing either.
+    r.fits.set(list.threadId, 3);
+    await verdicts(r);
+    expect(bannersOf(r)).toHaveLength(1);
+    r.notifier.stop();
+  });
+
+  it("rings nothing from the view when no verdict comes within the hold, or the view stops notifying", async () => {
+    const r = promptRig({ ...NOTIFIED, views: { v1: ALL } });
+    await r.notifier.start();
+    await r.notifier.idle();
+    const late = msg({ automated: true });
+    r.box.deliver(late);
+    await settle(r);
+    r.clock.now += 49 * 60 * 60_000;
+    await settle(r);
+    r.fits.set(late.threadId, 3);
+    await verdicts(r);
+    expect(bannersOf(r)).toEqual([]);
+
+    // A view whose notices were turned off waits no more.
+    const other = msg({ automated: true });
+    r.box.deliver(other);
+    await settle(r);
+    await r.notifier.set({ ...r.notifier.get(), views: {} });
+    r.fits.set(other.threadId, 3);
+    await verdicts(r);
+    expect(bannersOf(r)).toEqual([]);
+    r.notifier.stop();
+  });
+
+  it("holds nothing for a view with a prompt that does not notify", async () => {
+    const r = promptRig({ ...NOTIFIED, views: { v1: NONE } });
+    await r.notifier.start();
+    await r.notifier.idle();
+    const list = msg({ automated: true });
+    r.box.deliver(list);
+    await settle(r);
+    r.fits.set(list.threadId, 3);
+    await verdicts(r);
+    expect(bannersOf(r)).toEqual([]);
+    expect(r.asked).toEqual([]);
+    r.notifier.stop();
+  });
+
+  const badgesOf = (r: ReturnType<typeof rig>) =>
+    r.toMain.flatMap((e) => (e.type === "badge" ? [e.text] : []));
+  const counting = (viewId: string): NotificationPrefs => ({
+    ...NOTIFIED,
+    badge: { source: "view", viewId, style: "count" },
+  });
+
+  it("counts a view with a prompt as its tab does, and again when verdicts land", async () => {
+    const r = promptRig(counting("v1"));
+    r.badge.unread = 4;
+    await r.notifier.start();
+    await r.notifier.idle();
+    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "4" });
+    r.badge.unread = 2;
+    await verdicts(r);
+    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "2" });
+    // Never run: no number.
+    r.badge.unread = null;
+    await verdicts(r);
+    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "" });
+    r.notifier.stop();
+  });
+
+  it("counts the Inbox for a view that is gone, none chosen, or a prompt while AI is off", async () => {
+    for (const prefs of [
+      counting("gone"),
+      { ...NOTIFIED, badge: { source: "view" as const, style: "count" as const } },
+    ]) {
+      const r = promptRig(prefs);
+      r.box.deliver(msg());
+      r.box.deliver(msg());
+      await r.notifier.start();
+      await r.notifier.idle();
+      expect(badgesOf(r).at(-1)).toBe("2");
+      r.notifier.stop();
+    }
+    const off = promptRig(counting("v1"));
+    off.badge.ai = "off";
+    off.badge.unread = null;
+    off.box.deliver(msg());
+    await off.notifier.start();
+    await off.notifier.idle();
+    expect(badgesOf(off).at(-1)).toBe("1");
+    off.notifier.stop();
+  });
+
+  it("counts a view with no prompt by its unread mail", async () => {
+    const r = promptRig(counting("plain"), [view("plain", "from:northwind.example")]);
+    for (let i = 0; i < 3; i++) r.box.deliver(msg());
+    await r.notifier.start();
+    await r.notifier.idle();
+    // The rig's index gives every unread key for any query.
+    expect(badgesOf(r).at(-1)).toBe("3");
+    r.notifier.stop();
   });
 });

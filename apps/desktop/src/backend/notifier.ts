@@ -8,6 +8,7 @@ import type { BackendEvent, NoticeToMain } from "@matters/contracts";
 import {
   askOf,
   badgeText,
+  countMatches,
   type DueNotice,
   dueWithinADay,
   isQuiet,
@@ -21,10 +22,15 @@ import {
   type NoticePlan,
   type NoticeText,
   type NotificationPrefs,
+  PROMPT_SHOWN_FIT,
+  type PromptBadge,
+  type PromptMail,
+  parseQuery,
   planCatchUp,
   planDueNotices,
   planMattersNotices,
   planNotices,
+  planPromptNotices,
   quietEndsAt,
   readNotificationPrefs,
   readWatchState,
@@ -49,6 +55,17 @@ export interface MattersSource {
   count?(): Promise<number>;
 }
 
+/**
+ * What views with a prompt know (ADR 0117, rules 4 and 6): stored verdicts, read with no model.
+ * Without it a view with a prompt never notifies, and a badge that counts one counts the Inbox.
+ */
+export interface PromptSource {
+  /** The fit of the current verdict of each of these threads for the prompt of `query`; none: absent. */
+  fits(query: string, threadIds: readonly string[]): Promise<ReadonlyMap<string, number>>;
+  /** The number on the tab of the view with this text (rule 4). */
+  badge(query: string): Promise<PromptBadge>;
+}
+
 export interface NotifierOptions {
   /** Committed data only: the reader connection (or the read thread's ports). */
   readonly read: Omit<NewMailDeps, "now">;
@@ -60,6 +77,8 @@ export interface NotifierOptions {
   readonly statePath?: string | null;
   /** The agent's readings; without them nothing notifies as `matters`. */
   readonly things?: MattersSource;
+  /** The verdicts of views with a prompt (ADR 0117). */
+  readonly prompts?: PromptSource;
   readonly toMain: (event: NoticeToMain) => void;
   readonly broadcast: (event: BackendEvent) => void;
   readonly now?: () => number;
@@ -86,6 +105,8 @@ const localZone: ZoneOffset = (ms) => -new Date(ms).getTimezoneOffset();
 const DECIDED_SLACK_MS = 60_000;
 /** Threads whose readings one pass asks for. */
 const MAX_THREADS = 40;
+/** The most a badge of `view` counts, as the Inbox's (`inboxUnread`). */
+const VIEW_CAP = 1000;
 /** Deadlines one pass checks against the list's bar. */
 const MAX_DUES = 10;
 /** A window that opens this soon after the catch-up still gets its notice. */
@@ -113,6 +134,7 @@ export class Notifier implements NotificationsApi {
   private chain: Promise<void> = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private agentTimer: ReturnType<typeof setTimeout> | null = null;
+  private promptTimer: ReturnType<typeof setTimeout> | null = null;
   private dueTimer: ReturnType<typeof setInterval> | null = null;
   private started = false;
   private stopped = false;
@@ -185,6 +207,7 @@ export class Notifier implements NotificationsApi {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     if (this.agentTimer) clearTimeout(this.agentTimer);
+    if (this.promptTimer) clearTimeout(this.promptTimer);
     if (this.dueTimer) clearInterval(this.dueTimer);
     if (this.dueRetry) clearTimeout(this.dueRetry);
     if (this.countTimer) clearTimeout(this.countTimer);
@@ -193,6 +216,7 @@ export class Notifier implements NotificationsApi {
     this.countTimer = null;
     this.dueRetry = null;
     this.agentTimer = null;
+    this.promptTimer = null;
     this.dueTimer = null;
   }
 
@@ -223,6 +247,19 @@ export class Notifier implements NotificationsApi {
       this.agentTimer = null;
       this.enqueue(() => this.matters());
       this.enqueue(() => this.countMatters());
+    }, this.options.agentDelayMs ?? 1500);
+  }
+
+  /**
+   * A prompt stored verdicts (ADR 0117, rule 6), in the background or in a run: the mail views
+   * with a prompt hold is looked at shortly, and a badge that counts a view is counted again.
+   */
+  promptsChanged(): void {
+    if (!this.started || this.stopped || this.promptTimer) return;
+    this.promptTimer = setTimeout(() => {
+      this.promptTimer = null;
+      this.enqueue(() => this.prompted());
+      if (this.prefs.badge.source === "view") this.enqueue(() => this.countMatters());
     }, this.options.agentDelayMs ?? 1500);
   }
 
@@ -385,7 +422,10 @@ export class Notifier implements NotificationsApi {
     }
     await this.keep();
     // The agent may have read a thread before the look saw its mail.
-    if (mails.length > 0 && this.catchUp === null) await this.matters();
+    if (mails.length > 0 && this.catchUp === null) {
+      await this.matters();
+      await this.prompted();
+    }
   }
 
   private endCatchUp(): void {
@@ -406,7 +446,76 @@ export class Notifier implements NotificationsApi {
       await this.badge();
       await this.keep();
       await this.matters();
+      await this.prompted();
     });
+  }
+
+  /**
+   * Mail that views with a prompt hold (ADR 0117, rule 6): once its thread has a current verdict
+   * for a view's prompt, the view no longer waits, and a fit of 2 or 3 notifies through that
+   * view's channels that the mail has not gone through yet. A thread with no verdict waits for
+   * as long as the watch keeps the mail (48 hours, as `matters`), then nothing notifies from that
+   * view. A view that no longer notifies, or is gone, waits no more. For a thread with several
+   * new messages, the newest is the one told.
+   */
+  private async prompted(): Promise<void> {
+    const source = this.options.prompts;
+    const prefs = this.prefs;
+    if (this.stopped || source === undefined || !prefs.enabled || this.catchUp !== null) return;
+    const waiting = this.watch.waiting();
+    if (waiting.length === 0) return;
+    const views = new Map((await this.options.read.views.list()).map((v) => [v.id, v]));
+    let changed = false;
+    const byView = new Map<string, (typeof waiting)[number][]>();
+    for (const t of waiting) {
+      for (const id of t.waiting) {
+        const c = prefs.views[id];
+        if (!views.has(id) || c === undefined || !(c.banner || c.inApp || c.badge)) {
+          this.watch.settle(t.key, [id]);
+          changed = true;
+          continue;
+        }
+        const list = byView.get(id);
+        if (list) list.push(t);
+        else byView.set(id, [t]);
+      }
+    }
+    const fitting = new Map<number, string[]>();
+    for (const [id, mails] of byView) {
+      const view = views.get(id);
+      if (view === undefined) continue;
+      const threads = [...new Set(mails.map((m) => m.threadId))].slice(0, MAX_THREADS);
+      const fits = await source.fits(view.query, threads);
+      for (const threadId of threads) {
+        const fit = fits.get(threadId);
+        if (fit === undefined) continue;
+        // Newest first, as `waiting` gives them.
+        const ofThread = mails.filter((m) => m.threadId === threadId);
+        for (const m of ofThread) this.watch.settle(m.key, [id]);
+        changed = true;
+        const newest = ofThread[0];
+        if (newest === undefined || fit < PROMPT_SHOWN_FIT) continue;
+        const list = fitting.get(newest.key);
+        if (list) list.push(id);
+        else fitting.set(newest.key, [id]);
+      }
+    }
+    if (fitting.size > 0) {
+      const told = new Map(waiting.map((t) => [t.key, t.channels]));
+      const mails: PromptMail[] = [];
+      for (const message of await this.options.read.store.getByKeys([...fitting.keys()])) {
+        const channels = told.get(message.key);
+        const ids = fitting.get(message.key);
+        if (channels === undefined || ids === undefined) continue;
+        mails.push({ message, told: channels, views: ids });
+      }
+      const inbox = new Map(
+        mails.map((m) => [m.message.key, ((m.message.mailboxes ?? 0) & MAILBOX_BIT.inbox) !== 0]),
+      );
+      this.show(planPromptNotices(prefs, mails, this.quiet(), this.now()), inbox);
+      await this.badge();
+    }
+    if (changed) await this.keep();
   }
 
   /**
@@ -522,9 +631,49 @@ export class Notifier implements NotificationsApi {
     this.dueRetry.unref?.();
   }
 
+  /** The badge shows a count kept here: what is in Matters, or the number of a view (ADR 0117). */
   private countsMatters(): boolean {
     const { enabled, badge } = this.prefs;
-    return enabled && badge.source === "matters" && this.options.things?.count !== undefined;
+    if (!enabled) return false;
+    if (badge.source === "view") return true;
+    return badge.source === "matters" && this.options.things?.count !== undefined;
+  }
+
+  /**
+   * The number of the view the badge counts (ADR 0117, rule 5): for a view with a prompt, what its
+   * tab shows (rule 4), none for one never run; for any other view its unread mail, as its tab
+   * counts it. A view that is gone, none chosen, or a view with a prompt while AI is off: the
+   * Inbox. A read that fails throws, and the badge keeps what it said.
+   */
+  private async viewCount(): Promise<number> {
+    const id = this.prefs.badge.viewId;
+    const view =
+      id === undefined
+        ? undefined
+        : (await this.options.read.views.list()).find((v) => v.id === id);
+    if (view === undefined) return this.watch.inboxUnread();
+    if (parseQuery(view.query).prompt !== undefined) {
+      const prompts = this.options.prompts;
+      if (prompts === undefined) return this.watch.inboxUnread();
+      const b = await prompts.badge(view.query);
+      return b.ai === "off" ? this.watch.inboxUnread() : (b.unread ?? 0);
+    }
+    const deps = {
+      index: this.options.read.index,
+      accounts: this.options.read.accounts,
+      now: this.now,
+    };
+    let total = 0;
+    let beforeKey: number | undefined;
+    do {
+      const r = await countMatches(deps, view.query, {
+        cap: VIEW_CAP - total,
+        ...(beforeKey === undefined ? {} : { beforeKey }),
+      });
+      total += r.count;
+      beforeKey = r.nextBeforeKey;
+    } while (beforeKey !== undefined && total < VIEW_CAP);
+    return Math.min(total, VIEW_CAP);
   }
 
   /**
@@ -535,7 +684,8 @@ export class Notifier implements NotificationsApi {
     if (this.stopped) return;
     if (this.countTimer) clearTimeout(this.countTimer);
     this.countTimer = null;
-    const count = this.options.things?.count;
+    const view = this.prefs.badge.source === "view";
+    const count = view ? () => this.viewCount() : this.options.things?.count;
     if (count !== undefined && this.countsMatters()) {
       // The first count has nothing to compare with: every window has just read the list itself.
       const before = this.lastCountMs === Number.NEGATIVE_INFINITY ? null : this.inMatters;
@@ -548,7 +698,7 @@ export class Notifier implements NotificationsApi {
       // Mail changed what is in Matters with no agent write (a reply sent from elsewhere, mail
       // that left): the windows read the list again too, so that the tab says what the Dock says
       // (ADR 0112). After an agent write they do so already.
-      if (afterCommits && before !== null && this.inMatters !== before) {
+      if (!view && afterCommits && before !== null && this.inMatters !== before) {
         this.options.broadcast({ type: "agentChanged" });
       }
     }

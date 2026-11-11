@@ -68,6 +68,22 @@ export interface PromptSearch {
    * candidates are everything they match (rule 4). `queries` and `threadIds` are empty.
    */
   readonly whole?: true;
+  /**
+   * When the prompt last read what this search finds (ADR 0117, rule 3): a run that read all it
+   * set out to, or a reading in the background that read every new thread. The background reads
+   * only mail newer than this. Absent: `atMs`.
+   */
+  readonly readAtMs?: number;
+}
+
+/**
+ * The number on the tab of a view with a prompt (ADR 0117, rule 4): unread threads among those
+ * it shows, from stored verdicts, no model. `unread` is null for a view never read (no kept
+ * search): it shows no number. `ai` is `off` while AI is off or no account has consent.
+ */
+export interface PromptBadge {
+  readonly ai: "on" | "off";
+  readonly unread: number | null;
 }
 
 /** What a run of a prompt is doing now (rule 9). */
@@ -177,4 +193,9 @@ export interface PromptProgress {
   readonly fits?: number;
   /** The run ended (done, stopped or failed). */
   readonly finished: boolean;
+  /**
+   * A reading in the background for a saved view (ADR 0117, rule 3), not a run a window asked
+   * for: no window shows its progress, but verdicts came, so lists and badges are read again.
+   */
+  readonly background?: true;
 }

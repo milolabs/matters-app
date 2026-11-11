@@ -33,6 +33,7 @@ import type {
   PreparedGuidance,
   PreparedWork,
   PrepareResult,
+  PromptBadge,
   PromptCount,
   PromptList,
   PromptProgress,
@@ -71,6 +72,7 @@ import {
   acceptTalkAll,
   acceptTalkQuotes,
   actMatches,
+  addNeedsYouView,
   analyzeNext,
   buildAnalysisRequest,
   buildAnswerQuestionsRequest,
@@ -245,9 +247,17 @@ export interface AgentServiceDeps {
   >;
   /**
    * The person's saved views (ADR 0102): the loop's `list_views`, and the check of the views it
-   * offers. Absent: the person has none (tests that do not ask about views).
+   * offers; the views a prompt reads for in the background (ADR 0117, rule 3). Absent: the
+   * person has none (tests that do not ask about views).
    */
   readonly views?: Pick<SavedViewStorePort, "list">;
+  /**
+   * Where `Needs you` is added the first time AI is on with consent (ADR 0117, rule 2). Absent:
+   * it is not added (tests that do not ask about it).
+   */
+  readonly starterViews?: Pick<SavedViewStorePort, "list" | "put" | "setPositions">;
+  /** The saved views changed here, not by a window's request: the windows read them again. */
+  onViewsChanged?(): void;
   /**
    * The search index, for the search of a talk across all mail (ADR 0064, rule 7.2). It is the
    * worker's own connection: the reader connection belongs to the router, not to this process.
@@ -425,6 +435,7 @@ export class AgentService implements AgentApi {
     const settings = await this.deps.settings.get();
     this.readingPaused = settings.readingPaused === true;
     if (!settings.enabled) return;
+    await this.addStarterView();
     this.setProgress({ state: "checking", done: 0, total: 0 });
     await this.inspectRuntime();
     // A pause the person made before the restart still holds: the pass only says how far it got.
@@ -883,6 +894,20 @@ export class AgentService implements AgentApi {
       this.setProgress(this.offProgress());
       return;
     }
+
+    // ADR 0117, rule 3: the saved views with a prompt read their new mail first, behind the same
+    // gates; they give way to a run the person starts and stop with the person's pause.
+    try {
+      await this.prompts.readInBackground({
+        recentDays: RECENT_DAYS,
+        stopWhen: () => this.readingPaused || this.stopped,
+      });
+    } catch (error) {
+      this.deps.onError?.(
+        `agents: a prompt's reading failed (${error instanceof Error ? error.name : "unknown"})`,
+      );
+    }
+    if (this.stopped || this.abort.signal.aborted) return;
 
     // The budget said no to drafting ahead: reading goes on, and the pause is shown when it ends.
     let refusedDrafts: { readonly reason: MayRunReason; untilMs?: number } | null = null;
@@ -1433,6 +1458,30 @@ export class AgentService implements AgentApi {
     };
   }
 
+  /**
+   * ADR 0117, rule 2: `Needs you` goes in front of the saved views once, the first time AI is on
+   * with an account that has consent, and that it went is kept with the agent's settings. A view
+   * of that name already there counts as added. A full list adds nothing and keeps no record, so
+   * it is added once there is room. Never fails what called it.
+   */
+  private async addStarterView(): Promise<void> {
+    const views = this.deps.starterViews;
+    if (views === undefined) return;
+    try {
+      const s = await this.deps.settings.get();
+      if (!s.enabled || s.needsYouAdded === true) return;
+      if ((await consentedAccounts(this.deps, this.deps.runtime.id)).size === 0) return;
+      const added = await addNeedsYouView({ views, now: () => this.now });
+      if (added === "full") return;
+      await this.deps.settings.update({ needsYouAdded: true });
+      if (added === "added") this.deps.onViewsChanged?.();
+    } catch (error) {
+      this.deps.onError?.(
+        `agents: the starter view was not added (${error instanceof Error ? error.name : "unknown"})`,
+      );
+    }
+  }
+
   // --- AgentApi: the person pauses ---
 
   /**
@@ -1513,6 +1562,7 @@ export class AgentService implements AgentApi {
     }
     await settings.update({ enabled: true, runtimeId: runtime.id, windowDays: days });
     await insights.appendLedger(lines);
+    await this.addStarterView();
     this.blocked = null;
     this.failures.clear();
     this.setProgress({ state: "checking", done: 0, total: 0 });
@@ -1982,6 +2032,10 @@ export class AgentService implements AgentApi {
 
   promptVerdicts(query: string): Promise<PromptList> {
     return this.prompts.verdicts(query);
+  }
+
+  promptBadge(query: string): Promise<PromptBadge> {
+    return this.prompts.badge(query);
   }
 
   promptRun(query: string, again?: boolean, readAll?: boolean): Promise<PromptRunResult> {

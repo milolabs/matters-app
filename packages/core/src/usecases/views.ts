@@ -1,6 +1,12 @@
 import { InvalidViewError, ViewNotFoundError } from "../domain/errors.ts";
 import { foldText } from "../domain/text.ts";
-import { MAX_VIEW_NAME, MAX_VIEW_QUERY, MAX_VIEWS, type SavedView } from "../domain/views.ts";
+import {
+  MAX_VIEW_NAME,
+  MAX_VIEW_QUERY,
+  MAX_VIEWS,
+  NEEDS_YOU_VIEW,
+  type SavedView,
+} from "../domain/views.ts";
 import type { SavedViewStorePort } from "../ports/index.ts";
 
 export interface ViewDeps {
@@ -124,4 +130,36 @@ export function forgetSearch(deps: ViewDeps, viewId: string, query: string): Pro
 
 export function clearSearches(deps: ViewDeps, viewId: string): Promise<void> {
   return deps.views.clearSearches(viewId);
+}
+
+/**
+ * ADR 0117, rule 2: puts `Needs you` in front of the other views, the tabs that exist moving down
+ * by one. `full`: the list holds `MAX_VIEWS` and nothing is added (it may be added later).
+ * `taken`: a view of that name, or with that id, exists; nothing is added. Whether it is ever
+ * tried again is the caller's record, not the list's: a deleted view stays deleted.
+ */
+export async function addNeedsYouView(deps: {
+  readonly views: Pick<SavedViewStorePort, "list" | "put" | "setPositions">;
+  now(): number;
+}): Promise<"added" | "full" | "taken"> {
+  const all = await deps.views.list();
+  if (all.length >= MAX_VIEWS) return "full";
+  if (
+    all.some((v) => v.id === NEEDS_YOU_VIEW.id) ||
+    viewNameProblem(NEEDS_YOU_VIEW.name, all) !== null
+  ) {
+    return "taken";
+  }
+  const now = deps.now();
+  const first = all.reduce((min, v) => Math.min(min, v.position), 0) - 1;
+  await deps.views.put({
+    id: NEEDS_YOU_VIEW.id,
+    name: NEEDS_YOU_VIEW.name,
+    query: NEEDS_YOU_VIEW.query,
+    position: first,
+    createdMs: now,
+    updatedMs: now,
+  });
+  await deps.views.setPositions([NEEDS_YOU_VIEW.id, ...all.map((v) => v.id)]);
+  return "added";
 }

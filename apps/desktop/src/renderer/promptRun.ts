@@ -281,7 +281,18 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
   }
 
   const off = backend.onEvent((event) => {
-    if (event.type === "agentPromptProgress") {
+    if (event.type === "agentPromptProgress" && event.background === true) {
+      // A saved view's reading in the background (ADR 0117, rule 3) is no run of ours: its
+      // verdicts show in the list of the same prompt, read at most once per `progressReadMs`.
+      if (run !== null || !has() || count()?.promptKey !== event.promptKey) return;
+      if (rows() === null && count()?.searched !== true) return;
+      if (cancelProgressRead === null) {
+        cancelProgressRead = schedule(() => {
+          cancelProgressRead = null;
+          void readVerdicts();
+        }, progressReadMs);
+      }
+    } else if (event.type === "agentPromptProgress") {
       const mine = run;
       if (mine === null || mine.gen !== gen) return;
       if (mine.key === null) {

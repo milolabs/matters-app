@@ -503,6 +503,8 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         onPromptProgress: (progress) => post({ type: "agentPrompt", ...progress }),
         index: storage.index,
         views: storage.views,
+        starterViews: storage.views,
+        onViewsChanged: () => post({ type: "views" }),
         onError: (message) => console.error(`matters-sync: ${message}`),
         ...(options.agent.kickDebounceMs === undefined
           ? {}
@@ -716,6 +718,8 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         return needAgent().promptCount(command.query);
       case "agentPromptVerdicts":
         return needAgent().promptVerdicts(command.query);
+      case "agentPromptBadge":
+        return needAgent().promptBadge(command.query);
       case "agentPromptRun":
         return needAgent().promptRun(
           command.query,

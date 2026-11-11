@@ -130,6 +130,7 @@ function stub(overrides: Partial<AgentApi> = {}) {
     }),
     promptCount: note("promptCount", promptOff),
     promptVerdicts: note("promptVerdicts", { ...promptOff, rows: [] }),
+    promptBadge: note("promptBadge", { ai: "off", unread: null }),
     promptRun: note("promptRun", { ...promptOff, rows: [], stopped: false, rejected: 0 }),
     promptStop: note("promptStop", undefined),
     ...overrides,
@@ -453,6 +454,13 @@ describe("agent requests", () => {
       ok: true,
       list: { ai: "off", rows: [] },
     });
+    // ADR 0117, rule 4: the number on a view's tab.
+    expect(await ask({ type: "agentPromptBadge", query })).toEqual({
+      type: "agentPromptBadge",
+      requestId: "r",
+      ok: true,
+      badge: { ai: "off", unread: null },
+    });
     expect(await ask({ type: "agentPromptRun", query })).toMatchObject({
       type: "agentPromptRun",
       ok: true,
@@ -475,6 +483,7 @@ describe("agent requests", () => {
     expect(calls).toEqual([
       ["promptCount", query],
       ["promptVerdicts", query],
+      ["promptBadge", query],
       ["promptRun", query, false, false],
       ["promptRun", query, true, false],
       ["promptRun", query, false, true],
@@ -483,6 +492,7 @@ describe("agent requests", () => {
     for (const request of [
       { type: "agentPromptCount" },
       { type: "agentPromptVerdicts", query: 3 },
+      { type: "agentPromptBadge", query: null },
       { type: "agentPromptRun", query: "x".repeat(10_001) },
       { type: "agentPromptRun", query, again: "yes" },
       { type: "agentPromptRun", query, readAll: 1 },
@@ -492,7 +502,7 @@ describe("agent requests", () => {
         code: "invalidRequest",
       });
     }
-    expect(calls).toHaveLength(6);
+    expect(calls).toHaveLength(7);
   });
 
   it("carries the talks across all mail to the service and back (ADR 0086)", async () => {
@@ -885,6 +895,7 @@ describe("RemoteAgent", () => {
     // A prompt walks the index and runs turns: all four go to the worker (ADR 0116).
     await remote.promptCount("prompt:x");
     await remote.promptVerdicts("prompt:x");
+    await remote.promptBadge("prompt:x");
     await remote.promptRun("prompt:x");
     await remote.promptStop();
     // The talk is a read here (empty with no thread), and only the turn and its stop go out.
@@ -917,6 +928,7 @@ describe("RemoteAgent", () => {
       { name: "agentFillGaps", threadId: "t1", text: "Hi [date]" },
       { name: "agentPromptCount", query: "prompt:x" },
       { name: "agentPromptVerdicts", query: "prompt:x" },
+      { name: "agentPromptBadge", query: "prompt:x" },
       { name: "agentPromptRun", query: "prompt:x" },
       { name: "agentPromptStop" },
     ]);

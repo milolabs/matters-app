@@ -21,6 +21,8 @@ export interface SyncHostHandlers {
   onMoves(): void;
   /** What agents found or made changed. */
   onAgent(): void;
+  /** The saved views changed in the worker, not by a request (ADR 0117, rule 2). */
+  onViews?(): void;
   /** A turn across all mail finished its search: the query and how many threads go on. */
   onAgentTalkStep(
     query: string,
@@ -223,6 +225,8 @@ export class SyncHost {
           return this.options.handlers.onMoves();
         case "agent":
           return this.options.handlers.onAgent();
+        case "views":
+          return this.options.handlers.onViews?.();
         case "agentTalkStep":
           return this.options.handlers.onAgentTalkStep(
             message.query,

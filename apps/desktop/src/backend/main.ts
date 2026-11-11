@@ -29,6 +29,7 @@ import { serveHeavyRead } from "./heavyReads.ts";
 import { LimitProbe } from "./limitProbe.ts";
 import { summariseMoves } from "./moveSummary.ts";
 import { Notifier } from "./notifier.ts";
+import { promptFits } from "./promptFits.ts";
 import type { WorkerConfig } from "./protocol.ts";
 import { ChangePublisher } from "./publisher.ts";
 import { ReadThread } from "./readThread.ts";
@@ -198,7 +199,12 @@ async function createBackend(): Promise<Backend> {
           ...(kind === undefined ? {} : { kind }),
           ...(note === undefined ? {} : { note }),
         }),
-      onAgentPrompt: (progress) => broadcast({ type: "agentPromptProgress", ...progress }),
+      onAgentPrompt: (progress) => {
+        broadcast({ type: "agentPromptProgress", ...progress });
+        // Verdicts may have landed: mail a view with a prompt holds may notify (ADR 0117, rule 6).
+        if (progress.phase === "reading") notifier?.promptsChanged();
+      },
+      onViews: () => broadcast({ type: "viewsChanged" }),
       onMoveRefused: (action, count) => broadcast({ type: "moveRefused", action, count }),
       onAttachments: (draftId) => void publishAttachments(draftId),
       onAttachmentProgress: (id, fraction) =>
@@ -386,6 +392,12 @@ async function createBackend(): Promise<Backend> {
       shown: (threadId) => shownReading(agentReads(readNow), threadId),
       // The Matters tab's own read, on the read thread; no row is filled (ADR 0109).
       count: async () => (await heavy.ask({ name: "things", limit: 0 })).total,
+    },
+    prompts: {
+      fits: (query, threadIds) =>
+        promptFits({ store: readNow.store, insights: readNow.agentInsights }, query, threadIds),
+      // On the worker, where the kept search is walked (ADR 0117, rule 4).
+      badge: (query) => host.command({ name: "agentPromptBadge", query }),
     },
     toMain,
     broadcast,

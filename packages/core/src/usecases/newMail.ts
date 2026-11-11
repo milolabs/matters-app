@@ -134,7 +134,7 @@ export class NewMailWatch {
       this.deps.accounts.list(),
     ]);
     const mine = new Set(accounts.map((a) => a.address.toLowerCase()));
-    const inViews = await this.viewsOf(fresh, viewIds, accounts);
+    const { inViews, prompted } = await this.viewsOf(fresh, viewIds, accounts);
 
     const threads = [...new Set(messages.map((m) => m.threadId))].slice(0, MAX_THREADS);
     const wrote = new Set<string>();
@@ -153,15 +153,18 @@ export class NewMailWatch {
       fromMe: mine.has(message.from.address.toLowerCase()),
       youWrote: wrote.has(message.threadId),
       views: inViews.get(message.key) ?? [],
+      ...(prompted.has(message.key) ? { prompted: prompted.get(message.key) ?? [] } : {}),
     }));
     for (const m of out) {
       // Your own mail is never asked about again: it never notifies.
+      const waiting = m.fromMe ? [] : (m.prompted ?? []);
       this.remember({
         key: m.message.key,
         threadId: m.message.threadId,
         atMs: now,
         channels: NO_CHANNELS,
         decided: m.fromMe,
+        ...(waiting.length > 0 ? { waiting } : {}),
       });
     }
     return out;
@@ -194,6 +197,26 @@ export class NewMailWatch {
       const t = this.told.get(key);
       if (t !== undefined) this.told.set(key, { ...t, decided: true });
     }
+  }
+
+  /**
+   * Mail that views with a prompt still wait to hear about (ADR 0117, rule 6), newest first: each
+   * until its thread's verdict is looked at, or the mail is let go after `keepMs`.
+   */
+  waiting(): readonly (ToldMail & { readonly waiting: readonly string[] })[] {
+    return [...this.told.values()]
+      .filter((t): t is ToldMail & { waiting: readonly string[] } => (t.waiting?.length ?? 0) > 0)
+      .sort((a, b) => b.key - a.key);
+  }
+
+  /** These views looked at the verdict of this message's thread: they do not wait any more. */
+  settle(key: number, viewIds: readonly string[]): void {
+    const t = this.told.get(key);
+    if (t?.waiting === undefined) return;
+    const gone = new Set(viewIds);
+    const left = t.waiting.filter((id) => !gone.has(id));
+    const { waiting: _was, ...rest } = t;
+    this.told.set(key, left.length > 0 ? { ...rest, waiting: left } : rest);
   }
 
   /** Deadlines already said, by `dueId`. */
@@ -279,9 +302,10 @@ export class NewMailWatch {
     keys: readonly number[],
     viewIds: readonly string[],
     accounts: readonly { id: string; address: string; displayName: string }[],
-  ): Promise<Map<number, string[]>> {
+  ): Promise<{ inViews: Map<number, string[]>; prompted: Map<number, string[]> }> {
     const out = new Map<number, string[]>();
-    if (viewIds.length === 0) return out;
+    const prompted = new Map<number, string[]>();
+    if (viewIds.length === 0) return { inViews: out, prompted };
     const wanted = new Set(viewIds);
     const views = (await this.deps.views.list()).filter((v) => wanted.has(v.id));
     const ctx = {
@@ -290,6 +314,17 @@ export class NewMailWatch {
     };
     for (const view of views) {
       const parsed = parseQuery(view.query, ctx);
+      // ADR 0117, rule 6: a view with a prompt holds what its mail filters match until its
+      // verdict comes. A prompt alone (no filters) holds every new message.
+      if (parsed.prompt !== undefined) {
+        const matching = parsed.root ? await this.deps.index.matchesAmong(parsed, keys) : keys;
+        for (const key of matching) {
+          const list = prompted.get(key);
+          if (list) list.push(view.id);
+          else prompted.set(key, [view.id]);
+        }
+        continue;
+      }
       // A view with no constraint is the whole mailbox: that is what the kinds are for.
       if (!parsed.root) continue;
       for (const key of await this.deps.index.matchesAmong(parsed, keys)) {
@@ -298,7 +333,7 @@ export class NewMailWatch {
         else out.set(key, [view.id]);
       }
     }
-    return out;
+    return { inViews: out, prompted };
   }
 
   private remember(t: ToldMail): void {

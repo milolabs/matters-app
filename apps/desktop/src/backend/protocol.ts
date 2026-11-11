@@ -29,6 +29,7 @@ import type {
   MoveThreadInput,
   MoveThreadResult,
   PrepareResult,
+  PromptBadge,
   PromptCount,
   PromptList,
   PromptProgress,
@@ -192,6 +193,8 @@ export type WorkerCommand =
    */
   | { readonly name: "agentPromptCount"; readonly query: string }
   | { readonly name: "agentPromptVerdicts"; readonly query: string }
+  /** Read-only, as the verdicts: the number on the tab of a view with a prompt (ADR 0117, rule 4). */
+  | { readonly name: "agentPromptBadge"; readonly query: string }
   | {
       readonly name: "agentPromptRun";
       readonly query: string;
@@ -284,6 +287,7 @@ export interface CommandResults {
   readonly agentMatchAct: ActMatches;
   readonly agentPromptCount: PromptCount;
   readonly agentPromptVerdicts: PromptList;
+  readonly agentPromptBadge: PromptBadge;
   readonly agentPromptRun: PromptRunResult;
   readonly agentPromptStop: null;
 }
@@ -318,6 +322,8 @@ export type FromWorker =
   | { readonly type: "moves" }
   /** What agents found or made changed (committed): the router tells the renderer, which asks again. */
   | { readonly type: "agent" }
+  /** The saved views changed here and not by a request (ADR 0117, rule 2): the windows read them. */
+  | { readonly type: "views" }
   /**
    * A turn across all mail finished its search and goes on to the answer (ADR 0064, rule 12). Not
    * data: the query and a count, relayed as they are and never stored.
