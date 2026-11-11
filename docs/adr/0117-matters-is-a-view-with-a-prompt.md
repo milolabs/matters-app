@@ -1,6 +1,6 @@
 # 0117. Matters is a view with a prompt
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-11
 - Supersedes: [0052](0052-things-that-matter.md) and what was built on its list
   ([0053](0053-reading-that-shows-itself.md) to [0062](0062-the-list-holds-still-after-you-act.md),

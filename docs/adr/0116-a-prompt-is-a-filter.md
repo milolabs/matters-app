@@ -1,6 +1,6 @@
 # 0116. A prompt is a filter
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-11
 - Amends: [0025](0025-query-language-and-plans.md) (`limit:` and `sort:`; an order along the key in either direction)
 - Builds on: [0027](0027-saved-views.md), [0051](0051-agents-on-the-users-own-plans.md), [0064](0064-one-prompt-for-a-thread-or-all-mail.md)
@@ -28,8 +28,8 @@ Two limits hold whatever we build. A keystroke has 16 ms (ADR 0012), and no inte
 model (ADR 0051, rule 10). A model also runs on the person's plan, so how much is read must be
 bounded and shown before it starts.
 
-This is an experiment. `Matters` stays as it is while it runs, so the two can be compared on the
-same mail.
+This began as an experiment beside `Matters`, so the two could be compared on the same mail.
+ADR 0117 then removed that tab in favour of a view with a prompt.
 
 ## Decision
 
@@ -157,5 +157,6 @@ and a badge for views with a prompt are ADR 0117.
   measured), and the window reads it at most once a second while a reading runs.
 - Mail can try to steer its own verdict. It can only make itself show or hide in that view; the
   quote check and the lack of any tool bound the harm, as before.
-- Whether this is better than `Matters` is a question for the snapshot and the owner's labels
-  (ADR 0067), asked before anything is removed.
+- Whether this is better than `Matters` was not measured on the snapshot and the owner's labels
+  (ADR 0067) before ADR 0117 removed that tab; it was the owner's choice, on a trial with real
+  mail.
