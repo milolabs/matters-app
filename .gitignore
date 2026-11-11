@@ -1,0 +1,9 @@
+.DS_Store
+node_modules/
+out/
+dist/
+coverage/
+*.db
+*.db-wal
+*.db-shm
+.bench/

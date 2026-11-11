@@ -1,0 +1,158 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <attachments-runnable-types@corpus.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="B1"
+
+--B1
+Content-Type: text/plain; charset=utf-8
+
+See the files.
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.app"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.command"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.scpt"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.dmg"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.pkg"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.webloc"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.terminal"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.html"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.svg"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.docm"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.exe"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.scr"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.bat"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.lnk"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.url"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.vbs"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.ps1"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.js"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.jar"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.py"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.sh"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.hta"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.chm"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.msi"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1--
+

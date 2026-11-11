@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: yesterday, around lunch
+Message-ID: <mime-date-garbage@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+

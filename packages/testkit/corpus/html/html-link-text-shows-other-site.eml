@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-link-text-shows-other-site@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><p><a href="http://canary.test/phish1">https://www.example.org/account</a></p><p><a href="http://canary.test/phish2">example.org</a></p><p><a href="https://example.org@canary.test/phish3">https://example.org</a></p><p><a href="https://example.org.canary.test/phish4">www.example.org</a></p><p><a href="http://canary.test/phish5">https://www.exаmple.test/login</a></p><p><a href="http://canary.test/phish6">HTTPS://WWW.EXAMPLE.ORG</a></p><p><a href="https://canary.test/phish7?u=example.org">http://example.org/reset</a></p></body></html>

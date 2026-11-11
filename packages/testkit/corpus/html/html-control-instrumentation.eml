@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-control-instrumentation@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><p>Control.</p><img src="http://canary.test/control-image" width="40" height="40"><p><a href="http://canary.test/ok-link">a plain link</a></p></body></html>

@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-event-handlers@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><img src="x" onerror="parent.__pwned=1;new Image().src='http://canary.test/xss'"><body onload="parent.__pwned=1;new Image().src='http://canary.test/xss'"><div onmouseover="parent.__pwned=1;new Image().src='http://canary.test/xss'" style="width:100%;height:100%">hover</div><a href="#" onclick="parent.__pwned=1;new Image().src='http://canary.test/xss'">c</a><details open ontoggle="parent.__pwned=1;new Image().src='http://canary.test/xss'"><summary>s</summary></details><p style="animation:a 1s" onanimationstart="parent.__pwned=1;new Image().src='http://canary.test/xss'">p</p><svg onload="parent.__pwned=1;new Image().src='http://canary.test/xss'"></svg></body></html>

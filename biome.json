@@ -1,0 +1,103 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.4/schema.json",
+  "files": {
+    "includes": [
+      "packages/**",
+      "apps/**",
+      "tools/**",
+      "package.json",
+      "tsconfig.json",
+      "tsconfig.base.json",
+      "biome.json",
+      "!apps/desktop/out"
+    ]
+  },
+  "formatter": {
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "linter": {
+    "rules": {
+      "preset": "recommended"
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["packages/core/src/**", "packages/contracts/src/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "electron": "core and contracts must stay free of Electron (ADR 0004)"
+                },
+                "patterns": [
+                  {
+                    "group": ["node:*"],
+                    "message": "core and contracts must not import node:* (ADR 0004)"
+                  },
+                  {
+                    "group": ["@matters/adapter-*"],
+                    "message": "dependencies point inward (ADR 0004)"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["apps/desktop/src/renderer/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "electron": "the renderer talks to the backend over the port only (ADR 0005)"
+                },
+                "patterns": [
+                  {
+                    "group": ["node:*"],
+                    "message": "the renderer must not import node:* (ADR 0005)"
+                  },
+                  {
+                    "group": ["@matters/adapter-*", "@matters/testkit", "@matters/testkit/*"],
+                    "message": "the renderer must not import adapters or fakes (ADR 0004)"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["apps/desktop/src/backend/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "electron": "the backend is plain Node; main passes it the port (ADR 0005)"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  }
+}

@@ -1,0 +1,10 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <auth-dmarc-pass-and-fail-same-header@corpus.test>
+MIME-Version: 1.0
+Authentication-Results: mx.example.com; dmarc=pass header.from=example.org; dmarc=fail header.from=example.org
+Content-Type: text/plain; charset=utf-8
+
+

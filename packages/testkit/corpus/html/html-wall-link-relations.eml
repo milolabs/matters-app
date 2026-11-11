@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-wall-link-relations@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><link rel="stylesheet" href="http://canary.test/rel-0"><link rel="preload" as="fetch" href="http://canary.test/rel-1"><link rel="preload" as="script" href="http://canary.test/rel-2"><link rel="preload" as="font" crossorigin="" href="http://canary.test/rel-3"><link rel="modulepreload" href="http://canary.test/rel-4"><link rel="prefetch" href="http://canary.test/rel-5"><link rel="prerender" href="http://canary.test/rel-6"><link rel="manifest" href="http://canary.test/rel-7"><link rel="icon" href="http://canary.test/rel-8"><link rel="apple-touch-icon" href="http://canary.test/rel-9"><link rel="preconnect" href="http://canary.test/rel-10"><link rel="dns-prefetch" href="http://canary.test/rel-11"></body></html>

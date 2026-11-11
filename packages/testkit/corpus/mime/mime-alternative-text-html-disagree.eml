@@ -1,0 +1,18 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <mime-alternative-text-html-disagree@corpus.test>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="ALT"
+
+--ALT
+Content-Type: text/plain; charset=utf-8
+
+Your invoice is attached.
+--ALT
+Content-Type: text/html; charset=utf-8
+
+<p>Reset your password now.</p>
+--ALT--
+

@@ -1,0 +1,17 @@
+{
+  "name": "@matters/adapter-mime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@matters/core": "workspace:*",
+    "entities": "8.1.0",
+    "postal-mime": "4.2.0"
+  },
+  "devDependencies": {
+    "@matters/adapter-publicsuffix": "workspace:*"
+  }
+}

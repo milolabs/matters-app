@@ -1,0 +1,759 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <mime-multipart-nested-150-deep@corpus.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b149"
+
+--b149
+Content-Type: multipart/mixed; boundary="b148"
+
+--b148
+Content-Type: multipart/mixed; boundary="b147"
+
+--b147
+Content-Type: multipart/mixed; boundary="b146"
+
+--b146
+Content-Type: multipart/mixed; boundary="b145"
+
+--b145
+Content-Type: multipart/mixed; boundary="b144"
+
+--b144
+Content-Type: multipart/mixed; boundary="b143"
+
+--b143
+Content-Type: multipart/mixed; boundary="b142"
+
+--b142
+Content-Type: multipart/mixed; boundary="b141"
+
+--b141
+Content-Type: multipart/mixed; boundary="b140"
+
+--b140
+Content-Type: multipart/mixed; boundary="b139"
+
+--b139
+Content-Type: multipart/mixed; boundary="b138"
+
+--b138
+Content-Type: multipart/mixed; boundary="b137"
+
+--b137
+Content-Type: multipart/mixed; boundary="b136"
+
+--b136
+Content-Type: multipart/mixed; boundary="b135"
+
+--b135
+Content-Type: multipart/mixed; boundary="b134"
+
+--b134
+Content-Type: multipart/mixed; boundary="b133"
+
+--b133
+Content-Type: multipart/mixed; boundary="b132"
+
+--b132
+Content-Type: multipart/mixed; boundary="b131"
+
+--b131
+Content-Type: multipart/mixed; boundary="b130"
+
+--b130
+Content-Type: multipart/mixed; boundary="b129"
+
+--b129
+Content-Type: multipart/mixed; boundary="b128"
+
+--b128
+Content-Type: multipart/mixed; boundary="b127"
+
+--b127
+Content-Type: multipart/mixed; boundary="b126"
+
+--b126
+Content-Type: multipart/mixed; boundary="b125"
+
+--b125
+Content-Type: multipart/mixed; boundary="b124"
+
+--b124
+Content-Type: multipart/mixed; boundary="b123"
+
+--b123
+Content-Type: multipart/mixed; boundary="b122"
+
+--b122
+Content-Type: multipart/mixed; boundary="b121"
+
+--b121
+Content-Type: multipart/mixed; boundary="b120"
+
+--b120
+Content-Type: multipart/mixed; boundary="b119"
+
+--b119
+Content-Type: multipart/mixed; boundary="b118"
+
+--b118
+Content-Type: multipart/mixed; boundary="b117"
+
+--b117
+Content-Type: multipart/mixed; boundary="b116"
+
+--b116
+Content-Type: multipart/mixed; boundary="b115"
+
+--b115
+Content-Type: multipart/mixed; boundary="b114"
+
+--b114
+Content-Type: multipart/mixed; boundary="b113"
+
+--b113
+Content-Type: multipart/mixed; boundary="b112"
+
+--b112
+Content-Type: multipart/mixed; boundary="b111"
+
+--b111
+Content-Type: multipart/mixed; boundary="b110"
+
+--b110
+Content-Type: multipart/mixed; boundary="b109"
+
+--b109
+Content-Type: multipart/mixed; boundary="b108"
+
+--b108
+Content-Type: multipart/mixed; boundary="b107"
+
+--b107
+Content-Type: multipart/mixed; boundary="b106"
+
+--b106
+Content-Type: multipart/mixed; boundary="b105"
+
+--b105
+Content-Type: multipart/mixed; boundary="b104"
+
+--b104
+Content-Type: multipart/mixed; boundary="b103"
+
+--b103
+Content-Type: multipart/mixed; boundary="b102"
+
+--b102
+Content-Type: multipart/mixed; boundary="b101"
+
+--b101
+Content-Type: multipart/mixed; boundary="b100"
+
+--b100
+Content-Type: multipart/mixed; boundary="b99"
+
+--b99
+Content-Type: multipart/mixed; boundary="b98"
+
+--b98
+Content-Type: multipart/mixed; boundary="b97"
+
+--b97
+Content-Type: multipart/mixed; boundary="b96"
+
+--b96
+Content-Type: multipart/mixed; boundary="b95"
+
+--b95
+Content-Type: multipart/mixed; boundary="b94"
+
+--b94
+Content-Type: multipart/mixed; boundary="b93"
+
+--b93
+Content-Type: multipart/mixed; boundary="b92"
+
+--b92
+Content-Type: multipart/mixed; boundary="b91"
+
+--b91
+Content-Type: multipart/mixed; boundary="b90"
+
+--b90
+Content-Type: multipart/mixed; boundary="b89"
+
+--b89
+Content-Type: multipart/mixed; boundary="b88"
+
+--b88
+Content-Type: multipart/mixed; boundary="b87"
+
+--b87
+Content-Type: multipart/mixed; boundary="b86"
+
+--b86
+Content-Type: multipart/mixed; boundary="b85"
+
+--b85
+Content-Type: multipart/mixed; boundary="b84"
+
+--b84
+Content-Type: multipart/mixed; boundary="b83"
+
+--b83
+Content-Type: multipart/mixed; boundary="b82"
+
+--b82
+Content-Type: multipart/mixed; boundary="b81"
+
+--b81
+Content-Type: multipart/mixed; boundary="b80"
+
+--b80
+Content-Type: multipart/mixed; boundary="b79"
+
+--b79
+Content-Type: multipart/mixed; boundary="b78"
+
+--b78
+Content-Type: multipart/mixed; boundary="b77"
+
+--b77
+Content-Type: multipart/mixed; boundary="b76"
+
+--b76
+Content-Type: multipart/mixed; boundary="b75"
+
+--b75
+Content-Type: multipart/mixed; boundary="b74"
+
+--b74
+Content-Type: multipart/mixed; boundary="b73"
+
+--b73
+Content-Type: multipart/mixed; boundary="b72"
+
+--b72
+Content-Type: multipart/mixed; boundary="b71"
+
+--b71
+Content-Type: multipart/mixed; boundary="b70"
+
+--b70
+Content-Type: multipart/mixed; boundary="b69"
+
+--b69
+Content-Type: multipart/mixed; boundary="b68"
+
+--b68
+Content-Type: multipart/mixed; boundary="b67"
+
+--b67
+Content-Type: multipart/mixed; boundary="b66"
+
+--b66
+Content-Type: multipart/mixed; boundary="b65"
+
+--b65
+Content-Type: multipart/mixed; boundary="b64"
+
+--b64
+Content-Type: multipart/mixed; boundary="b63"
+
+--b63
+Content-Type: multipart/mixed; boundary="b62"
+
+--b62
+Content-Type: multipart/mixed; boundary="b61"
+
+--b61
+Content-Type: multipart/mixed; boundary="b60"
+
+--b60
+Content-Type: multipart/mixed; boundary="b59"
+
+--b59
+Content-Type: multipart/mixed; boundary="b58"
+
+--b58
+Content-Type: multipart/mixed; boundary="b57"
+
+--b57
+Content-Type: multipart/mixed; boundary="b56"
+
+--b56
+Content-Type: multipart/mixed; boundary="b55"
+
+--b55
+Content-Type: multipart/mixed; boundary="b54"
+
+--b54
+Content-Type: multipart/mixed; boundary="b53"
+
+--b53
+Content-Type: multipart/mixed; boundary="b52"
+
+--b52
+Content-Type: multipart/mixed; boundary="b51"
+
+--b51
+Content-Type: multipart/mixed; boundary="b50"
+
+--b50
+Content-Type: multipart/mixed; boundary="b49"
+
+--b49
+Content-Type: multipart/mixed; boundary="b48"
+
+--b48
+Content-Type: multipart/mixed; boundary="b47"
+
+--b47
+Content-Type: multipart/mixed; boundary="b46"
+
+--b46
+Content-Type: multipart/mixed; boundary="b45"
+
+--b45
+Content-Type: multipart/mixed; boundary="b44"
+
+--b44
+Content-Type: multipart/mixed; boundary="b43"
+
+--b43
+Content-Type: multipart/mixed; boundary="b42"
+
+--b42
+Content-Type: multipart/mixed; boundary="b41"
+
+--b41
+Content-Type: multipart/mixed; boundary="b40"
+
+--b40
+Content-Type: multipart/mixed; boundary="b39"
+
+--b39
+Content-Type: multipart/mixed; boundary="b38"
+
+--b38
+Content-Type: multipart/mixed; boundary="b37"
+
+--b37
+Content-Type: multipart/mixed; boundary="b36"
+
+--b36
+Content-Type: multipart/mixed; boundary="b35"
+
+--b35
+Content-Type: multipart/mixed; boundary="b34"
+
+--b34
+Content-Type: multipart/mixed; boundary="b33"
+
+--b33
+Content-Type: multipart/mixed; boundary="b32"
+
+--b32
+Content-Type: multipart/mixed; boundary="b31"
+
+--b31
+Content-Type: multipart/mixed; boundary="b30"
+
+--b30
+Content-Type: multipart/mixed; boundary="b29"
+
+--b29
+Content-Type: multipart/mixed; boundary="b28"
+
+--b28
+Content-Type: multipart/mixed; boundary="b27"
+
+--b27
+Content-Type: multipart/mixed; boundary="b26"
+
+--b26
+Content-Type: multipart/mixed; boundary="b25"
+
+--b25
+Content-Type: multipart/mixed; boundary="b24"
+
+--b24
+Content-Type: multipart/mixed; boundary="b23"
+
+--b23
+Content-Type: multipart/mixed; boundary="b22"
+
+--b22
+Content-Type: multipart/mixed; boundary="b21"
+
+--b21
+Content-Type: multipart/mixed; boundary="b20"
+
+--b20
+Content-Type: multipart/mixed; boundary="b19"
+
+--b19
+Content-Type: multipart/mixed; boundary="b18"
+
+--b18
+Content-Type: multipart/mixed; boundary="b17"
+
+--b17
+Content-Type: multipart/mixed; boundary="b16"
+
+--b16
+Content-Type: multipart/mixed; boundary="b15"
+
+--b15
+Content-Type: multipart/mixed; boundary="b14"
+
+--b14
+Content-Type: multipart/mixed; boundary="b13"
+
+--b13
+Content-Type: multipart/mixed; boundary="b12"
+
+--b12
+Content-Type: multipart/mixed; boundary="b11"
+
+--b11
+Content-Type: multipart/mixed; boundary="b10"
+
+--b10
+Content-Type: multipart/mixed; boundary="b9"
+
+--b9
+Content-Type: multipart/mixed; boundary="b8"
+
+--b8
+Content-Type: multipart/mixed; boundary="b7"
+
+--b7
+Content-Type: multipart/mixed; boundary="b6"
+
+--b6
+Content-Type: multipart/mixed; boundary="b5"
+
+--b5
+Content-Type: multipart/mixed; boundary="b4"
+
+--b4
+Content-Type: multipart/mixed; boundary="b3"
+
+--b3
+Content-Type: multipart/mixed; boundary="b2"
+
+--b2
+Content-Type: multipart/mixed; boundary="b1"
+
+--b1
+Content-Type: multipart/mixed; boundary="b0"
+
+--b0
+Content-Type: text/plain
+
+Leaf.
+--b0--
+
+--b1--
+
+--b2--
+
+--b3--
+
+--b4--
+
+--b5--
+
+--b6--
+
+--b7--
+
+--b8--
+
+--b9--
+
+--b10--
+
+--b11--
+
+--b12--
+
+--b13--
+
+--b14--
+
+--b15--
+
+--b16--
+
+--b17--
+
+--b18--
+
+--b19--
+
+--b20--
+
+--b21--
+
+--b22--
+
+--b23--
+
+--b24--
+
+--b25--
+
+--b26--
+
+--b27--
+
+--b28--
+
+--b29--
+
+--b30--
+
+--b31--
+
+--b32--
+
+--b33--
+
+--b34--
+
+--b35--
+
+--b36--
+
+--b37--
+
+--b38--
+
+--b39--
+
+--b40--
+
+--b41--
+
+--b42--
+
+--b43--
+
+--b44--
+
+--b45--
+
+--b46--
+
+--b47--
+
+--b48--
+
+--b49--
+
+--b50--
+
+--b51--
+
+--b52--
+
+--b53--
+
+--b54--
+
+--b55--
+
+--b56--
+
+--b57--
+
+--b58--
+
+--b59--
+
+--b60--
+
+--b61--
+
+--b62--
+
+--b63--
+
+--b64--
+
+--b65--
+
+--b66--
+
+--b67--
+
+--b68--
+
+--b69--
+
+--b70--
+
+--b71--
+
+--b72--
+
+--b73--
+
+--b74--
+
+--b75--
+
+--b76--
+
+--b77--
+
+--b78--
+
+--b79--
+
+--b80--
+
+--b81--
+
+--b82--
+
+--b83--
+
+--b84--
+
+--b85--
+
+--b86--
+
+--b87--
+
+--b88--
+
+--b89--
+
+--b90--
+
+--b91--
+
+--b92--
+
+--b93--
+
+--b94--
+
+--b95--
+
+--b96--
+
+--b97--
+
+--b98--
+
+--b99--
+
+--b100--
+
+--b101--
+
+--b102--
+
+--b103--
+
+--b104--
+
+--b105--
+
+--b106--
+
+--b107--
+
+--b108--
+
+--b109--
+
+--b110--
+
+--b111--
+
+--b112--
+
+--b113--
+
+--b114--
+
+--b115--
+
+--b116--
+
+--b117--
+
+--b118--
+
+--b119--
+
+--b120--
+
+--b121--
+
+--b122--
+
+--b123--
+
+--b124--
+
+--b125--
+
+--b126--
+
+--b127--
+
+--b128--
+
+--b129--
+
+--b130--
+
+--b131--
+
+--b132--
+
+--b133--
+
+--b134--
+
+--b135--
+
+--b136--
+
+--b137--
+
+--b138--
+
+--b139--
+
+--b140--
+
+--b141--
+
+--b142--
+
+--b143--
+
+--b144--
+
+--b145--
+
+--b146--
+
+--b147--
+
+--b148--
+
+--b149--
+

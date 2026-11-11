@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-link-element-resources@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head><link rel="stylesheet" href="http://canary.test/linkhead.css"></head><body><link rel="stylesheet" href="http://canary.test/link.css"><link rel="preload" href="http://canary.test/preload" as="image"><link rel="prefetch" href="http://canary.test/prefetch"><link rel="preconnect" href="http://canary.test/"><link rel="dns-prefetch" href="http://canary.test/"><link rel="icon" href="http://canary.test/icon.png"></body></html>

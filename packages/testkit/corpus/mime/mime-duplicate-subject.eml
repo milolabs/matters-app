@@ -1,0 +1,10 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Statement available
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <mime-duplicate-subject@corpus.test>
+MIME-Version: 1.0
+Subject: Action required: account suspended
+Content-Type: text/plain; charset=utf-8
+
+

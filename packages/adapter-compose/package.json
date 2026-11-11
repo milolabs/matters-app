@@ -1,0 +1,17 @@
+{
+  "name": "@matters/adapter-compose",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@matters/core": "workspace:*",
+    "juice": "12.2.1",
+    "markdown-it": "15.0.3"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "14.2.0"
+  }
+}

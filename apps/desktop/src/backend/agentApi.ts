@@ -1,0 +1,208 @@
+import type {
+  ActMatches,
+  AddInstructionInput,
+  AddRuleInput,
+  AgentInstruction,
+  AgentModels,
+  AgentRule,
+  AgentStatus,
+  FeedbackOutcome,
+  GapSuggestion,
+  JournalEntry,
+  PreparedGuidance,
+  PreparedWork,
+  PrepareResult,
+  RememberResult,
+  ReplyCheck,
+  RewriteHow,
+  RuleOffer,
+  TalkEntry,
+  TalkResult,
+  TalkSummary,
+  ThingsPage,
+  ThreadAgentView,
+} from "@matters/core";
+
+/** Why an agent request could not be done. The message is for the person and holds no mail text. */
+export class AgentUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentUnavailableError";
+  }
+}
+
+/** There is no reading of that thread (or no such thread). */
+export class ThingNotFoundError extends Error {
+  constructor(message = "There is nothing read for that thread") {
+    super(message);
+    this.name = "ThingNotFoundError";
+  }
+}
+
+/** A choice the service refuses (an unknown model, a window that makes no sense). */
+export class InvalidAgentSettingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidAgentSettingError";
+  }
+}
+
+/** How many threads a read would send, from the local store only. */
+export interface ReadEstimate {
+  readonly threads: number;
+  /** The window holds more threads than are counted. */
+  readonly capped: boolean;
+}
+
+/**
+ * What the renderer can ask of agents (ADR 0051, 0052). `AgentService` implements it in the sync
+ * worker; the router's `RemoteAgent` answers the reads itself on the reader connection and sends
+ * the rest to the worker. There is no method that sends mail: `draftFromPrepared` makes a draft,
+ * and the person sends it by the existing path.
+ */
+export interface AgentApi {
+  status(): Promise<AgentStatus>;
+  /** The best `limit`, or all of them, and how many there are (ADR 0055). Empty while AI is off. */
+  things(limit?: number): Promise<ThingsPage>;
+  /** The draft or question prepared for the thread as it stands now; null when none, or stale. */
+  prepared(threadId: string): Promise<PreparedWork | null>;
+  /**
+   * What the agent already has for one ordinary thread (ADR 0063): its reading when current and
+   * shown, and the work prepared for it as it stands. Local only: no model, no worker.
+   */
+  threadAgent(threadId: string): Promise<ThreadAgentView>;
+  readEstimate(input: { accountIds: readonly string[]; windowDays: number }): Promise<ReadEstimate>;
+  /** What was done with things, newest first (ADR 0054, rule 6): 50 by default, at most 200. Local only. */
+  journal(limit?: number): Promise<readonly JournalEntry[]>;
+  /** The active rules, in the order they were added (ADR 0054, rule 7). Local only. */
+  rules(): Promise<readonly AgentRule[]>;
+  /** What the tray offers after a closing: a rule for the thread's sender, or null. Local only. */
+  ruleOffer(threadId: string): Promise<RuleOffer | null>;
+  /**
+   * Adds a rule as the person, and writes its journal line. Refuses an invalid subject, and the
+   * person's own address. Adding an active rule again returns it and changes nothing.
+   */
+  addRule(input: AddRuleInput): Promise<AgentRule>;
+  /** Removes the rule; what it hid shows again, and what it kept from reading is read. */
+  removeRule(id: number): Promise<void>;
+  /** The active instructions for the model, oldest first, a thread's included (ADR 0054). Local only. */
+  instructions(): Promise<readonly AgentInstruction[]>;
+  /**
+   * Keeps an instruction the person typed in Settings. Refuses a blank or over-long text with a
+   * sentence. It runs no turn. Adding an active one again returns it.
+   */
+  addInstruction(input: AddInstructionInput): Promise<AgentInstruction>;
+  /** Removes the instruction; the next turns no longer carry it. */
+  removeInstruction(id: number): Promise<void>;
+  /**
+   * What to keep from the words the person typed about a thread (ADR 0054, rules 7 and 8). One
+   * background turn that gets the words and nothing else. Empty, and no turn, when the words are
+   * blank, AI is off, the account has no consent or the plan has no room; a failed turn or an answer
+   * that is not accepted is empty too, never an error.
+   */
+  remember(threadId: string, words: string): Promise<RememberResult>;
+  /** Records the person's consent for these accounts and this runtime, and turns AI on. */
+  setEnabled(input: {
+    accountIds: readonly string[];
+    runtimeId: string;
+    windowDays: number;
+  }): Promise<AgentStatus>;
+  /** Turns AI off and takes every consent back. */
+  disable(): Promise<AgentStatus>;
+  /** Takes back the consent for one account; AI stays on for the others. */
+  revokeConsent(accountId: string): Promise<AgentStatus>;
+  setModels(models: Partial<AgentModels>): Promise<AgentStatus>;
+  setWeekShare(percent: number): Promise<AgentStatus>;
+  setWindowDays(days: number): Promise<AgentStatus>;
+  /** The agent searches in a loop with tools instead of the plan and follow turns (ADR 0083). */
+  setTalkLoop(on: boolean): Promise<AgentStatus>;
+  /** Looks at the runtime again; spends nothing and sends no mail. */
+  inspect(): Promise<AgentStatus>;
+  /** The person stops the reading; it stays stopped across restarts and syncs (ADR 0053, rule 8). */
+  pauseReading(): Promise<AgentStatus>;
+  resumeReading(): Promise<AgentStatus>;
+  /** The test with a made-up message (ADR 0051, rule 5). */
+  testRuntime(): Promise<AgentStatus>;
+  /** `P0`: the person asked for it. */
+  prepare(threadId: string, guidance?: PreparedGuidance): Promise<PrepareResult>;
+  /**
+   * The person talks about one thread (ADR 0064, rule 6): one `P0` turn with the thread and its
+   * talk, on the model for writing. The answer is text, a draft, a question or a closing. Refused
+   * with a sentence and no turn when the words are blank, and when a turn for the thread is already
+   * running. A turn that fails, is stopped or gives an answer the code does not accept stores
+   * nothing, not even the words; the person tries again. May take a while.
+   */
+  talk(threadId: string, words: string): Promise<TalkResult>;
+  /**
+   * The agent helps write a reply (ADR 0098). Each is one `P0` turn for the thread, with the gates
+   * of `prepare`: AI on, the thread there, its account agreed, the runtime ready, room in the plan.
+   * `text` is the composer's whole Markdown body; the quote below the person's lines never goes to
+   * the model for a rewrite and comes back as it was. Every gap in square brackets is kept. None of
+   * these sends mail or changes a stored draft. An answer the code does not accept is an
+   * `AgentUnavailableError` with a sentence for the person, never a crash.
+   */
+  rewriteDraft(threadId: string, text: string, how: RewriteHow): Promise<{ text: string }>;
+  /** Short answers for what the other side's last message asked and the draft does not answer. */
+  answerQuestions(
+    threadId: string,
+    text: string,
+    missing?: readonly string[],
+  ): Promise<{ text: string }>;
+  /** What the draft answers of what the other side's last message asked. A small, cheap turn. */
+  checkReply(threadId: string, text: string): Promise<ReplyCheck>;
+  /** Values found in the thread for the gaps of the person's lines; gaps with none are left out. */
+  fillGaps(threadId: string, text: string): Promise<readonly GapSuggestion[]>;
+  /** Cuts the running talk turn of the thread short; it stores nothing. No turn running: nothing. */
+  talkStop(threadId: string): Promise<void>;
+  /** The newest 200 entries of the thread's talk, oldest first. Local only; empty while AI is off. */
+  talkEntries(threadId: string): Promise<readonly TalkEntry[]>;
+  /**
+   * The person asks across all their mail (ADR 0064, rule 7): one turn from their point of view,
+   * two for the model. The first turn gets only the person's own words and writes a search; the
+   * code runs it on this machine over the accounts with consent; the second gets the threads found
+   * and answers. Refused with a sentence and no turn when the words are blank and when another
+   * turn across all mail is running. Nothing found, an unusable search, a failed or stopped turn,
+   * and an answer the code does not accept: the first ends with an answer that says so and sends no
+   * mail; the others store nothing, not even the words. The turn is asked in the talk `talkId`
+   * (ADR 0086); `null`, absent or a talk that is gone starts a new talk, which the result names.
+   */
+  talkAll(words: string, talkId?: number | null): Promise<TalkResult>;
+  /** Cuts the running turn across all mail short, at either of its two turns. */
+  talkAllStop(): Promise<void>;
+  /**
+   * The newest 200 entries of a talk across all mail, oldest first (ADR 0086): of `talkId`, or of
+   * every talk without it; with `beforeId`, the 200 before that entry. Local only; empty while AI
+   * is off.
+   */
+  talkAllEntries(talkId?: number, beforeId?: number): Promise<readonly TalkEntry[]>;
+  /** The talks across all mail that have entries, the latest first (ADR 0086, rule 5). Local only. */
+  talks(): Promise<readonly TalkSummary[]>;
+  /** The person names a talk (rule 9); a blank name gives it back its first question. */
+  renameTalk(talkId: number, title: string): Promise<void>;
+  /** Removes one talk and its entries (rule 10), stopping a turn running in it first. */
+  deleteTalk(talkId: number): Promise<void>;
+  /** Removes every talk across all mail (rule 11), stopping a running turn; returns how many. */
+  deleteAllTalks(): Promise<number>;
+  /**
+   * Returns how many older threads of its series went with it (ADR 0065). A closing may say what
+   * the person meant by it (ADR 0066, rule 7): done, taken, or declined.
+   */
+  feedback(
+    threadId: string,
+    kind: "notImportant" | "later" | "closed",
+    outcome?: FeedbackOutcome,
+  ): Promise<number>;
+  /** The person pressed Undo: the newest feedback of that kind for the thread is forgotten. */
+  undoFeedback(threadId: string, kind: "notImportant" | "later" | "closed"): Promise<void>;
+  /**
+   * What the press of a clean-up offer acts on (ADR 0102, rule 7): the query matched in the scope
+   * its count was made in, the accounts agreed to and without the threads the rules cover, up to
+   * the cap. Read-only: keys, threads, accounts, subjects and seen flags, no text.
+   */
+  matchAct(query: string): Promise<ActMatches>;
+  /** A reply draft with this body, by the reply rules; the person sends it themselves. */
+  draftFromPrepared(
+    threadId: string,
+    body: string,
+  ): Promise<{ draftId: string; existing: boolean }>;
+}

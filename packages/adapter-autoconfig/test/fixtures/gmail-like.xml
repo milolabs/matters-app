@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<clientConfig version="1.1">
+  <emailProvider id="mail.example.com">
+    <domain>mail.example.com</domain>
+    <domain>mail.example.net</domain>
+    <displayName>Example Mail</displayName>
+    <displayShortName>ExampleMail</displayShortName>
+    <incomingServer type="imap">
+      <hostname>imap.mail.example.com</hostname>
+      <port>993</port>
+      <socketType>SSL</socketType>
+      <username>%EMAILADDRESS%</username>
+      <authentication>oauth2</authentication>
+      <authentication>password-cleartext</authentication>
+    </incomingServer>
+    <incomingServer type="pop3">
+      <hostname>pop.mail.example.com</hostname>
+      <port>995</port>
+      <socketType>SSL</socketType>
+      <username>%EMAILADDRESS%</username>
+      <authentication>password-cleartext</authentication>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>smtp.mail.example.com</hostname>
+      <port>465</port>
+      <socketType>SSL</socketType>
+      <username>%EMAILADDRESS%</username>
+      <authentication>oauth2</authentication>
+      <authentication>password-cleartext</authentication>
+    </outgoingServer>
+  </emailProvider>
+</clientConfig>

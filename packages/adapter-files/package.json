@@ -1,0 +1,16 @@
+{
+  "name": "@matters/adapter-files",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@matters/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@matters/adapter-mime": "workspace:*",
+    "@matters/adapter-smtp": "workspace:*"
+  }
+}

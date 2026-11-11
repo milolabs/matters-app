@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<clientConfig version="1.1">
+  <emailProvider id="odd.example.com">
+    <incomingServer type="imap">
+      <hostname>%EMAILLOCALPART%.imap.odd.example.com</hostname>
+      <port>993</port>
+      <socketType>SSL</socketType>
+    </incomingServer>
+  </emailProvider>
+</clientConfig>

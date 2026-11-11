@@ -1,0 +1,15 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <mime-boundary-preamble-text@corpus.test>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="B2"
+
+This text is the preamble and nobody should see it.
+--B2
+Content-Type: text/plain; charset=utf-8
+
+The real text.
+--B2--
+

@@ -1,0 +1,104 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <attachments-runnable-types-not-listed@corpus.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="B1"
+
+--B1
+Content-Type: text/plain; charset=utf-8
+
+See the files.
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.dll"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.settingcontent-ms"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.library-ms"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.diagcab"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.msha"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.vhd"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.vhdx"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.one"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.application"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.pyw"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.xbap"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.iqy"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.slk"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.ps1xml"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.psd1"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1--
+

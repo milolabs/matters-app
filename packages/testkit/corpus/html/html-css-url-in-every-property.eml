@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-css-url-in-every-property@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><style>.a{background:url(http://canary.test/bg)}.b{list-style-image:url(http://canary.test/lsi)}.c{border-image:url(http://canary.test/bi) 1}.d::before{content:url(http://canary.test/content)}.e{cursor:url(http://canary.test/cursor),auto}.f{-webkit-mask-image:url(http://canary.test/mask)}.g{shape-outside:url(http://canary.test/shape)}.h{filter:url(http://canary.test/filter.svg#f)}@media screen{.i{background:url(http://canary.test/media)}}@supports (display:grid){.j{background:url(http://canary.test/supports)}}</style><div class="a">a</div><ul class="b"><li>b</li></ul><div class="c">c</div><div class="d">d</div><div class="e">e</div><div class="f">f</div><div class="g">g</div><div class="h">h</div><div class="i">i</div><div class="j">j</div></body></html>

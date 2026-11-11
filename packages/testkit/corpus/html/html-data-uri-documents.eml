@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-data-uri-documents@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><a href="data:text/html;base64,PHNjcmlwdD5wYXJlbnQuX19wd25lZD0xO25ldyBJbWFnZSgpLnNyYz0naHR0cDovL2NhbmFyeS50ZXN0L3hzcyc8L3NjcmlwdD4=">a</a><iframe src="data:text/html,<script>parent.__pwned=1;new Image().src='http://canary.test/xss'</script>"></iframe><object data="data:text/html,<script>parent.__pwned=1;new Image().src='http://canary.test/xss'</script>"></object><embed src="data:text/html,x"><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cimage href='http://canary.test/svgimg'/%3E%3C/svg%3E"></body></html>

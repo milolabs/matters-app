@@ -1,0 +1,20 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <attachments-path-traversal-posix@corpus.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="B1"
+
+--B1
+Content-Type: text/plain; charset=utf-8
+
+See the files.
+--B1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="../../evil.txt"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--B1--
+

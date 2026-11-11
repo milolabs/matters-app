@@ -1,0 +1,14 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <agent-fake-quoted-fact@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Hello,
+
+I will send you the offer by Tuesday, and you can pay after that.   Is
+Wednesday a good day for a call?
+
+Sender

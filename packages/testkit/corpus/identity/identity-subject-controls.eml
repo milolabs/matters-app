@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: =?UTF-8?B?SW52b2ljZSDigK5nbnAuZXhl4oCsDQpCY2M6IHZpY3RpbUBleGFtcGxlLm9yZw==?=
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <identity-subject-controls@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+

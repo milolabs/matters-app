@@ -1,0 +1,12 @@
+{
+  "name": "@matters/adapter-publicsuffix",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "tldts": "7.4.19"
+  }
+}

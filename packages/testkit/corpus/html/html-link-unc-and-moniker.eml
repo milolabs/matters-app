@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-link-unc-and-moniker@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><a href="file:///\\canary.test\share\a.rtf!x">a</a><a href="\\canary.test\share\b.wav">b</a><a href="file://canary.test/share/c">c</a><a href="smb://canary.test/share">d</a><a href="//canary.test/share">e</a></body></html>

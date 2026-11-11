@@ -1,0 +1,250 @@
+/*
+ * The loading screen (index.html, ADR 0103). It is linked from the head on its own, so it is there
+ * before any script runs, in dev as in a build, and it does not wait for styles.css. The app's mark
+ * is the loader: the dot drops into the valley of the M, the M gives a little under it, and while the
+ * wait goes on the dot lifts and settles, like something being weighed. Nothing here is data, and
+ * the words speak only of the app.
+ *
+ * The colours mirror the tokens in styles.css (`:root`), which may not have loaded yet: --bg,
+ * --chrome, --hairline, --ink, --secondary and --font-sans. The mark's colours are the icon's own
+ * (build/icons/icon.svg): its violet, and in dark its paper for the M. Change them together.
+ */
+#boot {
+  --boot-bg: #ffffff;
+  --boot-chrome: #fafaf9;
+  --boot-hairline: #ededeb;
+  --boot-secondary: #6e6e73;
+  --boot-m: #1d1d1f;
+  --boot-dot: #5b45c9;
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  background: var(--boot-bg);
+  color: var(--boot-secondary);
+  font-family: -apple-system, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  cursor: default;
+  user-select: none;
+}
+@media (prefers-color-scheme: dark) {
+  #boot {
+    --boot-bg: #1e1e20;
+    --boot-chrome: #242426;
+    --boot-hairline: #34343a;
+    --boot-secondary: #98989f;
+    --boot-m: #f5f1ea;
+    --boot-dot: #9a88f5;
+  }
+}
+
+/* The real header bar, so the traffic lights sit on the same strip before and after. */
+.boot-bar {
+  flex: none;
+  background: var(--boot-chrome);
+  border-bottom: 1px solid var(--boot-hairline);
+}
+.boot-header {
+  height: 52px;
+}
+
+/* Mark and words in the middle of what is under the header, optically a little above centre. */
+.boot-stage {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding-bottom: 6vh;
+}
+.boot-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.boot-mark {
+  display: block;
+  width: 56px;
+  height: 48px;
+  /* The dot falls in from above the mark's box. */
+  overflow: visible;
+}
+.boot-m {
+  fill: var(--boot-m);
+}
+.boot-dot {
+  fill: var(--boot-dot);
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+
+/* Two lines of room, always: changing words never moves the mark. */
+.boot-words {
+  display: grid;
+  grid-template-rows: 18px 18px;
+  justify-items: center;
+  width: min(520px, calc(100vw - 48px));
+  margin-top: 14px;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+}
+.boot-word {
+  grid-area: 1 / 1;
+  margin: 0;
+  opacity: 0;
+}
+.boot-word-update-long {
+  grid-area: 2 / 1;
+}
+.boot-step {
+  position: absolute;
+  right: 0;
+  bottom: 14px;
+  left: 0;
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* The words wait in CSS, counted from the page's start, so they need no script and come even while
+   the first script is still being read from a cold disk. A slow start shows the window at 0.8 s. */
+.boot-word-first {
+  animation: boot-word-first 8.2s linear both;
+}
+.boot-word-long {
+  animation: boot-word-in 0.2s linear 8.2s both;
+}
+.boot-word-update,
+.boot-word-update-long {
+  display: none;
+}
+/* An update of the database says so (the preload sets the stage): its words come at once, its
+   reassurance after a while, and the step when the update can count them. */
+:root[data-boot-stage="updating"] .boot-word-first,
+:root[data-boot-stage="updating"] .boot-word-long {
+  display: none;
+}
+:root[data-boot-stage="updating"] .boot-word-update {
+  display: block;
+  animation: boot-word-in 0.2s linear both;
+}
+:root[data-boot-stage="updating"] .boot-word-update-long {
+  display: block;
+  animation: boot-word-in 0.2s linear 8.2s both;
+}
+:root[data-boot-stage="updating"][data-boot-counted] .boot-step::before {
+  counter-reset: boot-step var(--boot-step) boot-total var(--boot-total);
+  content: "Step " counter(boot-step) " of " counter(boot-total);
+}
+@keyframes boot-word-first {
+  0%,
+  14% {
+    opacity: 0;
+  }
+  17%,
+  98% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes boot-word-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* The mark moves from the moment the window is shown with it (the preload marks that), so the drop
+   is seen rather than over before anyone looks. Until then it is not drawn: the window is hidden. */
+.boot-m,
+.boot-dot {
+  opacity: 0;
+}
+:root[data-boot-shown] .boot-m {
+  animation:
+    boot-m-in 0.28s ease-out both,
+    boot-m-bear 0.5s ease-out 0.5s;
+}
+:root[data-boot-shown] .boot-dot {
+  animation:
+    boot-dot-drop 0.56s cubic-bezier(0.35, 0, 0.25, 1) 0.18s both,
+    boot-dot-weigh 2.8s ease-in-out 1.6s infinite;
+}
+@keyframes boot-m-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes boot-m-bear {
+  0%,
+  100% {
+    transform: none;
+  }
+  35% {
+    transform: translateY(1.6px);
+  }
+}
+@keyframes boot-dot-drop {
+  0% {
+    opacity: 0;
+    transform: translateY(-44px);
+  }
+  20% {
+    opacity: 1;
+  }
+  58% {
+    transform: translateY(0) scale(1.06, 0.9);
+  }
+  78% {
+    transform: translateY(-4px) scale(1, 1);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes boot-dot-weigh {
+  0%,
+  70%,
+  100% {
+    transform: none;
+  }
+  80% {
+    transform: translateY(-5px);
+  }
+  90% {
+    transform: translateY(0) scale(1.03, 0.95);
+  }
+}
+
+/* Once seen, it leaves into the mail with a short cross-fade (bootScreen.ts). */
+#boot[data-leaving] {
+  opacity: 0;
+  transition: opacity 140ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-m,
+  .boot-dot,
+  :root[data-boot-shown] .boot-m,
+  :root[data-boot-shown] .boot-dot {
+    animation: none;
+    opacity: 1;
+  }
+  #boot[data-leaving] {
+    transition: none;
+  }
+}

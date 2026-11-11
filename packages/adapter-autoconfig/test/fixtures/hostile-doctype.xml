@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<!DOCTYPE clientConfig [
+  <!ENTITY host "evil.example.org">
+  <!ENTITY % pull SYSTEM "file:///etc/passwd">
+]>
+<clientConfig version="1.1">
+  <emailProvider id="x.example.com">
+    <incomingServer type="imap">
+      <hostname>&host;</hostname>
+      <port>993</port>
+      <socketType>SSL</socketType>
+    </incomingServer>
+  </emailProvider>
+</clientConfig>

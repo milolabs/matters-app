@@ -1,0 +1,24 @@
+import type { CountApi } from "./handler.ts";
+import type { SyncHost } from "./syncHost.ts";
+
+/**
+ * Badge counts as the router serves them: a command to the sync worker, so the count runs on
+ * the worker's thread. While the worker is down the command rejects at once (`SyncHost`), and
+ * the renderer shows no badge.
+ */
+export class RemoteCounts implements CountApi {
+  private readonly host: SyncHost;
+
+  constructor(host: SyncHost) {
+    this.host = host;
+  }
+
+  count(query: string, cap: number, beforeKey?: number) {
+    return this.host.command({
+      name: "countMatches",
+      query,
+      cap,
+      ...(beforeKey === undefined ? {} : { beforeKey }),
+    });
+  }
+}

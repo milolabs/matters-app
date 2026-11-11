@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Fri, 31 Dec 9999 23:59:59 +0000
+Message-ID: <mime-date-far-future@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+

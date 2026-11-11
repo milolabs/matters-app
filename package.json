@@ -1,0 +1,43 @@
+{
+  "name": "matters",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "packageManager": "bun@1.4.4",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "ELECTRON_RUN_AS_NODE=1 electron ./node_modules/vitest/vitest.mjs run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/desktop/tsconfig.json && tsc --noEmit -p apps/desktop/tsconfig.renderer.json",
+    "lint": "biome check",
+    "check:licenses": "ELECTRON_RUN_AS_NODE=1 electron tools/check-licenses.ts",
+    "check:boundaries": "ELECTRON_RUN_AS_NODE=1 electron tools/check-boundaries.ts",
+    "test:imap": "ELECTRON_RUN_AS_NODE=1 electron tools/imap-test-server/run.ts -- ./node_modules/.bin/electron ./node_modules/vitest/vitest.mjs run --no-file-parallelism packages/adapter-imap/test/integration apps/desktop/test/integration",
+    "sync:imap": "ELECTRON_RUN_AS_NODE=1 electron tools/sync-imap.ts",
+    "dev:desktop": "cd apps/desktop && ./node_modules/.bin/electron-vite dev",
+    "dev:desktop:demo": "cd apps/desktop && MATTERS_SEED=1 ./node_modules/.bin/electron-vite dev",
+    "build:desktop": "cd apps/desktop && ./node_modules/.bin/electron-vite build",
+    "bench:launch": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/bench-launch.ts",
+    "smoke:desktop": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/smoke-desktop.ts",
+    "smoke:desktop:sync": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/smoke-desktop-sync.ts",
+    "smoke:identity": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/smoke-identity.ts",
+    "smoke:instance": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/smoke-instance.ts",
+    "bundle:macos": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/bundle-macos.ts",
+    "smoke:security": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/smoke-security.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.4",
+    "@types/node": "24.19.2",
+    "electron": "45.2.1",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  },
+  "trustedDependencies": [
+    "electron"
+  ]
+}

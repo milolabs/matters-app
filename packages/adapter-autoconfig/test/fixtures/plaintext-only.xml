@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<clientConfig version="1.1">
+  <emailProvider id="old.example.com">
+    <incomingServer type="imap">
+      <hostname>imap.old.example.com</hostname>
+      <port>143</port>
+      <socketType>plain</socketType>
+      <username>%EMAILADDRESS%</username>
+      <authentication>password-cleartext</authentication>
+    </incomingServer>
+  </emailProvider>
+</clientConfig>

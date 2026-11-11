@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-media-elements@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><video src="http://canary.test/video" poster="http://canary.test/poster" autoplay><source src="http://canary.test/vsource"><track src="http://canary.test/track"></video><audio src="http://canary.test/audio" autoplay></audio></body></html>

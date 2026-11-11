@@ -1,0 +1,7 @@
+<clientConfig version="1.1">
+  <emailProvider id="broken.example.com">
+    <incomingServer type="imap">
+      <hostname>imap.broken.example.com</port>
+    </incomingServer>
+  </emailProvider>
+</clientConfig>

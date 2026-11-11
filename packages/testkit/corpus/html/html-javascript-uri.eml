@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-javascript-uri@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><a href="javascript:parent.__pwned=1;new Image().src='http://canary.test/xss'">a</a><a href="JaVaScRiPt:parent.__pwned=1;new Image().src='http://canary.test/xss'">b</a><a href="java&#9;script:parent.__pwned=1;new Image().src='http://canary.test/xss'">c</a><a href="&#106;avascript:parent.__pwned=1;new Image().src='http://canary.test/xss'">d</a><a href="  javascript:parent.__pwned=1;new Image().src='http://canary.test/xss'">e</a><a href="vbscript:msgbox(1)">f</a></body></html>

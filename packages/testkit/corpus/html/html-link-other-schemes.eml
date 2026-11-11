@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-link-other-schemes@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><a href="ms-msdt:/id">l0</a> <a href="search-ms:query=x">l1</a> <a href="ms-word:ofe|u|http://canary.test/d.docx">l2</a> <a href="vscode://x/y">l3</a> <a href="ssh://canary.test">l4</a> <a href="ftp://canary.test/f">l5</a> <a href="tel:+10000000000">l6</a> <a href="sms:+10000000000">l7</a> <a href="x-apple.systempreferences:com.apple.preference.security">l8</a> <a href="blob:http://canary.test/x">l9</a> <a href="unclosed://open">l10</a> <a href="http://canary.test/ok-link">l11</a></body></html>

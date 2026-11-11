@@ -1,0 +1,2 @@
+# Corpus messages are byte-exact: CRLF, NUL and 8-bit bytes must survive a checkout.
+*.eml -text

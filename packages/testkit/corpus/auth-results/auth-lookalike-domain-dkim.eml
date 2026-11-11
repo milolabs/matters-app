@@ -1,0 +1,10 @@
+From: Sender <sender@example.test>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <auth-lookalike-domain-dkim@corpus.test>
+MIME-Version: 1.0
+Authentication-Results: mx.example.com; dkim=pass header.d=examp1e.test header.s=k1
+Content-Type: text/plain; charset=utf-8
+
+

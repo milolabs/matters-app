@@ -1,0 +1,19 @@
+{
+  "name": "@matters/adapter-imap",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@matters/core": "workspace:*",
+    "imapflow": "2.10.0"
+  },
+  "devDependencies": {
+    "@matters/adapter-mime": "workspace:*",
+    "@matters/adapter-sqlite": "workspace:*",
+    "@matters/testkit": "workspace:*",
+    "hoodiecrow-imap": "3.3.1"
+  }
+}

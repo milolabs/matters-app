@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-walls-injected-past-sanitizer@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><script>parent.__pwned=1;new Image().src='http://canary.test/xss'</script><img src="x" onerror="parent.__pwned=1;new Image().src='http://canary.test/xss'"><img src="http://canary.test/wall-img"><style>body{background:url(http://canary.test/wall-css)}@import url(http://canary.test/wall-import.css);@font-face{font-family:w;src:url(http://canary.test/wall-font)}p{font-family:w}</style><link rel="stylesheet" href="http://canary.test/wall-link.css"><iframe src="http://canary.test/wall-iframe"></iframe><form action="http://canary.test/wall-form"><input type="submit" id="wallsubmit"></form><p>wall</p></body></html>

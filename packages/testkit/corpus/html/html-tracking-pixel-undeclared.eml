@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-tracking-pixel-undeclared@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><style>.t{width:1px;height:1px}</style><img class="t" src="http://canary.test/px-class"><img src="http://canary.test/px-hidden" style="display:none"><img src="http://canary.test/px-opacity" width="40" height="40" style="opacity:0"><img src="http://canary.test/px-2x1" width="2" height="1"><img src="http://canary.test/px-width-only" width="1"><p>Hello</p></body></html>

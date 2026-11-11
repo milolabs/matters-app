@@ -1,0 +1,9 @@
+From: =?UTF-8?B?QWQbWzJKbWluB8KFeA==?= <attacker@example.net>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <identity-control-characters-name@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+

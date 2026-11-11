@@ -1,0 +1,15 @@
+{
+  "name": "@matters/testkit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./fakes": "./src/fakes.ts",
+    "./fixtures": "./src/fixtures.ts",
+    "./corpus": "./src/corpus.ts"
+  },
+  "dependencies": {
+    "@matters/core": "workspace:*"
+  }
+}

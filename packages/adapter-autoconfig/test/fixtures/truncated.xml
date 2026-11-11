@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<clientConfig version="1.1">
+  <emailProvider id="broken.example.com">
+    <domain>broken.example.com</domain>
+    <incomingServer type="imap">
+      <hostname>imap.broken.example.com</hostname>
+      <port>993</port>
+      <socketType>SSL</socketType>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>smtp.broken.example.com

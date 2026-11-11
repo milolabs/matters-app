@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-css-escaped-url@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><style>.a{background:u\72l(http://canary.test/esc1)}.b{background:url(\68ttp://canary.test/esc2)}.c{background:url("&#104;ttp://canary.test/esc3")}</style><div class="a">a</div><div class="b">b</div><div class="c">c</div></body></html>

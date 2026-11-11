@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-css-image-set@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><style>.a{background-image:image-set("http://canary.test/set1" 1x)}.b{background-image:-webkit-image-set(url(http://canary.test/set2) 1x)}</style><div class="a">a</div><div class="b">b</div></body></html>

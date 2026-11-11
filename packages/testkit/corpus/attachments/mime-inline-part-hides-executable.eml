@@ -1,0 +1,21 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <mime-inline-part-hides-executable@corpus.test>
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="REL"
+
+--REL
+Content-Type: text/html; charset=utf-8
+
+<p>Hello.</p>
+--REL
+Content-Type: application/octet-stream; name="setup.exe"
+Content-ID: <setup@corpus.test>
+Content-Disposition: inline; filename="setup.exe"
+Content-Transfer-Encoding: base64
+
+aGFybWxlc3MgY29ycHVzIGF0dGFjaG1lbnQgdGV4dAo=
+--REL--
+

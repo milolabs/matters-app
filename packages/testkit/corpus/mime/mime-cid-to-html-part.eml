@@ -1,0 +1,20 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <mime-cid-to-html-part@corpus.test>
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="REL"
+
+--REL
+Content-Type: text/html; charset=utf-8
+
+<p>Look: <img src="cid:evil@corpus.test"></p>
+--REL
+Content-Type: text/html; charset=utf-8
+Content-ID: <evil@corpus.test>
+Content-Transfer-Encoding: base64
+
+PHNjcmlwdD5wYXJlbnQuX19wd25lZD0xPC9zY3JpcHQ+
+--REL--
+

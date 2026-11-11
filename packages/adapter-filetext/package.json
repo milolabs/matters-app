@@ -1,0 +1,17 @@
+{
+  "name": "@matters/adapter-filetext",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@matters/core": "workspace:*",
+    "fflate": "0.8.2",
+    "pdfjs-dist": "5.4.394"
+  },
+  "devDependencies": {
+    "@matters/testkit": "workspace:*"
+  }
+}

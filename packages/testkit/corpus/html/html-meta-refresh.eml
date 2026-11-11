@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-meta-refresh@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head><meta http-equiv="refresh" content="0;url=http://canary.test/refreshhead"></head><body><meta http-equiv="refresh" content="0;url=http://canary.test/refresh"><meta http-equiv="refresh" content="0;url=data:text/html,x"><meta http-equiv="set-cookie" content="a=b"></body></html>

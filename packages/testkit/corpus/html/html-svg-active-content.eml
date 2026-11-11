@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-svg-active-content@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head></head><body><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" onload="parent.__pwned=1;new Image().src='http://canary.test/xss'"><script>parent.__pwned=1;new Image().src='http://canary.test/xss'</script><set attributeName="onmouseover" to="parent.__pwned=1;new Image().src='http://canary.test/xss'"/><animate attributeName="href" values="javascript:parent.__pwned=1;new Image().src='http://canary.test/xss'"/><use xlink:href="http://canary.test/sprite.svg#a"/><image href="http://canary.test/svgimage.png"/><foreignObject><iframe src="http://canary.test/fo"></iframe></foreignObject><a xlink:href="javascript:parent.__pwned=1;new Image().src='http://canary.test/xss'"><text>x</text></a></svg></body></html>

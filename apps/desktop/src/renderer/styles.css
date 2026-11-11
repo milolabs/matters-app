@@ -1,0 +1,1575 @@
+@import "tailwindcss";
+
+/*
+ * Tokens of the macOS canvas (Matters — macOS): system ink on white, warm quiet fills,
+ * one "late" accent. Chrome and lists are SF; letters are set in New York.
+ */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --chrome: #fafaf9;
+  --ink: #1d1d1f;
+  --mid: #55555a;
+  --secondary: #6e6e73;
+  --fill: #f3f3f1;
+  --soft: #f7f7f5;
+  --selected: #f0f0ee;
+  --button: #eaeae7;
+  --hairline: #ededeb;
+  --edge: #c9c9c4;
+  --late: #c4401a;
+  --good: #1f6b40;
+  --pill: #e9e9e5;
+  /* Only ever "an agent made this" (ADR 0052, rule 10). `--agent-wash` is the agent column's
+     ground, `--agent-line` its borders: they too mean the agent's (ADR 0069). */
+  --agent: #5b45c9;
+  --agent-soft: #f4f2fd;
+  --agent-edge: #b7aeeb;
+  --agent-wash: #f9f8fe;
+  --agent-line: color-mix(in srgb, var(--agent-edge) 40%, var(--hairline));
+  /* The words a search matched (ADR 0076): an amber wash and the ink on it. Not the agent's violet. */
+  --hit: #fbe7a1;
+  --hit-ink: #3d2c00;
+  --pop: 0 1px 2px rgb(0 0 0 / 0.05), 0 18px 50px rgb(0 0 0 / 0.1);
+  --acct-blue: #3a5ba0;
+  --acct-ochre: #8a6d3b;
+  --acct-green: #2f6f5e;
+  --acct-plum: #8b4a6b;
+  --acct-indigo: #5b5b9a;
+  --acct-rust: #a0522d;
+  --acct-teal: #2f7a8a;
+  --acct-graphite: #6b6b70;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e20;
+    --chrome: #242426;
+    --ink: #f5f5f7;
+    --mid: #c3c3c8;
+    --secondary: #98989f;
+    --fill: #2c2c30;
+    --soft: #252528;
+    --selected: #323236;
+    --button: #3a3a3f;
+    --hairline: #34343a;
+    --edge: #4c4c52;
+    --late: #ff7e57;
+    --good: #6bcb93;
+    --pill: #3c3c42;
+    --agent: #b9aef7;
+    --agent-soft: #29273a;
+    --agent-edge: #5d5799;
+    --agent-wash: #262530;
+    --hit: #6b5112;
+    --hit-ink: #fff0c2;
+    --pop: 0 1px 2px rgb(0 0 0 / 0.4), 0 18px 50px rgb(0 0 0 / 0.45);
+    --acct-blue: #7f9ee0;
+    --acct-ochre: #c9a664;
+    --acct-green: #62b79f;
+    --acct-plum: #c985aa;
+    --acct-indigo: #9a9ae0;
+    --acct-rust: #d98a62;
+    --acct-teal: #63b4c4;
+    --acct-graphite: #a8a8ae;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-chrome: var(--chrome);
+  --color-ink: var(--ink);
+  --color-mid: var(--mid);
+  --color-secondary: var(--secondary);
+  --color-fill: var(--fill);
+  --color-soft: var(--soft);
+  --color-selected: var(--selected);
+  --color-button: var(--button);
+  --color-hairline: var(--hairline);
+  --color-edge: var(--edge);
+  --color-late: var(--late);
+  --color-good: var(--good);
+  --color-pill: var(--pill);
+  --color-agent: var(--agent);
+  --color-agent-soft: var(--agent-soft);
+  --color-agent-edge: var(--agent-edge);
+  --color-agent-wash: var(--agent-wash);
+  --color-agent-line: var(--agent-line);
+  --font-sans: -apple-system, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
+  --font-serif: ui-serif, "New York", "Iowan Old Style", Georgia, serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font:
+    13px / 1.4 -apple-system,
+    "SF Pro Text",
+    system-ui,
+    "Segoe UI",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+.selectable {
+  user-select: text;
+}
+
+/* The toolbar moves the window; what can be clicked in it opts out. */
+.drag {
+  -webkit-app-region: drag;
+}
+.drag :is(button, input, a, [role="button"]) {
+  -webkit-app-region: no-drag;
+}
+
+/* The line between the list and the reader (ADR 0038). The list's border is the line at rest; a
+   9 px grip lies over it, centred. The delay keeps it from flashing when the pointer only passes.
+   Above the composer, below the query bar's panel and every tooltip. */
+.list-divider {
+  position: relative;
+  z-index: 11;
+  flex: none;
+  width: 0;
+}
+.list-divider::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: -1px;
+  width: 2px;
+  pointer-events: none;
+  transition: background-color 120ms 120ms;
+}
+.list-divider:hover::after {
+  background-color: var(--edge);
+}
+.list-divider:has(:focus-visible)::after {
+  background-color: var(--ink);
+  transition: none;
+}
+.list-divider-active::after,
+.list-divider-active:hover::after {
+  background-color: var(--secondary);
+  transition: none;
+}
+.list-divider-grip {
+  position: absolute;
+  inset-block: 0;
+  left: -5px;
+  width: 9px;
+  outline: none;
+  cursor: col-resize;
+  touch-action: none;
+}
+/* At the end of its range the cursor points the only way the line can still go. */
+.list-divider-only-right {
+  cursor: e-resize;
+}
+.list-divider-only-left {
+  cursor: w-resize;
+}
+/* The same grip on the left edge of the agent column (ADR 0069). It lies in the column, which is
+   positioned; under the composer (z 10), since the composer covers the column too. */
+.list-divider.pane-divider {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  z-index: 9;
+}
+
+/* In the base layer, so that a utility like `outline-none` can turn it off. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--ink) 35%, transparent);
+    outline-offset: -2px;
+  }
+}
+
+/* The large ring of the first-run screen: its arc follows the answers. */
+.ring-arc {
+  transition:
+    stroke-dashoffset 700ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke 500ms ease;
+}
+.ring-busy .ring-arc {
+  animation: ring-breathe 1400ms ease-in-out infinite;
+}
+@keyframes ring-breathe {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* An opened letter settles in; nothing moves for those who asked for less motion. */
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+.settle {
+  animation: settle 160ms ease-out;
+}
+
+/* Being read (ADR 0039): the unread dot drains in a faint ring of its own size, at the pace of the
+   countdown and without easing, so the time it shows is true. At zero the mail is read and the
+   ring goes too; leaving early puts the whole dot back. Only `transform` moves: no layout. */
+.dot-reading {
+  position: relative;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 28%, transparent);
+}
+.dot-reading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--ink);
+  animation: dot-drain var(--dwell) linear forwards;
+}
+@keyframes dot-drain {
+  to {
+    transform: scale(0);
+  }
+}
+/* Fading is not motion, and the countdown should still show. */
+@keyframes dot-fade {
+  to {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ring-arc,
+  .list-divider::after {
+    transition: none;
+  }
+  .settle,
+  .ring-busy .ring-arc {
+    animation: none;
+  }
+  .dot-reading::after,
+  .sdot-drain::after {
+    animation-name: dot-fade;
+  }
+  /* The ring's steps (the line gives the number) stand in for breathing. */
+  .sdot-breathe,
+  .sdot-full {
+    animation: none;
+  }
+}
+
+/* Files over the window (ADR 0041, rule 21). One class on the body is the whole change: the
+   overlays are always in the page and only shown by it, so dragging causes no layout. A frame would
+   swallow the drag events, so under the class none takes the pointer. */
+.dragging-files iframe {
+  pointer-events: none;
+}
+.drop-hint,
+.drop-overlay {
+  display: none;
+}
+.dragging-files .drop-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg) 84%, transparent);
+}
+.drop-frame {
+  position: absolute;
+  inset: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1.5px solid var(--ink);
+  border-radius: 10px;
+}
+.dragging-files .drop-overlay {
+  display: flex;
+  background: color-mix(in srgb, var(--bg) 84%, transparent);
+}
+.drop-target {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+}
+.drop-target::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px var(--edge);
+  pointer-events: none;
+}
+.drop-target[data-hover]::after {
+  box-shadow: inset 0 0 0 1.5px var(--ink);
+}
+
+/* A file in the composer (ADR 0041, rule 20): its extension, and a ring around it while it is
+   read. Progress sets --p on the badge directly; no signal carries it. */
+.chip-badge {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--button);
+  color: var(--mid);
+  font:
+    700 10px / 1 -apple-system,
+    "SF Pro Text",
+    system-ui,
+    sans-serif;
+  letter-spacing: 0.02em;
+}
+.chip-reading::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  padding: 1.5px;
+  border-radius: 7px;
+  background: conic-gradient(
+    var(--ink) calc(var(--p, 0) * 1turn),
+    color-mix(in srgb, var(--ink) 16%, transparent) 0
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+
+/* The dot of a send of 1 MiB or more (ADR 0041, rule 22). Messages under it keep the 6 px dot.
+   The ring fills with --p, which progress sets on the dot itself. */
+.sdot {
+  position: relative;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.sdot-drain {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 28%, transparent);
+}
+.sdot-drain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--ink);
+  animation: dot-drain var(--dwell, 10s) linear forwards;
+}
+.sdot-ring,
+.sdot-breathe,
+.sdot-full {
+  background: conic-gradient(
+    var(--ink) calc(var(--p, 0) * 1turn),
+    color-mix(in srgb, var(--ink) 22%, transparent) 0
+  );
+  -webkit-mask: radial-gradient(circle, transparent 2.6px, #000 3px);
+  mask: radial-gradient(circle, transparent 2.6px, #000 3px);
+}
+.sdot-breathe {
+  --p: 0;
+  animation: ring-breathe 1400ms ease-in-out infinite;
+}
+.sdot-full {
+  --p: 1;
+  animation: ring-breathe 1400ms ease-in-out infinite;
+}
+.sdot-good {
+  background: var(--good);
+}
+.sdot-late {
+  background: var(--late);
+}
+.sdot-hollow {
+  box-shadow: inset 0 0 0 1.5px var(--late);
+}
+.sdot-half {
+  background: linear-gradient(90deg, var(--late) 50%, transparent 50%);
+  box-shadow: inset 0 0 0 1.5px var(--late);
+}
+
+/* The query bar (ADR 0026, 0029): a mirror paints the tokens behind a transparent, native field.
+   The mirror is what gives the field its height, so a long query wraps and the field follows.
+   The two share every font and wrapping metric, and token styles change colour, fill and
+   underline only. */
+.qtext {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 3px 0;
+  border: 0;
+  font:
+    13px / 24px -apple-system,
+    "SF Pro Text",
+    system-ui,
+    "Segoe UI",
+    sans-serif;
+  letter-spacing: 0;
+  font-variant-ligatures: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.qmirror {
+  min-height: 30px;
+  pointer-events: none;
+  color: var(--ink);
+}
+.qinput {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  resize: none;
+  overflow: hidden;
+  appearance: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--ink);
+  outline: none;
+}
+.qinput::placeholder {
+  color: var(--secondary);
+}
+.qinput::selection {
+  background: color-mix(in srgb, var(--ink) 22%, transparent);
+}
+.qp {
+  background: var(--pill);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1.5px var(--pill);
+}
+.qp .qk {
+  color: var(--secondary);
+}
+.qp.qdraft {
+  background: none;
+  box-shadow: none;
+}
+.qp.qbad .qk,
+.qp.qbad .qv {
+  text-decoration: underline wavy var(--late) 1px;
+  text-underline-offset: 3px;
+}
+.qop {
+  color: var(--secondary);
+}
+.qop.qkw {
+  color: var(--good);
+}
+.qph {
+  color: var(--mid);
+}
+
+/* A strip across the whole window: text, then handlers. The slot keeps its
+   height, so that a long query grows over what is below and moves nothing (ADR 0029). */
+.qslot {
+  position: relative;
+  flex: none;
+  height: 40px;
+}
+.qstrip {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  box-sizing: border-box;
+  min-height: 40px;
+  padding: 5px 14px 4px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--chrome);
+  color: var(--secondary);
+}
+.qstrip:focus-within {
+  background: var(--bg);
+}
+.qline {
+  flex: 1 1 260px;
+  min-width: 200px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.qline > svg {
+  flex: none;
+  margin-top: 8px;
+}
+/* A search that answers at once shows nothing: the words come only once it is worth saying. */
+.qsearching {
+  flex: none;
+  margin-top: 7px;
+  font-size: 12px;
+  line-height: 18px;
+  animation: search-wait 120ms ease-out 150ms backwards;
+}
+@keyframes search-wait {
+  from {
+    opacity: 0;
+  }
+}
+/* The rows on screen answer the text before. */
+.list-waiting {
+  opacity: 0.5;
+  transition: opacity 120ms ease-out 150ms;
+}
+.qfield {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.qkey {
+  flex: none;
+  min-width: 30px;
+  padding: 0 4px;
+  margin-top: 6px;
+  border-radius: 4px;
+  background: var(--fill);
+  font: 11px / 18px var(--font-sans);
+  text-align: center;
+}
+
+/* The fields of the language, written as they are typed. A click writes one into the text. */
+@property --qfade {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes qfade {
+  from {
+    --qfade: 28px;
+  }
+  to {
+    --qfade: 0px;
+  }
+}
+.qfields {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: 30px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  /* A fade only while there is more to scroll to: with no overflow the timeline is inactive. */
+  mask-image: linear-gradient(to left, transparent, #000 var(--qfade));
+  animation: qfade linear both;
+  animation-timeline: scroll(self inline);
+}
+.qfields::-webkit-scrollbar {
+  display: none;
+}
+
+/* A query too long for the line takes the whole strip. At rest it shows what fits in one line;
+   focused, it shows all of it, with the handlers on a line of their own under it. */
+.qlong {
+  flex-wrap: wrap;
+  row-gap: 0;
+}
+.qlong .qline {
+  flex: 1 1 0;
+}
+.qlong .qfields {
+  order: 1;
+  flex: 1 0 100%;
+  height: 24px;
+}
+.qlong:not(:focus-within) .qfields {
+  display: none;
+}
+.qlong:not(:focus-within) .qfield {
+  max-height: 30px;
+  overflow: hidden;
+}
+.qlong:focus-within {
+  box-shadow: var(--pop);
+}
+.qf {
+  flex: none;
+  height: 20px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--secondary);
+  font:
+    11.5px / 20px ui-monospace,
+    "SF Mono",
+    Menlo,
+    monospace;
+  cursor: default;
+}
+.qf i {
+  font-style: normal;
+  opacity: 0.6;
+}
+.qf:hover,
+.qf[data-on] {
+  background: var(--pill);
+  color: var(--ink);
+}
+
+/* The suggestion panel hangs under the field and covers what is below; it moves nothing. */
+.qsugg {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 14px;
+  z-index: 30;
+  width: min(560px, calc(100% - 28px));
+  max-height: min(600px, calc(100vh - 160px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  box-shadow: var(--pop);
+}
+.qlist {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+.qscroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.qh.qhl {
+  margin-left: 12px;
+  margin-right: 12px;
+}
+.qpinned {
+  flex: none;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--hairline);
+}
+.qh {
+  margin: 6px 8px 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--secondary);
+}
+.qopt {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  cursor: default;
+}
+.qopt:hover,
+.qopt[aria-selected="true"] {
+  background: var(--selected);
+}
+.qopt b {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qopt b.qclear {
+  font-weight: 400;
+  color: var(--secondary);
+}
+.qforget {
+  flex: none;
+  margin-left: auto;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-style: normal;
+  color: var(--secondary);
+  opacity: 0;
+}
+.qopt:hover .qforget,
+.qopt[aria-selected="true"] .qforget {
+  opacity: 1;
+}
+.qforget:hover {
+  background: var(--pill);
+  color: var(--ink);
+}
+.qopt span {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--secondary);
+  overflow-wrap: anywhere;
+}
+.qopt em {
+  margin-left: auto;
+  font-size: 11.5px;
+  font-style: normal;
+  color: var(--secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Live results (ADR 0076). Sizes 11/12/13, spacing 4/8/12/16, radius 8; colours are the theme's. */
+mark.hit {
+  padding: 0 1px;
+  border-radius: 4px;
+  background: var(--hit);
+  color: var(--hit-ink);
+  font: inherit;
+}
+.qpills {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 0 8px;
+}
+.qpill {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: none;
+  color: var(--secondary);
+  font: 12px / 22px var(--font-sans);
+  cursor: default;
+}
+.qpill:hover {
+  background: var(--selected);
+  color: var(--ink);
+}
+.qpill[aria-pressed="true"] {
+  border-color: var(--edge);
+  background: var(--pill);
+  color: var(--ink);
+}
+.qpill:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+.qopt.qlive {
+  display: block;
+  padding: 8px 12px;
+}
+/* One row height for every live row: two lines (13/18 and 12/16, 2 apart). The lead column of
+   people and files is the 28 px one of ADR 0073. */
+.qgrid {
+  display: grid;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 2px;
+  min-width: 0;
+}
+.qthread {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.qperson {
+  grid-template-columns: 28px minmax(0, 1fr);
+}
+.qperson .qav {
+  grid-row: 1 / span 2;
+  width: 28px;
+  height: 28px;
+  font-size: 11px;
+}
+.qfile {
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+}
+.qfile .qficon {
+  grid-row: 1 / span 2;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: var(--secondary);
+}
+.qopt.qlive .qfile .qnote {
+  grid-column: 2 / -1;
+}
+.qopt.qlive .qrow1 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 18px;
+}
+.qopt.qlive .qwho,
+.qopt.qlive .qsubj,
+.qopt.qlive .qsnip {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qopt.qlive .qwho {
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+}
+.qopt.qlive .qrow1 .qwho {
+  flex: 0 1 auto;
+  max-width: 40%;
+}
+.qopt.qlive .qrow1 .qsubj {
+  flex: 1 1 0;
+}
+.qopt.qlive .qfname {
+  font-weight: 500;
+}
+.qopt.qlive .qsnip {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--secondary);
+}
+.qopt.qlive .qperson .qsnip,
+.qopt.qlive .qfile .qsnip {
+  grid-column: 2;
+}
+.qopt.qlive .qside {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.qopt.qlive .qwhen {
+  font-size: 12px;
+  color: var(--secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.qdot {
+  display: block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.qclip {
+  display: flex;
+  color: var(--secondary);
+}
+.qask {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+.qasktext {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qkbd {
+  flex: none;
+  margin-left: auto;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--fill);
+  color: var(--secondary);
+  font: 11px / 18px var(--font-sans);
+}
+.qnone {
+  margin: 4px 8px;
+  font-size: 12px;
+  color: var(--secondary);
+}
+.qfoot {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px;
+  padding: 6px 8px 2px;
+  border-top: 1px solid var(--hairline);
+  font-size: 11px;
+  color: var(--secondary);
+}
+
+/* Saved views (ADR 0027, 0029): tabs in the toolbar, a status row under the query bar. */
+.views {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.views::-webkit-scrollbar {
+  display: none;
+}
+.vt {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  height: 26px;
+  line-height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--mid);
+  cursor: default;
+  white-space: nowrap;
+}
+.vt:hover {
+  background: var(--fill);
+}
+.vt[aria-selected="true"] {
+  background: var(--selected);
+  color: var(--ink);
+  font-weight: 500;
+}
+.vt small {
+  font-size: 11.5px;
+  color: var(--secondary);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.vstatus {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--chrome);
+  font-size: 12px;
+  color: var(--secondary);
+}
+.vstatus .msg {
+  flex: 1 1 120px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.vstatus .err {
+  color: var(--late);
+}
+.act {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 12px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--mid);
+  cursor: default;
+  white-space: nowrap;
+}
+.act:hover {
+  background: var(--fill);
+}
+.act.main {
+  background: var(--button);
+  color: var(--ink);
+  font-weight: 500;
+}
+.vstatus input {
+  flex: 1 1 120px;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  font: 12px var(--font-sans);
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+  outline: none;
+  user-select: text;
+}
+.vmenu {
+  position: fixed;
+  z-index: 40;
+  min-width: 180px;
+  max-width: 280px;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  box-shadow: var(--pop);
+}
+.vmenu button {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  white-space: pre;
+}
+.vmenu button:hover:not(:disabled),
+.vmenu button:focus-visible {
+  background: var(--selected);
+  outline: none;
+}
+.vmenu button:disabled {
+  color: var(--secondary);
+  opacity: 0.55;
+}
+/* An item whose words must be read whole, such as an address: it grows instead of cutting them. */
+.vmenu button.whole {
+  height: auto;
+  min-height: 24px;
+  padding-block: 4px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.vmenu button.danger {
+  color: var(--late);
+}
+.vmenu .trunc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dirty-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--secondary);
+  align-self: center;
+}
+
+/* The account's colour, a native colour input in place of a dot (ADR 0035). */
+.account-color {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  appearance: none;
+  cursor: default;
+}
+.account-color::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+.account-color::-webkit-color-swatch {
+  border: 0;
+  border-radius: 50%;
+}
+.account-color:hover {
+  box-shadow: 0 0 0 2px var(--edge);
+}
+.account-color:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* The sender's avatar in a thread (ADR 0073): the letters are an attribute, so they are not text. */
+.avatar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--hairline);
+  border-radius: 50%;
+  background: var(--fill);
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+.avatar::before {
+  content: attr(data-initials);
+}
+/* Sizes of the same avatar (ADR 0078): the list's 32 px and the reader header's 48 px. */
+.avatar-32 {
+  width: 32px;
+  height: 32px;
+  font-size: 12px;
+}
+.avatar-48 {
+  width: 48px;
+  height: 48px;
+  font-size: 16px;
+}
+/* A person's own hue (ADR 0078): a 24 % wash of the hue on the page, and the hue pulled 30 % toward
+   the ink as the letters. Both are opaque, so a selected row does not show through. Contrast of the
+   letters is at least 4.5:1 in both themes (tests/personMark.test.ts reads these numbers). */
+.avatar[data-tint] {
+  background: color-mix(in srgb, var(--tint) 24%, var(--bg));
+  color: color-mix(in srgb, var(--tint) 70%, var(--ink));
+  border-color: transparent;
+}
+.avatar[data-tint="0"] {
+  --tint: var(--acct-blue);
+}
+.avatar[data-tint="1"] {
+  --tint: var(--acct-ochre);
+}
+.avatar[data-tint="2"] {
+  --tint: var(--acct-green);
+}
+.avatar[data-tint="3"] {
+  --tint: var(--acct-plum);
+}
+.avatar[data-tint="4"] {
+  --tint: var(--acct-indigo);
+}
+.avatar[data-tint="5"] {
+  --tint: var(--acct-rust);
+}
+.avatar[data-tint="6"] {
+  --tint: var(--acct-teal);
+}
+.avatar[data-tint="7"] {
+  --tint: var(--acct-graphite);
+}
+
+/* A promise or ask under the message it came from (ADR 0075). The lead column holds a 6 px marker
+   centred in the 28 px, and a 1 px hairline from the marker up to what is above: the avatar of the
+   collapsed row, the line before it, or the rail through the open letter's body. `--reach` is how
+   far up that is. Colours are the theme's own, so both themes follow. */
+.promise-lead {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+}
+.promise-lead::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: calc(9px - var(--reach, 19px));
+  width: 1px;
+  height: var(--reach, 19px);
+  background: var(--hairline);
+  transform: translateX(-50%);
+}
+.promise-dot {
+  position: relative;
+  box-sizing: border-box;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink);
+}
+.promise-dot[data-status="late"] {
+  background: var(--late);
+}
+.promise-dot[data-status="undated"] {
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+.promise-rail {
+  position: absolute;
+  left: 30px;
+  top: -14px;
+  bottom: 0;
+  width: 1px;
+  background: var(--hairline);
+  transform: translateX(-50%);
+}
+
+/* A received file (ADR 0043, rule 15): the composer's chip. The save button is always laid out
+   and only shown on hover or focus, so showing it moves nothing. A late tag is the failed state. */
+.rchip .rsave {
+  opacity: 0;
+}
+.rchip:hover .rsave,
+.rchip:focus-within .rsave {
+  opacity: 1;
+}
+.rchip[data-state="gone"] {
+  opacity: 0.6;
+}
+.chip-badge[data-late] {
+  color: var(--late);
+}
+
+/* The menu of a list row (ADR 0056, rule 4): a line between its groups, and the count of a group. */
+.vmenu hr {
+  height: 1px;
+  margin: 4px 8px;
+  border: 0;
+  background: var(--hairline);
+}
+.vmenu .vhead {
+  padding: 3px 8px 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--secondary);
+}
+
+/* Several letters laid on top of each other (ADR 0056, rule 3). Each sheet covers the lower part of
+   the one before, so who and what stay readable; the pointer lifts the rest away from the third
+   line. Only `transform` moves: no layout. The edge is the letter's own solid hairline. */
+.tstack {
+  --sheet: 82px;
+  --strip: 54px;
+  --lift: 24px;
+  position: relative;
+  margin: 0;
+  padding: 0 0 var(--lift);
+  list-style: none;
+}
+.tsheet {
+  position: relative;
+  height: var(--sheet);
+  margin-top: calc(var(--strip) - var(--sheet));
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--bg);
+  box-shadow: 0 -10px 22px -16px rgb(0 0 0 / 0.16);
+  transition: transform 140ms ease-out;
+}
+.tsheet:first-child {
+  margin-top: 0;
+}
+.tsheet:hover ~ .tsheet,
+.tsheet:focus-within ~ .tsheet {
+  transform: translateY(var(--lift));
+}
+.tsheet-open {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  gap: 1px;
+  padding: 9px 16px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.tsheet-open:focus-visible {
+  outline: none;
+}
+.tsheet:has(.tsheet-open:focus-visible) {
+  border-color: var(--edge);
+}
+.tsheet-remove {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--button);
+  color: var(--mid);
+  font: inherit;
+  line-height: 1;
+  cursor: default;
+  opacity: 0;
+}
+.tsheet:hover .tsheet-remove,
+.tsheet-remove:focus-visible {
+  opacity: 1;
+}
+/* A covered sheet shows two whole lines, never the top of a third. */
+.tsheet:not(:last-child):not(:hover):not(:focus-within) .tsheet-note {
+  visibility: hidden;
+}
+/* The date gives way to the cross, in the same place. */
+.tsheet:hover .tsheet-when {
+  visibility: hidden;
+}
+/* More than are drawn: the edges of the rest, under the last sheet. */
+.tstack-more::before,
+.tstack-more::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  height: 12px;
+  border: 1px solid var(--hairline);
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  background: var(--soft);
+}
+.tstack-more::before {
+  right: 10px;
+  bottom: calc(var(--lift) - 6px);
+  left: 10px;
+}
+.tstack-more::after {
+  right: 20px;
+  bottom: calc(var(--lift) - 12px);
+  left: 20px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tsheet {
+    transition: none;
+  }
+}
+
+/* Rows of one matter held together in the gutter (ADR 0059, rule 5): they stay ordinary rows. */
+.matter-rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: var(--edge);
+}
+.matter-rail[data-at="first"] {
+  top: 12px;
+  border-radius: 2px 2px 0 0;
+}
+.matter-rail[data-at="last"] {
+  bottom: 12px;
+  border-radius: 0 0 2px 2px;
+}
+
+/* One matter as an order of work (ADR 0059, rule 5). A filled dot can start now, a hollow one waits;
+   the dashed lines are the agent's. `--mm-x` is where a level's dot stands. */
+.matter-tree {
+  --mm-step: 18px;
+  --mm-start: 13px;
+  --mm-mid: 16px;
+  margin: 0 -8px;
+  padding: 0;
+  list-style: none;
+}
+.mm-row {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  padding: 5px 8px 5px calc(var(--mm-start) + var(--depth) * var(--mm-step) + 14px);
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: default;
+  transition: opacity 120ms ease-out;
+}
+.mm-row:hover {
+  background: var(--fill);
+}
+.mm-row[aria-current="true"] {
+  background: var(--selected);
+}
+.mm-row:focus-visible {
+  outline: 1px solid var(--edge);
+  outline-offset: -1px;
+}
+.mm-row[data-dim] {
+  opacity: 0.38;
+}
+.mm-dot {
+  position: absolute;
+  top: calc(var(--mm-mid) - 4px);
+  left: calc(var(--mm-start) + var(--depth) * var(--mm-step) - 4px);
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--edge);
+  border-radius: 50%;
+  background: var(--bg);
+}
+.mm-row[data-ready] .mm-dot {
+  border-color: var(--ink);
+  background: var(--ink);
+}
+.mm-row .mm-dot[data-late] {
+  border-color: var(--late);
+}
+.mm-row[data-ready] .mm-dot[data-late] {
+  background: var(--late);
+}
+/* Dashes as a gradient, not a border: they stay even where rows of any height meet. */
+.mm-guide,
+.mm-elbow,
+.mm-stem {
+  position: absolute;
+  width: 1px;
+  background: repeating-linear-gradient(to bottom, var(--agent) 0 3px, transparent 3px 6px);
+  opacity: 0.7;
+  pointer-events: none;
+}
+.mm-guide {
+  display: none;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--mm-start) + var(--level) * var(--mm-step));
+}
+.mm-guide[data-on] {
+  display: block;
+}
+.mm-stem {
+  top: calc(var(--mm-mid) + 6px);
+  bottom: 0;
+  left: calc(var(--mm-start) + var(--depth) * var(--mm-step));
+}
+/* From the level above, down to this row's middle and across to its dot. */
+.mm-elbow {
+  top: 0;
+  left: calc(var(--mm-start) + (var(--depth) - 1) * var(--mm-step));
+  height: calc(var(--mm-mid) + 0.5px);
+}
+/* A short run cannot hold a dash and a gap, so the turn itself is a thin solid curve. */
+.mm-elbow::after {
+  content: "";
+  position: absolute;
+  top: calc(100% - 6px);
+  left: 0;
+  width: calc(var(--mm-step) - 7px);
+  height: 6px;
+  border-bottom: 1px solid var(--agent);
+  border-left: 1px solid var(--agent);
+  border-bottom-left-radius: 6px;
+}
+/* The reason is in the mail's own words, so in the letter's face, in the colour of who found it. */
+.mm-reason {
+  overflow: hidden;
+  font-family: var(--font-serif);
+  font-size: 12.5px;
+  font-style: italic;
+  line-height: 1.35;
+  color: var(--agent);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mm-also {
+  font-family: inherit;
+  font-style: normal;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mm-row {
+    transition: none;
+  }
+}
+
+/* Notices inside the window (ADR 0071, rule 7): they settle in from just above, and the hairline at
+   their foot runs out with their time. The line's play state follows the window's focus. */
+.notice-in {
+  animation: notice-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+.notice-time {
+  animation-name: notice-time;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+@keyframes notice-time {
+  to {
+    transform: scaleX(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notice-in {
+    animation: none;
+  }
+  .notice-time {
+    display: none;
+  }
+}
+
+/* ADR 0077. The match the reader stopped at: the mark gets a ring in the ink of the marks. */
+mark.hit[data-now] {
+  outline: 2px solid var(--hit-ink);
+  outline-offset: 1px;
+  scroll-margin: 96px 0;
+}
+.match-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 8px;
+}
+.match-count {
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.match-step {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--mid);
+  font: 13px / 1 var(--font-sans);
+  cursor: default;
+}
+.match-step:hover {
+  background: var(--button);
+  color: var(--ink);
+}
+.match-step:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+
+/* Free pages in the database (ADR 0089): stripes, so they never read as one more kind of data. */
+.storage-free {
+  background: repeating-linear-gradient(135deg, var(--edge) 0 3px, transparent 3px 6px);
+}
+
+/* A note of the agent under a letter (ADR 0099): the one violet object in a thread. */
+.ask-note {
+  border-left: 2px solid var(--agent);
+  background: var(--agent-soft);
+  border-radius: 0 8px 8px 0;
+  padding: 10px 12px 10px 14px;
+}
+.ask-primary {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 7px;
+  background: var(--agent);
+  color: var(--bg);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: default;
+}
+.ask-primary:focus-visible {
+  outline: 1px solid var(--agent-edge);
+  outline-offset: 2px;
+}
