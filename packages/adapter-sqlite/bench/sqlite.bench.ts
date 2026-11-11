@@ -620,6 +620,40 @@ async function main() {
       search(`${m(i)} OR is:starred`),
     );
 
+    // ADR 0116, rule 4b: the same shapes walked oldest first. Windows grow from the oldest
+    // message, as they grow back from the newest; `sort:oldest` alone lists all mail.
+    if (process.env.BENCH_OLDEST !== "0") {
+      const oldest = { limit: 50, order: "oldest" as const };
+      const searchUp = async (text: string) => (await ix.search(q(text), oldest)).length;
+      const chunkUp = async (text: string) => (await ix.searchChunk(q(text), oldest)).keys.length;
+      await measure("oldest: full word", () => searchUp(full));
+      await measure("oldest: full word is:starred (search, 50)", () =>
+        searchUp(`${full} is:starred`),
+      );
+      await measure("oldest: full word label:rare (search, 50)", () =>
+        searchUp(`${full} label:rare`),
+      );
+      await measure("oldest: full word OR is:starred (first chunk)", () =>
+        chunkUp(`${full} OR is:starred`),
+      );
+      await measure("oldest: full word OR is:starred (search, 50)", () =>
+        searchUp(`${full} OR is:starred`),
+      );
+      await measure("oldest: frequent label:rare", (i) => searchUp(`${f(i)} label:rare`));
+      await measure("oldest: is:unread", () => searchUp("is:unread"));
+      await measure("oldest: frequent -mid", (i) => searchUp(`${f(i)} -${m(i)}`));
+      await measure("oldest: -frequent (search, 50)", (i) => searchUp(`-${f(i)}`));
+      await measure("oldest: all mail (search, 50)", () => searchUp("is:read OR is:unread"));
+      await measure("oldest: end to end searchMessages sort:oldest (50)", async (i) => {
+        const r = await searchMessages(
+          { index: ix, store: s, accounts: reopened.read.accounts },
+          `${fold(mid[i % mid.length] as string)} sort:oldest`,
+          { limit: 50 },
+        );
+        return r.messages.length;
+      });
+    }
+
     const threadCount = Math.floor(MESSAGES / THREAD_SIZE);
     // A stride coprime with the thread count walks the whole mailbox, not just recent threads.
     await measure("open thread of 10 (getThread + getBodies)", async (i) => {

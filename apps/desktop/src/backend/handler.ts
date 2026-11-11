@@ -41,6 +41,7 @@ import type {
   SearchIndexPort,
   SendOperation,
   SetSeenResult,
+  SortRanked,
   StoppableSource,
   TransportSecurity,
   UndoMoveResult,
@@ -196,6 +197,8 @@ export interface CountApi {
     cap: number,
     beforeKey?: number,
   ): Promise<{ count: number; nextBeforeKey?: number }>;
+  /** The ranked order of a query without a prompt (ADR 0116, rule 4b), in the sync worker. */
+  rank?(query: string): Promise<SortRanked>;
 }
 
 export interface BackendDeps {
@@ -703,9 +706,30 @@ function parseAgentRequest(
         ? { type, requestId, threadId: raw.threadId, body: raw.body }
         : "threadId and a body are required";
     case "agentMatchAct":
+    case "agentPromptCount":
+    case "agentPromptVerdicts":
       return typeof raw.query === "string" && raw.query.length <= MAX_VIEW_TEXT
         ? { type, requestId, query: raw.query }
         : "query must be a short string";
+    case "agentPromptRun":
+      if (typeof raw.query !== "string" || raw.query.length > MAX_VIEW_TEXT) {
+        return "query must be a short string";
+      }
+      if (raw.again !== undefined && typeof raw.again !== "boolean") {
+        return "again must be a boolean";
+      }
+      if (raw.readAll !== undefined && typeof raw.readAll !== "boolean") {
+        return "readAll must be a boolean";
+      }
+      return {
+        type,
+        requestId,
+        query: raw.query,
+        ...(raw.again === true ? { again: true } : {}),
+        ...(raw.readAll === true ? { readAll: true } : {}),
+      };
+    case "agentPromptStop":
+      return { type, requestId };
     default:
       return "unknown request type";
   }
@@ -736,6 +760,8 @@ function parseRequest(raw: unknown): BackendRequest | string {
   if (typeof requestId !== "string") return "requestId must be a string";
   const beforeKey = optionalNumber(raw.beforeKey);
   if (beforeKey === "bad") return "beforeKey must be a number";
+  const afterKey = optionalNumber(raw.afterKey);
+  if (afterKey === "bad") return "afterKey must be a number";
   const limit = raw.limit;
   const hasLimit = typeof limit === "number" && Number.isInteger(limit);
   const pageLimit = hasLimit ? Math.min(Math.max(limit, 1), MAX_LIMIT) : 0;
@@ -772,6 +798,7 @@ function parseRequest(raw: unknown): BackendRequest | string {
         query: raw.query,
         limit: pageLimit,
         ...(beforeKey === undefined ? {} : { beforeKey }),
+        ...(afterKey === undefined ? {} : { afterKey }),
       };
     case "getMessages": {
       const keys = raw.keys;
@@ -1045,6 +1072,10 @@ function parseRequest(raw: unknown): BackendRequest | string {
         Number.isInteger(raw.toIndex)
         ? { type, requestId, id: raw.id, toIndex: raw.toIndex }
         : "id and an integer toIndex are required";
+    case "sortRanked":
+      return typeof raw.query === "string" && raw.query.length <= MAX_VIEW_TEXT
+        ? { type, requestId, query: raw.query }
+        : "query must be a short string";
     case "countMatches":
       if (!Number.isInteger(raw.cap) || typeof raw.query !== "string") {
         return "query and an integer cap are required";
@@ -1979,9 +2010,47 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
         const matched = await needAgent(deps).matchAct(request.query);
         return { type: "agentMatchAct", requestId, ok: true, ...matched };
       }
+      // ADR 0116: a prompt is a filter.
+      case "agentPromptCount":
+        return {
+          type: "agentPromptCount",
+          requestId,
+          ok: true,
+          count: await needAgent(deps).promptCount(request.query),
+        };
+      case "agentPromptVerdicts":
+        return {
+          type: "agentPromptVerdicts",
+          requestId,
+          ok: true,
+          list: await needAgent(deps).promptVerdicts(request.query),
+        };
+      case "agentPromptRun":
+        return {
+          type: "agentPromptRun",
+          requestId,
+          ok: true,
+          result: await needAgent(deps).promptRun(
+            request.query,
+            request.again === true,
+            request.readAll === true,
+          ),
+        };
+      case "agentPromptStop":
+        await needAgent(deps).promptStop();
+        return { type: "agentPromptStop", requestId, ok: true };
       case "countMatches": {
         const result = await deps.counts.count(request.query, request.cap, request.beforeKey);
         return { type: "countMatches", requestId, ok: true, ...result };
+      }
+      case "sortRanked": {
+        if (deps.counts.rank === undefined) throw new Error("Sorting is not available");
+        return {
+          type: "sortRanked",
+          requestId,
+          ok: true,
+          ranked: await deps.counts.rank(request.query),
+        };
       }
       case "search": {
         const result = await searchMessages(
@@ -1995,6 +2064,7 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           {
             limit: request.limit,
             ...(request.beforeKey === undefined ? {} : { beforeKey: request.beforeKey }),
+            ...(request.afterKey === undefined ? {} : { afterKey: request.afterKey }),
           },
         );
         return {
@@ -2003,6 +2073,7 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           ok: true,
           messages: result.messages,
           ...(result.nextBeforeKey === undefined ? {} : { nextBeforeKey: result.nextBeforeKey }),
+          ...(result.nextAfterKey === undefined ? {} : { nextAfterKey: result.nextAfterKey }),
         };
       }
     }

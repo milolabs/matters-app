@@ -35,17 +35,97 @@ export interface QueryToken {
 }
 
 export interface QueryDiagnostic {
-  readonly code: "unknown-value" | "invalid-date" | "stray-close" | "too-deep" | "too-many-terms";
+  readonly code:
+    | "unknown-value"
+    | "invalid-date"
+    | "stray-close"
+    | "too-deep"
+    | "too-many-terms"
+    /** ADR 0116, rule 1: a prompt that is dropped, and why. */
+    | "prompt-twice"
+    | "prompt-negated"
+    | "prompt-or"
+    | "prompt-group"
+    /** ADR 0116, rule 11: AI is off, so the prompt constrains nothing. */
+    | "prompt-off"
+    /** ADR 0116, rule 4a: a `limit:` that is dropped, and why. */
+    | "invalid-limit"
+    | "limit-twice"
+    | "limit-negated"
+    | "limit-or"
+    | "limit-group"
+    /** ADR 0116, rule 4b: a `sort:` that is dropped, and why; the list stays by date. */
+    | "sort-twice"
+    | "sort-negated"
+    | "sort-or"
+    | "sort-group"
+    /** `sort:fit` without a prompt: there is no fit to sort by. */
+    | "sort-fit"
+    /** `sort:relevance` with no words to rank by. */
+    | "sort-no-words";
   readonly start: number;
   readonly end: number;
   readonly message: string;
 }
 
+/**
+ * ADR 0116, rule 1: the person's question, taken out of the tree. The mail filters never see it;
+ * it only narrows and orders what they found, and only when the person runs it.
+ */
+export interface QueryPrompt {
+  /** The words as typed, without the quotes, trimmed. Never empty. */
+  readonly text: string;
+  /** Span of the whole `prompt:` term in the (possibly truncated) input, `end` exclusive. */
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * ADR 0116, rule 4a: the person's own cap, taken out of the tree like a prompt. With a prompt it
+ * is the most threads the prompt reads, best first; without one, the most messages the list
+ * shows, newest first.
+ */
+export interface QueryLimit {
+  /** A whole number from 1 to `MAX_QUERY_LIMIT`. */
+  readonly n: number;
+  /** Span of the whole `limit:` term in the (possibly truncated) input, `end` exclusive. */
+  readonly start: number;
+  readonly end: number;
+}
+
+/** ADR 0116, rule 4b: the orders `sort:` names. */
+export type QuerySortValue = "newest" | "oldest" | "relevance" | "fit";
+
+/** ADR 0116, rule 4b: the order of the results, taken out of the tree like a limit. */
+export interface QuerySort {
+  readonly value: QuerySortValue;
+  /** Span of the whole `sort:` term in the (possibly truncated) input, `end` exclusive. */
+  readonly start: number;
+  readonly end: number;
+}
+
+/** The largest `limit:` taken; a larger value is taken as this. */
+export const MAX_QUERY_LIMIT = 100_000;
+
 export interface ParsedQuery {
-  /** `null`: the query constrains nothing and behaves like no query at all. */
+  /** `null`: the mail filters constrain nothing; a prompt may still be there. */
   readonly root: QueryNode | null;
   readonly tokens: readonly QueryToken[];
   readonly diagnostics: readonly QueryDiagnostic[];
+  /** At most one per query (ADR 0116, rule 1). Absent: no prompt, or one that is dropped. */
+  readonly prompt?: QueryPrompt;
+  /** At most one per query (ADR 0116, rule 4a). Absent: no limit, or one that is dropped. */
+  readonly limit?: QueryLimit;
+  /**
+   * At most one per query (ADR 0116, rule 4b). Absent: the default, `newest` without a prompt and
+   * `fit` with one, also when the one written is dropped.
+   */
+  readonly sort?: QuerySort;
+}
+
+/** The order a query's results are in (ADR 0116, rule 4b): the default when none is written. */
+export function sortOf(parsed: Pick<ParsedQuery, "sort" | "prompt">): QuerySortValue {
+  return parsed.sort?.value ?? (parsed.prompt === undefined ? "newest" : "fit");
 }
 
 export interface QueryContext {
@@ -53,6 +133,11 @@ export interface QueryContext {
   readonly nowMs?: number;
   /** For `account:` and `me`. */
   readonly accounts?: readonly { id: string; address: string; displayName: string }[];
+  /**
+   * AI is off or no account has consent (ADR 0116, rule 11): a prompt is reported and dropped.
+   * Absent: the parser does not know, and keeps it.
+   */
+  readonly promptOff?: boolean;
 }
 
 const MAX_INPUT = 1024;
@@ -64,6 +149,7 @@ type Field = TextField | "label" | "has" | "is" | "in" | "account" | "after" | "
 const FLAGS = enumValues("is") as readonly FlagName[];
 const PLACES = enumValues("in") as readonly NamedRole[];
 const HAS = enumValues("has");
+const SORTS = enumValues("sort") as readonly QuerySortValue[];
 const PEOPLE = new Set(["from", "to", "cc"]);
 
 type MutToken = { -readonly [K in keyof QueryToken]: QueryToken[K] };
@@ -222,6 +308,13 @@ export function parseQuery(input: string, context: QueryContext = {}): ParsedQue
   let depth = 0;
   let budget = MAX_TERMS;
   let overflowed = false;
+  // ADR 0116, rule 1: every `prompt:` met, with where it stood; one is kept after the parse.
+  const prompts: { tk: Tok; text: string; negated: boolean; underOr: boolean }[] = [];
+  // ADR 0116, rule 4a: every valid `limit:` met, the same way.
+  const limits: { tk: Tok; n: number; negated: boolean; underOr: boolean }[] = [];
+  // ADR 0116, rule 4b: every known `sort:` met, the same way.
+  const sorts: { tk: Tok; value: QuerySortValue; negated: boolean; underOr: boolean }[] = [];
+  let negated = false;
 
   const diag = (code: QueryDiagnostic["code"], start: number, end: number, message: string) => {
     diagnostics.push({ code, start, end, message });
@@ -391,6 +484,82 @@ export function parseQuery(input: string, context: QueryContext = {}): ParsedQue
     return node;
   };
 
+  /** `prompt:( … )`, `limit:( … )` and `sort:( … )` are dropped up to their closing bracket. */
+  const skipAsideGroup = (
+    field: Tok,
+    code: "prompt-group" | "limit-group" | "sort-group",
+    message: string,
+  ) => {
+    let level = 0;
+    let end = field.t.end;
+    field.t.state = "invalid";
+    while (pos < toks.length) {
+      const tk = toks[pos++];
+      if (!tk) break;
+      tk.t.state = "invalid";
+      end = tk.t.end;
+      if (tk.t.kind === "open") level++;
+      else if (tk.t.kind === "close" && --level <= 0) break;
+    }
+    diag(code, field.t.start, end, message);
+  };
+
+  /** ADR 0116, rule 4a: a whole number above 0, noted beside the tree. */
+  const limitTerm = (tk: Tok): null => {
+    if (tk.group) {
+      skipAsideGroup(tk, "limit-group", "A limit is a number, not a group");
+      return null;
+    }
+    const v = tk.text.trim();
+    if (v === "") {
+      tk.t.state = "incomplete";
+      return null;
+    }
+    const n = /^\d+$/.test(v) ? Number(v) : 0;
+    if (!(n >= 1)) {
+      tk.t.state = "invalid";
+      const [s, e] = valueSpan(tk);
+      diag("invalid-limit", s, e, `Not a whole number above 0: "${clip(v)}"`);
+      return null;
+    }
+    limits.push({ tk, n: Math.min(n, MAX_QUERY_LIMIT), negated, underOr: false });
+    return null;
+  };
+
+  /** ADR 0116, rule 4b: one of the known orders, noted beside the tree. */
+  const sortTerm = (tk: Tok): null => {
+    if (tk.group) {
+      skipAsideGroup(tk, "sort-group", "An order is one word, not a group");
+      return null;
+    }
+    const v = foldText(tk.text).trim();
+    if ((SORTS as readonly string[]).includes(v)) {
+      sorts.push({ tk, value: v as QuerySortValue, negated, underOr: false });
+    } else if (v === "" || SORTS.some((k) => k.startsWith(v))) {
+      tk.t.state = "incomplete";
+    } else {
+      tk.t.state = "invalid";
+      const [s, e] = valueSpan(tk);
+      diag("unknown-value", s, e, `Unknown value "${clip(v)}"`);
+    }
+    return null;
+  };
+
+  /** ADR 0116, rule 1: a prompt is noted beside the tree and never becomes a node. */
+  const promptTerm = (tk: Tok): null => {
+    if (tk.group) {
+      skipAsideGroup(tk, "prompt-group", "A prompt is a word or a quoted phrase, not a group");
+      return null;
+    }
+    const text = tk.text.trim();
+    if (text === "") {
+      tk.t.state = "incomplete";
+      return null;
+    }
+    prompts.push({ tk, text, negated, underOr: false });
+    return null;
+  };
+
   const parseAtom = (dflt: Field | undefined): QueryNode | null => {
     const tk = toks[pos];
     if (!tk) return null;
@@ -400,6 +569,9 @@ export function parseQuery(input: string, context: QueryContext = {}): ParsedQue
         return parseGroup(tk, dflt);
       case "field": {
         pos++;
+        if (tk.t.field === "prompt") return promptTerm(tk);
+        if (tk.t.field === "limit") return limitTerm(tk);
+        if (tk.t.field === "sort") return sortTerm(tk);
         const field = tk.t.field as Field;
         if (tk.group) {
           const open = toks[pos++];
@@ -429,7 +601,10 @@ export function parseQuery(input: string, context: QueryContext = {}): ParsedQue
       if (tk) negs.push(tk);
       kind = toks[pos]?.t.kind;
     }
+    const flips = negs.length % 2 === 1;
+    if (flips) negated = !negated;
     const node = parseAtom(dflt);
+    if (flips) negated = !negated;
     for (const tk of negs) tk.t.state = node === null ? "incomplete" : "ok";
     if (node === null || negs.length % 2 === 0) return node;
     return node.kind === "not" ? node.child : { kind: "not", child: node };
@@ -457,23 +632,120 @@ export function parseQuery(input: string, context: QueryContext = {}): ParsedQue
 
   const parseOr = (dflt: Field | undefined): QueryNode | null => {
     const nodes: QueryNode[] = [];
+    const firstPrompt = prompts.length;
+    const firstLimit = limits.length;
+    const firstSort = sorts.length;
     let left = parseAnd(dflt);
     if (left !== null) nodes.push(left);
+    let ors = 0;
     while (toks[pos]?.t.kind === "or") {
       const op = toks[pos++];
+      ors++;
       const right = parseAnd(dflt);
       if (op) op.t.state = left === null || right === null ? "incomplete" : "ok";
       if (right !== null) nodes.push(right);
       left = right;
     }
+    if (ors > 0) {
+      for (let i = firstPrompt; i < prompts.length; i++) {
+        const p = prompts[i];
+        if (p) prompts[i] = { ...p, underOr: true };
+      }
+      for (let i = firstLimit; i < limits.length; i++) {
+        const l = limits[i];
+        if (l) limits[i] = { ...l, underOr: true };
+      }
+      for (let i = firstSort; i < sorts.length; i++) {
+        const o = sorts[i];
+        if (o) sorts[i] = { ...o, underOr: true };
+      }
+    }
     return combine("or", nodes);
   };
 
   const root = parseOr(undefined);
-  return { root, tokens: toks.map((x) => x.t), diagnostics };
+  let prompt: QueryPrompt | undefined;
+  for (const p of prompts) {
+    const { start, end } = p.tk.t;
+    const drop = (code: QueryDiagnostic["code"], message: string) => {
+      p.tk.t.state = "invalid";
+      diag(code, start, end, message);
+    };
+    if (p.negated) drop("prompt-negated", "A prompt cannot be excluded");
+    else if (p.underOr) drop("prompt-or", "A prompt cannot be one side of OR");
+    else if (prompt !== undefined) drop("prompt-twice", "Only one prompt per query");
+    else prompt = { text: p.text, start, end };
+  }
+  let limit: QueryLimit | undefined;
+  for (const l of limits) {
+    const { start, end } = l.tk.t;
+    const drop = (code: QueryDiagnostic["code"], message: string) => {
+      l.tk.t.state = "invalid";
+      diag(code, start, end, message);
+    };
+    if (l.negated) drop("limit-negated", "A limit cannot be excluded");
+    else if (l.underOr) drop("limit-or", "A limit cannot be one side of OR");
+    else if (limit !== undefined) drop("limit-twice", "Only one limit per query");
+    else limit = { n: l.n, start, end };
+  }
+  let promptDropped = false;
+  if (prompt !== undefined && context.promptOff === true) {
+    diag("prompt-off", prompt.start, prompt.end, "AI is off, so the prompt does nothing");
+    prompt = undefined;
+    promptDropped = true;
+  }
+  let sort: QuerySort | undefined;
+  for (const o of sorts) {
+    const { start, end } = o.tk.t;
+    const drop = (code: QueryDiagnostic["code"], message: string) => {
+      o.tk.t.state = "invalid";
+      diag(code, start, end, message);
+    };
+    if (o.negated) drop("sort-negated", "An order cannot be excluded");
+    else if (o.underOr) drop("sort-or", "An order cannot be one side of OR");
+    else if (sort !== undefined) drop("sort-twice", "Only one order per query");
+    else sort = { value: o.value, start, end };
+  }
+  // What the order needs and does not have: the list stays by date, and says why (rule 4b).
+  if (sort?.value === "fit" && prompt === undefined) {
+    const at = sort;
+    const tk = sorts.find((o) => o.tk.t.start === at.start)?.tk;
+    if (tk) tk.t.state = "invalid";
+    // A prompt dropped because AI is off says so itself.
+    if (!promptDropped) diag("sort-fit", at.start, at.end, "Sorting by fit needs a prompt");
+    sort = undefined;
+  } else if (sort?.value === "relevance" && prompt === undefined && !hasWords(root)) {
+    diag("sort-no-words", sort.start, sort.end, "No words to rank by, so the list stays by date");
+    sort = undefined;
+  }
+  return {
+    root,
+    tokens: toks.map((x) => x.t),
+    diagnostics,
+    ...(prompt === undefined ? {} : { prompt }),
+    ...(limit === undefined ? {} : { limit }),
+    ...(sort === undefined ? {} : { sort }),
+  };
 }
 
-/** A query that constrains nothing behaves like no query at all. */
+/** Words a rank can go by (ADR 0116, rule 4b): a text term that is not excluded. */
+function hasWords(root: QueryNode | null): boolean {
+  if (root === null) return false;
+  switch (root.kind) {
+    case "text":
+      return true;
+    case "and":
+    case "or":
+      return root.children.some(hasWords);
+    default:
+      return false;
+  }
+}
+
+/**
+ * A query whose mail filters constrain nothing behaves like no query at all. A prompt alone does
+ * not change that: it narrows only when it is run (ADR 0116, rule 2).
+ */
 export function isEmptyQuery(q: ParsedQuery): boolean {
   return q.root === null;
 }

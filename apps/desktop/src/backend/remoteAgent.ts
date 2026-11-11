@@ -12,6 +12,9 @@ import type {
   PreparedGuidance,
   PreparedWork,
   PrepareResult,
+  PromptCount,
+  PromptList,
+  PromptRunResult,
   RememberResult,
   ReplyCheck,
   RewriteHow,
@@ -273,6 +276,30 @@ export class RemoteAgent implements AgentApi {
 
   async undoFeedback(threadId: string, kind: "notImportant" | "later" | "closed"): Promise<void> {
     await this.host.command({ name: "agentUndoFeedback", threadId, kind });
+  }
+
+  /** Read-only, but on the worker: it walks the index like a count (ADR 0116, rule 4). */
+  promptCount(query: string): Promise<PromptCount> {
+    return this.host.command({ name: "agentPromptCount", query });
+  }
+
+  /** Read-only, on the worker for the same reason; it never waits for a model (ADR 0051, rule 10). */
+  promptVerdicts(query: string): Promise<PromptList> {
+    return this.host.command({ name: "agentPromptVerdicts", query });
+  }
+
+  /** Goes to the worker, which searches and reads there; progress comes back as pushes. */
+  promptRun(query: string, again?: boolean, readAll?: boolean): Promise<PromptRunResult> {
+    return this.host.command({
+      name: "agentPromptRun",
+      query,
+      ...(again ? { again } : {}),
+      ...(readAll ? { readAll } : {}),
+    });
+  }
+
+  async promptStop(): Promise<void> {
+    await this.host.command({ name: "agentPromptStop" });
   }
 
   /** Read-only, but on the worker: it walks the index like a count (ADR 0102). */

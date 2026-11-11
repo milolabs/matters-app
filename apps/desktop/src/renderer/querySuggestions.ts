@@ -22,6 +22,8 @@ export interface SuggestionSources {
   readonly recent?: readonly string[];
   /** The text the active view stands for: the bar holding it means nothing was typed. */
   readonly baseline?: string;
+  /** AI is off or nothing is shared: `prompt:` is not offered (ADR 0116, rule 11). */
+  readonly noPrompt?: boolean;
 }
 
 /** Replace `text[start, end)` with `text`, then put the caret at `caret`. */
@@ -118,12 +120,24 @@ function personItems(
   return items;
 }
 
+/** ADR 0116, rule 4b: `sort:fit` is offered only beside a prompt. Every other value always. */
+function offered(
+  field: QueryFieldName,
+  value: string,
+  parsed: Pick<ParsedQuery, "prompt"> | undefined,
+): boolean {
+  if (field !== "sort") return true;
+  if (value === "fit") return parsed?.prompt !== undefined;
+  return true;
+}
+
 function valueItems(
   field: QueryFieldName,
   typed: string,
   start: number,
   end: number,
   sources: SuggestionSources,
+  parsed?: Pick<ParsedQuery, "prompt">,
 ): SuggestionGroup[] {
   const info = QUERY_FIELDS[field];
   const want = foldText(typed).trim();
@@ -143,7 +157,7 @@ function valueItems(
       break;
     case "enum":
       items = Object.entries(info.values)
-        .filter(([k]) => k.startsWith(want))
+        .filter(([k]) => k.startsWith(want) && offered(field, k, parsed))
         .map(([k, hint]) => done(k, k, hint));
       break;
     case "label":
@@ -274,7 +288,7 @@ function suggestionsAt(
   const c = Math.min(Math.max(caret, 0), text.length);
   const ctx = contextAt(text, c, parsed);
   if (ctx.kind === "value") {
-    return valueItems(ctx.field, ctx.typed, ctx.start, ctx.end, sources);
+    return valueItems(ctx.field, ctx.typed, ctx.start, ctx.end, sources, parsed);
   }
   const t = ctx.token;
 
@@ -296,11 +310,12 @@ function suggestionsAt(
     if (items.length > 0) groups.push({ title: "People", items });
   }
   const fields = (Object.keys(QUERY_FIELDS) as QueryFieldName[])
-    .filter((k) => k.startsWith(typed))
+    .filter((k) => k.startsWith(typed) && (k !== "prompt" || sources.noPrompt !== true))
     .map((k) => ({
       label: `${k}:`,
       hint: QUERY_FIELDS[k].hint,
-      edit: replace(start, end, `${k}:`),
+      // ADR 0116: a prompt is a phrase in the person's words; the caret waits inside the quotes.
+      edit: k === "prompt" ? replace(start, end, `${k}:""`, 1) : replace(start, end, `${k}:`),
     }));
   if (fields.length > 0) groups.push({ title: "Filters", items: fields });
   if (t === undefined && afterSpace && text.trim() !== "") {

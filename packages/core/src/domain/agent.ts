@@ -831,9 +831,10 @@ export interface LedgerEntry {
    * `remember` is the turn that keeps what the person typed (ADR 0054): `threads` is 0, since no
    * thread's mail went. `talk` is a turn of the person's talk (ADR 0064): about a thread, one
    * thread went; across all mail, the threads that were sent for the answer. `consent` and `revoke` record the person's choice: for `consent`, `threads` is how many
-   * threads the screen said would go; for `revoke` it is 0.
+   * threads the screen said would go; for `revoke` it is 0. `prompt` is one batch of a prompt in
+   * the query bar (ADR 0116, rule 9): the threads of that account that went.
    */
-  readonly purpose: "analysis" | "prepare" | "remember" | "talk" | "consent" | "revoke";
+  readonly purpose: "analysis" | "prepare" | "remember" | "talk" | "prompt" | "consent" | "revoke";
   readonly threads: number;
 }
 

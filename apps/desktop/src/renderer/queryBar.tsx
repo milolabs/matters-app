@@ -42,19 +42,30 @@ import {
 } from "./liveSearch.ts";
 import { createPeopleFeed } from "./peopleFeed.ts";
 import { personTint } from "./personMark.ts";
-import { addField } from "./queryEdits.ts";
+import { type PromptOff, withPromptOffText } from "./promptView.ts";
+import { addField, addFilter } from "./queryEdits.ts";
 import { type QuerySegment, querySegments } from "./querySegments.ts";
 import { type Edit, peoplePrefix, querySuggestions, type Suggestion } from "./querySuggestions.ts";
 import type { MailStore } from "./store.ts";
 
 /**
  * ADR 0026. The query text lives in the store and nowhere else. The renderer parses it here, on
- * the keystroke, with the loaded accounts so that `account:` diagnostics are right.
+ * the keystroke, with the loaded accounts so that `account:` diagnostics are right. `promptOff`
+ * is why a prompt does nothing now (ADR 0116, rule 11): the parser reports it and drops it.
  */
-export function createQueryModel(store: MailStore, accounts: AccountsStore) {
-  const parsed = createMemo<ParsedQuery>(() =>
-    parseQuery(store.query(), accounts.loaded() ? { accounts: accounts.accounts() } : {}),
-  );
+export function createQueryModel(
+  store: MailStore,
+  accounts: AccountsStore,
+  promptOff: () => PromptOff | null = () => null,
+) {
+  const parsed = createMemo<ParsedQuery>(() => {
+    const off = promptOff();
+    const parsed = parseQuery(store.query(), {
+      ...(accounts.loaded() ? { accounts: accounts.accounts() } : {}),
+      ...(off === null ? {} : { promptOff: true }),
+    });
+    return withPromptOffText(parsed, off);
+  });
   return { parsed };
 }
 export type QueryModel = ReturnType<typeof createQueryModel>;
@@ -287,6 +298,8 @@ export function QueryBar(props: {
   searching: () => boolean;
   /** The agent can be asked (AI is on); the ask row and ⌘↵ exist only then (ADR 0076). */
   canAsk: () => boolean;
+  /** A prompt would do nothing (ADR 0116, rule 11): `prompt:` is not offered. */
+  promptOff: () => boolean;
   /** Sends the words to the agent across all mail. */
   onAsk: (text: string) => void;
   /** Shows a thread found by the panel. */
@@ -314,10 +327,12 @@ export function QueryBar(props: {
   // Labels are fetched when the panel first opens per focus, never per keystroke.
   let fetched = false;
 
-  // `account:` says nothing while there is only one account to name.
+  // `account:` says nothing while there is only one account to name, `prompt:` while AI is off.
   const fields = createMemo(() =>
     (Object.keys(QUERY_FIELDS) as QueryFieldName[]).filter(
-      (f) => f !== "account" || props.accounts.accounts().length > 1,
+      (f) =>
+        (f !== "account" || props.accounts.accounts().length > 1) &&
+        (f !== "prompt" || !props.promptOff()),
     ),
   );
   const inUse = createMemo(() => {
@@ -380,6 +395,7 @@ export function QueryBar(props: {
           people: people(),
           recent: recent(),
           baseline: props.baseline(),
+          noPrompt: props.promptOff(),
         })
       : [],
   );
@@ -601,6 +617,12 @@ export function QueryBar(props: {
 
   /** A field handler: the same edit as choosing the field in the panel, at the end of the text. */
   function writeField(field: QueryFieldName) {
+    if (field === "prompt") {
+      // ADR 0116: one prompt, a phrase; the caret waits inside its quotes.
+      const text = addFilter(store.query(), 'prompt:""');
+      apply({ start: 0, end: store.query().length, text, caret: text.length - 1 });
+      return;
+    }
     const text = addField(store.query(), field);
     apply({ start: 0, end: store.query().length, text, caret: text.length });
   }
@@ -722,6 +744,7 @@ export function QueryBar(props: {
                       classList={{
                         qdraft: node.segs[0]?.state === "incomplete",
                         qbad: node.segs[0]?.state === "invalid",
+                        qagent: node.segs[0]?.agent === true,
                       }}
                     >
                       {node.segs.map((s) => (
@@ -799,6 +822,7 @@ export function QueryBar(props: {
                 type="button"
                 class="qf"
                 data-on={inUse().has(field) ? "" : undefined}
+                data-agent={field === "prompt" ? "" : undefined}
                 title={QUERY_FIELDS[field].hint}
                 aria-label={`Add ${field}: ${QUERY_FIELDS[field].hint}`}
                 // The input keeps or takes the focus when the field is written.
@@ -896,7 +920,11 @@ export function QueryBar(props: {
                   <>
                     <span>Tab accept</span>
                     <span>↑↓ choose</span>
-                    <span>↵ go to results</span>
+                    <span>
+                      {model.parsed().prompt === undefined
+                        ? "↵ go to results"
+                        : "↵ read with the prompt"}
+                    </span>
                   </>
                 }
               >

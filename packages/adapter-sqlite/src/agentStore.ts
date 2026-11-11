@@ -21,6 +21,9 @@ import type {
   PlanLimits,
   PreparedRecord,
   PreparedWork,
+  PromptFit,
+  PromptSearch,
+  PromptVerdict,
   TalkCarry,
   TalkEntry,
   TalkFact,
@@ -1065,13 +1068,30 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
         "agent_journal",
         "agent_instructions",
         "agent_talk",
+        "agent_prompt_verdicts",
       ]) {
         this.db
           .prepare(`DELETE FROM ${table} WHERE thread_id IN (SELECT value FROM json_each(?))`)
           .run(json);
       }
       this.dropFromTalkAll(new Set(threadIds));
+      this.dropFromPromptSearches(new Set(threadIds));
     });
+  }
+
+  /** A kept search of a prompt (ADR 0116, rule 4) no longer names these threads. */
+  private dropFromPromptSearches(gone: ReadonlySet<string>): void {
+    const rows = this.db
+      .prepare("SELECT prompt_key, filters, threads_json FROM agent_prompt_searches")
+      .all() as unknown as { prompt_key: string; filters: string; threads_json: string }[];
+    const update = this.db.prepare(
+      "UPDATE agent_prompt_searches SET threads_json = ? WHERE prompt_key = ? AND filters = ?",
+    );
+    for (const row of rows) {
+      const ids = JSON.parse(row.threads_json) as string[];
+      const kept = ids.filter((id) => !gone.has(id));
+      if (kept.length !== ids.length) update.run(JSON.stringify(kept), row.prompt_key, row.filters);
+    }
   }
 
   /** The talk of all mail keeps its words and answers, but not the hits and quotes of these threads. */
@@ -1133,6 +1153,140 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
       threads: r.threads,
     }));
   }
+
+  // --- A prompt is a filter (ADR 0116) ---
+
+  async putPromptVerdicts(verdicts: readonly PromptVerdict[]): Promise<void> {
+    if (verdicts.length === 0) return;
+    await write(this.db, () => {
+      // The primary key is the prompt and the thread: a newer verdict replaces the older one.
+      const put = this.db.prepare(`
+        INSERT OR REPLACE INTO agent_prompt_verdicts
+          (prompt_key, thread_id, last_message_key, version, fit, why, quote, quote_key, at_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const v of verdicts) {
+        put.run(
+          v.promptKey,
+          v.threadId,
+          v.lastMessageKey,
+          v.version,
+          v.fit,
+          v.why,
+          v.quote?.text ?? null,
+          v.quote?.messageKey ?? null,
+          v.atMs,
+        );
+      }
+    });
+  }
+
+  async getPromptVerdicts(
+    promptKey: string,
+    version: number,
+    threads: readonly { readonly threadId: string; readonly lastMessageKey: number }[],
+  ): Promise<readonly PromptVerdict[]> {
+    if (threads.length === 0) return [];
+    const at = new Map(threads.map((t) => [t.threadId, t.lastMessageKey]));
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM agent_prompt_verdicts
+          WHERE prompt_key = ? AND version = ? AND thread_id IN (SELECT value FROM json_each(?))`,
+      )
+      .all(promptKey, version, JSON.stringify([...at.keys()])) as unknown as PromptVerdictRow[];
+    return rows.filter((r) => at.get(r.thread_id) === r.last_message_key).map(verdictFromRow);
+  }
+
+  async prunePromptVerdicts(keep: readonly string[], beforeMs: number): Promise<number> {
+    return write(this.db, () => {
+      const result = this.db
+        .prepare(
+          `DELETE FROM agent_prompt_verdicts
+            WHERE prompt_key NOT IN (SELECT value FROM json_each(?))
+              AND prompt_key IN (SELECT prompt_key FROM agent_prompt_verdicts
+                                  GROUP BY prompt_key HAVING max(at_ms) < ?)`,
+        )
+        .run(JSON.stringify(keep), beforeMs);
+      // A search goes once its prompt has no verdict left and it is as old (rule 12).
+      this.db
+        .prepare(
+          `DELETE FROM agent_prompt_searches
+            WHERE prompt_key NOT IN (SELECT value FROM json_each(?))
+              AND at_ms < ?
+              AND prompt_key NOT IN (SELECT prompt_key FROM agent_prompt_verdicts)`,
+        )
+        .run(JSON.stringify(keep), beforeMs);
+      return Number(result.changes);
+    });
+  }
+
+  async putPromptSearch(search: PromptSearch): Promise<void> {
+    await write(this.db, () => {
+      this.db
+        .prepare(
+          `INSERT OR REPLACE INTO agent_prompt_searches
+             (prompt_key, filters, queries_json, threads_json, at_ms, whole)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          search.promptKey,
+          search.filters,
+          JSON.stringify(search.queries),
+          JSON.stringify(search.threadIds),
+          search.atMs,
+          search.whole === true ? 1 : 0,
+        );
+    });
+  }
+
+  async getPromptSearch(promptKey: string, filters: string): Promise<PromptSearch | null> {
+    const row = this.db
+      .prepare("SELECT * FROM agent_prompt_searches WHERE prompt_key = ? AND filters = ?")
+      .get(promptKey, filters) as
+      | { queries_json: string; threads_json: string; at_ms: number; whole: number }
+      | undefined;
+    if (row === undefined) return null;
+    const strings = (json: string): string[] => {
+      const v = JSON.parse(json) as unknown;
+      return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    };
+    return {
+      promptKey,
+      filters,
+      queries: strings(row.queries_json),
+      threadIds: strings(row.threads_json),
+      atMs: row.at_ms,
+      ...(row.whole === 1 ? { whole: true } : {}),
+    };
+  }
+}
+
+interface PromptVerdictRow {
+  prompt_key: string;
+  thread_id: string;
+  last_message_key: number;
+  version: number;
+  fit: number;
+  why: string;
+  quote: string | null;
+  quote_key: number | null;
+  at_ms: number;
+}
+
+/** A fit this build does not know (a newer build wrote it) reads as 0: it is not shown. */
+function verdictFromRow(r: PromptVerdictRow): PromptVerdict {
+  const fit: PromptFit = r.fit === 1 || r.fit === 2 || r.fit === 3 ? r.fit : 0;
+  return {
+    promptKey: r.prompt_key,
+    threadId: r.thread_id,
+    lastMessageKey: r.last_message_key,
+    version: r.version,
+    fit,
+    why: r.why,
+    ...(fit > 0 && r.quote !== null && r.quote_key !== null
+      ? { quote: { text: r.quote, messageKey: r.quote_key } }
+      : {}),
+    atMs: r.at_ms,
+  };
 }
 
 // --- Settings and consent ---

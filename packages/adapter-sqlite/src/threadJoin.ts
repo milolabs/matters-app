@@ -75,7 +75,19 @@ export function mergeThreads(
   db.prepare(
     "DELETE FROM agent_instructions WHERE thread_id IN (SELECT value FROM json_each(?))",
   ).run(list);
-  for (const table of ["agent_analyses", "agent_prepared"]) {
+  // A verdict of a prompt read the threads apart (ADR 0116); the joined thread is read again. Its
+  // table comes with version 50, after the joins that versions 45 and 48 run on stored mail.
+  const readings = ["agent_analyses", "agent_prepared"];
+  if (
+    db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_prompt_verdicts'",
+      )
+      .get()
+  ) {
+    readings.push("agent_prompt_verdicts");
+  }
+  for (const table of readings) {
     db.prepare(`DELETE FROM ${table} WHERE thread_id IN (SELECT value FROM json_each(?))`).run(all);
   }
   return Number(moved.changes);

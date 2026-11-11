@@ -33,6 +33,10 @@ import type {
   PersonSuggestion,
   PreparedWork,
   PrepareResult,
+  PromptCount,
+  PromptList,
+  PromptProgress,
+  PromptRunResult,
   ReceivedAttachment,
   RememberResult,
   ReplyCheck,
@@ -42,6 +46,7 @@ import type {
   RuleOffer,
   SavedView,
   SendOperation,
+  SortRanked,
   StoppableSource,
   SyncStatus,
   TalkEntry,
@@ -87,6 +92,8 @@ export interface SearchRequest {
   /** Raw user text; the backend parses it, nothing is trusted. */
   readonly query: string;
   readonly beforeKey?: number;
+  /** The cursor of an oldest-first list (`sort:oldest`, ADR 0116, rule 4b). */
+  readonly afterKey?: number;
   readonly limit: number;
 }
 
@@ -346,6 +353,16 @@ export interface CountMatchesRequest {
   readonly query: string;
   readonly cap: number;
   readonly beforeKey?: number;
+}
+
+/**
+ * The ranked order of a query without a prompt, `sort:relevance` (ADR 0116, rule 4b): asked
+ * after `↵`, never on a keystroke. It runs in the sync worker.
+ */
+export interface SortRankedRequest {
+  readonly type: "sortRanked";
+  readonly requestId: RequestId;
+  readonly query: string;
 }
 
 /**
@@ -916,8 +933,59 @@ export interface AgentMatchActRequest {
   readonly query: string;
 }
 
+/**
+ * A prompt in the query bar (ADR 0116, rule 4): whether its search with the mail filters of
+ * `query` ran, how many threads the kept search finds now, how many of them have a verdict, and
+ * whether a run of it is going on. No model.
+ */
+export interface AgentPromptCountRequest {
+  readonly type: "agentPromptCount";
+  readonly requestId: RequestId;
+  /** The whole text of the query bar; it must hold a prompt. */
+  readonly query: string;
+}
+
+/** The verdicts kept for the prompt of `query`, as the list shows them (ADR 0116, rule 7). No model. */
+export interface AgentPromptVerdictsRequest {
+  readonly type: "agentPromptVerdicts";
+  readonly requestId: RequestId;
+  readonly query: string;
+}
+
+/**
+ * Runs the prompt of `query` (ADR 0116, rule 3): `↵` in the query bar, or opening a saved view
+ * that holds a prompt. The agent searches first when no search is kept for the prompt and its mail
+ * filters, or when `again` asks for a new one (rule 4); then the threads found with no verdict are
+ * read. `agentPromptProgress` follows each step.
+ */
+export interface AgentPromptRunRequest {
+  readonly type: "agentPromptRun";
+  readonly requestId: RequestId;
+  readonly query: string;
+  /** `Search again`: the kept search is replaced by a new one. */
+  readonly again?: boolean;
+  /**
+   * The person saw how many threads are left to read and pressed `↵` (rule 4): more than
+   * `PROMPT_ASK_ABOVE` are read without asking. Absent: above it the run ends with `ask`.
+   */
+  readonly readAll?: boolean;
+}
+
+/**
+ * Cuts the running prompt short (ADR 0116, rule 9): a search keeps nothing, a reading keeps the
+ * batches that finished.
+ */
+export interface AgentPromptStopRequest {
+  readonly type: "agentPromptStop";
+  readonly requestId: RequestId;
+}
+
 export type BackendRequest =
   | AgentStatusRequest
+  | AgentPromptCountRequest
+  | AgentPromptVerdictsRequest
+  | AgentPromptRunRequest
+  | AgentPromptStopRequest
   | AgentThingsRequest
   | AgentPreparedRequest
   | AgentThreadRequest
@@ -1000,6 +1068,7 @@ export type BackendRequest =
   | ForgetSearchRequest
   | ClearSearchesRequest
   | CountMatchesRequest
+  | SortRankedRequest
   | PrepareNewRequest
   | PrepareReplyRequest
   | PrepareForwardRequest
@@ -1059,6 +1128,8 @@ export interface SearchResponse {
   readonly messages: readonly Message[];
   /** Ask again below this key. A page may be short or empty and still have one. */
   readonly nextBeforeKey?: number;
+  /** An oldest-first list: ask again above this key. */
+  readonly nextAfterKey?: number;
 }
 
 export interface GetMessagesResponse {
@@ -1542,6 +1613,13 @@ export interface CountMatchesResponse {
   readonly nextBeforeKey?: number;
 }
 
+export interface SortRankedResponse {
+  readonly type: "sortRanked";
+  readonly requestId: RequestId;
+  readonly ok: true;
+  readonly ranked: SortRanked;
+}
+
 export interface SetSeenResponse {
   readonly type: "setSeen";
   readonly requestId: RequestId;
@@ -1856,8 +1934,39 @@ export interface AgentMatchActResponse {
   readonly capped: boolean;
 }
 
+export interface AgentPromptCountResponse {
+  readonly type: "agentPromptCount";
+  readonly requestId: RequestId;
+  readonly ok: true;
+  readonly count: PromptCount;
+}
+
+export interface AgentPromptVerdictsResponse {
+  readonly type: "agentPromptVerdicts";
+  readonly requestId: RequestId;
+  readonly ok: true;
+  readonly list: PromptList;
+}
+
+export interface AgentPromptRunResponse {
+  readonly type: "agentPromptRun";
+  readonly requestId: RequestId;
+  readonly ok: true;
+  readonly result: PromptRunResult;
+}
+
+export interface AgentPromptStopResponse {
+  readonly type: "agentPromptStop";
+  readonly requestId: RequestId;
+  readonly ok: true;
+}
+
 export type BackendResponse =
   | AgentStatusResponse
+  | AgentPromptCountResponse
+  | AgentPromptVerdictsResponse
+  | AgentPromptRunResponse
+  | AgentPromptStopResponse
   | AgentThingsResponse
   | AgentPreparedResponse
   | AgentThreadResponse
@@ -1925,6 +2034,7 @@ export type BackendResponse =
   | ForgetSearchResponse
   | ClearSearchesResponse
   | CountMatchesResponse
+  | SortRankedResponse
   | PrepareResponse
   | GetDraftResponse
   | SaveDraftResponse
@@ -2110,8 +2220,18 @@ export interface NotificationTestFailedEvent {
   readonly reason: string;
 }
 
+/**
+ * How far a prompt is (ADR 0116, rule 9): the phase, each query the search ran with the threads
+ * it listed, each batch read, and once when the run ends. Never stored: the page asks for the
+ * verdicts again and the bar shows how far it is.
+ */
+export interface AgentPromptProgressEvent extends PromptProgress {
+  readonly type: "agentPromptProgress";
+}
+
 export type BackendEvent =
   | NoticesEvent
+  | AgentPromptProgressEvent
   | NotificationPrefsChangedEvent
   | NotificationTestFailedEvent
   | AgentChangedEvent

@@ -36,6 +36,7 @@ import {
   type DriverLimits,
   driverRows,
   KEY_MAX,
+  KEY_MIN,
   MAX_EXPANSION,
   type Param,
   planQuery,
@@ -251,15 +252,17 @@ export class SqliteSearchIndex implements SearchIndexPort, RankedSearchPort, Peo
     const limit = Math.max(0, Math.trunc(options.limit));
     const plan = query.root === null ? null : this.plan(query.root);
     const keys: number[] = [];
-    let beforeKey = options.beforeKey;
+    const oldest = options.order === "oldest";
+    let cursor = oldest ? options.afterKey : options.beforeKey;
     while (plan !== null && keys.length < limit) {
       const chunk = this.run(plan, {
+        ...options,
         limit: limit - keys.length,
-        ...(beforeKey === undefined ? {} : { beforeKey }),
+        ...(cursor === undefined ? {} : oldest ? { afterKey: cursor } : { beforeKey: cursor }),
       });
       keys.push(...chunk.keys);
-      if (chunk.nextBeforeKey === undefined) break;
-      beforeKey = chunk.nextBeforeKey;
+      cursor = oldest ? chunk.nextAfterKey : chunk.nextBeforeKey;
+      if (cursor === undefined) break;
     }
     return keys;
   }
@@ -440,18 +443,27 @@ export class SqliteSearchIndex implements SearchIndexPort, RankedSearchPort, Peo
     return rows.map((r) => r.key);
   }
 
-  /** One page for a light plan, one time window for a heavy one. */
+  /**
+   * One page for a light plan, one time window for a heavy one. `oldest` walks the key the other
+   * way (ADR 0116, rule 4b): the windows grow forward from the oldest message, as they grow back
+   * from the newest.
+   */
   private run(plan: SearchPlan, options: SearchOptions): SearchChunk {
     const limit = Math.max(0, Math.trunc(options.limit));
     if (limit === 0 || plan.empty) return { keys: [] };
+    const oldest = options.order === "oldest";
     const upperBound = Math.min(options.beforeKey ?? KEY_MAX, plan.highKey);
-    if (upperBound <= plan.lowKey) return { keys: [] };
+    const lowerBound = Math.max(
+      options.afterKey === undefined ? KEY_MIN : options.afterKey + 1,
+      plan.lowKey,
+    );
+    if (upperBound <= lowerBound) return { keys: [] };
 
     const route = this.route(plan);
-    let lower = plan.lowKey;
+    let lower = lowerBound;
     let upper = upperBound;
     let edge: number | undefined;
-    if (route.heavy) {
+    if (route.heavy && !oldest) {
       const newest = (
         this.statement("SELECT MAX(key) AS k FROM messages").get() as { k: number | null }
       ).k;
@@ -465,19 +477,43 @@ export class SqliteSearchIndex implements SearchIndexPort, RankedSearchPort, Peo
         }
       }
       if (edge !== undefined) lower = Math.max(lower, edge);
+    } else if (route.heavy) {
+      const first = (
+        this.statement("SELECT MIN(key) AS k FROM messages").get() as { k: number | null }
+      ).k;
+      if (first === null) return { keys: [] };
+      if (options.afterKey === undefined) lower = Math.max(lower, first);
+      // From `after:` when it is later: the same for every window of the query, so they grow.
+      const anchor = Math.max(first, plan.lowKey);
+      for (const months of WINDOW_MONTHS) {
+        const candidate = anchor + months * MONTH_KEYS;
+        if (candidate > lower) {
+          edge = candidate;
+          break;
+        }
+      }
+      if (edge !== undefined) upper = Math.min(upper, edge);
     }
 
-    const { sql, params, named } = buildSql(plan, route, { lower, upper, limit });
+    const { sql, params, named } = buildSql(plan, route, {
+      lower,
+      upper,
+      limit,
+      ...(oldest ? { order: "oldest" as const } : {}),
+    });
     const stmt = this.statement(sql);
     const rows = (plan.nestedFts ? stmt.all(named, ...params) : stmt.all(...params)) as {
       key: number;
     }[];
     const keys = rows.map((r) => r.key);
     const last = keys[keys.length - 1];
-    if (keys.length === limit && last !== undefined) return { keys, nextBeforeKey: last };
-    // A short window may still have older matches below its edge.
-    if (route.heavy && edge !== undefined && edge > plan.lowKey) {
-      return { keys, nextBeforeKey: edge };
+    if (keys.length === limit && last !== undefined) {
+      return oldest ? { keys, nextAfterKey: last } : { keys, nextBeforeKey: last };
+    }
+    // A short window may still have older (newer, for `oldest`) matches past its edge.
+    if (route.heavy && edge !== undefined) {
+      if (!oldest && edge > lowerBound) return { keys, nextBeforeKey: edge };
+      if (oldest && edge < upperBound) return { keys, nextAfterKey: edge - 1 };
     }
     return { keys };
   }

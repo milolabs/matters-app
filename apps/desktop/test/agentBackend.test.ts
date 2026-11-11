@@ -47,6 +47,15 @@ const status: AgentStatus = {
   ledger: [],
 };
 
+const promptOff = {
+  ai: "off",
+  promptKey: "",
+  searched: false,
+  found: 0,
+  read: 0,
+  fits: 0,
+} as const;
+
 /** An AgentApi that records what it was asked and answers from a table. */
 function stub(overrides: Partial<AgentApi> = {}) {
   const calls: [string, ...unknown[]][] = [];
@@ -119,6 +128,10 @@ function stub(overrides: Partial<AgentApi> = {}) {
       messages: [{ key: 7, threadId: "t1", accountId: "a", subject: "S", seen: false }],
       capped: false,
     }),
+    promptCount: note("promptCount", promptOff),
+    promptVerdicts: note("promptVerdicts", { ...promptOff, rows: [] }),
+    promptRun: note("promptRun", { ...promptOff, rows: [], stopped: false, rejected: 0 }),
+    promptStop: note("promptStop", undefined),
     ...overrides,
   };
   const deps = { agent: api } as unknown as BackendDeps;
@@ -424,6 +437,62 @@ describe("agent requests", () => {
       });
     }
     expect(calls).toHaveLength(3);
+  });
+
+  it("carries the requests of a prompt to the service and back (ADR 0116)", async () => {
+    const { ask, calls } = stub();
+    const query = 'from:office prompt:"what needs my decision"';
+    expect(await ask({ type: "agentPromptCount", query })).toEqual({
+      type: "agentPromptCount",
+      requestId: "r",
+      ok: true,
+      count: promptOff,
+    });
+    expect(await ask({ type: "agentPromptVerdicts", query })).toMatchObject({
+      type: "agentPromptVerdicts",
+      ok: true,
+      list: { ai: "off", rows: [] },
+    });
+    expect(await ask({ type: "agentPromptRun", query })).toMatchObject({
+      type: "agentPromptRun",
+      ok: true,
+      result: { ai: "off", stopped: false, rejected: 0 },
+    });
+    // `Search again` (rule 4).
+    expect(await ask({ type: "agentPromptRun", query, again: true })).toMatchObject({
+      type: "agentPromptRun",
+      ok: true,
+    });
+    // The person saw the count and pressed ↵ again (rule 4).
+    expect(await ask({ type: "agentPromptRun", query, readAll: true })).toMatchObject({
+      type: "agentPromptRun",
+      ok: true,
+    });
+    expect(await ask({ type: "agentPromptStop" })).toMatchObject({
+      type: "agentPromptStop",
+      ok: true,
+    });
+    expect(calls).toEqual([
+      ["promptCount", query],
+      ["promptVerdicts", query],
+      ["promptRun", query, false, false],
+      ["promptRun", query, true, false],
+      ["promptRun", query, false, true],
+      ["promptStop"],
+    ]);
+    for (const request of [
+      { type: "agentPromptCount" },
+      { type: "agentPromptVerdicts", query: 3 },
+      { type: "agentPromptRun", query: "x".repeat(10_001) },
+      { type: "agentPromptRun", query, again: "yes" },
+      { type: "agentPromptRun", query, readAll: 1 },
+    ]) {
+      expect(await ask(request), JSON.stringify(request)).toMatchObject({
+        type: "error",
+        code: "invalidRequest",
+      });
+    }
+    expect(calls).toHaveLength(6);
   });
 
   it("carries the talks across all mail to the service and back (ADR 0086)", async () => {
@@ -813,6 +882,11 @@ describe("RemoteAgent", () => {
     await remote.answerQuestions("t1", "Hi");
     await remote.checkReply("t1", "Hi");
     await remote.fillGaps("t1", "Hi [date]");
+    // A prompt walks the index and runs turns: all four go to the worker (ADR 0116).
+    await remote.promptCount("prompt:x");
+    await remote.promptVerdicts("prompt:x");
+    await remote.promptRun("prompt:x");
+    await remote.promptStop();
     // The talk is a read here (empty with no thread), and only the turn and its stop go out.
     expect(await remote.talkEntries("t1")).toEqual([]);
     expect(await remote.talkAllEntries()).toEqual([]);
@@ -841,6 +915,10 @@ describe("RemoteAgent", () => {
       { name: "agentAnswerQuestions", threadId: "t1", text: "Hi" },
       { name: "agentCheckReply", threadId: "t1", text: "Hi" },
       { name: "agentFillGaps", threadId: "t1", text: "Hi [date]" },
+      { name: "agentPromptCount", query: "prompt:x" },
+      { name: "agentPromptVerdicts", query: "prompt:x" },
+      { name: "agentPromptRun", query: "prompt:x" },
+      { name: "agentPromptStop" },
     ]);
   });
 });

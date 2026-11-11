@@ -21,4 +21,9 @@ export class RemoteCounts implements CountApi {
       ...(beforeKey === undefined ? {} : { beforeKey }),
     });
   }
+
+  /** ADR 0116, rule 4b: a ranked order, computed on the worker's thread. */
+  rank(query: string) {
+    return this.host.command({ name: "sortRanked", query });
+  }
 }

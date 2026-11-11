@@ -30,6 +30,18 @@ describe("countMatches (ADR 0027)", () => {
     expect(r.searchChunk).not.toHaveBeenCalled();
   });
 
+  it("answers 0 for a query with a prompt, which shows no badge (ADR 0116, rule 10)", async () => {
+    const r = rig([{ keys: [1] }]);
+    for (const q of ["prompt:x", 'from:jan prompt:"what needs me"']) {
+      await expect(countMatches(r.deps, q, { cap: 99 })).resolves.toEqual({ count: 0 });
+    }
+    expect(r.searchChunk).not.toHaveBeenCalled();
+    // A prompt that is dropped leaves the filters as they are.
+    await expect(countMatches(r.deps, "from:jan -prompt:x", { cap: 99 })).resolves.toEqual({
+      count: 1,
+    });
+  });
+
   it("ANDs the root with is:unread and asks for cap keys", async () => {
     const r = rig([{ keys: [5, 4, 3] }]);
     await expect(countMatches(r.deps, "faktura", { cap: 99 })).resolves.toEqual({ count: 3 });

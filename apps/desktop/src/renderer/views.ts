@@ -1,4 +1,4 @@
-import type { SavedView } from "@matters/core";
+import { parseQuery, type SavedView } from "@matters/core";
 import { batch, createSignal } from "solid-js";
 import type { Backend } from "./client.ts";
 import type { MailStore } from "./store.ts";
@@ -47,6 +47,9 @@ export interface ViewsOptions {
 
 const realDelay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** The text holds a prompt (ADR 0116): what the view shows is not what its mail filters match. */
+export const holdsPrompt = (query: string): boolean => parseQuery(query).prompt !== undefined;
+
 function messageOf(error: unknown): string {
   return error instanceof Error && error.message !== "" ? error.message : "Something went wrong.";
 }
@@ -70,6 +73,7 @@ export function createViewsStore(backend: Backend, store: MailStore, options: Vi
   // in the bar, ends the right of the app to open it by default.
   const [mattersOn, setMattersOn] = createSignal(false);
   let chose = false;
+  const openedListeners = new Set<(view: ViewTab) => void>();
 
   const views = (): readonly ViewTab[] =>
     mattersOn() ? [MATTERS, ALL_MAIL, ...saved()] : [ALL_MAIL, ...saved()];
@@ -77,6 +81,13 @@ export function createViewsStore(backend: Backend, store: MailStore, options: Vi
   /** The text in the bar differs from the active view's saved text. */
   const changed = () => store.query() !== active().query;
   const isSaved = () => !isBuiltInView(active().id);
+
+  /**
+   * The bar's text could be a view. A prompt alone can (ADR 0116, rule 10): it constrains no
+   * mail filter, and it is still what the view shows.
+   */
+  const savable = () =>
+    isSaved() ? store.query().trim() !== "" : store.filtered() || holdsPrompt(store.query());
 
   function put(view: SavedView) {
     setSaved((all) => all.map((v) => (v.id === view.id ? view : v)));
@@ -118,7 +129,13 @@ export function createViewsStore(backend: Backend, store: MailStore, options: Vi
    * unread mail like any view (ADR 0093): every tab's number means the same thing.
    */
   async function countAll(mine: number) {
-    const counted = [{ id: ALL_MAIL_ID, query: "is:unread" }, ...saved()];
+    // A view with a prompt has no badge (ADR 0116, rule 10): its filters alone are not what it shows.
+    const asking = saved().filter((v) => holdsPrompt(v.query));
+    for (const view of asking) setCount(view.id, undefined);
+    const counted = [
+      { id: ALL_MAIL_ID, query: "is:unread" },
+      ...saved().filter((v) => !holdsPrompt(v.query)),
+    ];
     for (const view of counted) {
       let total = 0;
       let before: number | undefined;
@@ -180,6 +197,7 @@ export function createViewsStore(backend: Backend, store: MailStore, options: Vi
     });
     // Selecting only moves the text; the bar keeps input, mirror and store in step.
     setText(view.query);
+    for (const listener of openedListeners) listener(view);
   }
 
   /** Back to the saved text; for `All mail` that is clearing the query. */
@@ -320,15 +338,14 @@ export function createViewsStore(backend: Backend, store: MailStore, options: Vi
     remove,
     move,
     submitName,
-    /** The bar's text could be saved as a new view: constrained on `All mail`, any text in a view. */
-    canSaveAs: () =>
-      activeId() !== MATTERS_ID && (isSaved() ? store.query().trim() !== "" : store.filtered()),
+    /** The bar's text could be saved as a new view: constrained or a prompt on `All mail`, any text in a view. */
+    canSaveAs: () => activeId() !== MATTERS_ID && savable(),
     /** Opens the naming row for a new view; true when it is open. */
     startNaming(): boolean {
       if (naming()) return true;
       // A search of Matters is not a saved view: a view searches mail (ADR 0056, rule 1).
       if (activeId() === MATTERS_ID) return false;
-      if (!(isSaved() ? store.query().trim() !== "" : store.filtered())) return false;
+      if (!savable()) return false;
       setNaming({ mode: "new" });
       return true;
     },
@@ -338,6 +355,11 @@ export function createViewsStore(backend: Backend, store: MailStore, options: Vi
     },
     cancelNaming: () => setNaming(null),
     clearProblem: () => setProblem(""),
+    /** A tab was opened and its text is in the bar (a view with a prompt reads, ADR 0116, rule 3). */
+    onOpened(listener: (view: ViewTab) => void) {
+      openedListeners.add(listener);
+      return () => openedListeners.delete(listener);
+    },
     /** The bar's `setText`, once the bar exists. */
     bindText(fn: (text: string) => void) {
       setText = fn;

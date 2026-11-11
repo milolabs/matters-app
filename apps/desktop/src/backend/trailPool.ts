@@ -9,6 +9,7 @@ import type {
   MessageBodyPort,
   MessageStorePort,
   ParsedQuery,
+  QueryNode,
   RankedSearchPort,
   RankedThread,
   TalkCarry,
@@ -63,6 +64,15 @@ export interface PoolContext {
   readonly time?: TalkTime;
   /** Read the passage of the best message of each candidate (the evaluation tool does not). */
   readonly fragments?: boolean;
+  /**
+   * The mail filters of the query a prompt is in (ADR 0116, rule 4): every query is ANDed with
+   * them in code. `root` goes into the search; `among` says which matches they match, so what
+   * the search adds on its own (file names) is held to them too. Absent: nothing narrows.
+   */
+  readonly within?: {
+    readonly root: QueryNode;
+    among(keys: readonly number[]): Promise<readonly number[]>;
+  };
 }
 
 export interface Candidate {
@@ -318,13 +328,25 @@ export function createTrailPool(ctx: PoolContext) {
       const search = async (query: string, parsed: ParsedQuery) => {
         // The agent's words tolerate inflection; the person's own search does not (ADR 0081).
         const stemmed = stemQuery(parsed);
+        const within = ctx.within;
         const t0 = performance.now();
-        const found = await ctx.index.searchRanked(stemmed, {
-          limit: RANKED_MESSAGES,
-          accountIds: [...ctx.consented],
-          automatedPenalty: BULK_PENALTY,
-          ownBoost: RELATIONSHIP_BOOST,
-        });
+        // The person's filters are ANDed after the stemming: their own words are not inflected.
+        const ranked = await ctx.index.searchRanked(
+          within === undefined || stemmed.root === null
+            ? stemmed
+            : { ...stemmed, root: { kind: "and", children: [stemmed.root, within.root] } },
+          {
+            limit: RANKED_MESSAGES,
+            accountIds: [...ctx.consented],
+            automatedPenalty: BULK_PENALTY,
+            ownBoost: RELATIONSHIP_BOOST,
+          },
+        );
+        const matching =
+          within === undefined
+            ? null
+            : new Set(await within.among([...new Set(ranked.map((m) => m.messageKey))]));
+        const found = matching === null ? ranked : ranked.filter((m) => matching.has(m.messageKey));
         const ms = performance.now() - t0;
         const threads = rankQueryThreads(found, {
           nowMs: ctx.nowMs,

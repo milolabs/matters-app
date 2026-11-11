@@ -213,6 +213,13 @@ describe("views store: tabs and changed", () => {
     expect(views.startNaming()).toBe(true);
     views.cancelNaming();
     expect(views.naming()).toBeNull();
+    // A prompt alone is a view too (ADR 0116, rule 10); an unfinished one is not.
+    store.setQuery("prompt:");
+    expect(views.canSaveAs()).toBe(false);
+    store.setQuery('prompt:"offers made to me"');
+    expect(views.canSaveAs()).toBe(true);
+    expect(views.startNaming()).toBe(true);
+    views.cancelNaming();
     views.startRename("b");
     expect(views.naming()).toEqual({ mode: "rename", id: "b", name: "Unread" });
     expect(await views.submitName("Inbox zero")).toEqual({ ok: true });

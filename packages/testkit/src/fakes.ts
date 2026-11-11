@@ -921,18 +921,20 @@ export class InMemorySearchIndex
   async search(query: ParsedQuery, options: SearchOptions): Promise<readonly number[]> {
     const root = query.root;
     if (root === null) return [];
-    const { beforeKey } = options;
+    const { beforeKey, afterKey } = options;
+    const oldest = options.order === "oldest";
     // Trash and Spam are left out unless the query asks for them (ADR 0044, rule 3).
     const asked = asksForHidden(root, (v) => this.store?.namedFolderRole(v));
     return [...this.docs.values()]
       .filter((d) => {
         const m = this.store?.peek(d.message.key) ?? d.message;
         if (beforeKey !== undefined && m.key >= beforeKey) return false;
+        if (afterKey !== undefined && m.key <= afterKey) return false;
         if (!asked && isHiddenMailbox(m.mailboxes ?? 0)) return false;
         return evaluate(root, d, m);
       })
       .map((d) => d.message.key)
-      .sort((a, b) => b - a)
+      .sort((a, b) => (oldest ? a - b : b - a))
       .slice(0, Math.max(0, options.limit));
   }
 
@@ -1111,13 +1113,14 @@ export class InMemorySearchIndex
       .slice(0, Math.max(0, Math.trunc(limit)));
   }
 
-  /** One full page, with a cursor when it is full. */
+  /** One full page, with a cursor when it is full: `nextAfterKey` for `oldest`. */
   async searchChunk(query: ParsedQuery, options: SearchOptions): Promise<SearchChunk> {
     const keys = await this.search(query, options);
     const last = keys[keys.length - 1];
-    return keys.length === Math.trunc(options.limit) && last !== undefined
-      ? { keys, nextBeforeKey: last }
-      : { keys };
+    if (keys.length !== Math.trunc(options.limit) || last === undefined) return { keys };
+    return options.order === "oldest"
+      ? { keys, nextAfterKey: last }
+      : { keys, nextBeforeKey: last };
   }
 
   async matchesAmong(query: ParsedQuery, keys: readonly number[]): Promise<readonly number[]> {

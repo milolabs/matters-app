@@ -8,7 +8,10 @@ import {
   hasRole,
   isEmptyQuery,
   isHiddenMailbox,
+  type KeyOrder,
   leavesView,
+  listLimit,
+  listOrder,
   MOVE_UNDO_WINDOW_MS,
   parseQuery,
   planMove,
@@ -26,10 +29,19 @@ export const PAGE_SIZE = 200;
 
 /**
  * Whether the text constrains anything (ADR 0025). `from:`, `is:un` or ` -- ` do not, and the
- * list treats them as no query at all, so it does not empty while the user is typing.
+ * list treats them as no query at all, so it does not empty while the user is typing. A `limit:`
+ * without a prompt does (ADR 0116, rule 4a): the backend's search lists that many, the newest,
+ * and stops paging there, also for `limit:` alone. So does `sort:oldest` (rule 4b): the search
+ * walks the key the other way, also over all mail.
  */
 export function isConstrained(text: string): boolean {
-  return !isEmptyQuery(parseQuery(text));
+  const parsed = parseQuery(text);
+  return !isEmptyQuery(parsed) || listLimit(parsed) !== undefined || listOrder(parsed) === "oldest";
+}
+
+/** Which way the dated list of the text runs (ADR 0116, rule 4b). */
+function orderOf(text: string): KeyOrder {
+  return listOrder(parseQuery(text));
 }
 
 export interface OpenThread {
@@ -95,9 +107,15 @@ const realTimeout = (run: () => void, delayMs: number) => {
   return () => clearTimeout(timer);
 };
 
-/** `list` with `message` put where its key belongs; the list is newest first. */
-function insertByKey(list: readonly Message[], message: Message): readonly Message[] {
-  const at = list.findIndex((m) => m.key < message.key);
+/** `list` with `message` put where its key belongs; the list is newest first, or oldest first. */
+function insertByKey(
+  list: readonly Message[],
+  message: Message,
+  order: KeyOrder = "newest",
+): readonly Message[] {
+  const at = list.findIndex((m) =>
+    order === "oldest" ? m.key > message.key : m.key < message.key,
+  );
   return at < 0 ? [...list, message] : [...list.slice(0, at), message, ...list.slice(at)];
 }
 
@@ -141,6 +159,12 @@ export function createMailStore(backend: Backend, options: MailStoreOptions = {}
   const made = new Map<string, MadeMove>();
   // Whether the open thread was fetched with its deleted messages (a view of Trash or Spam).
   let openHidden = false;
+  // ADR 0116, rule 7: the query whose prompt's rows stand in for the mail filters' result, in the
+  // prompt's order. Null: the list is the result of the query, as always.
+  let ordered: string | null = null;
+  const [isOrdered, setIsOrdered] = createSignal(false);
+  // Those rows are by date (a prompt under `sort:newest` or `sort:oldest`, rule 4b): day headings.
+  const [orderedDated, setOrderedDated] = createSignal(false);
 
   // Read and unread (ADR 0039). What the reader asked for stays on top of what is fetched until
   // the worker has committed it and an event at least as new as the commit has been applied, so
@@ -211,9 +235,10 @@ export function createMailStore(backend: Backend, options: MailStoreOptions = {}
     }
   }
 
-  async function fetchPage(text: string, beforeKey?: number) {
-    const page = { limit: PAGE_SIZE, ...(beforeKey === undefined ? {} : { beforeKey }) };
+  /** One page from `cursor`: below it newest first, or above it under `sort:oldest`. */
+  async function fetchPage(text: string, cursor?: number) {
     if (!isConstrained(text)) {
+      const page = { limit: PAGE_SIZE, ...(cursor === undefined ? {} : { beforeKey: cursor }) };
       const r = await backend.listNewest(page);
       const last = r.messages[r.messages.length - 1];
       return {
@@ -221,8 +246,13 @@ export function createMailStore(backend: Backend, options: MailStoreOptions = {}
         next: r.messages.length === PAGE_SIZE && last ? last.key : undefined,
       };
     }
-    const r = await backend.search({ query: text, ...page });
-    return { messages: r.messages, next: r.nextBeforeKey };
+    const oldest = orderOf(text) === "oldest";
+    const r = await backend.search({
+      query: text,
+      limit: PAGE_SIZE,
+      ...(cursor === undefined ? {} : oldest ? { afterKey: cursor } : { beforeKey: cursor }),
+    });
+    return { messages: r.messages, next: oldest ? r.nextAfterKey : r.nextBeforeKey };
   }
 
   async function openSelected() {
@@ -324,17 +354,106 @@ export function createMailStore(backend: Backend, options: MailStoreOptions = {}
     setSelected(at >= 0 ? at : Math.min(selected(), Math.max(list.length - 1, 0)));
   }
 
+  /**
+   * ADR 0116, rule 7: the rows a prompt kept, in its order, in place of the result of `text`, or
+   * null to go back to that result. Only for the text in the bar: an answer for older text is
+   * dropped. The selection stays on its thread when the thread is still listed.
+   */
+  function showOrdered(text: string, rows: readonly Message[] | null, dated = false): void {
+    if (text !== query()) return;
+    if (rows === null) {
+      if (ordered === null) return;
+      ordered = null;
+      batch(() => {
+        setIsOrdered(false);
+        setOrderedDated(false);
+      });
+      void run(text);
+      return;
+    }
+    // A list or fill of the mail filters that is on its way must not land over these rows.
+    listSeq++;
+    fillGen++;
+    ordered = text;
+    held = null;
+    const before = messages()[selected()];
+    const next = overlay(rows);
+    const at = before === undefined ? -1 : next.findIndex((m) => m.threadId === before.threadId);
+    batch(() => {
+      setIsOrdered(true);
+      setOrderedDated(dated);
+      setMessages(next);
+      setSelected(Math.max(at, 0));
+      setSearching(false);
+      setLoaded(true);
+    });
+    setCursor(undefined);
+    const now = next[Math.max(at, 0)];
+    if (now?.threadId !== before?.threadId) {
+      // The app moved the selection, not the reader: nothing is counted for it.
+      autoRead.displaced(now?.threadId ?? null);
+      void openSelected();
+    }
+  }
+
+  /**
+   * A change while a prompt's rows are shown: the rows keep their places, their messages are read
+   * again, and what was removed or moved away goes. Which threads fit is the prompt's to say.
+   */
+  async function applyOrdered(event: ChangesEvent) {
+    const seq = listSeq;
+    const listed = new Set(messages().map((m) => m.key));
+    const keys = event.changedKeys.filter((k) => listed.has(k));
+    const fetched = new Map<number, Message>();
+    for (let i = 0; i < keys.length; i += 500) {
+      for (const m of (await backend.getMessages(keys.slice(i, i + 500))).messages) {
+        fetched.set(m.key, m);
+      }
+    }
+    if (seq !== listSeq) return;
+    appliedSeq = Math.max(appliedSeq, event.changeSeq);
+    releaseIntents(event.removedKeys);
+    const before = messages();
+    const selectedKey = before[selected()]?.key;
+    const removed = new Set(event.removedKeys);
+    const next = overlay(
+      before.filter((m) => !removed.has(m.key)).map((m) => fetched.get(m.key) ?? m),
+    );
+    batch(() => {
+      setMessages(next);
+      keepSelection(selectedKey);
+    });
+    const current = messages()[selected()];
+    if (current?.key !== selectedKey) {
+      autoRead.displaced(current?.threadId ?? null);
+      if (current) void openSelected();
+      else {
+        threadSeq++;
+        setThread(null);
+      }
+      return;
+    }
+    const open = thread();
+    if (open && keys.some((k) => fetched.get(k)?.threadId === open.thread.id)) {
+      const r = await backend.openThread(open.thread.id, openHidden).catch(() => null);
+      if (r && seq === listSeq && messages()[selected()]?.threadId === open.thread.id) {
+        setThread(overlayThread({ thread: r.thread, messages: r.messages }));
+      }
+    }
+  }
+
   async function applyChanges(event: ChangesEvent) {
     if (event.changedKeys.length + event.removedKeys.length === 0) return;
+    if (ordered !== null) return applyOrdered(event);
     const seq = listSeq;
-    const filtered = isConstrained(query());
+    const text = query();
+    const filtered = isConstrained(text);
 
     const fetched: Message[] = [];
     let page: Awaited<ReturnType<typeof fetchPage>> | undefined;
     if (filtered) {
       // The backend decides what matches a query: ask again for the first page. A short or
       // empty first window must not blank the list, so go on until a page is full.
-      const text = query();
       page = await fetchPage(text);
       while (seq === listSeq && page.messages.length < PAGE_SIZE && page.next !== undefined) {
         const more = await fetchPage(text, page.next);
@@ -357,16 +476,19 @@ export function createMailStore(backend: Backend, options: MailStoreOptions = {}
       const row = before[selected()];
       const removed = new Set(event.removedKeys);
       const last = found[found.length - 1];
+      const order = orderOf(text);
       // The row being read stays even if the refresh no longer matches it (it was marked read in
       // an `is:unread` list): it goes when the reader moves to another. A deleted row is gone,
-      // and so is one below the window this page covers.
+      // and so is one past the window this page covers (below it, or above it oldest first).
+      // New mail of an oldest-first list lands past the first page, so only a short list shows it.
       const stays =
         row !== undefined &&
         !found.some((m) => m.key === row.key) &&
         !removed.has(row.key) &&
-        (page.next === undefined || (last !== undefined && row.key > last.key));
+        (page.next === undefined ||
+          (last !== undefined && (order === "oldest" ? row.key < last.key : row.key > last.key)));
       if (stays) {
-        found = insertByKey(found, overlay([row])[0] as Message);
+        found = insertByKey(found, overlay([row])[0] as Message, order);
         held = row.key;
       } else {
         // The row matches again, or the reader is elsewhere.
@@ -849,9 +971,17 @@ export function createMailStore(backend: Backend, options: MailStoreOptions = {}
     setZone,
     start: () => run(""),
     setQuery(text: string) {
+      // New text is the mail filters' again until its prompt is read (ADR 0116, rule 2).
+      const keep = ordered !== null && ordered === text;
+      if (ordered !== null && !keep) {
+        ordered = null;
+        setIsOrdered(false);
+        setOrderedDated(false);
+      }
       setQueryText(text);
       for (const listener of queryListeners) listener(text);
-      void run(text);
+      // The same text again keeps the prompt's rows.
+      if (!keep) void run(text);
     },
     /** Called on every change of the query text (the views' badges stand down while typing). */
     onQueryChange(listener: (query: string) => void) {
@@ -919,6 +1049,11 @@ export function createMailStore(backend: Backend, options: MailStoreOptions = {}
       return () => shiftListeners.delete(listener);
     },
     hasMore: () => cursor() !== undefined,
+    showOrdered,
+    /** The list holds a prompt's or a ranked order's rows, not the mail filters' result. */
+    ordered: isOrdered,
+    /** Those rows are by date all the same (ADR 0116, rule 4b): the list keeps its headings. */
+    orderedDated,
     /** Smoke hook: called right after a result set was applied to the signals. */
     onSettled(listener: (query: string) => void) {
       settledListeners.add(listener);

@@ -57,12 +57,13 @@ export function bucketLabel(bucket: string, now: number): string {
 
 /**
  * Lays out `messages` newest first. With `heading`, one heading tops the whole list instead of
- * day headings (search results are not in date order).
+ * day headings (search results are not in date order). With `null`, there are no headings at
+ * all: a prompt's rows are in its own order (ADR 0116, rule 7).
  */
 export function layoutList(
   messages: readonly { readonly dateMs: number }[],
   now: number,
-  heading?: string,
+  heading?: string | null,
 ): ListLayout {
   const items: ListItem[] = [];
   const starts: number[] = [];
@@ -74,7 +75,7 @@ export function layoutList(
     y += item.kind === "head" ? HEAD_HEIGHT : ROW_HEIGHT;
   };
 
-  if (heading !== undefined && messages.length > 0) push({ kind: "head", label: heading });
+  if (typeof heading === "string" && messages.length > 0) push({ kind: "head", label: heading });
   let bucket = "";
   for (let i = 0; i < messages.length; i++) {
     if (heading === undefined) {

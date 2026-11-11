@@ -472,6 +472,19 @@ body {
   text-decoration: underline wavy var(--late) 1px;
   text-underline-offset: 3px;
 }
+/* A prompt (ADR 0116) is the agent's to read: its pill is the agent's violet (ADR 0052, rule 10). */
+.qp.qagent {
+  background: var(--agent-soft);
+  box-shadow: 0 0 0 1.5px var(--agent-soft);
+  color: var(--agent);
+}
+.qp.qagent .qk {
+  color: color-mix(in srgb, var(--agent) 70%, transparent);
+}
+.qp.qagent.qdraft {
+  background: none;
+  box-shadow: none;
+}
 .qop {
   color: var(--secondary);
 }
@@ -630,6 +643,14 @@ body {
 .qf[data-on] {
   background: var(--pill);
   color: var(--ink);
+}
+.qf[data-agent] {
+  color: var(--agent);
+}
+.qf[data-agent]:hover,
+.qf[data-agent][data-on] {
+  background: var(--agent-soft);
+  color: var(--agent);
 }
 
 /* The suggestion panel hangs under the field and covers what is below; it moves nothing. */
@@ -1059,6 +1080,16 @@ mark.hit {
   height: 6px;
   border-radius: 50%;
   background: var(--secondary);
+  align-self: center;
+}
+/* A view whose text holds a prompt (ADR 0116): a small violet ring before its name. */
+.vt-agent {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: -1px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--agent);
   align-self: center;
 }
 

@@ -191,6 +191,21 @@ export interface SmokeReport {
     readonly promiseLineShown: boolean;
     readonly promiseLineText: string;
     readonly stripShowsOpen: boolean;
+    /** ADR 0116: a prompt counted, run with ↵, and its rows in its order with a reason. */
+    readonly prompt?: {
+      readonly lineShown: string;
+      readonly ran: boolean;
+      readonly rows: number;
+      readonly inOrder: boolean;
+      readonly whyShown: boolean;
+      readonly noHeadings: boolean;
+      readonly backToFilters: boolean;
+      /** ADR 0116, rule 4b: the same prompt by date shows what fits by date, with a heading. */
+      readonly datedHeadings: boolean;
+      /** Without a prompt, `sort:relevance` is ranked after ↵, with no headings. */
+      readonly relevanceSorted: boolean;
+      readonly detail: string;
+    };
     readonly detail: string;
   };
   /**
@@ -659,6 +674,25 @@ export function runSmoke(report: SmokeReport, processStartEpochMs: number, phase
     } else if (matters.promiseLineShown && !matters.stripShowsOpen) {
       failures.push("the agent strip did not name what is still open");
     }
+    const prompt = matters.prompt;
+    if (matters.tabPresent && prompt !== undefined) {
+      if (prompt.lineShown === "") {
+        failures.push(`a prompt in the bar showed no count line (${prompt.detail})`);
+      } else if (!prompt.ran) {
+        failures.push(`↵ with a prompt did not show the prompt's rows (${prompt.detail})`);
+      } else {
+        if (!prompt.inOrder) failures.push("the prompt's rows were not in the order it gave");
+        if (!prompt.whyShown) failures.push("a row the prompt kept did not show its reason");
+        if (!prompt.noHeadings) failures.push("the list under a prompt showed headings");
+        if (!prompt.backToFilters) {
+          failures.push("changing the mail filters did not bring their result back");
+        }
+        if (!prompt.datedHeadings) {
+          failures.push("a prompt under sort:newest did not show what fits by date");
+        }
+        if (!prompt.relevanceSorted) failures.push("sort:relevance did not rank the list after ↵");
+      }
+    }
     if (matters.tabPresent && !matters.tabGoneAfterOff) {
       failures.push("turning AI off did not take the Matters tab away");
     }
@@ -756,6 +790,7 @@ export function runSmoke(report: SmokeReport, processStartEpochMs: number, phase
         readingThreads: matters.readingTotal,
         searchFrameMedianMs: median(matters.searchFrameMs),
         searchWorkMedianMs: median(matters.searchWorkMs),
+        prompt: matters.prompt,
       },
       attach: attach && {
         pastedMB: Math.round(attach.pastedBytes / 1e6),

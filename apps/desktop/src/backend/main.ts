@@ -198,6 +198,7 @@ async function createBackend(): Promise<Backend> {
           ...(kind === undefined ? {} : { kind }),
           ...(note === undefined ? {} : { note }),
         }),
+      onAgentPrompt: (progress) => broadcast({ type: "agentPromptProgress", ...progress }),
       onMoveRefused: (action, count) => broadcast({ type: "moveRefused", action, count }),
       onAttachments: (draftId) => void publishAttachments(draftId),
       onAttachmentProgress: (id, fraction) =>

@@ -56,6 +56,7 @@ import type {
   Placement,
 } from "../domain/move.ts";
 import type { ArrivalMark, ArrivalSpan } from "../domain/notifications.ts";
+import type { PromptSearch, PromptVerdict } from "../domain/prompts.ts";
 import type {
   AttachmentAnswer,
   CachedFile,
@@ -571,15 +572,25 @@ export interface MessageBodyPort {
 
 export interface SearchOptions {
   readonly limit: number;
+  /** Only keys below this one (exclusive). */
   readonly beforeKey?: number;
+  /** Only keys above this one (exclusive): the cursor of `oldest`. */
+  readonly afterKey?: number;
+  /**
+   * Which way along the key (ADR 0116, rule 4b; ADR 0025). Default `newest`: keys descending,
+   * paged by `beforeKey`. `oldest`: ascending, paged by `afterKey`, time windows oldest first.
+   */
+  readonly order?: "newest" | "oldest";
 }
 
 /** One window of a search (ADR 0025): possibly fewer keys than the limit, even none. */
 export interface SearchChunk {
-  /** Newest first. */
+  /** In the order asked for: newest first by default. */
   readonly keys: readonly number[];
-  /** Pass as `beforeKey` for the next chunk; absent when nothing older can match. */
+  /** `newest`: pass as `beforeKey` for the next chunk; absent when nothing older can match. */
   readonly nextBeforeKey?: number;
+  /** `oldest`: pass as `afterKey` for the next chunk; absent when nothing newer can match. */
+  readonly nextAfterKey?: number;
 }
 
 export interface SearchIndexPort {
@@ -591,7 +602,7 @@ export interface SearchIndexPort {
   indexMessages(batch: readonly MessageDocument[]): Promise<void>;
   /** Drops these keys from the index; unknown keys are skipped. */
   removeMessages(keys: readonly number[]): Promise<void>;
-  /** Message keys, newest first: an exact page of `limit` unless the matches run out. */
+  /** Message keys in `order` (newest first by default): an exact page of `limit` unless the matches run out. */
   search(query: ParsedQuery, options: SearchOptions): Promise<readonly number[]>;
   /**
    * The next window of matches below `beforeKey`. It may hold fewer keys than the limit, or
@@ -1561,13 +1572,44 @@ export interface AgentInsightStorePort {
   /** Removes every talk across all mail and its entries; returns how many talks went. */
   deleteAllTalks(): Promise<number>;
   /**
-   * Forgets what was read, prepared, chosen, talked and journaled for these threads, when their mail
+   * Forgets what was read, prepared, chosen, talked, judged for a prompt (ADR 0116, rule 12) and
+   * journaled for these threads, when their mail
    * is removed from the machine. In the talk across all mail, the hits and quotes of these threads go
    * too, and the rest of that talk stays. The ledger stays: it holds counts, never mail. Rules and their journal
    * lines stay too: a rule holds an address and the person's own words, never mail. Instructions of
    * scope `thread` and their journal lines go with the thread; the others stay.
    */
   removeForThreads(threadIds: readonly string[]): Promise<void>;
+  /**
+   * Keeps the verdicts of one batch of a prompt (ADR 0116, rule 5) in one transaction. Only the
+   * newest verdict of a thread for a prompt is kept: one replaces any earlier verdict of the same
+   * prompt and thread, whatever its last message or version. Verdicts go with their thread in
+   * `removeForThreads`.
+   */
+  putPromptVerdicts(verdicts: readonly PromptVerdict[]): Promise<void>;
+  /**
+   * The verdicts of a prompt for these threads as they stand now: of this version and at the
+   * `lastMessageKey` given. A thread with a newer message has none (rule 5). In no particular order.
+   */
+  getPromptVerdicts(
+    promptKey: string,
+    version: number,
+    threads: readonly { readonly threadId: string; readonly lastMessageKey: number }[],
+  ): Promise<readonly PromptVerdict[]>;
+  /**
+   * Drops every verdict of each prompt not in `keep` (the prompts saved views hold) whose newest
+   * verdict was made before `beforeMs` (ADR 0116, rule 12), and the kept searches of a prompt not
+   * in `keep` made before `beforeMs` that no verdict is left for. Returns how many verdicts went.
+   */
+  prunePromptVerdicts(keep: readonly string[], beforeMs: number): Promise<number>;
+  /**
+   * Keeps what the search of a prompt wrote (ADR 0116, rule 4), under the prompt and the mail
+   * filters: it replaces an earlier search of the same pair. A thread removed in
+   * `removeForThreads` leaves its `threadIds`.
+   */
+  putPromptSearch(search: PromptSearch): Promise<void>;
+  /** The kept search of a prompt with these mail filters, or null when it never ran. */
+  getPromptSearch(promptKey: string, filters: string): Promise<PromptSearch | null>;
 }
 
 /** The person's choices about agents and their consent, kept locally (ADR 0051, rule 6). */

@@ -14,6 +14,9 @@ import type {
   AgentMatchActResponse,
   AgentPreparedResponse,
   AgentPrepareResponse,
+  AgentPromptCountResponse,
+  AgentPromptRunResponse,
+  AgentPromptVerdictsResponse,
   AgentReadEstimateResponse,
   AgentRememberResponse,
   AgentRewriteDraftResponse,
@@ -74,6 +77,7 @@ import type {
   SendActionResponse,
   SetImageRuleResponse,
   SetSeenResponse,
+  SortRankedResponse,
   StorageReport,
   SuggestPeopleResponse,
   UndoMoveResponse,
@@ -108,6 +112,9 @@ import type {
   PersonSuggestion,
   PreparedWork,
   PrepareResult,
+  PromptCount,
+  PromptList,
+  PromptRunResult,
   RememberResult,
   ReplyCheck,
   ReplyMode,
@@ -115,6 +122,7 @@ import type {
   RuleOffer,
   SavedView,
   SendOperation,
+  SortRanked,
   StoppableSource,
   TalkEntry,
   TalkResult,
@@ -145,7 +153,13 @@ export interface Backend {
   listNewest(args: { beforeKey?: number; limit: number }): Promise<ListNewestResponse>;
   /** `hidden`: the thread is looked at from Trash or Spam, so its deleted messages are shown too. */
   openThread(threadId: string, hidden?: boolean): Promise<OpenThreadResponse>;
-  search(args: { query: string; beforeKey?: number; limit: number }): Promise<SearchResponse>;
+  /** `afterKey` and `nextAfterKey` page a `sort:oldest` list (ADR 0116, rule 4b). */
+  search(args: {
+    query: string;
+    beforeKey?: number;
+    afterKey?: number;
+    limit: number;
+  }): Promise<SearchResponse>;
   getMessages(keys: readonly number[]): Promise<GetMessagesResponse>;
   /** The message's HTML, as sent: untrusted, see `mailHtml.ts`. */
   getMessageHtml(key: number): Promise<GetMessageHtmlResponse>;
@@ -269,6 +283,8 @@ export interface Backend {
   forgetSearch(viewId: string, query: string): Promise<void>;
   /** Everything remembered for the view, not only what the panel shows. */
   clearSearches(viewId: string): Promise<void>;
+  /** The ranked order of a query without a prompt, after `↵` (ADR 0116, rule 4b). */
+  sortRanked(query: string): Promise<SortRanked>;
   /** Unread matches in one window of at most `cap` keys; follow `nextBeforeKey` for more. */
   countMatches(args: {
     query: string;
@@ -390,6 +406,18 @@ export interface Backend {
    * accounts agreed to and without the threads the rules cover. Read-only.
    */
   agentMatchAct(query: string): Promise<{ messages: readonly ActMatch[]; capped: boolean }>;
+  /** ADR 0116, rule 4: what a run of the prompt in `query` would read. No model. */
+  agentPromptCount(query: string): Promise<PromptCount>;
+  /** ADR 0116, rule 7: the verdicts kept for the prompt in `query`, as the list shows them. */
+  agentPromptVerdicts(query: string): Promise<PromptList>;
+  /**
+   * ADR 0116, rules 3 and 4: runs the prompt in `query`, its search first when none is kept or
+   * `again` asks for a new one, then what it found and has not read; progress is pushed. Above
+   * `PROMPT_ASK_ABOVE` threads to read it reads only with `readAll`, else it answers `ask`.
+   */
+  agentPromptRun(query: string, again?: boolean, readAll?: boolean): Promise<PromptRunResult>;
+  /** ADR 0116, rule 9: cuts the running prompt short. */
+  agentPromptStop(): Promise<void>;
   /** Pushes from the backend (changes, sync status). Returns the unsubscribe function. */
   onEvent(listener: (event: BackendEvent) => void): () => void;
 }
@@ -591,6 +619,8 @@ export function createBackend(port: MessagePort): Backend {
     moveView: async (id, toIndex) => {
       await request({ type: "moveView", id, toIndex });
     },
+    sortRanked: async (query) =>
+      (await request<SortRankedResponse>({ type: "sortRanked", query })).ranked,
     countMatches: async ({ query, cap, beforeKey }) => {
       const r = await request<CountMatchesResponse>({
         type: "countMatches",
@@ -752,6 +782,22 @@ export function createBackend(port: MessagePort): Backend {
     agentMatchAct: async (query) => {
       const r = await request<AgentMatchActResponse>({ type: "agentMatchAct", query });
       return { messages: r.messages, capped: r.capped };
+    },
+    agentPromptCount: async (query) =>
+      (await request<AgentPromptCountResponse>({ type: "agentPromptCount", query })).count,
+    agentPromptVerdicts: async (query) =>
+      (await request<AgentPromptVerdictsResponse>({ type: "agentPromptVerdicts", query })).list,
+    agentPromptRun: async (query, again, readAll) =>
+      (
+        await request<AgentPromptRunResponse>({
+          type: "agentPromptRun",
+          query,
+          ...(again === true ? { again } : {}),
+          ...(readAll === true ? { readAll } : {}),
+        })
+      ).result,
+    agentPromptStop: async () => {
+      await request({ type: "agentPromptStop" });
     },
     onEvent(listener) {
       listeners.add(listener);

@@ -141,9 +141,42 @@ describe("querySuggestions", () => {
     const s = suggest("|");
     expect(s.groups.map((g) => g.title)).toEqual(["Filters"]);
     expect(s.labels).toContain("from:");
-    expect(s.labels).toHaveLength(11);
+    expect(s.labels).toHaveLength(14);
     expect(s.labels).toContain("in:");
     expect(s.first("is:")).toEqual({ text: "is:", caret: 3 });
+  });
+
+  it("offers limit: with its hint, and no values for it (ADR 0116, rule 4a)", () => {
+    expect(suggest("lim|").labels).toEqual(["limit:"]);
+    expect(suggest("lim|").first("limit:")).toEqual({ text: "limit:", caret: 6 });
+    expect(suggest("limit:|").labels).toEqual([]);
+    expect(suggest("limit:5|").labels).toEqual([]);
+  });
+
+  it("offers sort: and its values with hints; fit only beside a prompt (ADR 0116, rule 4b)", () => {
+    expect(suggest("so|").labels).toEqual(["sort:"]);
+    expect(suggest("sort:|").labels).toEqual(["newest", "oldest", "relevance"]);
+    expect(suggest("sort:o|").first("oldest")).toEqual({ text: "sort:oldest ", caret: 12 });
+    const values = suggest("sort:|").groups[0];
+    expect(values?.title).toBe("Order of the results");
+    expect(values?.items.find((i) => i.label === "relevance")?.hint).toBe(
+      "Best match first, after ↵",
+    );
+    expect(suggest('prompt:"x" sort:f|').labels).toEqual(["fit"]);
+    expect(suggest("sort:f|").labels).toEqual([]);
+    // With AI off, the same orders: none of them needs the assistant.
+    const off = querySuggestions("sort:", 5, parseQuery("sort:"), { ...sources, noPrompt: true });
+    expect(off.flatMap((g) => g.items.map((i) => i.label))).toEqual([
+      "newest",
+      "oldest",
+      "relevance",
+    ]);
+  });
+
+  it("offers prompt: with its hint, and no values for it (ADR 0116)", () => {
+    expect(suggest("pro|").labels).toEqual(["prompt:"]);
+    expect(suggest("prompt:|").labels).toEqual([]);
+    expect(suggest("prompt:wh|").labels).toEqual([]);
   });
 
   it("filters fields by the word at the caret, and offers nothing for other words", () => {

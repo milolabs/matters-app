@@ -65,7 +65,8 @@ const TOOLS = [
   "count_mail",
   "mail_overview",
 ] as const;
-type ToolName = (typeof TOOLS)[number];
+export type MailToolName = (typeof TOOLS)[number];
+type ToolName = MailToolName;
 /** A request larger than this is refused: the tools take a query or a number. */
 const MAX_BODY_BYTES = 1_000_000;
 const DEFAULT_PROTOCOL = "2025-03-26";
@@ -118,6 +119,8 @@ export interface MailToolsContext extends PoolContext {
    * takes files. The loop never gets the bytes; it is told the file goes, and the budget is kept.
    */
   readonly wholeFiles?: boolean;
+  /** The tools this turn is offered; absent: all of them. The search of a prompt has two (ADR 0116). */
+  readonly tools?: readonly MailToolName[];
 }
 
 /** What the tools did in this question, for the service to read when the turn ends. */
@@ -320,6 +323,7 @@ function senderLabel(address: string, name: string): string {
 }
 
 export async function openMailTools(ctx: MailToolsContext): Promise<MailTools> {
+  const offered: readonly ToolName[] = ctx.tools ?? TOOLS;
   const token = randomBytes(24).toString("base64url");
   const expected = Buffer.from(`Bearer ${token}`);
   // Each search ranks on its own: a pool shared by the question would let the first broad
@@ -687,7 +691,7 @@ export async function openMailTools(ctx: MailToolsContext): Promise<MailTools> {
 
   /** One call of a tool: its text, or null when the name is not ours. */
   const call = (name: string, args: Record<string, unknown>): Promise<string> | null => {
-    if (!(TOOLS as readonly string[]).includes(name)) return null;
+    if (!(offered as readonly string[]).includes(name)) return null;
     const tool = name as ToolName;
     return serial(async () => {
       if (closed) return "The tools are closed.";
@@ -729,7 +733,7 @@ export async function openMailTools(ctx: MailToolsContext): Promise<MailTools> {
       case "ping":
         return rpcResult(id, {});
       case "tools/list":
-        return rpcResult(id, { tools: TOOL_LIST });
+        return rpcResult(id, { tools: TOOL_LIST.filter((t) => offered.includes(t.name)) });
       case "tools/call": {
         const args = (
           typeof params.arguments === "object" && params.arguments !== null ? params.arguments : {}
@@ -797,7 +801,7 @@ export async function openMailTools(ctx: MailToolsContext): Promise<MailTools> {
       name: SERVER_NAME,
       url: `http://127.0.0.1:${address.port}/mcp`,
       token,
-      tools: TOOLS,
+      tools: offered,
     },
     state,
     close: () => {

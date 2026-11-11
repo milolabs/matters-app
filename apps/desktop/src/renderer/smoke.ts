@@ -1209,6 +1209,17 @@ async function measureMatters(extras: {
     promiseLineShown: false,
     promiseLineText: "",
     stripShowsOpen: false,
+    /** ADR 0116: a query with a prompt, ↵, and rows in the prompt's order with the model's reason. */
+    prompt: {
+      lineShown: "",
+      ran: false,
+      rows: 0,
+      inOrder: false,
+      whyShown: false,
+      noHeadings: false,
+      backToFilters: false,
+      detail: "",
+    },
     detail: "",
   };
 
@@ -1672,12 +1683,128 @@ async function measureMatters(extras: {
     }
   }
 
+  // ADR 0116: a prompt in the bar is counted before it runs, ↵ reads it, and the list shows the
+  // threads it kept in its order, each with the model's sentence.
+  out.prompt = await measurePrompt(extras.store, backend);
+
   // While AI is still on: the column widened over the window (⇧⌘E).
   widePaneResult = await measureWidePane(extras.store, views);
 
   // Turning AI off takes the tab away and leaves the app as it was before.
   await agent.change(backend.agentDisable());
   out.tabGoneAfterOff = await until(() => tab() === null && views.active().id === "all", 3000);
+  return out;
+}
+
+/**
+ * ADR 0116 on the seeded mailbox: the demo runtime answers the prompt's turns the same each time,
+ * the plan turn that searches (it has no tools) and the batches that judge.
+ */
+async function measurePrompt(store: MailStore, backend: Backend) {
+  const out = {
+    lineShown: "",
+    ran: false,
+    rows: 0,
+    inOrder: false,
+    whyShown: false,
+    noHeadings: false,
+    backToFilters: false,
+    datedHeadings: false,
+    relevanceSorted: false,
+    detail: "",
+  };
+  const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Search mail"]');
+  if (!input) {
+    out.detail = "no search input";
+    return out;
+  }
+  const query = 'prompt:"spotkanie termin"';
+  const line = () => document.querySelector<HTMLElement>("[data-prompt-line]");
+  input.focus();
+  input.value = query;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  // Typing reads nothing: what is known comes after a quiet moment. A cold start has not searched
+  // yet; a warm one has its search kept and everything read (ADR 0116, rule 4).
+  const counted = await until(
+    () => ["ready", "ask", "count", "allRead"].includes(line()?.dataset.promptLine ?? ""),
+    5000,
+  );
+  out.lineShown = line()?.textContent ?? "";
+  if (!counted) {
+    out.detail = `no count line (saw ${line()?.dataset.promptLine ?? "none"})`;
+    return out;
+  }
+  const enter = () => {
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  };
+  const read = () =>
+    store.ordered() && line()?.dataset.promptLine === "allRead" && store.messages().length > 0;
+  enter();
+  // The search, then the reading: done when the line says how many fit. Above PROMPT_ASK_ABOVE
+  // found, the line asks first, and one more ↵ reads them all (rule 4).
+  await until(() => read() || line()?.dataset.promptLine === "ask", 20_000);
+  if (line()?.dataset.promptLine === "ask") enter();
+  out.ran = await until(read, 60_000);
+  await frame();
+  const kept = await backend.agentPromptVerdicts(query).catch(() => null);
+  out.rows = store.messages().length;
+  out.inOrder =
+    kept !== null &&
+    kept.rows.length === store.messages().length &&
+    kept.rows.every((r, i) => store.messages()[i]?.threadId === r.threadId);
+  out.whyShown = document.querySelector("[data-row] [data-prompt-why]") !== null;
+  const listbox = document.querySelector<HTMLElement>('[role="listbox"][aria-label="Messages"]');
+  out.noHeadings =
+    listbox !== null &&
+    [...listbox.querySelectorAll<HTMLElement>(":scope > div > div")].every((el) =>
+      el.hasAttribute("data-row"),
+    );
+  // A developer can ask main for a picture of this moment (MATTERS_SMOKE_SHOT).
+  window.postMessage({ mattersSmokeSignal: "shot" }, "*");
+  await new Promise((r) => setTimeout(r, 500));
+  // Rule 4b: the same prompt by date reads nothing more; what fits is dated, under a heading.
+  const typeText = (text: string) => {
+    input.value = text;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  typeText(`${query} sort:newest`);
+  const headed = () =>
+    listbox !== null &&
+    [...listbox.querySelectorAll<HTMLElement>(":scope > div > div")].some(
+      (el) => !el.hasAttribute("data-row"),
+    );
+  out.datedHeadings =
+    (await until(
+      () => store.ordered() && store.orderedDated() && store.messages().length === out.rows,
+      5000,
+    )) &&
+    (await until(headed, 1000)) &&
+    store.messages().every((m, i, all) => i === 0 || (all[i - 1]?.dateMs ?? 0) >= m.dateMs);
+  // Without a prompt, a ranked order comes after ↵ only, with no headings (rule 4b).
+  const sortLine = () => document.querySelector<HTMLElement>("[data-sort-line]")?.dataset.sortLine;
+  typeText("sort:relevance spotkanie");
+  if (await until(() => sortLine() === "ready" && !store.ordered(), 3000)) {
+    enter();
+    out.relevanceSorted =
+      (await until(() => sortLine() === "sorted" && store.ordered(), 10_000)) &&
+      !store.orderedDated() &&
+      !headed();
+  }
+  if (!out.relevanceSorted) {
+    const why = await backend.sortRanked("sort:relevance spotkanie").then(
+      (r) => `${r.rows.length} rows`,
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+    out.detail = `sort line ${sortLine() ?? "none"} (${why})`;
+  }
+  // Other mail filters: the list is theirs again until the prompt is read for them.
+  input.value = `${query} has:attachment`;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  out.backToFilters = await until(() => !store.ordered(), 2000);
+  input.value = "";
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  await frame();
   return out;
 }
 

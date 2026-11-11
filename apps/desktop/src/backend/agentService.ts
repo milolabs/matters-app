@@ -33,6 +33,10 @@ import type {
   PreparedGuidance,
   PreparedWork,
   PrepareResult,
+  PromptCount,
+  PromptList,
+  PromptProgress,
+  PromptRunResult,
   PromptThread,
   RankedSearchPort,
   ReadingProgress,
@@ -166,6 +170,7 @@ import {
   whoOf,
 } from "./agentReads.ts";
 import { type MailToolsState, openMailTools, type ReadFileRecord } from "./mailTools.ts";
+import { PromptService } from "./promptService.ts";
 import { followTrail, type TrailResult } from "./talkTrail.ts";
 
 const DAY_MS = 86_400_000;
@@ -236,6 +241,7 @@ export interface AgentServiceDeps {
     | "listReceivedMail"
     | "getByKeys"
     | "listSenderCounts"
+    | "changesSince"
   >;
   /**
    * The person's saved views (ADR 0102): the loop's `list_views`, and the check of the views it
@@ -246,7 +252,7 @@ export interface AgentServiceDeps {
    * The search index, for the search of a talk across all mail (ADR 0064, rule 7.2). It is the
    * worker's own connection: the reader connection belongs to the router, not to this process.
    */
-  readonly index: Pick<SearchIndexPort, "searchChunk"> & RankedSearchPort;
+  readonly index: Pick<SearchIndexPort, "searchChunk" | "matchesAmong"> & RankedSearchPort;
   readonly bodies: Pick<MessageBodyPort, "getBodies" | "getHtml" | "getHtmlKinds">;
   readonly accounts: Pick<AccountStorePort, "list">;
   readonly insights: AgentInsightStorePort;
@@ -288,6 +294,8 @@ export interface AgentServiceDeps {
    * `mail_overview` looked at, in `note`). Not stored; the windows show it while the turn runs.
    */
   onTalkStep?(query: string, threads: number, kind?: TalkStepKind, note?: string): void;
+  /** How far a prompt in the query bar is searched and read (ADR 0116, rule 9). Not stored. */
+  onPromptProgress?(progress: PromptProgress): void;
   onError?(message: string): void;
   readonly stepThreads?: number;
   readonly kickDebounceMs?: number;
@@ -371,8 +379,32 @@ export class AgentService implements AgentApi {
   /** The test and the inspection must not run twice at once. */
   private testing: Promise<AgentRuntimeInfo> | null = null;
 
+  /** A prompt is a filter (ADR 0116): its turns, behind the same gates as every turn here. */
+  private readonly prompts: PromptService;
+
   constructor(deps: AgentServiceDeps) {
     this.deps = deps;
+    this.prompts = new PromptService({
+      runtime: deps.runtime,
+      store: deps.store,
+      index: deps.index,
+      bodies: deps.bodies,
+      visibleText: (html) => deps.visibleText(html),
+      accounts: deps.accounts,
+      insights: deps.insights,
+      settings: {
+        get: () => this.currentSettings(),
+        listConsents: () => deps.settings.listConsents(),
+      },
+      ...(deps.views === undefined ? {} : { views: deps.views }),
+      now: () => this.now,
+      gateRuntime: (s) => this.gateRuntime(s),
+      loadThread: (threadId, consented) => this.loadThread(threadId, consented),
+      noteRun: (limits, before) => this.noteRun(limits, before),
+      askFailure: (error, fallback) => this.askFailure(error, fallback),
+      stopAll: () => this.abort.signal,
+      onProgress: (progress) => deps.onPromptProgress?.(progress),
+    });
   }
 
   private get now(): number {
@@ -1940,6 +1972,24 @@ export class AgentService implements AgentApi {
         { atMs: this.now, runtimeId: runtime.id, accountId, purpose: "talk", threads: 1 },
       ]);
     }
+  }
+
+  // --- A prompt is a filter (ADR 0116) ---
+
+  promptCount(query: string): Promise<PromptCount> {
+    return this.prompts.count(query);
+  }
+
+  promptVerdicts(query: string): Promise<PromptList> {
+    return this.prompts.verdicts(query);
+  }
+
+  promptRun(query: string, again?: boolean, readAll?: boolean): Promise<PromptRunResult> {
+    return this.prompts.run(query, again === true, readAll === true);
+  }
+
+  async promptStop(): Promise<void> {
+    this.prompts.stop();
   }
 
   // --- The talk across all mail (ADR 0064, rule 7) ---

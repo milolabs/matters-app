@@ -31,6 +31,8 @@ export function ledgerWords(entry: LedgerEntry): string {
       return "Your words, to decide what to remember";
     case "talk":
       return "Talked about a thread";
+    case "prompt":
+      return "Read for your prompt";
     case "consent":
       return "You agreed";
     case "revoke":

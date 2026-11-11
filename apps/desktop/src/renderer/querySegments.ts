@@ -19,6 +19,8 @@ export interface QuerySegment {
   readonly state: QueryToken["state"];
   /** Segments of one `field:value` share the id of their token: the pill is drawn around both. */
   readonly pill?: number;
+  /** A `prompt:` term: the person's question, read by the agent (ADR 0116; ADR 0052, rule 10). */
+  readonly agent?: true;
 }
 
 const OPERATORS = new Set<QueryToken["kind"]>(["or", "and", "not", "minus"]);
@@ -26,19 +28,37 @@ const OPERATORS = new Set<QueryToken["kind"]>(["or", "and", "not", "minus"]);
 export function querySegments(text: string, parsed: ParsedQuery): readonly QuerySegment[] {
   const out: QuerySegment[] = [];
   let at = 0;
-  const push = (end: number, kind: SegmentKind, state: QueryToken["state"], pill?: number) => {
+  const push = (
+    end: number,
+    kind: SegmentKind,
+    state: QueryToken["state"],
+    pill?: number,
+    agent = false,
+  ) => {
     if (end <= at) return;
-    out.push({ text: text.slice(at, end), kind, state, ...(pill === undefined ? {} : { pill }) });
+    out.push({
+      text: text.slice(at, end),
+      kind,
+      state,
+      ...(pill === undefined ? {} : { pill }),
+      ...(agent ? { agent: true as const } : {}),
+    });
     at = end;
   };
+  // ADR 0116, rule 11: while AI is off the prompt is kept in the text but does nothing.
+  const off = new Set(
+    parsed.diagnostics.filter((d) => d.code === "prompt-off").map((d) => d.start),
+  );
   parsed.tokens.forEach((t, i) => {
     // Spans ascend; one that does not fit the text (stale parse) is left as plain text.
     if (t.start < at || t.end > text.length) return;
     push(t.start, "plain", "ok");
     if (t.kind === "field") {
       const split = Math.min(Math.max(t.valueStart ?? t.start, t.start), t.end);
-      push(split, "key", t.state, i);
-      push(t.end, "value", t.state, i);
+      const agent = t.field === "prompt";
+      const state = agent && off.has(t.start) ? "invalid" : t.state;
+      push(split, "key", state, i, agent);
+      push(t.end, "value", state, i, agent);
     } else if (OPERATORS.has(t.kind)) {
       push(t.end, "op", t.state);
     } else if (t.kind === "open" || t.kind === "close") {

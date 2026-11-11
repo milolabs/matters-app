@@ -18,6 +18,8 @@ import {
   GAPS_OPEN,
   LAST_CLOSE,
   LAST_OPEN,
+  PROMPT_CLOSE,
+  PROMPT_OPEN,
   REWRITE_HOW_TEXT,
 } from "@matters/core";
 import { TEST_PROMPT_QUOTE } from "./agentService.ts";
@@ -104,6 +106,17 @@ function blocks(untrusted: string): Block[] {
 }
 
 const DAY_MS = 86_400_000;
+/** Words of a prompt that say nothing about mail (ADR 0116): the demo does not match on them. */
+const PROMPT_STOP_WORDS = new Set([
+  "what",
+  "that",
+  "this",
+  "with",
+  "from",
+  "have",
+  "only",
+  "would",
+]);
 /** The text between two marker lines of a request, or "". */
 function between(text: string, open: string, close: string): string {
   const start = text.indexOf(`${open}\n`);
@@ -279,15 +292,17 @@ export class DemoAgentRuntime implements AgentRuntimePort {
     if (this.turnMs > 0) await this.takeTime(options.signal);
     const props = (request.schema as { properties?: Record<string, unknown> }).properties ?? {};
     const value =
-      "rewritten" in props
-        ? this.rewritten(request)
-        : "withAnswers" in props
-          ? this.withAnswers(request)
-          : "asks" in props
-            ? this.checked(request)
-            : "fills" in props
-              ? this.filled(request)
-              : this.other(request, props);
+      "verdicts" in props
+        ? this.judged(request)
+        : "rewritten" in props
+          ? this.rewritten(request)
+          : "withAnswers" in props
+            ? this.withAnswers(request)
+            : "asks" in props
+              ? this.checked(request)
+              : "fills" in props
+                ? this.filled(request)
+                : this.other(request, props);
     return { value, limits: this.limits(), inputTokens: 1, outputTokens: 1 };
   }
 
@@ -309,6 +324,63 @@ export class DemoAgentRuntime implements AgentRuntimePort {
                   : "state" in props
                     ? this.analysis(request)
                     : this.prepared(request);
+  }
+
+  // --- A prompt is a filter (ADR 0116): the same answer for the same mail, every time ---
+
+  /**
+   * A batch of threads against the person's prompt, by the lines that hold a word of the prompt:
+   * two different passages fit 2, and 3 when there are five lines; one passage fits 2 when it
+   * comes up three times, else 1 (stored and not shown); none is 0. It quotes the first. The reason names the message and the word, so
+   * it differs from thread to thread. Every quote is a line of the message it names.
+   */
+  private judged(request: AgentRunRequest) {
+    const prompt = between(request.untrusted, PROMPT_OPEN, PROMPT_CLOSE);
+    const words = (prompt.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? []).filter(
+      (w) => !PROMPT_STOP_WORDS.has(w),
+    );
+    const parts = request.untrusted.split(/^\[Thread (\d+)\]$/m);
+    const verdicts = [];
+    for (let i = 1; i + 1 < parts.length; i += 2) {
+      const body = parts[i + 1] ?? "";
+      const lines = blocks(body).flatMap((b) =>
+        b.text
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l.length >= 8 && !l.startsWith(">"))
+          .map((line) => ({ message: b.number, line })),
+      );
+      const hits = lines.filter(({ line }) => words.some((w) => line.toLowerCase().includes(w)));
+      const first = hits[0];
+      if (first === undefined) {
+        verdicts.push({
+          thread: Number(parts[i]),
+          fit: 0,
+          why: "Nothing in it holds what the prompt asks for.",
+        });
+        continue;
+      }
+      const word = words.find((w) => first.line.toLowerCase().includes(w)) ?? "";
+      // Mail repeats itself: a sentence quoted again counts once toward a strong fit.
+      const distinct = new Set(hits.map((h) => h.line)).size;
+      const fit = distinct >= 2 ? (hits.length >= 5 ? 3 : 2) : hits.length >= 3 ? 2 : 1;
+      const why =
+        fit === 3
+          ? `“${word}” runs through it: ${hits.length} lines, from message ${first.message} on.`
+          : fit === 2 && distinct >= 2
+            ? `“${word}” in message ${first.message}, and another passage says more.`
+            : fit === 2
+              ? `“${word}” comes up ${hits.length} times, first in message ${first.message}.`
+              : `Only message ${first.message} names “${word}”, in passing.`;
+      verdicts.push({
+        thread: Number(parts[i]),
+        fit,
+        why,
+        message: first.message,
+        quote: first.line.slice(0, 120),
+      });
+    }
+    return { verdicts };
   }
 
   // --- Help with a reply (ADR 0098): canned, and true to the rules the code checks ---

@@ -2,7 +2,7 @@ import type { ParsedQuery } from "@matters/core";
 import { createEffect, createSignal, For, onMount, Show } from "solid-js";
 import type { MattersTab } from "./mattersView.ts";
 import { menuPoint, PopMenu } from "./popMenu.tsx";
-import { isBuiltInView, MATTERS_ID, type ViewsStore } from "./views.ts";
+import { holdsPrompt, isBuiltInView, MATTERS_ID, type ViewsStore } from "./views.ts";
 
 const mac = navigator.userAgent.includes("Macintosh");
 const SAVE_KEY = mac ? "⌘S" : "Ctrl+S";
@@ -94,6 +94,8 @@ export function ViewTabs(props: {
                 return badge() ? `, ${badge()} unread` : "";
               };
               const dirty = () => selected() && views.isSaved() && views.changed();
+              // A view whose text holds a prompt is the agent's reading (ADR 0116; ADR 0052, rule 10).
+              const asks = () => !isBuiltInView(view.id) && holdsPrompt(view.query);
               return (
                 <button
                   type="button"
@@ -101,7 +103,7 @@ export function ViewTabs(props: {
                   data-view={view.id}
                   aria-selected={selected()}
                   aria-haspopup={isBuiltInView(view.id) ? undefined : "menu"}
-                  aria-label={`${view.name}${spoken()}${dirty() ? ", changed, not saved" : ""}`}
+                  aria-label={`${view.name}${asks() ? ", with a prompt" : ""}${spoken()}${dirty() ? ", changed, not saved" : ""}`}
                   // One tab is in the tab order; the arrow keys move between the others.
                   tabIndex={selected() ? 0 : -1}
                   title={`${matters ? "Things that matter" : view.query === "" ? "Everything" : view.query}${i() < 9 ? `  ·  key ${i() + 1}` : ""}`}
@@ -115,6 +117,9 @@ export function ViewTabs(props: {
                     if (!isBuiltInView(view.id)) openMenu(view.id, e.clientX, e.clientY);
                   }}
                 >
+                  <Show when={asks()}>
+                    <span class="vt-agent" aria-hidden="true" />
+                  </Show>
                   {view.name}
                   <Show when={badge()}>{(text) => <small aria-hidden="true">{text()}</small>}</Show>
                   <Show when={dirty()}>

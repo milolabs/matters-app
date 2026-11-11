@@ -1,4 +1,4 @@
-import type { MoveKind, SyncStatus } from "@matters/core";
+import type { MoveKind, PromptProgress, SyncStatus } from "@matters/core";
 import { backoffDelay } from "@matters/core";
 import type { CommandResult, FromWorker, ToWorker, WireError, WorkerCommand } from "./protocol.ts";
 
@@ -28,6 +28,8 @@ export interface SyncHostHandlers {
     kind?: "search" | "follow" | "read" | "note" | "count" | "look",
     note?: string,
   ): void;
+  /** How far a prompt is read (ADR 0116, rule 9). Absent: nobody listens. */
+  onAgentPrompt?(progress: PromptProgress): void;
   /** The server turned moves down for good. */
   onMoveRefused(action: MoveKind, count: number): void;
   /** The files of a draft changed. */
@@ -228,6 +230,10 @@ export class SyncHost {
             message.kind,
             message.note,
           );
+        case "agentPrompt": {
+          const { type: _type, ...progress } = message;
+          return this.options.handlers.onAgentPrompt?.(progress);
+        }
         case "moveRefused":
           return this.options.handlers.onMoveRefused(message.action, message.count);
         case "attachments":

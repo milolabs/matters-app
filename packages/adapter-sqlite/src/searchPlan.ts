@@ -450,9 +450,11 @@ export interface Window {
   readonly limit: number;
   /** Only these keys, as a JSON array. */
   readonly within?: string;
+  /** Keys ascending (ADR 0116, rule 4b); default newest first. */
+  readonly order?: "newest" | "oldest";
 }
 
-/** The one query a route runs over a window of keys, newest first. */
+/** The one query a route runs over a window of keys, newest first unless `oldest` is asked. */
 export function buildSql(
   plan: SearchPlan,
   route: Route,
@@ -496,7 +498,7 @@ export function buildSql(
 
   params.push(win.limit);
   return {
-    sql: `SELECT ${keyColumn} AS key FROM ${from} WHERE ${where.join(" AND ")} ORDER BY ${keyColumn} DESC LIMIT ?`,
+    sql: `SELECT ${keyColumn} AS key FROM ${from} WHERE ${where.join(" AND ")} ORDER BY ${keyColumn} ${win.order === "oldest" ? "ASC" : "DESC"} LIMIT ?`,
     params,
     // Only a statement with a nested FTS subquery has these names.
     named: plan.nestedFts ? { lo: win.lower, hi: win.upper } : {},

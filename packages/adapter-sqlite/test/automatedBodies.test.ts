@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   AUTOMATED_BODY_COUNTER,
   createSqliteStorage,
+  LATEST_SCHEMA_VERSION,
   MIGRATIONS,
   openDatabase,
   type SqliteStorage,
@@ -117,7 +118,7 @@ describe("automated by text (ADR 0111)", () => {
     }
     old.close();
     const db = openDatabase(path);
-    expect(schemaVersion(db)).toBe(49);
+    expect(schemaVersion(db)).toBe(LATEST_SCHEMA_VERSION);
     expect(
       db.prepare("SELECT value FROM counters WHERE name = ?").get(AUTOMATED_BODY_COUNTER),
     ).toEqual({ value: Number.MAX_SAFE_INTEGER });

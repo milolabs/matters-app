@@ -12,6 +12,9 @@ import type {
   PreparedGuidance,
   PreparedWork,
   PrepareResult,
+  PromptCount,
+  PromptList,
+  PromptRunResult,
   RememberResult,
   ReplyCheck,
   RewriteHow,
@@ -169,6 +172,25 @@ export interface AgentApi {
   talkAll(words: string, talkId?: number | null): Promise<TalkResult>;
   /** Cuts the running turn across all mail short, at either of its two turns. */
   talkAllStop(): Promise<void>;
+  /**
+   * A prompt in the query bar (ADR 0116, rule 4): whether its search with the mail filters of
+   * `query` ran, how many threads the kept search finds now, and how many of them have a verdict.
+   * No model. While AI is off, or no account has consent, `ai` is `off` and nothing is counted
+   * (rule 11). A query with no prompt is refused with a sentence.
+   */
+  promptCount(query: string): Promise<PromptCount>;
+  /** The verdicts kept for the prompt of `query`, as the list shows them (rule 7). No model. */
+  promptVerdicts(query: string): Promise<PromptList>;
+  /**
+   * Runs the prompt of `query` (rule 3): the agent's search first when none is kept or `again`
+   * asks for a new one (rule 4), then the threads found with no verdict yet, in `P0` batches, each
+   * kept as it returns (rule 9); progress is pushed as it goes. One run at a time. Stopped or cut
+   * short by the plan, it keeps what finished and says so. More than `PROMPT_ASK_ABOVE` threads to
+   * read wait for `readAll` (rule 4): without it the run ends with `ask` and reads nothing.
+   */
+  promptRun(query: string, again?: boolean, readAll?: boolean): Promise<PromptRunResult>;
+  /** Cuts the running prompt short: a search keeps nothing, a reading its finished batches. */
+  promptStop(): Promise<void>;
   /**
    * The newest 200 entries of a talk across all mail, oldest first (ADR 0086): of `talkId`, or of
    * every talk without it; with `beforeId`, the 200 before that entry. Local only; empty while AI

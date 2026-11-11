@@ -1277,6 +1277,80 @@ export const MIGRATIONS: readonly Migration[] = [
         VALUES ('automated_body_before', 9007199254740991);
     `,
   },
+  {
+    version: 50,
+    // ADR 0116: a prompt is a filter. One verdict per prompt and thread, the newest: a new message
+    // makes it stale, and the next run replaces it, so the table holds at most one row for each
+    // pair. `last_message_key` and `version` are read and compared, not keyed: the primary key is
+    // what a run writes and a list reads (a prompt and up to 200 threads). `..._thread` serves
+    // removal with a thread's mail. The quote is the person's own mail kept on their machine.
+    //
+    // The ledger learns `prompt`, one line per batch and account, rebuilt as in version 33.
+    sql: `
+      CREATE TABLE IF NOT EXISTS agent_prompt_verdicts (
+        prompt_key TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        last_message_key INTEGER NOT NULL,
+        version INTEGER NOT NULL,
+        fit INTEGER NOT NULL,
+        why TEXT NOT NULL,
+        quote TEXT,
+        quote_key INTEGER,
+        at_ms INTEGER NOT NULL,
+        PRIMARY KEY (prompt_key, thread_id)
+      ) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS agent_prompt_verdicts_thread ON agent_prompt_verdicts (thread_id);
+
+      CREATE TABLE agent_ledger_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at_ms INTEGER NOT NULL,
+        runtime_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        purpose TEXT NOT NULL CHECK (purpose IN ('analysis', 'prepare', 'remember', 'talk', 'prompt', 'consent', 'revoke')),
+        threads INTEGER NOT NULL
+      );
+      INSERT INTO agent_ledger_new (id, at_ms, runtime_id, account_id, purpose, threads)
+        SELECT id, at_ms, runtime_id, account_id, purpose, threads FROM agent_ledger;
+      DELETE FROM sqlite_sequence WHERE name = 'agent_ledger_new';
+      INSERT INTO sqlite_sequence (name, seq)
+        SELECT 'agent_ledger_new', seq FROM sqlite_sequence WHERE name = 'agent_ledger';
+      DROP TABLE agent_ledger;
+      ALTER TABLE agent_ledger_new RENAME TO agent_ledger;
+      CREATE INDEX agent_ledger_recent ON agent_ledger (at_ms DESC, id DESC);
+    `,
+  },
+  {
+    version: 51,
+    // ADR 0116, rule 4: a prompt finds its own candidates. What its search wrote is kept under the
+    // prompt and the query's mail filters (the query without the prompt): the queries it ran, to
+    // run them again with no model, and the threads it named. Ids and queries, never mail text.
+    // A table of its own, after 50: a database that ran 50 already must get it too.
+    sql: `
+      CREATE TABLE IF NOT EXISTS agent_prompt_searches (
+        prompt_key TEXT NOT NULL,
+        filters TEXT NOT NULL,
+        queries_json TEXT NOT NULL,
+        threads_json TEXT NOT NULL,
+        at_ms INTEGER NOT NULL,
+        PRIMARY KEY (prompt_key, filters)
+      ) WITHOUT ROWID;
+    `,
+  },
+  {
+    version: 52,
+    // ADR 0116, rule 4: when the mail filters alone are narrow, the prompt reads what they match
+    // and no search runs. Such a kept search has no queries and says so here: coming back reads
+    // everything the filters match again. A column, after 51: a database that ran 51 gets it too.
+    sql: "",
+    run: (db) => {
+      const columns = db.prepare("PRAGMA table_info(agent_prompt_searches)").all() as {
+        name: string;
+      }[];
+      if (!columns.some((c) => c.name === "whole")) {
+        db.exec("ALTER TABLE agent_prompt_searches ADD COLUMN whole INTEGER NOT NULL DEFAULT 0");
+      }
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

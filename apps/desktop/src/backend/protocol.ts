@@ -29,12 +29,17 @@ import type {
   MoveThreadInput,
   MoveThreadResult,
   PrepareResult,
+  PromptCount,
+  PromptList,
+  PromptProgress,
+  PromptRunResult,
   RememberResult,
   ReplyCheck,
   RewriteHow,
   SavedView,
   SendOperation,
   SetSeenResult,
+  SortRanked,
   StoppableSource,
   SyncStatus,
   TalkResult,
@@ -181,13 +186,28 @@ export type WorkerCommand =
   | { readonly name: "agentDraftFromPrepared"; readonly threadId: string; readonly body: string }
   /** Read-only: what the press of a clean-up acts on, matched as its count was (ADR 0102). */
   | { readonly name: "agentMatchAct"; readonly query: string }
+  /**
+   * A prompt is a filter (ADR 0116). The count and the verdicts read only, but they walk the index
+   * like a count; the run sends mail to the runtime. All of it runs here, where the agent runs.
+   */
+  | { readonly name: "agentPromptCount"; readonly query: string }
+  | { readonly name: "agentPromptVerdicts"; readonly query: string }
+  | {
+      readonly name: "agentPromptRun";
+      readonly query: string;
+      readonly again?: boolean;
+      readonly readAll?: boolean;
+    }
+  | { readonly name: "agentPromptStop" }
   /** Read-only, but it runs here: a count can take tens of ms and the router serves keystrokes. */
   | {
       readonly name: "countMatches";
       readonly query: string;
       readonly cap: number;
       readonly beforeKey?: number;
-    };
+    }
+  /** Read-only: a ranked order after `↵` (ADR 0116, rule 4b), over a bounded pool. */
+  | { readonly name: "sortRanked"; readonly query: string };
 
 export interface CommandResults {
   readonly addAccount: { readonly account: AccountInfo; readonly folderCount: number };
@@ -228,6 +248,7 @@ export interface CommandResults {
   readonly compactDatabase: { readonly freedBytes: number; readonly ms: number };
   readonly clearFileText: number;
   readonly countMatches: { readonly count: number; readonly nextBeforeKey?: number };
+  readonly sortRanked: SortRanked;
   readonly agentStatus: AgentStatus;
   readonly agentSetEnabled: AgentStatus;
   readonly agentDisable: AgentStatus;
@@ -261,6 +282,10 @@ export interface CommandResults {
   readonly agentRevokeConsent: AgentStatus;
   readonly agentDraftFromPrepared: { readonly draftId: string; readonly existing: boolean };
   readonly agentMatchAct: ActMatches;
+  readonly agentPromptCount: PromptCount;
+  readonly agentPromptVerdicts: PromptList;
+  readonly agentPromptRun: PromptRunResult;
+  readonly agentPromptStop: null;
 }
 
 export type CommandResult<C extends WorkerCommand> = CommandResults[C["name"]];
@@ -304,6 +329,8 @@ export type FromWorker =
       readonly kind?: "search" | "follow" | "read" | "note" | "count" | "look";
       readonly note?: string;
     }
+  /** How far a prompt is read (ADR 0116, rule 9): counts, relayed as they are and never stored. */
+  | ({ readonly type: "agentPrompt" } & PromptProgress)
   /** The server turned down moves for good; the router tells the renderer, which says so in the tray. */
   | { readonly type: "moveRefused"; readonly action: MoveKind; readonly count: number }
   /** The files of a draft changed (committed): the router reads the list and tells the renderer. */

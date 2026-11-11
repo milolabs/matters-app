@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { isEmptyQuery, parseQuery, type QueryContext, type QueryNode } from "../src/index.ts";
+import {
+  isEmptyQuery,
+  MAX_QUERY_LIMIT,
+  parseQuery,
+  promptFilters,
+  type QueryContext,
+  type QueryNode,
+  sortOf,
+} from "../src/index.ts";
 
 const prefix = (value: string, field = "any"): QueryNode =>
   ({ kind: "text", field, match: "prefix", value }) as QueryNode;
@@ -550,6 +558,8 @@ describe("parseQuery fuzz", () => {
     "😀",
     "12",
     "x@y.z",
+    "prompt:",
+    'prompt:"',
   ];
 
   it("never throws; spans stay inside the input and ascend; text stays clean", () => {
@@ -575,5 +585,279 @@ describe("parseQuery fuzz", () => {
         expect(text, input).toMatch(/^[\p{L}\p{N}]+( [\p{L}\p{N}]+)*$/u);
       }
     }
+  });
+});
+
+describe("parseQuery prompt (ADR 0116, rule 1)", () => {
+  const codes = (q: string, ctx?: QueryContext) =>
+    parseQuery(q, ctx).diagnostics.map((d) => d.code);
+
+  it("takes a word or a quoted phrase out of the tree and returns it beside it", () => {
+    const p = parseQuery('from:office prompt:"what needs my decision" after:2026-01-01');
+    expect(p.prompt).toEqual({ text: "what needs my decision", start: 12, end: 43 });
+    expect(p.root).toEqual(
+      and(prefix("office", "from"), { kind: "after", ms: new Date(2026, 0, 1).getTime() }),
+    );
+    expect(p.diagnostics).toEqual([]);
+    expect(parseQuery("prompt:invoices").prompt).toMatchObject({ text: "invoices" });
+    // Unquoted, only the first word is the prompt; the rest are words of the mail filters.
+    const loose = parseQuery("prompt:unpaid invoices");
+    expect(loose.prompt?.text).toBe("unpaid");
+    expect(loose.root).toEqual(prefix("invoices"));
+  });
+
+  it("leaves a query that is only a prompt with no tree, so it behaves like no filter", () => {
+    const p = parseQuery('prompt:"what would I regret not seeing"');
+    expect(p.root).toBeNull();
+    expect(isEmptyQuery(p)).toBe(true);
+    expect(p.prompt?.text).toBe("what would I regret not seeing");
+    expect(p.tokens).toEqual([
+      expect.objectContaining({ kind: "field", field: "prompt", state: "ok", start: 0 }),
+    ]);
+  });
+
+  it("treats prompt: with no value as unfinished: it constrains nothing", () => {
+    for (const q of ["prompt:", 'prompt:""', 'prompt:"  "']) {
+      const p = parseQuery(q);
+      expect(p.prompt, q).toBeUndefined();
+      expect(p.root, q).toBeNull();
+      expect(p.diagnostics, q).toEqual([]);
+      expect(p.tokens[0]?.state, q).toBe("incomplete");
+    }
+    // A quote not closed yet is the prompt so far.
+    expect(parseQuery('prompt:"what needs').prompt?.text).toBe("what needs");
+  });
+
+  it("keeps the first prompt and drops a second one with a diagnostic", () => {
+    const p = parseQuery("prompt:first from:anna prompt:second");
+    expect(p.prompt?.text).toBe("first");
+    expect(p.root).toEqual(prefix("anna", "from"));
+    expect(p.diagnostics).toEqual([
+      { code: "prompt-twice", start: 23, end: 36, message: "Only one prompt per query" },
+    ]);
+    expect(p.tokens.at(-1)?.state).toBe("invalid");
+  });
+
+  it("drops a negated prompt, and keeps the rest of the query", () => {
+    for (const q of ["-prompt:x from:anna", "NOT prompt:x from:anna", "-(prompt:x) from:anna"]) {
+      const p = parseQuery(q);
+      expect(p.prompt, q).toBeUndefined();
+      expect(codes(q), q).toEqual(["prompt-negated"]);
+      expect(p.root, q).toEqual(prefix("anna", "from"));
+    }
+    // Two negations cancel, as they do for any term.
+    expect(parseQuery("NOT NOT prompt:x").prompt?.text).toBe("x");
+  });
+
+  it("drops a prompt under OR, at any depth", () => {
+    for (const q of [
+      "prompt:x OR from:anna",
+      "from:anna OR (prompt:x subject:y)",
+      "(a OR prompt:x) b",
+    ]) {
+      expect(parseQuery(q).prompt, q).toBeUndefined();
+      expect(codes(q), q).toEqual(["prompt-or"]);
+    }
+    // Brackets alone are no OR.
+    expect(parseQuery("(prompt:x from:anna) b").prompt?.text).toBe("x");
+  });
+
+  it("drops prompt:( … ) up to its closing bracket and parses what follows", () => {
+    const p = parseQuery("prompt:(a OR (b c)) from:anna");
+    expect(p.prompt).toBeUndefined();
+    expect(p.root).toEqual(prefix("anna", "from"));
+    expect(p.diagnostics).toEqual([
+      {
+        code: "prompt-group",
+        start: 0,
+        end: 19,
+        message: "A prompt is a word or a quoted phrase, not a group",
+      },
+    ]);
+    expect(states("prompt:(a) b")).toEqual([
+      ["field", "invalid"],
+      ["open", "invalid"],
+      ["word", "invalid"],
+      ["close", "invalid"],
+      ["word", "ok"],
+    ]);
+  });
+
+  it("reports a prompt while AI is off, and drops it (rule 11)", () => {
+    const p = parseQuery("from:anna prompt:x", { promptOff: true });
+    expect(p.prompt).toBeUndefined();
+    expect(p.root).toEqual(prefix("anna", "from"));
+    expect(p.diagnostics).toEqual([
+      { code: "prompt-off", start: 10, end: 18, message: "AI is off, so the prompt does nothing" },
+    ]);
+  });
+
+  it("spends no term of the budget", () => {
+    const words = Array.from({ length: 32 }, (_, i) => `w${i}`).join(" ");
+    const p = parseQuery(`${words} prompt:x`);
+    expect(p.prompt?.text).toBe("x");
+    expect(p.diagnostics).toEqual([]);
+  });
+});
+
+describe("parseQuery limit (ADR 0116, rule 4a)", () => {
+  const codes = (q: string) => parseQuery(q).diagnostics.map((d) => d.code);
+
+  it("takes a whole number out of the tree and returns it beside it, with or without a prompt", () => {
+    const p = parseQuery('from:office limit:50 prompt:"what needs my decision"');
+    expect(p.limit).toEqual({ n: 50, start: 12, end: 20 });
+    expect(p.prompt?.text).toBe("what needs my decision");
+    expect(p.root).toEqual(prefix("office", "from"));
+    expect(p.diagnostics).toEqual([]);
+    const alone = parseQuery("limit:5");
+    expect(alone.limit?.n).toBe(5);
+    expect(alone.root).toBeNull();
+    expect(alone.diagnostics).toEqual([]);
+    expect(parseQuery("from:anna limit:007").limit?.n).toBe(7);
+    expect(parseQuery(`limit:${MAX_QUERY_LIMIT * 10}`).limit?.n).toBe(MAX_QUERY_LIMIT);
+  });
+
+  it("reports a value that is not a whole number above 0, and constrains nothing", () => {
+    for (const q of ["limit:0", "limit:-3", "limit:1.5", "limit:ten", 'limit:"5 6"']) {
+      const p = parseQuery(`from:anna ${q}`);
+      expect(p.limit, q).toBeUndefined();
+      expect(codes(`from:anna ${q}`), q).toEqual(["invalid-limit"]);
+      expect(p.root, q).toEqual(prefix("anna", "from"));
+    }
+    expect(parseQuery("limit:x").diagnostics[0]?.message).toBe('Not a whole number above 0: "x"');
+  });
+
+  it("treats limit: with no value as unfinished", () => {
+    const p = parseQuery("limit:");
+    expect(p.limit).toBeUndefined();
+    expect(p.diagnostics).toEqual([]);
+    expect(p.tokens[0]?.state).toBe("incomplete");
+  });
+
+  it("keeps one: a second, a negated one, one under OR and limit:( … ) are dropped and reported", () => {
+    const twice = parseQuery("limit:5 from:anna limit:9");
+    expect(twice.limit?.n).toBe(5);
+    expect(twice.diagnostics.map((d) => d.code)).toEqual(["limit-twice"]);
+    expect(twice.tokens.at(-1)?.state).toBe("invalid");
+    for (const q of ["-limit:5 from:anna", "NOT limit:5 from:anna"]) {
+      expect(parseQuery(q).limit, q).toBeUndefined();
+      expect(codes(q), q).toEqual(["limit-negated"]);
+    }
+    for (const q of ["limit:5 OR from:anna", "from:anna OR (limit:5 b)"]) {
+      expect(parseQuery(q).limit, q).toBeUndefined();
+      expect(codes(q), q).toEqual(["limit-or"]);
+    }
+    const group = parseQuery("limit:(5) from:anna");
+    expect(group.limit).toBeUndefined();
+    expect(group.root).toEqual(prefix("anna", "from"));
+    expect(group.diagnostics.map((d) => d.code)).toEqual(["limit-group"]);
+  });
+
+  it("spends no term of the budget", () => {
+    const words = Array.from({ length: 32 }, (_, i) => `w${i}`).join(" ");
+    expect(parseQuery(`${words} limit:3`).diagnostics).toEqual([]);
+  });
+});
+
+describe("parseQuery sort (ADR 0116, rule 4b)", () => {
+  const codes = (q: string, ctx: QueryContext = {}) =>
+    parseQuery(q, ctx).diagnostics.map((d) => d.code);
+
+  it("takes a known order out of the tree and returns it beside it", () => {
+    const p = parseQuery("from:office sort:oldest limit:10");
+    expect(p.sort).toEqual({ value: "oldest", start: 12, end: 23 });
+    expect(p.root).toEqual(prefix("office", "from"));
+    expect(p.limit?.n).toBe(10);
+    expect(p.diagnostics).toEqual([]);
+    expect(parseQuery("SORT:Newest").sort?.value).toBe("newest");
+    const alone = parseQuery("sort:oldest");
+    expect(alone.sort?.value).toBe("oldest");
+    expect(alone.root).toBeNull();
+    expect(isEmptyQuery(alone)).toBe(true);
+    expect(parseQuery("invoice sort:relevance").sort?.value).toBe("relevance");
+    expect(parseQuery('prompt:"x" sort:fit').sort?.value).toBe("fit");
+  });
+
+  it("defaults to newest without a prompt and to fit with one", () => {
+    expect(sortOf(parseQuery("from:anna"))).toBe("newest");
+    expect(sortOf(parseQuery('from:anna prompt:"x"'))).toBe("fit");
+    expect(sortOf(parseQuery('prompt:"x" sort:oldest'))).toBe("oldest");
+    expect(parseQuery("from:anna").sort).toBeUndefined();
+  });
+
+  it("reports an unknown value as any enum does, and treats a start of one as unfinished", () => {
+    const bad = parseQuery("from:anna sort:sideways");
+    expect(bad.sort).toBeUndefined();
+    expect(codes("from:anna sort:sideways")).toEqual(["unknown-value"]);
+    expect(bad.diagnostics[0]?.message).toBe('Unknown value "sideways"');
+    expect(bad.tokens.at(-1)?.state).toBe("invalid");
+    // `matters` is not an order: unknown, whether AI is on or off.
+    for (const promptOff of [false, true]) {
+      const matters = parseQuery("invoice sort:matters", { promptOff });
+      expect(matters.sort).toBeUndefined();
+      expect(matters.diagnostics).toEqual([
+        { code: "unknown-value", start: 13, end: 20, message: 'Unknown value "matters"' },
+      ]);
+      expect(matters.tokens.at(-1)?.state).toBe("invalid");
+    }
+    for (const q of ["sort:", "sort:ol", "sort:r"]) {
+      const p = parseQuery(q);
+      expect(p.sort, q).toBeUndefined();
+      expect(p.diagnostics, q).toEqual([]);
+      expect(p.tokens[0]?.state, q).toBe("incomplete");
+    }
+  });
+
+  it("keeps one at the top level: a second, a negated one, one under OR and sort:( … ) are dropped", () => {
+    const twice = parseQuery("sort:oldest from:anna sort:newest");
+    expect(twice.sort?.value).toBe("oldest");
+    expect(twice.diagnostics.map((d) => d.code)).toEqual(["sort-twice"]);
+    expect(twice.tokens.at(-1)?.state).toBe("invalid");
+    for (const q of ["-sort:oldest from:anna", "NOT sort:oldest from:anna"]) {
+      expect(parseQuery(q).sort, q).toBeUndefined();
+      expect(codes(q), q).toEqual(["sort-negated"]);
+    }
+    for (const q of ["sort:oldest OR from:anna", "from:anna OR (sort:oldest b)"]) {
+      expect(parseQuery(q).sort, q).toBeUndefined();
+      expect(codes(q), q).toEqual(["sort-or"]);
+    }
+    const group = parseQuery("sort:(oldest) from:anna");
+    expect(group.sort).toBeUndefined();
+    expect(group.root).toEqual(prefix("anna", "from"));
+    expect(codes("sort:(oldest) from:anna")).toEqual(["sort-group"]);
+  });
+
+  it("drops fit without a prompt, and relevance with no words", () => {
+    const fit = parseQuery("from:anna sort:fit");
+    expect(fit.sort).toBeUndefined();
+    expect(codes("from:anna sort:fit")).toEqual(["sort-fit"]);
+    expect(fit.tokens.at(-1)?.state).toBe("invalid");
+    // A prompt dropped for AI off says so itself; the order goes with it.
+    expect(codes('prompt:"x" sort:fit', { promptOff: true })).toEqual(["prompt-off"]);
+    // Words to rank by: a text term that is not excluded.
+    for (const q of ["is:unread has:attachment sort:relevance", "-invoice sort:relevance"]) {
+      expect(parseQuery(q).sort, q).toBeUndefined();
+      expect(codes(q), q).toEqual(["sort-no-words"]);
+    }
+    expect(parseQuery("sort:relevance").diagnostics[0]?.message).toBe(
+      "No words to rank by, so the list stays by date",
+    );
+    expect(parseQuery("from:anna sort:relevance").sort?.value).toBe("relevance");
+    expect(parseQuery("(invoice OR receipt) is:unread sort:relevance").sort?.value).toBe(
+      "relevance",
+    );
+    // With a prompt the rank is the search's own: no words needed.
+    expect(parseQuery('is:unread prompt:"x" sort:relevance').sort?.value).toBe("relevance");
+    // AI off drops a prompt, not a ranked order without one.
+    expect(parseQuery("invoice sort:relevance", { promptOff: true }).sort?.value).toBe("relevance");
+  });
+
+  it("spends no term of the budget, and is not part of a prompt's mail filters", () => {
+    const words = Array.from({ length: 32 }, (_, i) => `w${i}`).join(" ");
+    expect(parseQuery(`${words} sort:oldest`).diagnostics).toEqual([]);
+    const q = 'from:office sort:oldest prompt:"x" limit:5';
+    expect(promptFilters(q, parseQuery(q))).toBe("from:office");
+    const r = 'sort:newest from:office prompt:"x"';
+    expect(promptFilters(r, parseQuery(r))).toBe("from:office");
   });
 });

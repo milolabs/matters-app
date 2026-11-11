@@ -853,3 +853,87 @@ export function parseRememberAnswer(value: unknown): RememberAnswer | null {
   }
   return { items };
 }
+
+// --- A prompt is a filter (ADR 0116) ---
+
+/** Most threads of one batch, and so of one answer (ADR 0116, rule 9). */
+export const MAX_PROMPT_BATCH_THREADS = 10;
+export const MAX_PROMPT_WHY_CHARS = 300;
+/** `fit` runs from 0 (does not fit) to this (fits strongly) (ADR 0116, rule 6). */
+export const MAX_PROMPT_FIT = 3;
+
+/** One thread of a batch as the model judged it. Numbers and the quote are not yet checked. */
+export interface PromptAnswerItem {
+  /** 1-based number of the thread in the turn. */
+  readonly thread: number;
+  readonly fit: number;
+  readonly why: string;
+  /** 1-based number of the message within that thread; with `quote`, only for a fit above 0. */
+  readonly message?: number;
+  readonly quote?: string;
+}
+
+export interface PromptAnswer {
+  readonly verdicts: readonly PromptAnswerItem[];
+}
+
+/** The answer of a batch: one verdict per thread (ADR 0116, rule 6). */
+export const PROMPT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["verdicts"],
+  properties: {
+    verdicts: {
+      type: "array",
+      maxItems: MAX_PROMPT_BATCH_THREADS,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["thread", "fit", "why"],
+        properties: {
+          thread: { type: "integer", minimum: 1 },
+          fit: { type: "integer", minimum: 0, maximum: MAX_PROMPT_FIT },
+          why: { type: "string", minLength: 1, maxLength: MAX_PROMPT_WHY_CHARS },
+          message: { type: "integer", minimum: 1 },
+          quote: { type: "string", minLength: 1, maxLength: MAX_QUOTE_CHARS },
+        },
+      },
+    },
+  },
+} as const;
+
+/** The answer of a batch as it is, or `null`. Thread numbers and quotes are not yet checked. */
+export function parsePromptAnswer(value: unknown): PromptAnswer | null {
+  if (!isObject(value) || !hasKeys(value, ["verdicts"])) return null;
+  if (!Array.isArray(value.verdicts) || value.verdicts.length > MAX_PROMPT_BATCH_THREADS) {
+    return null;
+  }
+  const verdicts: PromptAnswerItem[] = [];
+  for (const raw of value.verdicts) {
+    if (!isObject(raw) || !hasKeys(raw, ["thread", "fit", "why"], ["message", "quote"])) {
+      return null;
+    }
+    const { thread, fit, message } = raw;
+    const why = text(raw.why, MAX_PROMPT_WHY_CHARS);
+    const quote = "quote" in raw ? text(raw.quote, MAX_QUOTE_CHARS) : undefined;
+    if (why === null || quote === null) return null;
+    if (typeof thread !== "number" || !Number.isInteger(thread) || thread < 1) return null;
+    if (typeof fit !== "number" || !Number.isInteger(fit) || fit < 0 || fit > MAX_PROMPT_FIT) {
+      return null;
+    }
+    if (
+      message !== undefined &&
+      (typeof message !== "number" || !Number.isInteger(message) || message < 1)
+    ) {
+      return null;
+    }
+    verdicts.push({
+      thread,
+      fit,
+      why,
+      ...(message === undefined ? {} : { message }),
+      ...(quote === undefined ? {} : { quote }),
+    });
+  }
+  return { verdicts };
+}

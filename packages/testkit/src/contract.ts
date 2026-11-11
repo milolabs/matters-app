@@ -25,6 +25,7 @@ import type {
   Participant,
   PeoplePort,
   PreparedRecord,
+  PromptVerdict,
   ReceivedAttachment,
   SavedView,
   SavedViewStorePort,
@@ -1770,6 +1771,74 @@ export function describeSearchIndexContract(name: string, factory: Factory<Searc
             expect(await chunked(q, limit), `${q} / ${limit}`).toEqual(all);
           }
         }
+      });
+
+      it("walks the key oldest first, in windows and chunks, as newest first reversed (ADR 0116, rule 4b)", async () => {
+        // Over two years, so that the time windows of a heavy plan matter in either direction.
+        const docs = Array.from({ length: 48 }, (_, i) =>
+          makeDocument({
+            dateMs: day(1) + i * 15 * 86_400_000 + (i % 3) * 1000,
+            subject: i % 3 === 0 ? `alpha beta ${i}` : `alpha gamma ${i}`,
+            labelIds: i % 5 === 0 ? ["inbox", "rare"] : ["inbox"],
+            flags: flags({ seen: i % 2 === 0, flagged: i % 7 === 0 }),
+            hasAttachments: i % 4 === 0,
+          }),
+        );
+        await index().indexMessages(docs);
+        const ascending = async (q: string, limit: number): Promise<number[]> => {
+          const out: number[] = [];
+          let afterKey: number | undefined;
+          for (let i = 0; i < 1000; i++) {
+            const chunk = await index().searchChunk(parseQuery(q, { accounts }), {
+              limit,
+              order: "oldest",
+              ...(afterKey === undefined ? {} : { afterKey }),
+            });
+            expect(chunk.keys.length).toBeLessThanOrEqual(limit);
+            expect(chunk.nextBeforeKey).toBeUndefined();
+            out.push(...chunk.keys);
+            if (chunk.nextAfterKey === undefined) return out;
+            afterKey = chunk.nextAfterKey;
+          }
+          throw new Error("chunks never ended");
+        };
+        for (const q of [
+          "alpha",
+          "alpha OR beta",
+          "alpha -beta",
+          "-beta",
+          "label:rare",
+          "alpha label:rare",
+          "is:unread",
+          "is:read OR is:unread",
+          "alpha is:starred",
+          "-alpha OR is:starred",
+          "has:attachment -is:read",
+          "alpha after:2024-09-10",
+          "alpha before:2025-01-10",
+        ]) {
+          const all = await index().search(parseQuery(q, { accounts }), { limit: 500 });
+          const up = [...all].reverse();
+          expect(
+            await index().search(parseQuery(q, { accounts }), { limit: 500, order: "oldest" }),
+            q,
+          ).toEqual(up);
+          for (const limit of [1, 3, 7, 500]) {
+            expect(await ascending(q, limit), `${q} / ${limit}`).toEqual(up);
+          }
+        }
+        // A page oldest first, then the next one from its cursor.
+        const first = await index().search(parseQuery("alpha", { accounts }), {
+          limit: 5,
+          order: "oldest",
+        });
+        expect(first).toEqual(docs.slice(0, 5).map(key));
+        const next = await index().search(parseQuery("alpha", { accounts }), {
+          limit: 5,
+          order: "oldest",
+          afterKey: first[4] as number,
+        });
+        expect(next).toEqual(docs.slice(5, 10).map(key));
       });
     });
 
@@ -4551,6 +4620,114 @@ export function describeAgentInsightStoreContract(
 ) {
   describe(`AgentInsightStorePort contract: ${name}`, () => {
     const store = useFixture(factory);
+
+    const verdict = (over: Partial<PromptVerdict> = {}): PromptVerdict => ({
+      promptKey: "k1",
+      threadId: "t1",
+      lastMessageKey: 10,
+      version: 1,
+      fit: 2,
+      why: "It asks for a decision by Friday.",
+      quote: { text: "Please decide by Friday", messageKey: 9 },
+      atMs: 1000,
+      ...over,
+    });
+
+    it("round-trips the verdicts of a prompt at the threads' last messages (ADR 0116)", async () => {
+      const a = verdict();
+      const b = verdict({ threadId: "t2", lastMessageKey: 20, fit: 0, why: "Nothing to decide." });
+      delete (b as { quote?: unknown }).quote;
+      await store().putPromptVerdicts([a, b]);
+      const got = await store().getPromptVerdicts("k1", 1, [
+        { threadId: "t1", lastMessageKey: 10 },
+        { threadId: "t2", lastMessageKey: 20 },
+      ]);
+      expect([...got].sort((x, y) => (x.threadId < y.threadId ? -1 : 1))).toEqual([a, b]);
+      // Another prompt, another version, a newer message or a thread not asked: nothing.
+      expect(
+        await store().getPromptVerdicts("k2", 1, [{ threadId: "t1", lastMessageKey: 10 }]),
+      ).toEqual([]);
+      expect(
+        await store().getPromptVerdicts("k1", 2, [{ threadId: "t1", lastMessageKey: 10 }]),
+      ).toEqual([]);
+      expect(
+        await store().getPromptVerdicts("k1", 1, [{ threadId: "t1", lastMessageKey: 11 }]),
+      ).toEqual([]);
+      expect(await store().getPromptVerdicts("k1", 1, [])).toEqual([]);
+    });
+
+    it("keeps one verdict per prompt and thread: a newer one replaces it", async () => {
+      await store().putPromptVerdicts([verdict(), verdict({ promptKey: "k2" })]);
+      await store().putPromptVerdicts([verdict({ lastMessageKey: 12, fit: 3, atMs: 2000 })]);
+      expect(
+        await store().getPromptVerdicts("k1", 1, [{ threadId: "t1", lastMessageKey: 10 }]),
+      ).toEqual([]);
+      expect(
+        await store().getPromptVerdicts("k1", 1, [{ threadId: "t1", lastMessageKey: 12 }]),
+      ).toEqual([verdict({ lastMessageKey: 12, fit: 3, atMs: 2000 })]);
+      expect(
+        await store().getPromptVerdicts("k2", 1, [{ threadId: "t1", lastMessageKey: 10 }]),
+      ).toHaveLength(1);
+    });
+
+    it("prunes prompts no view keeps and not run since the cut, and removes them with the thread", async () => {
+      await store().putPromptVerdicts([
+        verdict({ promptKey: "old", atMs: 100 }),
+        verdict({ promptKey: "old", threadId: "t2", atMs: 200 }),
+        verdict({ promptKey: "saved", atMs: 100 }),
+        verdict({ promptKey: "recent", atMs: 100 }),
+        verdict({ promptKey: "recent", threadId: "t2", atMs: 900 }),
+      ]);
+      expect(await store().prunePromptVerdicts(["saved"], 500)).toBe(2);
+      const left = async (key: string) =>
+        (
+          await store().getPromptVerdicts(key, 1, [
+            { threadId: "t1", lastMessageKey: 10 },
+            { threadId: "t2", lastMessageKey: 10 },
+          ])
+        ).length;
+      expect([await left("old"), await left("saved"), await left("recent")]).toEqual([0, 1, 2]);
+      await store().removeForThreads(["t2"]);
+      expect(await left("recent")).toBe(1);
+      expect(await store().prunePromptVerdicts([], 0)).toBe(0);
+    });
+
+    it("keeps the search of a prompt per prompt and mail filters, and lets go of removed threads (ADR 0116)", async () => {
+      const search = {
+        promptKey: "k1",
+        filters: "from:office",
+        queries: ["warranty", "receipt bicycle"],
+        threadIds: ["t1", "t2"],
+        atMs: 1000,
+      };
+      expect(await store().getPromptSearch("k1", "from:office")).toBeNull();
+      await store().putPromptSearch(search);
+      await store().putPromptSearch({ ...search, filters: "", queries: ["other"] });
+      expect(await store().getPromptSearch("k1", "from:office")).toEqual(search);
+      expect((await store().getPromptSearch("k1", ""))?.queries).toEqual(["other"]);
+      await store().putPromptSearch({ ...search, queries: ["again"], atMs: 2000 });
+      expect((await store().getPromptSearch("k1", "from:office"))?.queries).toEqual(["again"]);
+      // The filters' whole match, with no search, says so and comes back the same (rule 4).
+      const whole = {
+        ...search,
+        filters: "label:x",
+        queries: [],
+        threadIds: [],
+        whole: true as const,
+      };
+      await store().putPromptSearch(whole);
+      expect(await store().getPromptSearch("k1", "label:x")).toEqual(whole);
+      await store().removeForThreads(["t1"]);
+      expect((await store().getPromptSearch("k1", "from:office"))?.threadIds).toEqual(["t2"]);
+      // Old, no view holds it and no verdict is left: it goes. A verdict of its prompt keeps it.
+      await store().putPromptSearch({ ...search, promptKey: "k2", atMs: 100 });
+      await store().putPromptSearch({ ...search, promptKey: "k3", atMs: 100 });
+      await store().putPromptVerdicts([verdict({ promptKey: "k3", atMs: 900 })]);
+      await store().prunePromptVerdicts([], 500);
+      expect(await store().getPromptSearch("k2", "from:office")).toBeNull();
+      expect(await store().getPromptSearch("k3", "from:office")).not.toBeNull();
+      expect(await store().getPromptSearch("k1", "from:office")).not.toBeNull();
+    });
 
     it("round-trips an analysis with every field", async () => {
       const a = analysis();

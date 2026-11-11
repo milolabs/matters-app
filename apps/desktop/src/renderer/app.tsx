@@ -12,7 +12,7 @@ import type {
   Thing,
   ThreadFactView,
 } from "@matters/core";
-import { promiseLines, replyPromptTarget } from "@matters/core";
+import { parseQuery, promiseLines, replyPromptTarget } from "@matters/core";
 import { createVirtualizer } from "@tanstack/solid-virtual";
 import {
   createEffect,
@@ -104,6 +104,9 @@ import { OVERLAY_BELOW } from "./paneWidth.ts";
 import { personMark } from "./personMark.ts";
 import { createMenuAnchor, menuPoint, PopMenu } from "./popMenu.tsx";
 import { linesByMessage } from "./promiseRows.ts";
+import { PromptLine } from "./promptLine.tsx";
+import { createPromptRun } from "./promptRun.ts";
+import { NOTHING_FITS, promptOff } from "./promptView.ts";
 import { createQueryModel, QueryBar, type QueryBarHandle } from "./queryBar.tsx";
 import { addFilter, labelToken, senderToken } from "./queryEdits.ts";
 import { ReceivedStrip } from "./receivedStrip.tsx";
@@ -120,6 +123,8 @@ import {
   verifiedBadge,
 } from "./senderHeader.ts";
 import { SendTray } from "./sendTray.tsx";
+import { SortLine } from "./sortLine.tsx";
+import { createSortRun, rankedSortOf } from "./sortRun.ts";
 import type { MailStore, MoveSubject } from "./store.ts";
 import { resolveAct, saveViewOffer } from "./talkOffers.ts";
 import type { OfferActions } from "./talkOffers.tsx";
@@ -276,7 +281,10 @@ function Mail(props: Stores) {
   const [dragCount, setDragCount] = createSignal(0);
   const [dropHover, setDropHover] = createSignal<DropTarget | null>(null);
   let bar!: QueryBarHandle;
-  const model = createQueryModel(store, accounts);
+  // ADR 0116, rule 11: a prompt does nothing while the agent could not read for it, from the
+  // same state that decides whether Matters is there.
+  const offWhy = createMemo(() => promptOff(agent.enabled(), agent.status()));
+  const model = createQueryModel(store, accounts, offWhy);
   const showMarks = createMemo(() =>
     showsAccountMarks(accounts.accounts().length, model.parsed().root),
   );
@@ -287,6 +295,53 @@ function Mail(props: Stores) {
   createEffect(() => views.setMattersAvailable(agent.enabled()));
   const inMatters = () => views.active().id === MATTERS_ID;
   createEffect(() => agent.setShown(inMatters()));
+  // A prompt is a filter (ADR 0116). The bar's text says whether there is one; nothing is asked
+  // of the backend on the keystroke, and the list stays the mail filters' until a run or kept
+  // verdicts give it rows (rules 2 and 7). Matters has a list of its own.
+  const prompt = createPromptRun(props.backend);
+  onCleanup(() => prompt.dispose());
+  createEffect(() => {
+    const text = store.query();
+    const has = !inMatters() && model.parsed().prompt !== undefined;
+    untrack(() => prompt.setQuery(text, has));
+  });
+  // A ranked order without a prompt (rule 4b): computed after `↵`, the dated list until then.
+  const sorted = createSortRun(props.backend);
+  onCleanup(() => sorted.dispose());
+  createEffect(() => {
+    const text = store.query();
+    const mine = inMatters() ? null : rankedSortOf(model.parsed());
+    untrack(() => sorted.setQuery(text, mine));
+  });
+  createEffect(() => {
+    const rows = prompt.rows();
+    const ranked = sorted.rows();
+    untrack(() => {
+      if (rows !== null) {
+        // Under `sort:newest` or `sort:oldest` what fits is by date, with day headings (rule 4b).
+        const by = parseQuery(prompt.text()).sort?.value;
+        const dated = by === "newest" || by === "oldest";
+        store.showOrdered(
+          prompt.text(),
+          rows.map((r) => r.message),
+          dated,
+        );
+      } else if (ranked !== null) store.showOrdered(sorted.text(), ranked);
+      else store.showOrdered(store.query(), null);
+    });
+  });
+  // Opening a saved view whose text holds a prompt shows what is kept and reads the rest (rule 3);
+  // one with a ranked order is sorted, as `↵` would.
+  onCleanup(
+    views.onOpened(() => {
+      if (prompt.has()) void prompt.open();
+      else if (sorted.has()) void sorted.run();
+    }),
+  );
+  /** The model's sentence per thread, shown on the row in the agent's colour (rule 6). */
+  const whys = createMemo(
+    () => new Map((prompt.rows() ?? []).map((r) => [r.threadId, r.why] as const)),
+  );
   // What the agent already has for the open ordinary thread, and the person's way to ask for more
   // (ADR 0063). Nothing here spends a turn unless the person asks.
   const threadAgent = createThreadAgent({
@@ -1006,6 +1061,20 @@ function Mail(props: Stores) {
       return;
     }
     if (inSearch) {
+      if (e.key === "Enter" && prompt.has()) {
+        // ↵ with a prompt reads it (ADR 0116, rule 3); the list takes the keys as always.
+        e.preventDefault();
+        void prompt.run();
+        toList();
+        return;
+      }
+      if (e.key === "Enter" && sorted.has()) {
+        // ↵ with a ranked order computes it (rule 4b); the list takes the keys as always.
+        e.preventDefault();
+        void sorted.run();
+        toList();
+        return;
+      }
       if (e.key === "Enter" || (e.key === "ArrowDown" && bar.atLastLine())) {
         e.preventDefault();
         toList();
@@ -1271,6 +1340,7 @@ function Mail(props: Stores) {
         baseline={() => views.active().query}
         searching={() => (inMatters() ? agent.searching() : store.searching())}
         canAsk={() => agent.enabled() && !compose.isOpen()}
+        promptOff={() => offWhy() !== null || inMatters()}
         onAsk={askAcrossAll}
         onOpenThread={openFound}
         ref={(handle) => (bar = handle)}
@@ -1289,6 +1359,8 @@ function Mail(props: Stores) {
             focusBar={() => bar.input.focus()}
             focusList={() => listEl.focus({ preventScroll: true })}
           />
+          <PromptLine prompt={prompt} shown={() => !inMatters()} />
+          <SortLine sort={sorted} shown={() => !inMatters()} />
           <div class="min-h-0 flex-1">
             <Show
               when={inMatters()}
@@ -1301,6 +1373,14 @@ function Mail(props: Stores) {
                   onMenu={menuForRow}
                   resultsHeading={() => inAllMail() && store.filtered()}
                   resultCount={count}
+                  whyOf={(m) => (store.ordered() ? whys().get(m.threadId) : undefined)}
+                  orderedEmpty={() =>
+                    sorted.rows() !== null
+                      ? "Nothing found."
+                      : prompt.progress() === null
+                        ? NOTHING_FITS
+                        : ""
+                  }
                   words={hitWords}
                   own={own()}
                   syncing={accounts.summary().tone === "busy"}
@@ -1808,6 +1888,10 @@ function MessageList(props: {
   resultsHeading: () => boolean;
   /** How many messages the list holds, `50+` while more can be loaded: beside `Results` (ADR 0093). */
   resultCount: () => string;
+  /** The model's sentence for a row a prompt kept (ADR 0116, rule 6). */
+  whyOf: (message: Message) => string | undefined;
+  /** What an empty list says while it holds a prompt's rows. */
+  orderedEmpty: () => string;
   syncing: boolean;
   /** The account mark of a message; undefined when the view does not show marks. */
   markOf: (message: Message) => AccountMark | undefined;
@@ -1823,8 +1907,18 @@ function MessageList(props: {
   let scroller!: HTMLDivElement;
 
   // Day headings are laid out against the day the list was built; a new day rebuilds on change.
+  // A prompt's rows are in its order, not by day: no headings (ADR 0116, rule 7), unless that
+  // order is by date (rule 4b). Either way along the key, the headings follow the rows.
   const layout = createMemo(() =>
-    layoutList(store.messages(), Date.now(), props.resultsHeading() ? "Results" : undefined),
+    layoutList(
+      store.messages(),
+      Date.now(),
+      store.ordered() && !store.orderedDated()
+        ? null
+        : props.resultsHeading()
+          ? "Results"
+          : undefined,
+    ),
   );
 
   const virtualizer = createVirtualizer({
@@ -1876,6 +1970,18 @@ function MessageList(props: {
     }),
   );
 
+  // A prompt's rows came or went (ADR 0116, rule 7): the same message may now stand elsewhere.
+  createEffect(
+    on(
+      store.ordered,
+      () => {
+        const item = layout().rowItem[store.selected()];
+        if (item !== undefined) virtualizer.scrollToIndex(item === 1 ? 0 : item);
+      },
+      { defer: true },
+    ),
+  );
+
   // ⇧ with an arrow walks past the end of the view.
   createEffect(
     on(marks.head, (head) => {
@@ -1908,11 +2014,13 @@ function MessageList(props: {
         fallback={
           <Show when={!store.searching()}>
             <p class="px-6 pt-16 text-center text-[13px] text-secondary">
-              {store.filtered()
-                ? "Nothing found."
-                : props.syncing
-                  ? "Your mail is on its way."
-                  : "Nothing here."}
+              {store.ordered()
+                ? props.orderedEmpty()
+                : store.filtered()
+                  ? "Nothing found."
+                  : props.syncing
+                    ? "Your mail is on its way."
+                    : "Nothing here."}
             </p>
           </Show>
         }
@@ -1962,6 +2070,10 @@ function MessageList(props: {
                       const m = message();
                       return m === undefined ? null : rowHits.of(m, props.words());
                     })()}
+                    why={(() => {
+                      const m = message();
+                      return m === undefined ? undefined : props.whyOf(m);
+                    })()}
                     onPress={(e) => {
                       const m = message();
                       if (m) props.onPress(m, e);
@@ -2008,6 +2120,8 @@ function Row(props: {
   top: number;
   /** The marked parts of subject and snippet while a search with free words is shown (ADR 0077). */
   hits: RowSegments | null;
+  /** A prompt kept the row: the model's sentence takes the snippet's line (ADR 0116, rule 6). */
+  why?: string | undefined;
   onPress: (e: MouseEvent) => void;
   onMenu: (e: MouseEvent) => void;
 }) {
@@ -2015,6 +2129,23 @@ function Row(props: {
     <Show when={props.message}>
       {(m) => {
         const who = createMemo(() => rowPerson(m(), props.own));
+        // The third line: the snippet, or the model's own sentence in the agent's colour.
+        const third = () => (
+          <Show
+            when={props.why}
+            fallback={
+              <Show when={props.hits} fallback={m().snippet}>
+                {(h) => <Segments segments={h().snippet} />}
+              </Show>
+            }
+          >
+            {(why) => (
+              <span class="text-agent" title={why()} data-prompt-why>
+                {why()}
+              </span>
+            )}
+          </Show>
+        );
         return (
           <div
             data-row
@@ -2079,18 +2210,14 @@ function Row(props: {
                 when={props.mark}
                 fallback={
                   <span class="col-start-2 col-end-4 truncate text-[12px] text-secondary">
-                    <Show when={props.hits} fallback={m().snippet}>
-                      {(h) => <Segments segments={h().snippet} />}
-                    </Show>
+                    {third()}
                   </span>
                 }
               >
                 {(mark) => (
                   <span class="col-start-2 col-end-4 flex min-w-0 items-center gap-2">
                     <span class="min-w-0 flex-1 truncate text-[12px] text-secondary">
-                      <Show when={props.hits} fallback={m().snippet}>
-                        {(h) => <Segments segments={h().snippet} />}
-                      </Show>
+                      {third()}
                     </span>
                     <span class="sr-only">Account {mark().address}</span>
                     {/* The padding gives the tooltip more than the dot's 6px to land on. */}

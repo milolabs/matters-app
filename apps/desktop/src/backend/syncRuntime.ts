@@ -34,6 +34,7 @@ import {
   RejectedPasswords,
   receivedId,
   SyncScheduler,
+  sortRanked,
   sweepReceived,
 } from "@matters/core";
 import { AccountService } from "./accounts.ts";
@@ -499,6 +500,7 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
             ...(kind === undefined ? {} : { kind }),
             ...(note === undefined ? {} : { note }),
           }),
+        onPromptProgress: (progress) => post({ type: "agentPrompt", ...progress }),
         index: storage.index,
         views: storage.views,
         onError: (message) => console.error(`matters-sync: ${message}`),
@@ -710,6 +712,29 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         return needAgent().draftFromPrepared(command.threadId, command.body);
       case "agentMatchAct":
         return needAgent().matchAct(command.query);
+      case "agentPromptCount":
+        return needAgent().promptCount(command.query);
+      case "agentPromptVerdicts":
+        return needAgent().promptVerdicts(command.query);
+      case "agentPromptRun":
+        return needAgent().promptRun(
+          command.query,
+          command.again === true,
+          command.readAll === true,
+        );
+      case "agentPromptStop":
+        await needAgent().promptStop();
+        return null;
+      case "sortRanked":
+        return sortRanked(
+          {
+            index: storage.index,
+            store: storage.store,
+            accounts: storage.accounts,
+            now: () => clock.now(),
+          },
+          command.query,
+        );
       case "countMatches":
         return countMatches(
           { index: storage.index, accounts: storage.accounts, now: () => clock.now() },

@@ -18,6 +18,8 @@ import type {
   NewTalkEntry,
   PlanLimits,
   PreparedRecord,
+  PromptSearch,
+  PromptVerdict,
   TalkEntry,
   TalkSummary,
   TalkTitleBy,
@@ -111,6 +113,68 @@ export class InMemoryAgentInsightStore implements AgentInsightStorePort {
     titleBy?: TalkTitleBy;
   }[] = [];
   private nextTalksId = 1;
+  private verdicts: PromptVerdict[] = [];
+  private searches: PromptSearch[] = [];
+
+  async putPromptSearch(search: PromptSearch): Promise<void> {
+    this.searches = this.searches.filter(
+      (o) => !(o.promptKey === search.promptKey && o.filters === search.filters),
+    );
+    this.searches.push({
+      ...search,
+      queries: [...search.queries],
+      threadIds: [...search.threadIds],
+    });
+  }
+
+  async getPromptSearch(promptKey: string, filters: string): Promise<PromptSearch | null> {
+    const found = this.searches.find((o) => o.promptKey === promptKey && o.filters === filters);
+    return found === undefined
+      ? null
+      : { ...found, queries: [...found.queries], threadIds: [...found.threadIds] };
+  }
+
+  async putPromptVerdicts(verdicts: readonly PromptVerdict[]): Promise<void> {
+    for (const v of verdicts) {
+      this.verdicts = this.verdicts.filter(
+        (o) => !(o.promptKey === v.promptKey && o.threadId === v.threadId),
+      );
+      this.verdicts.push({ ...v });
+    }
+  }
+
+  async getPromptVerdicts(
+    promptKey: string,
+    version: number,
+    threads: readonly { readonly threadId: string; readonly lastMessageKey: number }[],
+  ): Promise<readonly PromptVerdict[]> {
+    const at = new Map(threads.map((t) => [t.threadId, t.lastMessageKey]));
+    return this.verdicts
+      .filter(
+        (v) =>
+          v.promptKey === promptKey &&
+          v.version === version &&
+          at.get(v.threadId) === v.lastMessageKey,
+      )
+      .map((v) => ({ ...v }));
+  }
+
+  async prunePromptVerdicts(keep: readonly string[], beforeMs: number): Promise<number> {
+    const newest = new Map<string, number>();
+    for (const v of this.verdicts) {
+      newest.set(v.promptKey, Math.max(newest.get(v.promptKey) ?? -Infinity, v.atMs));
+    }
+    const kept = new Set(keep);
+    const before = this.verdicts.length;
+    this.verdicts = this.verdicts.filter(
+      (v) => kept.has(v.promptKey) || (newest.get(v.promptKey) ?? 0) >= beforeMs,
+    );
+    const judged = new Set(this.verdicts.map((v) => v.promptKey));
+    this.searches = this.searches.filter(
+      (o) => kept.has(o.promptKey) || o.atMs >= beforeMs || judged.has(o.promptKey),
+    );
+    return before - this.verdicts.length;
+  }
 
   async getAnalysis(threadId: string, lastMessageKey: number, analyzerVersion: number) {
     return (
@@ -402,6 +466,10 @@ export class InMemoryAgentInsightStore implements AgentInsightStorePort {
 
   async removeForThreads(threadIds: readonly string[]): Promise<void> {
     const gone = new Set(threadIds);
+    this.searches = this.searches.map((o) => ({
+      ...o,
+      threadIds: o.threadIds.filter((id) => !gone.has(id)),
+    }));
     this.talk = this.talk
       .filter((t) => t.threadId === null || !gone.has(t.threadId))
       .map((t) =>
@@ -421,6 +489,7 @@ export class InMemoryAgentInsightStore implements AgentInsightStorePort {
           : t,
       );
     this.analyses = this.analyses.filter((a) => !gone.has(a.threadId));
+    this.verdicts = this.verdicts.filter((v) => !gone.has(v.threadId));
     this.prepared = this.prepared.filter((p) => !gone.has(p.threadId));
     this.feedback = this.feedback.filter((f) => !gone.has(f.threadId));
     this.journal = this.journal.filter(
