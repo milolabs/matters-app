@@ -31,7 +31,13 @@ import type {
   TalkTitleBy,
   ThingFeedback,
 } from "@matters/core";
-import { cutTitle, DEFAULT_AGENT_SETTINGS, FEEDBACK_OUTCOMES } from "@matters/core";
+import {
+  cutTitle,
+  DEFAULT_AGENT_SETTINGS,
+  FEEDBACK_OUTCOMES,
+  isAgentEffort,
+  readEfforts,
+} from "@matters/core";
 import { type Database, exclusive, write } from "./database.ts";
 
 /** A value this build does not know (a newer one wrote it) reads as absent. */
@@ -405,8 +411,8 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
       DELETE FROM agent_feedback WHERE id = (
         SELECT id FROM agent_feedback WHERE thread_id = ? AND kind = ? ORDER BY id DESC LIMIT 1)`);
     this.insertLedger = db.prepare(`
-      INSERT INTO agent_ledger (at_ms, runtime_id, account_id, purpose, threads)
-      VALUES (?, ?, ?, ?, ?)`);
+      INSERT INTO agent_ledger (at_ms, runtime_id, account_id, purpose, threads, effort)
+      VALUES (?, ?, ?, ?, ?, ?)`);
     this.insertTalk = db.prepare(`
       INSERT INTO agent_talk (thread_id, at_ms, role, kind, text, quotes_json, runtime_name, model, threads, query, hits_json, carry_json, loop_json, talk_id, offers_json, facts_json)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -657,7 +663,14 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
     if (entries.length === 0) return;
     await write(this.db, () => {
       for (const e of entries) {
-        this.insertLedger.run(e.atMs, e.runtimeId, e.accountId, e.purpose, e.threads);
+        this.insertLedger.run(
+          e.atMs,
+          e.runtimeId,
+          e.accountId,
+          e.purpose,
+          e.threads,
+          e.effort ?? null,
+        );
       }
     });
   }
@@ -888,6 +901,7 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
       account_id: string;
       purpose: LedgerEntry["purpose"];
       threads: number;
+      effort: string | null;
     }[];
     return rows.map((r) => ({
       atMs: r.at_ms,
@@ -895,6 +909,8 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
       accountId: r.account_id,
       purpose: r.purpose,
       threads: r.threads,
+      // A line from before ADR 0118, or a level this build does not know, says none.
+      ...(isAgentEffort(r.effort) ? { effort: r.effort } : {}),
     }));
   }
 
@@ -1069,7 +1085,8 @@ function readSettings(json: string | undefined): AgentSettings {
           titles: stored.models.titles ?? DEFAULT_AGENT_SETTINGS.models.titles,
         }
       : DEFAULT_AGENT_SETTINGS.models;
-  return { ...DEFAULT_AGENT_SETTINGS, ...stored, models };
+  // Efforts stored before ADR 0118, or unknown, read as the starting values (rule 8).
+  return { ...DEFAULT_AGENT_SETTINGS, ...stored, models, efforts: readEfforts(stored.efforts) };
 }
 
 export class SqliteAgentSettings implements AgentSettingsPort {

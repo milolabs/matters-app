@@ -6,8 +6,12 @@ import type {
 } from "@matters/core";
 import { describe, expect, it } from "vitest";
 import {
+  EFFORT_WORDS,
+  effortOptions,
+  effortShown,
   journalLine,
   journalLines,
+  ledgerEffort,
   ourShare,
   planButton,
   questionButtonText,
@@ -23,6 +27,7 @@ const status = (over: Partial<AgentStatus> = {}): AgentStatus => ({
     enabled: true,
     runtimeId: "claude-code",
     models,
+    efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
     weekSharePercent: 10,
     usedByUsPercent: 4.2,
     limits: {
@@ -300,5 +305,44 @@ describe("the journal's words", () => {
     expect(later(NOW)?.undoable).toBe(false);
     expect(later(NOW - 1000)?.undoable).toBe(false);
     expect(later(NOW - 1000)?.undone).toBe(false);
+  });
+});
+
+describe("the effort beside each model (ADR 0118)", () => {
+  const all = { efforts: ["low", "medium", "high", "xhigh", "max"] } as const;
+
+  it("offers Default and only the levels the runtime lists, lowest first (rule 4)", () => {
+    expect(effortOptions(all)).toEqual([
+      ["default", "Default"],
+      ["low", "Low"],
+      ["medium", "Medium"],
+      ["high", "High"],
+      ["xhigh", "Extra high"],
+      ["max", "Max"],
+    ]);
+    expect(effortOptions({ efforts: ["high", "low"] })).toEqual([
+      ["default", "Default"],
+      ["low", "Low"],
+      ["high", "High"],
+    ]);
+  });
+
+  it("offers nothing, so no control shows, when the runtime lists none or is not known", () => {
+    expect(effortOptions({ efforts: [] })).toEqual([]);
+    expect(effortOptions({})).toEqual([]);
+    expect(effortOptions(null)).toEqual([]);
+  });
+
+  it("shows a stored level the runtime does not list as Default, which is what is sent", () => {
+    expect(effortShown("max", { efforts: ["low", "medium"] })).toBe("default");
+    expect(effortShown("medium", { efforts: ["low", "medium"] })).toBe("medium");
+    expect(effortShown("default", all)).toBe("default");
+  });
+
+  it("names the effort of a ledger line, and nothing for a line without one (rule 7)", () => {
+    expect(ledgerEffort({ effort: "xhigh" })).toBe("extra high effort");
+    expect(ledgerEffort({ effort: "low" })).toBe("low effort");
+    expect(ledgerEffort({})).toBe("");
+    expect(EFFORT_WORDS.default).toBe("Default");
   });
 });

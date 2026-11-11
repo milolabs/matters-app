@@ -11,6 +11,7 @@ import type {
 } from "@matters/contracts";
 import type {
   AccountStorePort,
+  AgentEffortSetting,
   AttachmentStorePort,
   ComposeRendererPort,
   DeleteForeverResult,
@@ -50,6 +51,7 @@ import type {
 import {
   chooseImages,
   failureDetailOf,
+  isAgentEffortSetting,
   isMessageKey,
   isPartId,
   MAX_IMAGE_RULE_VALUE,
@@ -563,7 +565,16 @@ function parseAgentRequest(
         }
         models[key as (typeof MODEL_KEYS)[number]] = value;
       }
-      return { type, requestId, models };
+      if (raw.efforts === undefined) return { type, requestId, models };
+      if (!isRecord(raw.efforts)) return "efforts must be an object";
+      const efforts: Partial<Record<(typeof MODEL_KEYS)[number], AgentEffortSetting>> = {};
+      for (const [key, value] of Object.entries(raw.efforts)) {
+        if (!(MODEL_KEYS as readonly string[]).includes(key) || !isAgentEffortSetting(value)) {
+          return "efforts holds understand, write, answer and titles, as levels of effort";
+        }
+        efforts[key as (typeof MODEL_KEYS)[number]] = value;
+      }
+      return { type, requestId, models, efforts };
     }
     case "agentSetWeekShare":
       return typeof raw.percent === "number" && Number.isFinite(raw.percent)
@@ -1680,7 +1691,7 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           type: "agentSetModels",
           requestId,
           ok: true,
-          status: await needAgent(deps).setModels(request.models),
+          status: await needAgent(deps).setModels(request.models, request.efforts),
         };
       case "agentSetWeekShare":
         return {

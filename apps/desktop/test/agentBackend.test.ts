@@ -36,6 +36,7 @@ const status: AgentStatus = {
       answer: "sonnet",
       titles: "haiku",
     },
+    efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
     weekSharePercent: 10,
     usedByUsPercent: 0,
   },
@@ -162,6 +163,19 @@ describe("agent requests", () => {
     expect(await ask({ type: "agentSetModels", models: { write: "opus" } })).toMatchObject({
       type: "agentSetModels",
     });
+    // The effort beside the model (ADR 0118): every level and the default pass.
+    expect(
+      await ask({
+        type: "agentSetModels",
+        models: {},
+        efforts: { understand: "max", write: "default", answer: "xhigh", titles: "low" },
+      }),
+    ).toMatchObject({ type: "agentSetModels", ok: true });
+    expect(calls.filter((c) => c[0] === "setModels").at(-1)).toEqual([
+      "setModels",
+      {},
+      { understand: "max", write: "default", answer: "xhigh", titles: "low" },
+    ]);
     expect(await ask({ type: "agentSetWeekShare", percent: 15 })).toMatchObject({ ok: true });
     expect(await ask({ type: "agentSetTalkLoop", on: true })).toMatchObject({ ok: true });
     expect(await ask({ type: "agentInspect" })).toMatchObject({ type: "agentInspect" });
@@ -204,6 +218,7 @@ describe("agent requests", () => {
       "journal",
       "setEnabled",
       "disable",
+      "setModels",
       "setModels",
       "setWeekShare",
       "setTalkLoop",
@@ -591,6 +606,10 @@ describe("agent requests", () => {
       { type: "agentSetModels", models: { write: 3 } },
       { type: "agentSetModels", models: "write" },
       { type: "agentSetModels", models: { draftAhead: "haiku" } },
+      { type: "agentSetModels", models: {}, efforts: "high" },
+      { type: "agentSetModels", models: {}, efforts: { write: "ultra" } },
+      { type: "agentSetModels", models: {}, efforts: { write: "High" } },
+      { type: "agentSetModels", models: {}, efforts: { mystery: "low" } },
       { type: "agentSetWeekShare", percent: "10" },
       { type: "agentSetTalkLoop", on: "yes" },
       { type: "agentSetWeekShare", percent: Number.POSITIVE_INFINITY },

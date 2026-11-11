@@ -1,7 +1,20 @@
 import type { AccountInfo } from "@matters/contracts";
-import type { AgentModels, AgentRuntimeInfo, AgentStatus } from "@matters/core";
-import { createSignal, For, Index, Show } from "solid-js";
-import { modelName, SIGN_IN_COMMAND, vendorName, windowLine } from "./agentText.ts";
+import type {
+  AgentEffortSetting,
+  AgentEfforts,
+  AgentModels,
+  AgentRuntimeInfo,
+  AgentStatus,
+} from "@matters/core";
+import { createSignal, For, Index, type JSX, Show } from "solid-js";
+import {
+  effortOptions,
+  effortShown,
+  modelName,
+  SIGN_IN_COMMAND,
+  vendorName,
+  windowLine,
+} from "./agentText.ts";
 import type { Backend } from "./client.ts";
 import { field, pill, pillPrimary } from "./ui.ts";
 
@@ -201,6 +214,8 @@ export function Choice(props: {
   options: readonly (readonly [string, string])[];
   disabled?: boolean;
   onChange: (value: string) => void;
+  /** A second control beside the select, such as the effort of a kind of work (ADR 0118). */
+  aside?: JSX.Element | undefined;
 }) {
   // A value the list does not name (a window set to 7 days) is still shown, not replaced.
   const options = () =>
@@ -208,7 +223,13 @@ export function Choice(props: {
       ? props.options
       : [...props.options, [props.value, props.value] as const];
   return (
-    <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,230px)] items-center gap-4">
+    <div
+      class="grid items-center gap-4"
+      classList={{
+        "grid-cols-[minmax(0,1fr)_minmax(0,230px)]": props.aside === undefined,
+        "grid-cols-[minmax(0,1fr)_minmax(0,230px)_112px]": props.aside !== undefined,
+      }}
+    >
       <label for={props.id} class="min-w-0">
         <span class="block text-[13px]">{props.label}</span>
         <Show when={props.hint}>
@@ -232,21 +253,56 @@ export function Choice(props: {
           )}
         </Index>
       </select>
+      {props.aside}
     </div>
   );
 }
 
-/** "What does what": one choice of model for each kind of work, from the runtime's own models. */
+/** The effort of one kind of work, in the same quiet field style (ADR 0118). */
+function EffortChoice(props: {
+  id: string;
+  label: string;
+  value: AgentEffortSetting;
+  options: readonly (readonly [AgentEffortSetting, string])[];
+  disabled: boolean;
+  onChange: (value: AgentEffortSetting) => void;
+}) {
+  return (
+    <select
+      id={props.id}
+      aria-label={`${props.label}, effort`}
+      data-effort
+      class={`${field} w-full`}
+      value={props.value}
+      disabled={props.disabled}
+      onChange={(e) => props.onChange(e.currentTarget.value as AgentEffortSetting)}
+    >
+      <Index each={props.options}>
+        {(option) => (
+          <option value={option()[0]} selected={option()[0] === props.value}>
+            {option()[1]}
+          </option>
+        )}
+      </Index>
+    </select>
+  );
+}
+
+/**
+ * "What does what": one choice of model for each kind of work, from the runtime's own models, and
+ * beside it the effort, from the levels the runtime lists; none when it lists none (ADR 0118).
+ */
 export function WhatDoesWhat(props: {
   status: AgentStatus;
   idPrefix: string;
-  onChange: (models: Partial<AgentModels>) => void;
+  onChange: (models: Partial<AgentModels>, efforts?: Partial<AgentEfforts>) => void;
   /** Words for the first-run screen: the values are what the app suggests. */
   suggested?: boolean;
 }) {
   const runtime = () => props.status.runtime;
   const names = () => runtime()?.models ?? [];
   const by = () => runtime()?.name ?? "";
+  const efforts = () => effortOptions(runtime());
   return (
     <div class="flex flex-col gap-3">
       <p class="text-[12px] font-semibold text-secondary">
@@ -266,9 +322,26 @@ export function WhatDoesWhat(props: {
               ...names().map((m) => [m, `${modelName(m)} · ${by()}`] as const),
             ]}
             onChange={(value) => props.onChange({ [work.key]: value })}
+            aside={
+              efforts().length === 0 ? undefined : (
+                <EffortChoice
+                  id={`${props.idPrefix}-${work.key}-effort`}
+                  label={work.label}
+                  value={effortShown(props.status.settings.efforts[work.key], runtime())}
+                  options={efforts()}
+                  disabled={work.key === "titles" && props.status.settings.models.titles === "off"}
+                  onChange={(value) => props.onChange({}, { [work.key]: value })}
+                />
+              )
+            }
           />
         )}
       </For>
+      <Show when={efforts().length > 0}>
+        <p class="text-[12px] text-secondary">
+          Higher effort uses more of your plan. Default leaves it to {by()}.
+        </p>
+      </Show>
     </div>
   );
 }

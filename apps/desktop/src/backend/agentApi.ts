@@ -2,6 +2,7 @@ import type {
   ActMatches,
   AddInstructionInput,
   AddRuleInput,
+  AgentEfforts,
   AgentInstruction,
   AgentModels,
   AgentRule,
@@ -96,7 +97,8 @@ export interface AgentApi {
   disable(): Promise<AgentStatus>;
   /** Takes back the consent for one account; AI stays on for the others. */
   revokeConsent(accountId: string): Promise<AgentStatus>;
-  setModels(models: Partial<AgentModels>): Promise<AgentStatus>;
+  /** The model and the effort of each kind of work (ADR 0118); a kind left out keeps its own. */
+  setModels(models: Partial<AgentModels>, efforts?: Partial<AgentEfforts>): Promise<AgentStatus>;
   setWeekShare(percent: number): Promise<AgentStatus>;
   /** The agent searches in a loop with tools instead of the plan and follow turns (ADR 0083). */
   setTalkLoop(on: boolean): Promise<AgentStatus>;

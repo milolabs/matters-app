@@ -5150,6 +5150,19 @@ export function describeAgentInsightStoreContract(
       ]);
     });
 
+    it("keeps the effort a turn was sent with, and none where none was sent (ADR 0118, rule 7)", async () => {
+      await store().appendLedger([
+        { atMs: 1, runtimeId: "r", accountId: "a", purpose: "prompt", threads: 2, effort: "low" },
+        { atMs: 2, runtimeId: "r", accountId: "a", purpose: "talk", threads: 1 },
+        { atMs: 3, runtimeId: "r", accountId: "a", purpose: "prepare", threads: 1, effort: "max" },
+      ]);
+      expect(await store().listLedger(10)).toEqual([
+        { atMs: 3, runtimeId: "r", accountId: "a", purpose: "prepare", threads: 1, effort: "max" },
+        { atMs: 2, runtimeId: "r", accountId: "a", purpose: "talk", threads: 1 },
+        { atMs: 1, runtimeId: "r", accountId: "a", purpose: "prompt", threads: 2, effort: "low" },
+      ]);
+    });
+
     it("lists the ledger newest first, up to the limit", async () => {
       const entry = (atMs: number, threads: number): LedgerEntry => ({
         atMs,
@@ -5519,9 +5532,23 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
           answer: "sonnet",
           titles: "haiku",
         },
+        efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
         weekSharePercent: 10,
         usedByUsPercent: 0,
       });
+    });
+
+    it("keeps the efforts as a whole (ADR 0118)", async () => {
+      const efforts = {
+        understand: "medium",
+        write: "max",
+        answer: "default",
+        titles: "xhigh",
+      } as const;
+      await settings().update({ efforts });
+      expect((await settings().get()).efforts).toEqual(efforts);
+      await settings().update({ weekSharePercent: 25 });
+      expect((await settings().get()).efforts).toEqual(efforts);
     });
 
     it("changes only the fields given, and returns the result", async () => {

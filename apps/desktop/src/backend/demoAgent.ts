@@ -4,6 +4,7 @@
 // holds quotes to the mail (ADR 0051, rule 9) is exercised for real. It exists only when the sync
 // worker was started with the seed (see syncWorker.ts); a real database never gets one.
 import type {
+  AgentEffort,
   AgentRunRequest,
   AgentRunResult,
   AgentRuntimeInfo,
@@ -11,6 +12,7 @@ import type {
   PlanLimits,
 } from "@matters/core";
 import {
+  AGENT_EFFORTS,
   DRAFT_CLOSE,
   DRAFT_OPEN,
   draftGaps,
@@ -172,6 +174,8 @@ export class DemoAgentRuntime implements AgentRuntimePort {
   readonly id = "claude-code";
   readonly name = "Demo assistant";
   private runs = 0;
+  /** The effort each turn asked for, in order; `undefined` when it asked for none (ADR 0118). */
+  readonly effortsAsked: (AgentEffort | undefined)[] = [];
   private readonly now: () => number;
   /** Fixed at the start, like a real plan's windows: a reset time that moved would look like a new week. */
   private readonly sessionResetsAtMs: number;
@@ -193,6 +197,7 @@ export class DemoAgentRuntime implements AgentRuntimePort {
       status: "found",
       plan: "demo",
       models: ["haiku", "sonnet", "opus"],
+      efforts: [...AGENT_EFFORTS],
     };
   }
 
@@ -230,6 +235,7 @@ export class DemoAgentRuntime implements AgentRuntimePort {
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<AgentRunResult> {
     this.runs++;
+    this.effortsAsked.push(request.effort);
     if (this.turnMs > 0) await this.takeTime(options.signal);
     const props = (request.schema as { properties?: Record<string, unknown> }).properties ?? {};
     const value =

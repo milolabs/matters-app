@@ -11,7 +11,7 @@ import {
   RuntimeCard,
   WhatDoesWhat,
 } from "./agentConnect.tsx";
-import { instructionScopeWords, ourShare, ruleText } from "./agentText.ts";
+import { instructionScopeWords, ledgerEffort, ourShare, ruleText } from "./agentText.ts";
 import type { Backend } from "./client.ts";
 import { letterDate } from "./format.ts";
 import { createStatusOrder } from "./statusOrder.ts";
@@ -211,7 +211,9 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                   <WhatDoesWhat
                     status={s()}
                     idPrefix="settings"
-                    onChange={(models) => void change(props.backend.agentSetModels(models))}
+                    onChange={(models, efforts) =>
+                      void change(props.backend.agentSetModels(models, efforts))
+                    }
                   />
                 </div>
               </Show>
@@ -640,7 +642,11 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                               {addressOf(entry.accountId) ?? "an account that was removed"}
                             </span>
                           </span>
-                          <span class="text-secondary tabular-nums">{ledgerThreads(entry)}</span>
+                          <span class="text-secondary tabular-nums">
+                            {[ledgerThreads(entry), ledgerEffort(entry)]
+                              .filter((part) => part !== "")
+                              .join(" · ")}
+                          </span>
                         </li>
                       )}
                     </For>

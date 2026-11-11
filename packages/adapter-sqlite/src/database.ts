@@ -1366,6 +1366,18 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 54,
+    // ADR 0118, rule 7: each line of the ledger says the effort its turn was sent with. NULL: none
+    // was sent, and every line written before. A column, as in 53.
+    sql: "",
+    run: (db) => {
+      const columns = db.prepare("PRAGMA table_info(agent_ledger)").all() as { name: string }[];
+      if (!columns.some((c) => c.name === "effort")) {
+        db.exec("ALTER TABLE agent_ledger ADD COLUMN effort TEXT");
+      }
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

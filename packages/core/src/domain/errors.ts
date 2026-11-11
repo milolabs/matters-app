@@ -105,6 +105,7 @@ export function isFileWorkError(error: unknown): error is FileWorkError {
  * - `limit`: the plan's allowance is used up for now.
  * - `refused`: the model declined to answer.
  * - `badAnswer`: it answered, but not in the shape asked for.
+ * - `effortRefused`: the model does not take the effort the turn asked for (ADR 0118, rule 5).
  * - `failed`: anything else, including a timeout, a missing program and a cancelled run.
  */
 export type AgentRunErrorCode =
@@ -113,6 +114,7 @@ export type AgentRunErrorCode =
   | "limit"
   | "refused"
   | "badAnswer"
+  | "effortRefused"
   | "failed";
 
 export class AgentRunError extends Error {
@@ -130,6 +132,7 @@ const RUN_ERROR_CODES: ReadonlySet<string> = new Set([
   "limit",
   "refused",
   "badAnswer",
+  "effortRefused",
   "failed",
 ]);
 

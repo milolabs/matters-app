@@ -42,6 +42,11 @@ export interface AgentRuntimeInfo {
   readonly plan?: string;
   /** Model names the runtime accepts, for the choice per kind of work. */
   readonly models: readonly string[];
+  /**
+   * The levels of effort the runtime takes (ADR 0118, rule 4). Absent or empty: it takes none, and
+   * no effort is ever sent to it.
+   */
+  readonly efforts?: readonly AgentEffort[];
   readonly limits?: PlanLimits;
   /** A sentence for the person, when `status` is `signedOut` or `failed`. */
   readonly problem?: string;
@@ -643,6 +648,11 @@ export interface LedgerEntry {
    */
   readonly purpose: "analysis" | "prepare" | "remember" | "talk" | "prompt" | "consent" | "revoke";
   readonly threads: number;
+  /**
+   * The effort sent with the turn (ADR 0118, rule 7). Absent when none was sent, and on every line
+   * written before it was kept.
+   */
+  readonly effort?: AgentEffort;
 }
 
 /** A prepared draft or question, kept for the thing it was made for. */
@@ -677,12 +687,97 @@ export const DEFAULT_AGENT_MODELS: AgentModels = {
 /** The value of `models.titles` that turns the naming of talks off (ADR 0086, rule 8). */
 export const TITLES_OFF = "off";
 
+/** The kinds of work that have a model, and so an effort (ADR 0118, rule 1). */
+export type AgentWorkKind = keyof AgentModels;
+
+export const AGENT_WORK_KINDS: readonly AgentWorkKind[] = [
+  "understand",
+  "write",
+  "answer",
+  "titles",
+];
+
+/** How hard a runtime is asked to think, lowest first (ADR 0118, rule 2). */
+export const AGENT_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+export type AgentEffort = (typeof AGENT_EFFORTS)[number];
+
+/** What the person sets for a kind of work: a level, or `default`, which sends none. */
+export type AgentEffortSetting = AgentEffort | "default";
+
+export const AGENT_EFFORT_SETTINGS: readonly AgentEffortSetting[] = ["default", ...AGENT_EFFORTS];
+
+/** The effort of each kind of work, beside its model (ADR 0118, rule 1). */
+export type AgentEfforts = { readonly [K in AgentWorkKind]: AgentEffortSetting };
+
+/** ADR 0118, rule 3. */
+export const DEFAULT_AGENT_EFFORTS: AgentEfforts = {
+  understand: "low",
+  write: "default",
+  answer: "default",
+  titles: "low",
+};
+
+export function isAgentEffort(value: unknown): value is AgentEffort {
+  return typeof value === "string" && (AGENT_EFFORTS as readonly string[]).includes(value);
+}
+
+export function isAgentEffortSetting(value: unknown): value is AgentEffortSetting {
+  return value === "default" || isAgentEffort(value);
+}
+
+/**
+ * The effort a turn sends, from a setting and the levels the runtime lists (ADR 0118, rules 2 and
+ * 4): `default` and a level the runtime does not list send none (`undefined`).
+ */
+export function resolveEffort(
+  setting: AgentEffortSetting | undefined,
+  levels: readonly AgentEffort[] | undefined,
+): AgentEffort | undefined {
+  if (setting === undefined || setting === "default") return undefined;
+  return levels?.includes(setting) === true ? setting : undefined;
+}
+
+/** The effort of a turn that runs on the model of `kind` (ADR 0118, rule 1). */
+export function effortFor(
+  kind: AgentWorkKind,
+  settings: Pick<AgentSettings, "efforts">,
+  levels: readonly AgentEffort[] | undefined,
+): AgentEffort | undefined {
+  return resolveEffort(settings.efforts[kind], levels);
+}
+
+/** `{ effort }` to spread into a request or a ledger line, or nothing when no effort is sent. */
+export function withEffort(effort: AgentEffort | undefined): { readonly effort?: AgentEffort } {
+  return effort === undefined ? {} : { effort };
+}
+
+/**
+ * Efforts read back from stored settings (ADR 0118, rule 8): a kind missing, or holding a value
+ * this build does not know, gets its starting value.
+ */
+export function readEfforts(raw: unknown): AgentEfforts {
+  const stored = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  const pick = (kind: AgentWorkKind): AgentEffortSetting => {
+    const value = stored[kind];
+    return isAgentEffortSetting(value) ? value : DEFAULT_AGENT_EFFORTS[kind];
+  };
+  return {
+    understand: pick("understand"),
+    write: pick("write"),
+    answer: pick("answer"),
+    titles: pick("titles"),
+  };
+}
+
 export interface AgentSettings {
   /** AI is off until the person turns it on. */
   readonly enabled: boolean;
   /** The runtime they chose; absent while none is. */
   readonly runtimeId?: AgentRuntimeId;
   readonly models: AgentModels;
+  /** The effort of each kind of work (ADR 0118); stored settings without it read as the start. */
+  readonly efforts: AgentEfforts;
   /** Share of the plan's week that background work may use, in percent (ADR 0051, rule 7). */
   readonly weekSharePercent: number;
   /** The plan's windows as last seen. */
@@ -712,6 +807,7 @@ export interface AgentSettings {
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   enabled: false,
   models: DEFAULT_AGENT_MODELS,
+  efforts: DEFAULT_AGENT_EFFORTS,
   weekSharePercent: DEFAULT_WEEK_SHARE_PERCENT,
   usedByUsPercent: 0,
 };

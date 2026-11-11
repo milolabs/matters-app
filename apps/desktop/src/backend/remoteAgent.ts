@@ -2,6 +2,7 @@ import type {
   ActMatches,
   AddInstructionInput,
   AddRuleInput,
+  AgentEfforts,
   AgentInstruction,
   AgentModels,
   AgentRule,
@@ -129,8 +130,14 @@ export class RemoteAgent implements AgentApi {
     return this.changed(this.host.command({ name: "agentRevokeConsent", accountId }));
   }
 
-  setModels(models: Partial<AgentModels>): Promise<AgentStatus> {
-    return this.changed(this.host.command({ name: "agentSetModels", models }));
+  setModels(models: Partial<AgentModels>, efforts?: Partial<AgentEfforts>): Promise<AgentStatus> {
+    return this.changed(
+      this.host.command({
+        name: "agentSetModels",
+        models,
+        ...(efforts === undefined ? {} : { efforts }),
+      }),
+    );
   }
 
   setWeekShare(percent: number): Promise<AgentStatus> {

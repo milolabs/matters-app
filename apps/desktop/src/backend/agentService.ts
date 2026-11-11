@@ -7,6 +7,8 @@ import type {
   AddInstructionInput,
   AddRuleInput,
   AgentConsent,
+  AgentEffort,
+  AgentEfforts,
   AgentFile,
   AgentInsightStorePort,
   AgentInstruction,
@@ -19,6 +21,7 @@ import type {
   AgentSettings,
   AgentSettingsPort,
   AgentStatus,
+  AgentWorkKind,
   ClockPort,
   Draft,
   DraftContent,
@@ -58,6 +61,7 @@ import type {
   WholeFileAnswer,
 } from "@matters/core";
 import {
+  AGENT_WORK_KINDS,
   acceptAnswers,
   acceptCheck,
   acceptFills,
@@ -84,7 +88,9 @@ import {
   countQuery,
   type DraftParts,
   draftGaps,
+  effortFor,
   type HelpRefusal,
+  isAgentEffortSetting,
   isAgentRunError,
   isAutomatedSender,
   isEmptyQuery,
@@ -115,6 +121,7 @@ import {
   parseTalkTitleAnswer,
   prepareReplyDraft,
   REWRITE_HOWS,
+  resolveEffort,
   splitDraft,
   TALK_LOOP_TIME_CAP_MS,
   TALK_LOOP_TIME_MS,
@@ -122,6 +129,7 @@ import {
   TALK_TITLE_QUESTIONS,
   TITLES_OFF,
   wholeFilesProblem,
+  withEffort,
   withFiles,
 } from "@matters/core";
 import {
@@ -354,6 +362,7 @@ export class AgentService implements AgentApi {
       gateRuntime: (s) => this.gateRuntime(s),
       loadThread: (threadId, consented) => this.loadThread(threadId, consented),
       noteRun: (limits, before) => this.noteRun(limits, before),
+      effortOf: (kind, s) => this.effortOf(kind, s),
       askFailure: (error, fallback) => this.askFailure(error, fallback),
       stopAll: () => this.abort.signal,
       onProgress: (progress) => deps.onPromptProgress?.(progress),
@@ -362,6 +371,11 @@ export class AgentService implements AgentApi {
 
   private get now(): number {
     return this.deps.clock.now();
+  }
+
+  /** The effort a turn on the model of `kind` sends, or none (ADR 0118, rules 1 and 4). */
+  private effortOf(kind: AgentWorkKind, s: AgentSettings): AgentEffort | undefined {
+    return effortFor(kind, s, this.info?.efforts);
   }
 
   // --- Starting and stopping ---
@@ -492,8 +506,9 @@ export class AgentService implements AgentApi {
     let status: AgentRuntimeInfo["status"] = "failed";
     let problem: string | undefined;
     try {
+      // Not a kind of work: the test stays at `low`, when the runtime takes it (ADR 0118, rule 6).
       const run = await runtime.run(
-        { model, ...request, effort: "low" },
+        { model, ...request, ...withEffort(resolveEffort("low", info.efforts)) },
         { signal: this.abort.signal },
       );
       await this.noteRun(run.limits);
@@ -805,8 +820,8 @@ export class AgentService implements AgentApi {
   private async prepareFor(
     threadId: string,
     model: string,
-    guidance?: PreparedGuidance,
-    effort?: "low" | "medium" | "high",
+    guidance: PreparedGuidance | undefined,
+    effort: AgentEffort | undefined,
   ): Promise<PrepareResult> {
     const { runtime, insights, settings } = this.deps;
     const consented = await consentedAccounts(this.deps, runtime.id);
@@ -823,7 +838,7 @@ export class AgentService implements AgentApi {
     const before = (await settings.get()).limits;
     try {
       const run = await runtime.run(
-        { model, ...request, ...(effort === undefined ? {} : { effort }) },
+        { model, ...request, ...withEffort(effort) },
         { signal: this.abort.signal },
       );
       await this.noteRun(run.limits, before);
@@ -861,6 +876,7 @@ export class AgentService implements AgentApi {
           accountId,
           purpose: "prepare",
           threads: 1,
+          ...withEffort(effort),
         },
       ]);
     }
@@ -1113,9 +1129,26 @@ export class AgentService implements AgentApi {
     return this.status();
   }
 
-  async setModels(models: Partial<AgentModels>): Promise<AgentStatus> {
+  /**
+   * The model and the effort of each kind of work (ADR 0051, rule 6; ADR 0118, rule 1). A kind
+   * left out keeps what it has. An effort is checked against the levels, not against what the
+   * runtime lists: a stored level the runtime does not list is sent as `default` (rule 4).
+   */
+  async setModels(
+    models: Partial<AgentModels>,
+    efforts: Partial<AgentEfforts> = {},
+  ): Promise<AgentStatus> {
     const current = await this.deps.settings.get();
     const next = { ...current.models };
+    const nextEfforts = { ...current.efforts };
+    for (const key of AGENT_WORK_KINDS) {
+      const value = efforts[key];
+      if (value === undefined) continue;
+      if (!isAgentEffortSetting(value)) {
+        throw new InvalidAgentSettingError("That effort is not one of the levels.");
+      }
+      nextEfforts[key] = value;
+    }
     const known = this.info?.models ?? [];
     for (const key of ["understand", "write", "answer", "titles"] as const) {
       const value = models[key];
@@ -1128,7 +1161,7 @@ export class AgentService implements AgentApi {
       if (!ok) throw new InvalidAgentSettingError("That model is not available.");
       next[key] = value;
     }
-    await this.deps.settings.update({ models: next });
+    await this.deps.settings.update({ models: next, efforts: nextEfforts });
     this.deps.onChanged();
     this.kick();
     return this.status();
@@ -1194,6 +1227,11 @@ export class AgentService implements AgentApi {
       );
     }
     if (isAgentRunError(error) && error.code === "limit") return new AgentUnavailableError(USED_UP);
+    // The model does not take the effort set for this work: said as the runtime said it, which
+    // is a sentence of the adapter's naming the model and the level (ADR 0118, rule 5).
+    if (isAgentRunError(error) && error.code === "effortRefused") {
+      return new AgentUnavailableError(error.message);
+    }
     return new AgentUnavailableError(fallback);
   }
 
@@ -1206,6 +1244,7 @@ export class AgentService implements AgentApi {
         guidance !== undefined && (guidance.direction ?? guidance.answer) !== undefined
           ? guidance
           : undefined,
+        this.effortOf("write", s),
       );
     } catch (error) {
       throw this.askFailure(error, "The assistant could not prepare this. Try again.");
@@ -1243,7 +1282,7 @@ export class AgentService implements AgentApi {
   private async helpTurn(
     accountId: string,
     threads: number,
-    run: { model: string; request: AgentRequestBody; effort?: "low" },
+    run: { model: string; request: AgentRequestBody; effort: AgentEffort | undefined },
     failed: string,
   ): Promise<unknown> {
     const { runtime, insights, settings } = this.deps;
@@ -1253,7 +1292,7 @@ export class AgentService implements AgentApi {
         {
           model: run.model,
           ...run.request,
-          ...(run.effort === undefined ? {} : { effort: run.effort }),
+          ...withEffort(run.effort),
         },
         { signal: this.abort.signal },
       );
@@ -1263,7 +1302,14 @@ export class AgentService implements AgentApi {
       throw this.askFailure(error, failed);
     } finally {
       await insights.appendLedger([
-        { atMs: this.now, runtimeId: runtime.id, accountId, purpose: "prepare", threads },
+        {
+          atMs: this.now,
+          runtimeId: runtime.id,
+          accountId,
+          purpose: "prepare",
+          threads,
+          ...withEffort(run.effort),
+        },
       ]);
     }
   }
@@ -1278,7 +1324,11 @@ export class AgentService implements AgentApi {
     const value = await this.helpTurn(
       accountId,
       0,
-      { model: s.models.write, request: buildRewriteRequest(parts.own, how, standing) },
+      {
+        model: s.models.write,
+        request: buildRewriteRequest(parts.own, how, standing),
+        effort: this.effortOf("write", s),
+      },
       "The assistant could not rewrite this. Try again.",
     );
     const got = acceptRewrite(value, parts.own);
@@ -1304,6 +1354,7 @@ export class AgentService implements AgentApi {
       {
         model: s.models.write,
         request: buildAnswerQuestionsRequest(thread, last, parts.own, this.now, standing, missing),
+        effort: this.effortOf("write", s),
       },
       "The assistant could not answer the questions. Try again.",
     );
@@ -1326,7 +1377,7 @@ export class AgentService implements AgentApi {
       {
         model: s.models.understand,
         request: buildCheckReplyRequest(last, parts.own),
-        effort: "low",
+        effort: this.effortOf("understand", s),
       },
       "The assistant could not check the reply. Try again.",
     );
@@ -1348,7 +1399,7 @@ export class AgentService implements AgentApi {
       {
         model: s.models.understand,
         request: buildFillGapsRequest(thread, parts.own, tokens, this.now),
-        effort: "low",
+        effort: this.effortOf("understand", s),
       },
       "The assistant could not look for the missing values. Try again.",
     );
@@ -1378,7 +1429,13 @@ export class AgentService implements AgentApi {
     this.talking.set(threadId, mine);
     try {
       const { s } = await this.gateForAsk(threadId);
-      return await this.talkNow(threadId, typed, s.models.write, mine.signal);
+      return await this.talkNow(
+        threadId,
+        typed,
+        s.models.write,
+        this.effortOf("write", s),
+        mine.signal,
+      );
     } catch (error) {
       if (mine.signal.aborted && !(error instanceof ThingNotFoundError)) {
         throw new AgentUnavailableError("Stopped.");
@@ -1394,6 +1451,7 @@ export class AgentService implements AgentApi {
     threadId: string,
     words: string,
     model: string,
+    effort: AgentEffort | undefined,
     stop: AbortSignal,
   ): Promise<TalkResult> {
     const { runtime, insights, settings } = this.deps;
@@ -1418,7 +1476,7 @@ export class AgentService implements AgentApi {
     try {
       // The service's own signal still cuts the turn short when AI is turned off or consent goes.
       const run = await runtime.run(
-        { model, ...request },
+        { model, ...request, ...withEffort(effort) },
         { signal: AbortSignal.any([this.abort.signal, stop]) },
       );
       await this.noteRun(run.limits, before);
@@ -1461,7 +1519,14 @@ export class AgentService implements AgentApi {
     } finally {
       // What was sent is counted whether or not it worked: counts only, no text.
       await insights.appendLedger([
-        { atMs: this.now, runtimeId: runtime.id, accountId, purpose: "talk", threads: 1 },
+        {
+          atMs: this.now,
+          runtimeId: runtime.id,
+          accountId,
+          purpose: "talk",
+          threads: 1,
+          ...withEffort(effort),
+        },
       ]);
     }
   }
@@ -1621,7 +1686,7 @@ export class AgentService implements AgentApi {
           ? s.models.titles
           : s.models.understand;
       const run = await this.deps.runtime.run(
-        { model, ...buildTalkTitleRequest(questions), effort: "low" },
+        { model, ...buildTalkTitleRequest(questions), ...withEffort(this.effortOf("titles", s)) },
         { signal: this.abort.signal },
       );
       await this.noteRun(run.limits, s.limits);
@@ -1693,10 +1758,18 @@ export class AgentService implements AgentApi {
       this.deps.onChanged();
       return { entries };
     };
+    const efforts = {
+      understand: this.effortOf("understand", s),
+      write: this.effortOf("write", s),
+      answer: this.effortOf("answer", s),
+    };
     /** One turn of the understanding model: counted against the plan, stopped by Stop. */
     const understand = async (request: AgentRequestBody): Promise<unknown> => {
       const before = (await settings.get()).limits;
-      const run = await runtime.run({ model: s.models.understand, ...request }, { signal });
+      const run = await runtime.run(
+        { model: s.models.understand, ...request, ...withEffort(efforts.understand) },
+        { signal },
+      );
       await this.noteRun(run.limits, before);
       check();
       return run.value;
@@ -1729,7 +1802,7 @@ export class AgentService implements AgentApi {
           olderThanDays: plan.olderThanDays,
           carry,
           follow: understand,
-          sent: (perAccount) => this.recordTalkSent(perAccount),
+          sent: (perAccount) => this.recordTalkSent(perAccount, efforts.understand),
           step: (step) =>
             step.kind === "search"
               ? this.deps.onTalkStep?.(step.query, step.threads, "search")
@@ -1789,7 +1862,11 @@ export class AgentService implements AgentApi {
         try {
           run = await withTools.call(
             runtime,
-            { model: s.models.write, ...buildTalkLoopRequest(history, words, this.now) },
+            {
+              model: s.models.write,
+              ...buildTalkLoopRequest(history, words, this.now),
+              ...withEffort(efforts.write),
+            },
             {
               signal,
               server: tools.server,
@@ -1853,7 +1930,7 @@ export class AgentService implements AgentApi {
         await tools.close();
         // What the tools returned left this machine, counted whether or not the turn worked (rule
         // 10). A line that cannot be written does not hide the error of the turn.
-        await this.recordTalkSent(tools.state.sent).catch((error: unknown) =>
+        await this.recordTalkSent(tools.state.sent, efforts.write).catch((error: unknown) =>
           this.deps.onError?.(
             `the ledger of a talk could not be written: ${error instanceof Error ? error.message : "failed"}`,
           ),
@@ -1966,6 +2043,7 @@ export class AgentService implements AgentApi {
         {
           model: s.models.answer,
           ...built.request,
+          ...withEffort(efforts.answer),
           ...(whole.files.length === 0 ? {} : { files: whole.files }),
         },
         { signal },
@@ -2034,7 +2112,7 @@ export class AgentService implements AgentApi {
       // What was sent is counted whether or not it worked: counts per account, no text (rule 10).
       const perAccount = new Map<string, number>();
       for (const l of sent) perAccount.set(l.accountId, (perAccount.get(l.accountId) ?? 0) + 1);
-      await this.recordTalkSent(perAccount);
+      await this.recordTalkSent(perAccount, efforts.answer);
     }
   }
 
@@ -2096,7 +2174,10 @@ export class AgentService implements AgentApi {
   }
 
   /** Lines in the ledger for mail that went to a model in a talk across all mail (rule 10). */
-  private async recordTalkSent(perAccount: ReadonlyMap<string, number>): Promise<void> {
+  private async recordTalkSent(
+    perAccount: ReadonlyMap<string, number>,
+    effort: AgentEffort | undefined,
+  ): Promise<void> {
     await this.deps.insights.appendLedger(
       [...perAccount].map(([accountId, threads]) => ({
         atMs: this.now,
@@ -2104,6 +2185,7 @@ export class AgentService implements AgentApi {
         accountId,
         purpose: "talk" as const,
         threads,
+        ...withEffort(effort),
       })),
     );
   }
@@ -2202,9 +2284,11 @@ export class AgentService implements AgentApi {
     if (!gate.ok) return none;
 
     let answer: ReturnType<typeof parseRememberAnswer> = null;
+    // Not a kind of work: it stays at `low`, when the runtime takes it (ADR 0118, rule 6).
+    const effort = resolveEffort("low", this.info?.efforts);
     try {
       const run = await runtime.run(
-        { model: s.models.understand, ...buildRememberRequest(typed), effort: "low" },
+        { model: s.models.understand, ...buildRememberRequest(typed), ...withEffort(effort) },
         { signal: this.abort.signal },
       );
       await this.noteRun(run.limits, s.limits);
@@ -2214,7 +2298,14 @@ export class AgentService implements AgentApi {
     } finally {
       // Counted whether or not it worked. No thread's mail went, so no threads.
       await insights.appendLedger([
-        { atMs: this.now, runtimeId: runtime.id, accountId, purpose: "remember", threads: 0 },
+        {
+          atMs: this.now,
+          runtimeId: runtime.id,
+          accountId,
+          purpose: "remember",
+          threads: 0,
+          ...withEffort(effort),
+        },
       ]);
     }
     if (answer === null || answer.items.length === 0) return none;

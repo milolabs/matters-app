@@ -25,7 +25,7 @@ import type {
   TalkTitleBy,
   ThingFeedback,
 } from "@matters/core";
-import { cutTitle, DEFAULT_AGENT_SETTINGS } from "@matters/core";
+import { AGENT_EFFORTS, cutTitle, DEFAULT_AGENT_SETTINGS } from "@matters/core";
 
 type Step =
   | AgentRunResult
@@ -35,7 +35,8 @@ type Step =
 /**
  * A runtime that answers from a script, one step per `run`. A step is a result, an error to
  * reject with, or a function of the request. Running out of steps rejects, so a test cannot
- * silently depend on a call it did not plan.
+ * silently depend on a call it did not plan. It lists every level of effort unless `info` says
+ * otherwise; the effort each turn asked for is in `calls`.
  */
 export class FakeAgentRuntime implements AgentRuntimePort {
   readonly id: string;
@@ -53,6 +54,7 @@ export class FakeAgentRuntime implements AgentRuntimePort {
       name: this.name,
       status: "ready",
       models: ["small", "large"],
+      efforts: [...AGENT_EFFORTS],
       ...options.info,
     };
   }

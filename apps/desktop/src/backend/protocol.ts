@@ -11,6 +11,7 @@ import type {
   ActMatches,
   AddInstructionInput,
   AddRuleInput,
+  AgentEfforts,
   AgentInstruction,
   AgentModels,
   AgentRule,
@@ -130,7 +131,11 @@ export type WorkerCommand =
       readonly runtimeId: string;
     }
   | { readonly name: "agentDisable" }
-  | { readonly name: "agentSetModels"; readonly models: Partial<AgentModels> }
+  | {
+      readonly name: "agentSetModels";
+      readonly models: Partial<AgentModels>;
+      readonly efforts?: Partial<AgentEfforts>;
+    }
   | { readonly name: "agentSetWeekShare"; readonly percent: number }
   | { readonly name: "agentSetTalkLoop"; readonly on: boolean }
   | { readonly name: "agentInspect" }

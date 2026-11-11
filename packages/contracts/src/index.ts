@@ -2,6 +2,7 @@ import type {
   ActMatch,
   AddInstructionInput,
   AddRuleInput,
+  AgentEfforts,
   AgentInstruction,
   AgentModels,
   AgentRule,
@@ -679,6 +680,8 @@ export interface AgentSetModelsRequest {
   readonly type: "agentSetModels";
   readonly requestId: RequestId;
   readonly models: Partial<AgentModels>;
+  /** The effort of each kind of work beside its model (ADR 0118); absent changes none. */
+  readonly efforts?: Partial<AgentEfforts>;
 }
 
 export interface AgentSetWeekShareRequest {

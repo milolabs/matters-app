@@ -2,6 +2,7 @@
 // page: the plans line, the runtime, a draft's pieces and who wrote it, rules, instructions and the
 // journal. Nothing here reads the DOM or talks to the backend.
 import type {
+  AgentEffortSetting,
   AgentModels,
   AgentRuntimeInfo,
   AgentStatus,
@@ -11,6 +12,8 @@ import type {
   ReadingProgress,
   ThreadCategory,
 } from "@matters/core";
+
+import { AGENT_EFFORTS } from "@matters/core";
 
 const DAY_MS = 86_400_000;
 
@@ -43,6 +46,42 @@ export function seenText(limits: PlanLimits | undefined, now: number): string {
 }
 
 /** `Haiku` for `haiku`: the alias the runtime accepts, written for people. */
+/** The words for each effort (ADR 0118, rule 2). */
+export const EFFORT_WORDS: Readonly<Record<AgentEffortSetting, string>> = {
+  default: "Default",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+};
+
+/**
+ * The effort a kind of work can be set to on this runtime: `Default`, then the levels it lists,
+ * lowest first. None when it lists none, and the control is not shown (ADR 0118, rule 4).
+ */
+export function effortOptions(
+  runtime: Pick<AgentRuntimeInfo, "efforts"> | null,
+): readonly (readonly [AgentEffortSetting, string])[] {
+  const levels = AGENT_EFFORTS.filter((level) => runtime?.efforts?.includes(level) === true);
+  if (levels.length === 0) return [];
+  return (["default", ...levels] as const).map((value) => [value, EFFORT_WORDS[value]] as const);
+}
+
+/** The effort a ledger line's turn was sent with, in words; nothing when none was (rule 7). */
+export function ledgerEffort(entry: { readonly effort?: AgentEffortSetting }): string {
+  if (entry.effort === undefined || entry.effort === "default") return "";
+  return `${EFFORT_WORDS[entry.effort].toLowerCase()} effort`;
+}
+
+/** What the control shows: a stored level the runtime does not list goes as `Default` (rule 4). */
+export function effortShown(
+  setting: AgentEffortSetting,
+  runtime: Pick<AgentRuntimeInfo, "efforts"> | null,
+): AgentEffortSetting {
+  return effortOptions(runtime).some(([value]) => value === setting) ? setting : "default";
+}
+
 export function modelName(model: string): string {
   if (model === "") return model;
   return model.charAt(0).toUpperCase() + model.slice(1);

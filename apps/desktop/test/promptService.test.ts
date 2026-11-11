@@ -1371,3 +1371,112 @@ describe("the starter view (ADR 0117, rule 2)", () => {
     expect(await other.storage.views.list()).toEqual([]);
   });
 });
+
+describe("the effort of a prompt's turns (ADR 0118)", () => {
+  /** A runtime that lists every level, as the one we ship does. */
+  const listing = () => {
+    const runtime = new Responder();
+    runtime.info = { ...runtime.info, efforts: ["low", "medium", "high", "xhigh", "max"] };
+    return runtime;
+  };
+  const promptLedger = async (h: Awaited<ReturnType<typeof build>>) =>
+    (await h.insights.listLedger(50)).filter((l) => l.purpose === "prompt");
+
+  it("searches and judges at the effort for understanding mail, low from the start (rules 1 and 3)", async () => {
+    const runtime = listing();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"]);
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    expect(runtime.of("plan").map((c) => c.effort)).toEqual(["low"]);
+    expect(runtime.of("verdicts").length).toBeGreaterThan(0);
+    expect(runtime.calls.every((c) => c.effort === "low")).toBe(true);
+    const ledger = await promptLedger(h);
+    expect(ledger.length).toBeGreaterThan(0);
+    expect(ledger.every((l) => l.effort === "low")).toBe(true);
+  });
+
+  it("follows the setting, and sends none for the default", async () => {
+    const runtime = listing();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"]);
+    await h.ready();
+    await h.service.setModels({}, { understand: "high" });
+    await h.service.promptRun(PROMPT);
+    expect(runtime.calls.length).toBeGreaterThan(0);
+    expect(runtime.calls.every((c) => c.effort === "high")).toBe(true);
+    runtime.calls.length = 0;
+    await h.service.setModels({}, { understand: "default" });
+    await h.service.promptRun('prompt:"something else to decide"');
+    expect(runtime.of("verdicts").length).toBeGreaterThan(0);
+    expect(runtime.calls.some((c) => "effort" in c)).toBe(false);
+    expect((await promptLedger(h)).filter((l) => l.effort === undefined).length).toBeGreaterThan(0);
+  });
+
+  it("runs the loop at the effort for writing, the model it runs on", async () => {
+    const runtime = listing();
+    const seen = withTools(runtime, async () => ({ threads: [] }));
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"]);
+    await h.ready();
+    await h.settings.update({ talkLoop: true });
+    await h.service.setModels({}, { write: "xhigh" });
+    await h.service.promptRun(PROMPT);
+    expect(seen.map((s) => s.request.effort)).toEqual(["xhigh"]);
+  });
+
+  it("reads new mail in the background at the same effort (ADR 0117, rule 3)", async () => {
+    const runtime = listing();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addView("asks", PROMPT);
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    await h.service.setModels({}, { understand: "medium" });
+    runtime.calls.length = 0;
+    await h.addMail("c", ["Please decide by Sunday"], { dayOffset: 0 });
+    await h.clock.advance(60_000);
+    await h.pass();
+    expect(runtime.of("verdicts").length).toBeGreaterThan(0);
+    expect(runtime.of("verdicts").every((c) => c.effort === "medium")).toBe(true);
+  });
+
+  it("sends none to a runtime that lists none, whatever is stored (rule 4)", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"]);
+    await h.ready();
+    await h.service.setModels({}, { understand: "max" });
+    await h.service.promptRun(PROMPT);
+    expect(runtime.of("verdicts").length).toBeGreaterThan(0);
+    expect(runtime.calls.some((c) => "effort" in c)).toBe(false);
+    expect((await promptLedger(h)).some((l) => "effort" in l)).toBe(false);
+  });
+
+  it("says the runtime's reason when the model refuses the effort, and does not retry (rule 5)", async () => {
+    const runtime = listing();
+    const reason = "small does not take the effort max. Choose another in Settings.";
+    runtime.answer = async () => {
+      throw new AgentRunError("effortRefused", reason);
+    };
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"]);
+    await h.ready();
+    await h.service.setModels({}, { understand: "max" });
+    const result = await h.service.promptRun(PROMPT);
+    expect(result.problem).toBe(reason);
+    expect(runtime.of("verdicts")).toHaveLength(1);
+    expect(runtime.of("verdicts")[0]?.effort).toBe("max");
+  });
+
+  it("the demo runtime lists every level and keeps the effort each turn asked for", async () => {
+    const demo = new DemoAgentRuntime(() => NOW, 0);
+    expect((await demo.inspect()).efforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    const h = await build(demo as unknown as Responder);
+    await h.addMail("pay", ["The invoice is due on Friday."], { dayOffset: 2 });
+    await h.ready();
+    await h.service.promptRun('prompt:"invoice to pay"');
+    expect(demo.effortsAsked.length).toBeGreaterThan(1);
+    expect(demo.effortsAsked.every((e) => e === "low")).toBe(true);
+  });
+});

@@ -1,6 +1,7 @@
 import type { DiscoveredServers, MailServerSettings, StoredAccount } from "../domain/accounts.ts";
 import type {
   AgentConsent,
+  AgentEffort,
   AgentInstruction,
   AgentInstructionInput,
   AgentRule,
@@ -1368,10 +1369,11 @@ export interface AgentRunRequest {
   /** JSON Schema of the answer. */
   readonly schema: unknown;
   /**
-   * How hard the runtime should think. Absent: the runtime's own default. Understanding mail asks
-   * for `low` (ADR 0053, rule 3); what the person asked for directly sets nothing.
+   * How hard the runtime should think: one of the levels it listed in `inspect()`. Absent: the
+   * runtime's own default. The person sets it per kind of work (ADR 0118); a level the model
+   * refuses fails the turn with `effortRefused`, and is never retried at another level.
    */
-  readonly effort?: "low" | "medium" | "high";
+  readonly effort?: AgentEffort;
   /**
    * Files with no text, sent whole next to `untrusted` (ADR 0090, rule 2). Data like it. Only for a
    * runtime whose `takesFiles` is true; any other refuses the request.

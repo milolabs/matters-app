@@ -57,7 +57,7 @@ describe("run: how the child is started", () => {
     await h.scenario({ lines: GOOD_STREAM });
     await h.runtime().run(request());
     expect(h.record().argv).not.toContain("--effort");
-    for (const effort of ["low", "medium", "high"] as const) {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
       await h.scenario({ lines: GOOD_STREAM });
       await h.runtime().run({ ...request(), effort });
       const argv = h.record().argv;
@@ -67,7 +67,7 @@ describe("run: how the child is started", () => {
 
   it("refuses an effort it does not know, without starting anything", async () => {
     await h.scenario({ lines: GOOD_STREAM });
-    for (const effort of ["--bad", "", "max", "LOW"]) {
+    for (const effort of ["--bad", "", "maximum", "LOW", "default"]) {
       const bad = { ...request(), effort } as unknown as Parameters<
         ReturnType<typeof h.runtime>["run"]
       >[0];
@@ -313,6 +313,34 @@ describe("run: failures", () => {
     expect((await failure(h.runtime().run(request()))).code).toBe("failed");
   });
 
+  it("fails a turn whose effort the model refuses with that reason, and does not retry (ADR 0118, rule 5)", async () => {
+    await h.scenario({
+      lines: [INIT, errorResult("API Error: 400 effort 'max' is not supported by this model")],
+    });
+    const error = await failure(h.runtime().run({ ...request(), effort: "max" }));
+    expect(error.code).toBe("effortRefused");
+    expect(error.message).toBe("haiku does not take the effort max. Choose another in Settings.");
+    expect(error.message).not.toContain("API Error");
+    expect(h.spawns).toHaveLength(1);
+    // Refused before any answer: the program says so on stderr and ends.
+    await h.scenario({
+      lines: [],
+      stderr: "error: option '--effort <level>' argument 'xhigh' is invalid.",
+      exitCode: 1,
+    });
+    const second = await failure(h.runtime().run({ ...request(), effort: "xhigh" }));
+    expect(second.code).toBe("effortRefused");
+    expect(second.message).toMatch(/does not take the effort xhigh/);
+    expect(h.spawns).toHaveLength(2);
+  });
+
+  it("does not take an error for a refused effort when no effort was asked for, or for a limit", async () => {
+    await h.scenario({ lines: [INIT, errorResult("effort is not supported")] });
+    expect((await failure(h.runtime().run(request()))).code).toBe("failed");
+    await h.scenario({ lines: [INIT, errorResult("usage limit reached at this effort")] });
+    expect((await failure(h.runtime().run({ ...request(), effort: "high" }))).code).toBe("limit");
+  });
+
   it("reads stderr to find a login problem when there is no result", async () => {
     await h.scenario({ lines: [INIT], stderr: "Error: Not logged in", exitCode: 1 });
     expect((await failure(h.runtime().run(request()))).code).toBe("notSignedIn");
@@ -382,6 +410,7 @@ describe("inspect", () => {
       status: "found",
       plan: "pro",
       models: ["haiku", "sonnet", "opus"],
+      efforts: ["low", "medium", "high", "xhigh", "max"],
     });
     expect(info.limits).toBeUndefined();
     expect(h.record(true).argv).toEqual(["auth", "status"]);

@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-11-05
 - Amended by: [0083](0083-the-agent-searches-in-a-loop.md) (rule 3: a turn of the loop may call our read-only mail tools, and nothing else)
+- Amended by: [0118](0118-effort-is-set-per-kind-of-work.md) (rule 6: effort beside the model)
 
 ## Context
 

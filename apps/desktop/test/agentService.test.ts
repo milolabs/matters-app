@@ -77,6 +77,7 @@ class Responder {
     status: "found",
     plan: "pro",
     models: ["small", "large"],
+    efforts: ["low", "medium", "high", "xhigh", "max"],
   };
   handler: (request: AgentRunRequest, n: number) => AgentRunResult | Error = () => {
     throw new Error("no handler");
@@ -1182,6 +1183,113 @@ describe("AgentService: drafts", () => {
   });
 });
 
+describe("AgentService: the effort of each kind of work (ADR 0118)", () => {
+  const WORDS = "always answer briefly";
+  const isTest = (r: AgentRunRequest) => r.untrusted.includes(TEST_PROMPT_QUOTE);
+  const isPrepare = (r: AgentRunRequest) => r.instructions === PREPARED_INSTRUCTIONS;
+  const isRemember = (r: AgentRunRequest) => r.instructions === REMEMBER_INSTRUCTIONS;
+
+  /** AI on for one thread, a runtime that lists `efforts` (all five unless told), tested. */
+  async function ready(efforts?: AgentRuntimeInfo["efforts"]) {
+    const h = await build();
+    if (efforts !== undefined) h.runtime.info = { ...h.runtime.info, efforts };
+    h.runtime.handler = (request) => {
+      if (isTest(request)) return { value: testVerdict(), limits: limits(1, 1) };
+      if (isPrepare(request)) {
+        return { value: { kind: "draft", body: "Hi", nudge: false }, limits: limits(2, 1) };
+      }
+      if (isRemember(request)) return { value: { items: [] } };
+      return { value: null };
+    };
+    await h.addMail(offerThread("t1"));
+    await h.enable();
+    await h.pass();
+    return h;
+  }
+  const last = (h: Rig, is: (r: AgentRunRequest) => boolean) => h.runtime.calls.filter(is).at(-1);
+  const ledgerOf = async (h: Rig, purpose: string) =>
+    (await h.insights.listLedger(50)).find((e) => e.purpose === purpose);
+
+  it("starts at low for understanding mail and the default for writing (rule 3)", async () => {
+    const h = await ready();
+    expect((await h.service.status()).settings.efforts).toEqual({
+      understand: "low",
+      write: "default",
+      answer: "default",
+      titles: "low",
+    });
+    expect(last(h, isTest)?.effort).toBe("low");
+    await h.service.prepare("t1", { direction: "Say yes" });
+    expect(last(h, isPrepare)).not.toHaveProperty("effort");
+    expect(await ledgerOf(h, "prepare")).not.toHaveProperty("effort");
+    await h.service.remember("t1", WORDS);
+    expect(last(h, isRemember)?.effort).toBe("low");
+    expect((await ledgerOf(h, "remember"))?.effort).toBe("low");
+  });
+
+  it("sends the effort the person set for writing with a draft, and says it in the ledger (rules 1 and 7)", async () => {
+    const h = await ready();
+    const status = await h.service.setModels({}, { write: "high", understand: "max" });
+    expect(status.settings.efforts).toMatchObject({ write: "high", understand: "max" });
+    expect(status.settings.models).toEqual((await h.settings.get()).models);
+    await h.service.prepare("t1", { direction: "Say yes" });
+    expect(last(h, isPrepare)?.effort).toBe("high");
+    expect((await ledgerOf(h, "prepare"))?.effort).toBe("high");
+  });
+
+  it("keeps the test and the remembering at low whatever is set (rule 6)", async () => {
+    const h = await ready();
+    await h.service.setModels({}, { understand: "max", write: "max", titles: "max" });
+    await h.service.testRuntime();
+    expect(last(h, isTest)?.effort).toBe("low");
+    await h.service.remember("t1", WORDS);
+    expect(last(h, isRemember)?.effort).toBe("low");
+  });
+
+  it("sends no effort at all to a runtime that lists none (rule 4)", async () => {
+    const h = await ready([]);
+    await h.service.setModels({}, { write: "high" });
+    expect(last(h, isTest)).not.toHaveProperty("effort");
+    await h.service.prepare("t1", { direction: "Say yes" });
+    expect(last(h, isPrepare)).not.toHaveProperty("effort");
+    expect(await ledgerOf(h, "prepare")).not.toHaveProperty("effort");
+    await h.service.remember("t1", WORDS);
+    expect(last(h, isRemember)).not.toHaveProperty("effort");
+    expect(await ledgerOf(h, "remember")).not.toHaveProperty("effort");
+  });
+
+  it("sends a stored level the runtime does not list as the default, and keeps it stored (rule 4)", async () => {
+    const h = await ready(["low", "medium"]);
+    await h.service.setModels({}, { write: "max" });
+    await h.service.prepare("t1", { direction: "Say yes" });
+    expect(last(h, isPrepare)).not.toHaveProperty("effort");
+    expect((await h.settings.get()).efforts.write).toBe("max");
+  });
+
+  it("refuses a value that is not a level, and changes nothing", async () => {
+    const h = await ready();
+    const before = await h.settings.get();
+    await expect(
+      h.service.setModels({ write: "large" }, { write: "ultra" } as never),
+    ).rejects.toBeInstanceOf(InvalidAgentSettingError);
+    expect(await h.settings.get()).toEqual(before);
+  });
+
+  it("fails a draft whose effort the model refuses with the runtime's reason, and does not retry (rule 5)", async () => {
+    const h = await ready();
+    await h.service.setModels({}, { write: "max" });
+    const reason = "large does not take the effort max. Choose another in Settings.";
+    h.runtime.handler = (request) =>
+      isPrepare(request) ? new AgentRunError("effortRefused", reason) : { value: null };
+    const prepares = h.runtime.calls.filter(isPrepare).length;
+    const error = await h.service.prepare("t1", { direction: "Say yes" }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AgentUnavailableError);
+    expect((error as Error).message).toBe(reason);
+    expect(h.runtime.calls.filter(isPrepare)).toHaveLength(prepares + 1);
+    expect(last(h, isPrepare)?.effort).toBe("max");
+  });
+});
+
 describe("AgentService: settings", () => {
   it("validates models against the runtime, and the share of the week", async () => {
     const h = await build();
@@ -1587,6 +1695,8 @@ describe("AgentService: instructions and what writes them (ADR 0054, rules 7 to 
         accountId: "acc1",
         purpose: "remember",
         threads: 0,
+        // The effort it was sent with (ADR 0118, rule 7).
+        effort: "low",
       },
     ]);
     const failing = await withReading(new Error("boom"));
@@ -3613,6 +3723,55 @@ describe("AgentService: a talk across all mail (ADR 0064, rules 7 to 12; ADR 008
     expect(planCalls(h)[1]?.untrusted).toContain("Hypothesis: The offer thread");
     expect(followCalls(h)[1]?.untrusted).not.toContain("About t1");
     expect(entries[1]).toMatchObject({ threads: 0, hits: [] });
+  });
+
+  describe("the effort of each turn (ADR 0118)", () => {
+    const isTitle = (r: AgentRunRequest) => r.instructions === TALK_TITLE_INSTRUCTIONS;
+    async function withTitles() {
+      const h = await ready();
+      const before = h.runtime.handler;
+      h.runtime.handler = (request, n) =>
+        isTitle(request) ? { value: { title: "Offer for Anna" } } : before(request, n);
+      return h;
+    }
+    async function titleCall(h: H) {
+      for (let i = 0; i < 100 && !h.runtime.calls.some(isTitle); i++) await settle();
+      return h.runtime.calls.find(isTitle);
+    }
+
+    it("reads at the effort for understanding, answers at the one for questions, names at the one for titles", async () => {
+      const h = await withTitles();
+      await h.service.talkAll(WORDS);
+      expect(planCalls(h).map((c) => c.effort)).toEqual(["low"]);
+      expect(followCalls(h).every((c) => c.effort === "low")).toBe(true);
+      expect(answerCalls(h)).toHaveLength(1);
+      expect(answerCalls(h)[0]).not.toHaveProperty("effort");
+      expect((await titleCall(h))?.effort).toBe("low");
+      const efforts = (await talkLedger(h)).map((e) => e.effort);
+      expect(efforts).toContain("low");
+      expect(efforts).toContain(undefined);
+    });
+
+    it("follows what the person set", async () => {
+      const h = await withTitles();
+      await h.service.setModels({}, { understand: "medium", answer: "xhigh", titles: "max" });
+      await h.service.talkAll(WORDS);
+      expect(planCalls(h).map((c) => c.effort)).toEqual(["medium"]);
+      expect(answerCalls(h).map((c) => c.effort)).toEqual(["xhigh"]);
+      expect((await titleCall(h))?.effort).toBe("max");
+      const efforts = new Set((await talkLedger(h)).map((e) => e.effort));
+      expect(efforts).toEqual(new Set(["medium", "xhigh"]));
+    });
+
+    it("sends none to a runtime that lists none", async () => {
+      const h = await withTitles();
+      h.runtime.info = { ...h.runtime.info, efforts: [] };
+      await h.service.inspect();
+      await h.service.talkAll(WORDS);
+      expect(h.runtime.calls.filter(isTalk).some((c) => "effort" in c)).toBe(false);
+      expect((await titleCall(h)) ?? {}).not.toHaveProperty("effort");
+      expect((await talkLedger(h)).some((e) => "effort" in e)).toBe(false);
+    });
   });
 
   describe("talks across all mail (ADR 0086)", () => {

@@ -34,6 +34,7 @@ const status = (over: Partial<AgentStatus> = {}): AgentStatus => ({
     enabled: true,
     runtimeId: "claude-code",
     models,
+    efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
     weekSharePercent: 10,
     usedByUsPercent: 4.2,
     limits: {

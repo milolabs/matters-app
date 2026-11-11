@@ -13,7 +13,7 @@ import type {
   AgentToolServer,
   PlanLimits,
 } from "@matters/core";
-import { AgentRunError, wholeFilesProblem } from "@matters/core";
+import { AGENT_EFFORTS, AgentRunError, wholeFilesProblem } from "@matters/core";
 import {
   checkInit,
   checkToolInit,
@@ -95,9 +95,19 @@ export function findBinary(binary: string, env: NodeJS.ProcessEnv): string | nul
   return null;
 }
 
-/** Models are plain aliases or ids; anything that could pass for a flag is refused. */
-const EFFORTS: readonly string[] = ["low", "medium", "high"];
+/**
+ * The levels `--effort` takes (ADR 0118, rule 4). Whether a model takes a level is the program's
+ * to say: a level it refuses fails the turn (rule 5).
+ */
+const EFFORTS: readonly string[] = AGENT_EFFORTS;
 
+/**
+ * The program said no to the effort asked for. Its own words are not kept (they may reach logs):
+ * an error that names the effort, on a turn that set one, is taken as this.
+ */
+const EFFORT_WORDS = /\beffort\b/i;
+
+/** Models are plain aliases or ids; anything that could pass for a flag is refused. */
 const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,63}$/;
 
 // The server's words end up in argv, so only these shapes pass (ADR 0083, rule 3).
@@ -136,6 +146,8 @@ interface TurnHooks {
   readonly onAssistant?: (event: Record<string, unknown>) => string | undefined;
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
+  /** Set when the turn asked for an effort: the message of a failure that names it (ADR 0118). */
+  readonly effortRefused?: string;
 }
 
 export class ClaudeCodeRuntime implements AgentRuntimePort {
@@ -164,7 +176,7 @@ export class ClaudeCodeRuntime implements AgentRuntimePort {
    * and no keychain: sign-in is the program's own business (ADR 0051, rule 2). Spends nothing.
    */
   async inspect(): Promise<AgentRuntimeInfo> {
-    const base = { id: this.id, name: this.name, models: [...MODELS] };
+    const base = { id: this.id, name: this.name, models: [...MODELS], efforts: [...AGENT_EFFORTS] };
     const file = findBinary(this.binary, this.baseEnv);
     if (file === null) {
       return {
@@ -315,7 +327,20 @@ export class ClaudeCodeRuntime implements AgentRuntimePort {
       ];
       const stdin =
         files.length === 0 ? request.untrusted : userMessageLine(files, request.untrusted);
-      return await this.turn(file, args, cwd, stdin, signal, this.hooksFor(tools));
+      const hooks = this.hooksFor(tools);
+      return await this.turn(
+        file,
+        args,
+        cwd,
+        stdin,
+        signal,
+        request.effort === undefined
+          ? hooks
+          : {
+              ...hooks,
+              effortRefused: `${request.model} does not take the effort ${request.effort}. Choose another in Settings.`,
+            },
+      );
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -462,6 +487,15 @@ export class ClaudeCodeRuntime implements AgentRuntimePort {
       };
       const fail = (code: AgentRunError["code"], message: string, hard = true) =>
         decide({ ok: false, error: new AgentRunError(code, message) }, hard);
+      // A failure that names the effort, on a turn that asked for one, is that refusal; a sign-in
+      // or a limit stays what it is.
+      const effortRefused = (text: string, kind: ReturnType<typeof classifyFailure>) =>
+        hooks.effortRefused !== undefined &&
+        kind !== "notSignedIn" &&
+        kind !== "limit" &&
+        EFFORT_WORDS.test(text)
+          ? hooks.effortRefused
+          : undefined;
 
       const timer = setTimeout(() => fail("failed", "Claude Code took too long."), hooks.timeoutMs);
       const onAbort = () => fail("failed", "Cancelled.", false);
@@ -489,7 +523,10 @@ export class ClaudeCodeRuntime implements AgentRuntimePort {
             event.is_error === true ||
             (event.subtype !== undefined && event.subtype !== "success")
           ) {
-            const kind = classifyFailure(resultText(event));
+            const text = resultText(event);
+            const kind = classifyFailure(text);
+            const refused = effortRefused(text, kind);
+            if (refused !== undefined) return fail("effortRefused", refused);
             return fail(
               kind,
               kind === "notSignedIn"
@@ -544,12 +581,15 @@ export class ClaudeCodeRuntime implements AgentRuntimePort {
         buffer = "";
         if (outcome === undefined) {
           const kind = classifyFailure(stderr);
-          fail(
-            kind === "notSignedIn" ? "notSignedIn" : "failed",
-            kind === "notSignedIn"
-              ? "Claude Code is not signed in."
-              : `Claude Code ended without an answer (exit ${code ?? "signal"}).`,
-          );
+          const refused = effortRefused(stderr, kind);
+          if (refused !== undefined) fail("effortRefused", refused);
+          else
+            fail(
+              kind === "notSignedIn" ? "notSignedIn" : "failed",
+              kind === "notSignedIn"
+                ? "Claude Code is not signed in."
+                : `Claude Code ended without an answer (exit ${code ?? "signal"}).`,
+            );
         }
         finish();
       });

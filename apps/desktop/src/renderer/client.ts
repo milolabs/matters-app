@@ -83,6 +83,7 @@ import type {
   ActMatch,
   AddInstructionInput,
   AddRuleInput,
+  AgentEfforts,
   AgentInstruction,
   AgentModels,
   AgentRule,
@@ -312,7 +313,11 @@ export interface Backend {
   agentSetEnabled(args: { accountIds: readonly string[]; runtimeId: string }): Promise<AgentStatus>;
   agentDisable(): Promise<AgentStatus>;
   agentRevokeConsent(accountId: string): Promise<AgentStatus>;
-  agentSetModels(models: Partial<AgentModels>): Promise<AgentStatus>;
+  /** The model and the effort of each kind of work (ADR 0118). */
+  agentSetModels(
+    models: Partial<AgentModels>,
+    efforts?: Partial<AgentEfforts>,
+  ): Promise<AgentStatus>;
   agentSetWeekShare(percent: number): Promise<AgentStatus>;
   agentSetTalkLoop(on: boolean): Promise<AgentStatus>;
   /** Looks at the runtime again. Spends nothing. */
@@ -639,8 +644,14 @@ export function createBackend(port: MessagePort): Backend {
     agentDisable: async () => (await request<AgentStatusResponse>({ type: "agentDisable" })).status,
     agentRevokeConsent: async (accountId) =>
       (await request<AgentStatusResponse>({ type: "agentRevokeConsent", accountId })).status,
-    agentSetModels: async (models) =>
-      (await request<AgentStatusResponse>({ type: "agentSetModels", models })).status,
+    agentSetModels: async (models, efforts) =>
+      (
+        await request<AgentStatusResponse>({
+          type: "agentSetModels",
+          models,
+          ...(efforts === undefined ? {} : { efforts }),
+        })
+      ).status,
     agentSetWeekShare: async (percent) =>
       (await request<AgentStatusResponse>({ type: "agentSetWeekShare", percent })).status,
     agentSetTalkLoop: async (on) =>

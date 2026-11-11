@@ -125,3 +125,4 @@ Format: copy [`template.md`](template.md).
 | [0115](0115-every-window-hears-a-changed-status.md) | Every window hears a changed status (amends 0052, 0112) | Accepted |
 | [0116](0116-a-prompt-is-a-filter.md) | A prompt is a filter (builds on 0025, 0027, 0051, 0064) | Accepted |
 | [0117](0117-matters-is-a-view-with-a-prompt.md) | Matters is a view with a prompt (supersedes 0052, 0075; amends 0063, 0071, 0078, 0079, 0116) | Accepted |
+| [0118](0118-effort-is-set-per-kind-of-work.md) | Effort is set per kind of work (amends 0051) | Accepted |

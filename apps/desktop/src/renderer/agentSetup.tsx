@@ -71,9 +71,12 @@ export function RuntimeStep(props: {
     }
   }
 
-  async function setModels(models: Parameters<Backend["agentSetModels"]>[0]) {
+  async function setModels(
+    models: Parameters<Backend["agentSetModels"]>[0],
+    efforts?: Parameters<Backend["agentSetModels"]>[1],
+  ) {
     try {
-      take(await props.backend.agentSetModels(models));
+      take(await props.backend.agentSetModels(models, efforts));
     } catch (e) {
       setFailure(e instanceof Error ? e.message : "That did not work.");
     }

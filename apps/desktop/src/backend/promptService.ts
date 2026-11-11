@@ -11,6 +11,7 @@
 // carry fixed sentences only.
 import type {
   AccountStorePort,
+  AgentEffort,
   AgentInsightStorePort,
   AgentPriority,
   AgentRequestBody,
@@ -18,6 +19,7 @@ import type {
   AgentRuntimePort,
   AgentSettings,
   AgentSettingsPort,
+  AgentWorkKind,
   MessageStorePort,
   ParsedQuery,
   PlanLimits,
@@ -61,6 +63,7 @@ import {
   TALK_LOOP_TIME_CAP_MS,
   TALK_LOOP_TIME_MS,
   TALK_TIME_CAP_MS,
+  withEffort,
 } from "@matters/core";
 import { AgentUnavailableError, InvalidAgentSettingError } from "./agentApi.ts";
 import { consentedAccounts } from "./agentReads.ts";
@@ -118,6 +121,8 @@ export interface PromptServiceDeps {
   loadThread(threadId: string, consented: ReadonlySet<string>): Promise<LoadedThread | null>;
   /** Records the plan's windows a turn saw. */
   noteRun(limits: PlanLimits | undefined, before?: PlanLimits): Promise<void>;
+  /** The effort a turn on the model of `kind` sends, or none (ADR 0118, rules 1 and 4). */
+  effortOf(kind: AgentWorkKind, s: AgentSettings): AgentEffort | undefined;
   /** What the person is told when a turn they asked for cannot be done. */
   askFailure(error: unknown, fallback: string): Error;
   /** Aborted when AI is turned off: nothing more goes once the person says no. */
@@ -628,6 +633,8 @@ export class PromptService {
       mine.step = { query, threads };
       this.progress(mine, false);
     };
+    // The loop runs on the model for writing; the plan and follow turns on the one for mail.
+    const effort = this.deps.effortOf(loop === undefined ? "understand" : "write", s);
     const failure = (error: unknown): Searched =>
       stop.aborted
         ? { kind: "stopped" }
@@ -650,7 +657,11 @@ export class PromptService {
           try {
             run = await loop.call(
               runtime,
-              { model: s.models.write, ...buildPromptSearchRequest(asked.text, this.deps.now()) },
+              {
+                model: s.models.write,
+                ...buildPromptSearchRequest(asked.text, this.deps.now()),
+                ...withEffort(effort),
+              },
               { signal, server: tools.server, timeoutMs: TALK_LOOP_TIME_MS },
             );
           } catch (error) {
@@ -678,7 +689,10 @@ export class PromptService {
       };
       const understand = async (request: AgentRequestBody): Promise<unknown> => {
         const before = (await settings.get()).limits;
-        const run = await runtime.run({ model: s.models.understand, ...request }, { signal });
+        const run = await runtime.run(
+          { model: s.models.understand, ...request, ...withEffort(effort) },
+          { signal },
+        );
         await this.deps.noteRun(run.limits, before);
         check();
         return run.value;
@@ -716,6 +730,7 @@ export class PromptService {
             accountId,
             purpose: "prompt" as const,
             threads,
+            ...withEffort(effort),
           })),
         )
         .catch(() => {});
@@ -746,6 +761,7 @@ export class PromptService {
     let full = false;
     const halt = new AbortController();
     const turnSignal = AbortSignal.any([signal, halt.signal]);
+    const effort = this.deps.effortOf("understand", s);
 
     const nextBatch = async (): Promise<{ c: Candidate; loaded: LoadedThread }[]> => {
       const batch = waiting.splice(0);
@@ -795,7 +811,7 @@ export class PromptService {
         try {
           const before = now.limits;
           const result = await runtime.run(
-            { model: s.models.understand, ...request },
+            { model: s.models.understand, ...request, ...withEffort(effort) },
             { signal: turnSignal },
           );
           await this.deps.noteRun(result.limits, before);
@@ -826,7 +842,9 @@ export class PromptService {
           if (isAgentRunError(error) && error.code === "limit") problem ??= USED_UP;
           else if (
             isAgentRunError(error) &&
-            (error.code === "notSignedIn" || error.code === "notPlan")
+            (error.code === "notSignedIn" ||
+              error.code === "notPlan" ||
+              error.code === "effortRefused")
           ) {
             problem ??= this.deps.askFailure(error, FAILED).message;
           } else problem ??= FAILED;
@@ -845,6 +863,7 @@ export class PromptService {
               accountId,
               purpose: "prompt" as const,
               threads,
+              ...withEffort(effort),
             })),
           );
         }

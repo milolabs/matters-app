@@ -643,7 +643,7 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
       case "agentDisable":
         return needAgent().disable();
       case "agentSetModels":
-        return needAgent().setModels(command.models);
+        return needAgent().setModels(command.models, command.efforts);
       case "agentSetWeekShare":
         return needAgent().setWeekShare(command.percent);
       case "agentSetTalkLoop":
