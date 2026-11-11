@@ -1,20 +1,16 @@
 // The router's notifications (ADR 0071, 0106): it keeps the settings, looks for new mail after
-// every commit, hears when the agent decided something matters, and tells main what banner to
-// show and what the badge says, and the windows what notice to show inside. Nothing here shows
+// every commit, hears when a view with a prompt has given a verdict (ADR 0117), and tells main
+// what banner to show and what the badge says, and the windows what notice to show inside. Nothing here shows
 // anything itself. What the watch knows is kept in a small file beside the settings, so a restart
 // goes on from it.
 import { readFile, rename, writeFile } from "node:fs/promises";
 import type { BackendEvent, NoticeToMain } from "@matters/contracts";
 import {
-  askOf,
   badgeText,
   countMatches,
-  type DueNotice,
-  dueWithinADay,
   isQuiet,
   localMinuteOf,
   MAILBOX_BIT,
-  type MattersMail,
   type Message,
   type NewMail,
   type NewMailDeps,
@@ -27,33 +23,14 @@ import {
   type PromptMail,
   parseQuery,
   planCatchUp,
-  planDueNotices,
-  planMattersNotices,
   planNotices,
   planPromptNotices,
-  quietEndsAt,
   readNotificationPrefs,
   readWatchState,
-  type ThreadAnalysis,
   type WatchState,
   type ZoneOffset,
 } from "@matters/core";
 import type { NotificationsApi } from "./handler.ts";
-
-/** What the agent made of threads, read on the reader connection (ADR 0106, rule 3). */
-export interface MattersSource {
-  /** The latest reading of each of these threads, or of every thread; current or not. */
-  readings(threadIds?: readonly string[]): Promise<readonly ThreadAnalysis[]>;
-  /** The thread's reading if it shows in Matters now (the list's own bar), with its account. */
-  shown(
-    threadId: string,
-  ): Promise<{ readonly analysis: ThreadAnalysis; readonly accountId: string } | null>;
-  /**
-   * How many things are in Matters: the `total` of the list the Matters tab reads, every thing,
-   * loaded or not (ADR 0109). Without it a badge of `matters` counts nothing.
-   */
-  count?(): Promise<number>;
-}
 
 /**
  * What views with a prompt know (ADR 0117, rules 4 and 6): stored verdicts, read with no model.
@@ -75,40 +52,32 @@ export interface NotifierOptions {
   readonly prefs?: NotificationPrefs;
   /** Where the watch keeps what it knows, beside the settings. Null keeps it in memory. */
   readonly statePath?: string | null;
-  /** The agent's readings; without them nothing notifies as `matters`. */
-  readonly things?: MattersSource;
   /** The verdicts of views with a prompt (ADR 0117). */
   readonly prompts?: PromptSource;
   readonly toMain: (event: NoticeToMain) => void;
   readonly broadcast: (event: BackendEvent) => void;
   readonly now?: () => number;
-  /** The time zone, for quiet hours and due days; a test passes its own. */
+  /** The time zone, for quiet hours and a pause until tomorrow; a test passes its own. */
   readonly zone?: ZoneOffset;
   /** Commits that come close together are one look; default 700 ms. */
   readonly delayMs?: number;
-  /** Agent writes that come close together are one look at its readings; default 1.5 s. */
+  /** Verdicts that come close together are one look at the mail views hold; default 1.5 s. */
   readonly agentDelayMs?: number;
   /** The catch-up waits for every account's first sync, but no longer than this; default 2 min. */
   readonly catchUpMaxMs?: number;
-  /** How often deadlines are looked at; default an hour. */
-  readonly dueEveryMs?: number;
   /**
-   * Mail commits recount what is in Matters at most this often; default 5 s. An agent write, a
-   * change of the settings and the start recount at once (ADR 0109).
+   * Mail commits recount the view the badge counts at most this often; default 5 s. New verdicts,
+   * a change of the settings and the start recount at once.
    */
   readonly countGapMs?: number;
 }
 
 const localZone: ZoneOffset = (ms) => -new Date(ms).getTimezoneOffset();
 
-/** A reading made this long before the watch saw the mail still counts as made after it came. */
-const DECIDED_SLACK_MS = 60_000;
-/** Threads whose readings one pass asks for. */
+/** Threads whose verdicts one pass asks for. */
 const MAX_THREADS = 40;
 /** The most a badge of `view` counts, as the Inbox's (`inboxUnread`). */
 const VIEW_CAP = 1000;
-/** Deadlines one pass checks against the list's bar. */
-const MAX_DUES = 10;
 /** A window that opens this soon after the catch-up still gets its notice. */
 const REPLAY_MS = 2 * 60_000;
 /** Banners of one message the router still checks, newest kept: more than main holds. */
@@ -133,14 +102,12 @@ export class Notifier implements NotificationsApi {
   private prefs: NotificationPrefs = readNotificationPrefs(undefined);
   private chain: Promise<void> = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private agentTimer: ReturnType<typeof setTimeout> | null = null;
   private promptTimer: ReturnType<typeof setTimeout> | null = null;
-  private dueTimer: ReturnType<typeof setInterval> | null = null;
   private started = false;
   private stopped = false;
   private lastBadge: string | null = null;
-  /** What is in Matters at the last count (ADR 0109); 0 until the first one. */
-  private inMatters = 0;
+  /** The number of the view the badge counts, at the last count (ADR 0117, rule 5); 0 until then. */
+  private viewNumber = 0;
   private lastCountMs = Number.NEGATIVE_INFINITY;
   private countTimer: ReturnType<typeof setTimeout> | null = null;
   private catchUp: CatchUp | null = null;
@@ -152,8 +119,6 @@ export class Notifier implements NotificationsApi {
    * in the Inbox then (leaving it is archiving), and when (ADR 0108).
    */
   private readonly held = new Map<number, { readonly inbox: boolean; readonly atMs: number }>();
-  /** Deadlines whose banner quiet held back are looked at again when quiet ends. */
-  private dueRetry: ReturnType<typeof setTimeout> | null = null;
   private lastPause = "";
 
   constructor(options: NotifierOptions) {
@@ -193,31 +158,19 @@ export class Notifier implements NotificationsApi {
       }
     }
     // A commit while the watch was taking stock may have been missed: one look covers it.
-    // It also counts what is in Matters for the badge.
+    // It also counts the view the badge counts.
     this.enqueue(() => this.look());
-    this.enqueue(() => this.dues());
-    this.dueTimer = setInterval(
-      () => this.enqueue(() => this.dues()),
-      this.options.dueEveryMs ?? 60 * 60_000,
-    );
-    this.dueTimer.unref?.();
   }
 
   stop(): void {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
-    if (this.agentTimer) clearTimeout(this.agentTimer);
     if (this.promptTimer) clearTimeout(this.promptTimer);
-    if (this.dueTimer) clearInterval(this.dueTimer);
-    if (this.dueRetry) clearTimeout(this.dueRetry);
     if (this.countTimer) clearTimeout(this.countTimer);
     if (this.catchUp?.timer) clearTimeout(this.catchUp.timer);
     this.timer = null;
     this.countTimer = null;
-    this.dueRetry = null;
-    this.agentTimer = null;
     this.promptTimer = null;
-    this.dueTimer = null;
   }
 
   /** The store committed: one look shortly, however many commits come in the meantime. */
@@ -238,19 +191,6 @@ export class Notifier implements NotificationsApi {
   }
 
   /**
-   * The agent wrote something (a reading, or what the person did with a thing): its readings are
-   * looked at shortly, and what is in Matters is counted again.
-   */
-  agentChanged(): void {
-    if (!this.started || this.stopped || this.agentTimer) return;
-    this.agentTimer = setTimeout(() => {
-      this.agentTimer = null;
-      this.enqueue(() => this.matters());
-      this.enqueue(() => this.countMatters());
-    }, this.options.agentDelayMs ?? 1500);
-  }
-
-  /**
    * A prompt stored verdicts (ADR 0117, rule 6), in the background or in a run: the mail views
    * with a prompt hold is looked at shortly, and a badge that counts a view is counted again.
    */
@@ -259,17 +199,8 @@ export class Notifier implements NotificationsApi {
     this.promptTimer = setTimeout(() => {
       this.promptTimer = null;
       this.enqueue(() => this.prompted());
-      if (this.prefs.badge.source === "view") this.enqueue(() => this.countMatters());
+      if (this.prefs.badge.source === "view") this.enqueue(() => this.countView());
     }, this.options.agentDelayMs ?? 1500);
-  }
-
-  /**
-   * Something the list of things stands on changed outside the agent: a reply went into the
-   * outbox, was undone, failed or was sent (ADR 0112). What is in Matters is counted again now.
-   */
-  thingsChanged(): void {
-    if (!this.started || this.stopped) return;
-    this.enqueue(() => this.countMatters());
   }
 
   /**
@@ -296,10 +227,8 @@ export class Notifier implements NotificationsApi {
     await this.save(this.prefs);
     this.options.broadcast({ type: "notificationPrefsChanged", prefs: this.prefs });
     this.announcePause();
-    // A badge that now counts what is in Matters needs a count of now, not of whenever.
-    this.enqueue(() => this.countMatters());
-    // A resume lets a held deadline banner go now, not at the next hour.
-    if (this.watch.heldDues().size > 0) this.enqueue(() => this.dues());
+    // A badge that now counts a view needs a count of now, not of whenever.
+    this.enqueue(() => this.countView());
     return this.prefs;
   }
 
@@ -413,19 +342,16 @@ export class Notifier implements NotificationsApi {
       const inbox = new Map(mails.map((m) => [m.message.key, m.inbox]));
       this.show(planNotices(prefs, mails, this.quiet(), this.now()), inbox);
     }
-    // Mail that left (deleted, moved to Spam) takes its thing along: what is in Matters is
-    // counted again, but not on every commit of a sync.
-    if (this.countDue()) await this.countMatters(true);
+    // Mail that came or left changes what the view counts: it is counted again, but not on every
+    // commit of a sync.
+    if (this.countDue()) await this.countView();
     else {
       await this.badge();
       this.countLater();
     }
     await this.keep();
-    // The agent may have read a thread before the look saw its mail.
-    if (mails.length > 0 && this.catchUp === null) {
-      await this.matters();
-      await this.prompted();
-    }
+    // A view may have given its verdict before the look saw the mail.
+    if (mails.length > 0 && this.catchUp === null) await this.prompted();
   }
 
   private endCatchUp(): void {
@@ -445,7 +371,6 @@ export class Notifier implements NotificationsApi {
       if (notice !== undefined) this.caughtUp = { notice, atMs: this.now() };
       await this.badge();
       await this.keep();
-      await this.matters();
       await this.prompted();
     });
   }
@@ -454,7 +379,7 @@ export class Notifier implements NotificationsApi {
    * Mail that views with a prompt hold (ADR 0117, rule 6): once its thread has a current verdict
    * for a view's prompt, the view no longer waits, and a fit of 2 or 3 notifies through that
    * view's channels that the mail has not gone through yet. A thread with no verdict waits for
-   * as long as the watch keeps the mail (48 hours, as `matters`), then nothing notifies from that
+   * as long as the watch keeps the mail (48 hours), then nothing notifies from that
    * view. A view that no longer notifies, or is gone, waits no more. For a thread with several
    * new messages, the newest is the one told.
    */
@@ -518,125 +443,10 @@ export class Notifier implements NotificationsApi {
     if (changed) await this.keep();
   }
 
-  /**
-   * Mail the agent read after it came, and found that it matters (ADR 0106, rule 3). A cheap
-   * read of the latest readings comes first; only a thread read after its mail came is asked
-   * whether it shows in Matters.
-   */
-  private async matters(): Promise<void> {
-    const things = this.options.things;
-    const prefs = this.prefs;
-    if (this.stopped || things === undefined || !prefs.enabled || this.catchUp !== null) return;
-    const undecided = this.watch.undecided();
-    if (undecided.length === 0) return;
-    const threads = [...new Set(undecided.map((t) => t.threadId))].slice(0, MAX_THREADS);
-    const readings = new Map((await things.readings(threads)).map((a) => [a.threadId, a]));
-    const decided: number[] = [];
-    const found: { key: number; thing: ThreadAnalysis }[] = [];
-    for (const threadId of threads) {
-      const reading = readings.get(threadId);
-      if (reading === undefined) continue;
-      const after = undecided.filter(
-        (t) => t.threadId === threadId && reading.analyzedAtMs >= t.atMs - DECIDED_SLACK_MS,
-      );
-      const newest = after[0];
-      if (newest === undefined) continue;
-      decided.push(...after.map((t) => t.key));
-      const shown = await things.shown(threadId);
-      if (shown !== null && shown.analysis.analyzedAtMs >= newest.atMs - DECIDED_SLACK_MS) {
-        found.push({ key: newest.key, thing: shown.analysis });
-      }
-    }
-    this.watch.decide(decided);
-    if (found.length > 0) {
-      const told = new Map(undecided.map((t) => [t.key, t.channels]));
-      const messages = await this.options.read.store.getByKeys(found.map((f) => f.key));
-      const byKey = new Map(found.map((f) => [f.key, f.thing]));
-      const mails: MattersMail[] = [];
-      for (const message of messages) {
-        const thing = byKey.get(message.key);
-        const channels = told.get(message.key);
-        if (thing === undefined || channels === undefined) continue;
-        const ask = askOf(thing);
-        mails.push({
-          message,
-          // Your own mail is decided when it comes and never gets here.
-          fromMe: false,
-          told: channels,
-          thing: { title: thing.headline, ...(ask === undefined ? {} : { ask }) },
-        });
-      }
-      const inbox = new Map(
-        mails.map((m) => [m.message.key, ((m.message.mailboxes ?? 0) & MAILBOX_BIT.inbox) !== 0]),
-      );
-      this.show(planMattersNotices(prefs, mails, this.quiet(), this.now()), inbox);
-      await this.badge();
-    }
-    if (decided.length > 0) await this.keep();
-  }
-
-  /**
-   * Deadlines of things that show, said once on their day (the person's local day). A banner that
-   * quiet or a pause held back is still owed: it goes when banners may go again, and the notice
-   * inside the window is not shown twice (ADR 0108).
-   */
-  private async dues(): Promise<void> {
-    const things = this.options.things;
-    const prefs = this.prefs;
-    const want = prefs.kinds.matters;
-    if (this.stopped || things === undefined || !prefs.enabled) return;
-    if (!want.banner && !want.inApp) return;
-    const now = this.now();
-    const quiet = this.quiet();
-    const held = this.watch.heldDues();
-    // While quiet, a deadline whose notice was shown has nothing more to say yet.
-    const due = dueWithinADay(
-      await things.readings(),
-      now,
-      this.watch.saidDues(),
-      this.zone,
-    ).filter((d) => !(quiet && held.has(d.id)));
-    const notices: DueNotice[] = [];
-    for (const d of due.slice(0, MAX_DUES)) {
-      const shown = await things.shown(d.threadId);
-      // A thing that does not show now (done, hidden, a new reading) is not said.
-      if (shown === null || !shown.analysis.facts.some((f) => f.dueMs === d.dueMs)) continue;
-      notices.push({
-        due: d,
-        key: shown.analysis.lastMessageKey,
-        accountId: shown.accountId,
-        ...(held.has(d.id) ? { heldBanner: true } : {}),
-      });
-    }
-    if (notices.length > 0) {
-      const plan = planDueNotices(prefs, notices, quiet);
-      this.watch.sayDues(plan.said);
-      this.show(plan);
-      await this.keep();
-    }
-    this.retryDues();
-  }
-
-  /** While a deadline banner is owed, one more look when quiet ends (at most a day away). */
-  private retryDues(): void {
-    if (this.dueRetry) clearTimeout(this.dueRetry);
-    this.dueRetry = null;
-    if (this.stopped || this.watch.heldDues().size === 0) return;
-    const now = this.now();
-    const wait = Math.min(Math.max(quietEndsAt(this.prefs, now, this.zone) - now, 0), 86_400_000);
-    this.dueRetry = setTimeout(() => {
-      this.dueRetry = null;
-      this.enqueue(() => this.dues());
-    }, wait + 1000);
-    this.dueRetry.unref?.();
-  }
-
-  /** The badge shows a count kept here: what is in Matters, or the number of a view (ADR 0117). */
-  private countsMatters(): boolean {
+  /** The badge shows a count kept here: the number of a view (ADR 0117, rule 5). */
+  private countsView(): boolean {
     const { enabled, badge } = this.prefs;
-    if (!enabled) return false;
-    if (badge.source === "view") return true;
-    return badge.source === "matters" && this.options.things?.count !== undefined;
+    return enabled && badge.source === "view";
   }
 
   /**
@@ -677,29 +487,19 @@ export class Notifier implements NotificationsApi {
   }
 
   /**
-   * What is in Matters, counted again by the Matters tab's own read (ADR 0109), and the badge set
-   * from it. Only while the badge counts it; a failed read keeps the last count.
+   * The view the badge counts, counted again, and the badge set from it. Only while the badge
+   * counts a view; a failed read keeps the last count.
    */
-  private async countMatters(afterCommits = false): Promise<void> {
+  private async countView(): Promise<void> {
     if (this.stopped) return;
     if (this.countTimer) clearTimeout(this.countTimer);
     this.countTimer = null;
-    const view = this.prefs.badge.source === "view";
-    const count = view ? () => this.viewCount() : this.options.things?.count;
-    if (count !== undefined && this.countsMatters()) {
-      // The first count has nothing to compare with: every window has just read the list itself.
-      const before = this.lastCountMs === Number.NEGATIVE_INFINITY ? null : this.inMatters;
+    if (this.countsView()) {
       this.lastCountMs = this.now();
       try {
-        this.inMatters = await count();
+        this.viewNumber = await this.viewCount();
       } catch {
-        // The badge keeps what it said; the next agent write or commit counts again.
-      }
-      // Mail changed what is in Matters with no agent write (a reply sent from elsewhere, mail
-      // that left): the windows read the list again too, so that the tab says what the Dock says
-      // (ADR 0112). After an agent write they do so already.
-      if (!view && afterCommits && before !== null && this.inMatters !== before) {
-        this.options.broadcast({ type: "agentChanged" });
+        // The badge keeps what it said; the next verdict or commit counts again.
       }
     }
     await this.badge();
@@ -711,16 +511,16 @@ export class Notifier implements NotificationsApi {
 
   /** After a mail commit, a count is due now when none ran for the gap and none is waiting. */
   private countDue(): boolean {
-    return this.countsMatters() && this.countTimer === null && this.countWait() === 0;
+    return this.countsView() && this.countTimer === null && this.countWait() === 0;
   }
 
   /** Otherwise one count when the gap is over, however many commits come until then. */
   private countLater(): void {
-    if (this.stopped || this.countTimer || !this.countsMatters()) return;
+    if (this.stopped || this.countTimer || !this.countsView()) return;
     const wait = this.countWait();
     this.countTimer = setTimeout(() => {
       this.countTimer = null;
-      this.enqueue(() => this.countMatters(true));
+      this.enqueue(() => this.countView());
     }, wait);
     this.countTimer.unref?.();
   }
@@ -743,7 +543,7 @@ export class Notifier implements NotificationsApi {
       out = r.also;
     } else {
       if (enabled && badge.source === "inbox") count = await this.watch.inboxUnread();
-      if (this.countsMatters()) count = this.inMatters;
+      if (this.countsView()) count = this.viewNumber;
       if (held.length > 0) out = await this.options.read.store.getByKeys(held);
     }
     if (held.length > 0) this.takeBack(held, out);

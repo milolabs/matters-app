@@ -329,7 +329,7 @@ export async function openMailTools(ctx: MailToolsContext): Promise<MailTools> {
   // Each search ranks on its own: a pool shared by the question would let the first broad
   // searches fill the list shown, and a later, narrower one would come back empty. Numbers stay
   // the same across the question.
-  const newPool = () => createTrailPool({ ...ctx, onlyThreads: null, olderThanDays: undefined });
+  const newPool = () => createTrailPool({ ...ctx, olderThanDays: undefined });
   const numberOf = new Map<string, number>();
   const listedCandidates = new Map<string, Candidate>();
   const own = new Set(ctx.accounts.map((a) => lower(a.address)));

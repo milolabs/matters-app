@@ -79,6 +79,10 @@ notifications. Those are what a view has to gain before the tab can go.
    reply help, rules, instructions and the journal, the test that marks a runtime ready, and the shared
    parts the tab's code held (how a thread is rendered for a model, the checks on a quote, which
    threads are eligible).
+   Two of the superseded decisions keep a part that lives outside the tab: closing a thread
+   from a talk and what the agent remembers (ADR 0054), and the menus on rows of mail
+   (ADR 0056). A runtime is tested, and the security corpus runs, with the verdict turn of
+   ADR 0116 in place of the reading that is gone.
 8. **Stored data.** Tables are left as they are; a schema that drops them is not part of this
    step. Nothing reads the rows that only the tab used.
 

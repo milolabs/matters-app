@@ -1,82 +1,16 @@
 /**
- * The two answers a model gives, as JSON Schema for the runtime and as strict validators for us
+ * The answers a model gives, as JSON Schema for the runtime and as strict validators for us
  * (ADR 0051, rule 9). The schema asks; the validator decides. Messages of a thread are numbered
  * 1..n in the prompt, so answers name a message by `message: number`, never by a key or an id.
  */
-import type {
-  AmountRole,
-  AnalysisIntent,
-  CaseStatus,
-  Consequence,
-  Stakes,
-  ThreadCategory,
-  ThreadState,
-} from "./agent.ts";
-import {
-  AMOUNT_ROLES,
-  ANALYSIS_INTENTS,
-  CASE_STATUSES,
-  MAX_INSTRUCTION_CHARS,
-  THREAD_CATEGORIES,
-} from "./agent.ts";
+import { MAX_INSTRUCTION_CHARS } from "./agent.ts";
 
-export const MAX_HEADLINE_CHARS = 200;
 export const MAX_QUOTE_CHARS = 500;
-export const MAX_FACTS = 12;
 export const MAX_DRAFT_CHARS = 20_000;
 export const MAX_MISSING_CHARS = 500;
 export const MAX_DIRECTION_CHARS = 200;
 export const MAX_DIRECTIONS = 3;
 export const MAX_REASON_CHARS = 200;
-export const MAX_CASE_CHARS = 120;
-export const MAX_ANCHOR_CHARS = 80;
-export const MAX_ANCHORS = 6;
-
-export interface AnalysisAnswerFact {
-  readonly kind: "promise" | "ask";
-  readonly who: "you" | "them";
-  /** 1-based number of the message the quote comes from. */
-  readonly message: number;
-  readonly quote: string;
-  /** `YYYY-MM-DD`, only when the message names a date. */
-  readonly due?: string;
-}
-
-export interface AnalysisAnswer {
-  readonly state: ThreadState;
-  readonly headline: string;
-  readonly facts: readonly AnalysisAnswerFact[];
-  readonly stakes: Stakes;
-  readonly confidence: number;
-  /** What ignoring it costs (ADR 0058). `real` must be backed by `consequenceQuote`. */
-  readonly consequence?: Consequence;
-  readonly consequenceQuote?: string;
-  /** A short name for the matter this thread is about, the same for any thread about it. */
-  readonly case?: string;
-  /** What identifies the matter, word for word: numbers, names of projects, files. */
-  readonly anchors?: readonly string[];
-  /** What the thread asks of the person (ADR 0066). `intentQuote` may be empty only for `none`. */
-  readonly intent: AnalysisIntent;
-  readonly intentQuote: string;
-  /** The main amount and what it means; `quote` is the passage it was read from. */
-  readonly amount?: AnalysisAnswerAmount;
-  /** `YYYY-MM-DD`: when an offer or chance ends. */
-  readonly windowEnd?: string;
-  /** Whether this is about the person's own matter, or would go to anyone on a list. */
-  readonly forYou: "specific" | "generic";
-  readonly forYouQuote?: string;
-  /** Whether the thread itself shows the matter finished. */
-  readonly status: CaseStatus;
-  /** What kind of mail it is; a value outside the list has been read as `other`. */
-  readonly category: ThreadCategory;
-}
-
-export interface AnalysisAnswerAmount {
-  readonly value: number;
-  readonly currency: string;
-  readonly role: AmountRole;
-  readonly quote: string;
-}
 
 export type PreparedAnswer =
   | { readonly kind: "draft"; readonly body: string; readonly nudge: boolean }
@@ -104,8 +38,6 @@ export const MAX_REMEMBER_ITEMS = 3;
 
 /** The query the search turn returns, in the language of ADR 0025. */
 export const MAX_TALK_QUERY_CHARS = 300;
-/** Only a state the readings can answer for; the other two are never a question about waiting. */
-export type TalkSearchState = "onYou" | "waiting";
 /** The longest age that makes sense to ask for, in days. */
 export const MAX_TALK_OLDER_DAYS = 3650;
 /** A note on one hit: a line, in the language of the person's words. */
@@ -140,7 +72,6 @@ export interface TalkPlanAnswer {
   readonly trails: readonly TalkTrail[];
   /** Kinds of mail that would only add noise, to be told to the follow turns. */
   readonly traps: readonly string[];
-  readonly state?: TalkSearchState;
   readonly olderThanDays?: number;
   /**
    * The words continue the earlier talk ("and from X?", "that one", "why did you not find it"). When
@@ -192,78 +123,6 @@ export interface RememberAnswer {
   readonly items: readonly RememberItem[];
 }
 
-export const ANALYSIS_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: [
-    "state",
-    "headline",
-    "facts",
-    "stakes",
-    "confidence",
-    "consequence",
-    "case",
-    "anchors",
-    "intent",
-    "intentQuote",
-    "forYou",
-    "status",
-    "category",
-  ],
-  properties: {
-    state: { type: "string", enum: ["onYou", "waiting", "fyi", "none"] },
-    headline: { type: "string", minLength: 1, maxLength: MAX_HEADLINE_CHARS },
-    facts: {
-      type: "array",
-      maxItems: MAX_FACTS,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["kind", "who", "message", "quote"],
-        properties: {
-          kind: { type: "string", enum: ["promise", "ask"] },
-          who: { type: "string", enum: ["you", "them"] },
-          message: { type: "integer", minimum: 1 },
-          quote: { type: "string", minLength: 1, maxLength: MAX_QUOTE_CHARS },
-          due: { type: "string", pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
-        },
-      },
-    },
-    stakes: { type: "string", enum: ["none", "money", "contract"] },
-    confidence: { type: "number", minimum: 0, maximum: 1 },
-    consequence: { type: "string", enum: ["none", "minor", "real"] },
-    consequenceQuote: { type: "string", minLength: 1, maxLength: MAX_QUOTE_CHARS },
-    case: { type: "string", maxLength: MAX_CASE_CHARS },
-    anchors: {
-      type: "array",
-      maxItems: MAX_ANCHORS,
-      items: { type: "string", minLength: 1, maxLength: MAX_ANCHOR_CHARS },
-    },
-    intent: { type: "string", enum: ["reply", "act", "decide", "wait", "know", "none"] },
-    intentQuote: { type: "string", maxLength: MAX_QUOTE_CHARS },
-    amount: {
-      type: "object",
-      additionalProperties: false,
-      required: ["value", "currency", "role", "quote"],
-      properties: {
-        value: { type: "number", exclusiveMinimum: 0 },
-        currency: { type: "string", pattern: "^[A-Za-z]{3}$" },
-        role: { type: "string", enum: ["debt", "price", "refund", "other"] },
-        quote: { type: "string", minLength: 1, maxLength: MAX_QUOTE_CHARS },
-      },
-    },
-    windowEnd: { type: "string", pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
-    forYou: { type: "string", enum: ["specific", "generic"] },
-    forYouQuote: { type: "string", minLength: 1, maxLength: MAX_QUOTE_CHARS },
-    status: { type: "string", enum: ["open", "done", "unknown"] },
-    category: { type: "string", enum: [...THREAD_CATEGORIES] },
-  },
-} as const;
-
-/**
- * One flat object rather than a union: runtimes differ in what they accept at the top level of a
- * schema. `kind` says which of the other keys must be present; `parsePreparedAnswer` insists on it.
- */
 export const PREPARED_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -381,7 +240,6 @@ export const TALK_PLAN_SCHEMA = {
       maxItems: MAX_PLAN_NOTES,
       items: { type: "string", minLength: 1, maxLength: MAX_PLAN_NOTE_CHARS },
     },
-    state: { type: "string", enum: ["onYou", "waiting"] },
     olderThanDays: { type: "integer", minimum: 0, maximum: MAX_TALK_OLDER_DAYS },
   },
 } as const;
@@ -493,128 +351,6 @@ function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T | nul
     : null;
 }
 
-const CONSEQUENCES = ["none", "minor", "real"] as const;
-
-function parseFact(raw: unknown): AnalysisAnswerFact | null {
-  if (!isObject(raw) || !hasKeys(raw, ["kind", "who", "message", "quote"], ["due"])) return null;
-  const kind = oneOf(raw.kind, ["promise", "ask"] as const);
-  const who = oneOf(raw.who, ["you", "them"] as const);
-  const quote = text(raw.quote, MAX_QUOTE_CHARS);
-  const message = raw.message;
-  if (kind === null || who === null || quote === null) return null;
-  if (typeof message !== "number" || !Number.isInteger(message) || message < 1) return null;
-  if ("due" in raw && text(raw.due, 10) === null) return null;
-  const fact = { kind, who, message, quote };
-  return "due" in raw ? { ...fact, due: raw.due as string } : fact;
-}
-
-function parseAmount(raw: unknown): AnalysisAnswerAmount | null {
-  if (!isObject(raw) || !hasKeys(raw, ["value", "currency", "role", "quote"])) return null;
-  const role = oneOf(raw.role, AMOUNT_ROLES);
-  const quote = text(raw.quote, MAX_QUOTE_CHARS);
-  const currency = typeof raw.currency === "string" ? raw.currency.trim() : "";
-  // A number of any size is a number; whether it can be an amount is for `acceptAnalysis`.
-  if (role === null || quote === null || typeof raw.value !== "number") return null;
-  if (!/^[A-Za-z]{3}$/.test(currency)) return null;
-  return { value: raw.value, currency: currency.toUpperCase(), role, quote };
-}
-
-/** The analysis answer as it is, or `null` for anything that does not match the schema. */
-export function parseAnalysisAnswer(value: unknown): AnalysisAnswer | null {
-  const optional = [
-    "consequence",
-    "consequenceQuote",
-    "case",
-    "anchors",
-    "amount",
-    "windowEnd",
-    "forYouQuote",
-  ];
-  const required = [
-    "state",
-    "headline",
-    "facts",
-    "stakes",
-    "confidence",
-    "intent",
-    "intentQuote",
-    "forYou",
-    "status",
-    "category",
-  ];
-  if (!isObject(value) || !hasKeys(value, required, optional)) {
-    return null;
-  }
-  const intent = oneOf(value.intent, ANALYSIS_INTENTS);
-  const forYou = oneOf(value.forYou, ["specific", "generic"] as const);
-  const status = oneOf(value.status, CASE_STATUSES);
-  if (intent === null || forYou === null || status === null) return null;
-  // A kind this build does not know is `other`, not a reason to lose the reading (ADR 0068).
-  if (typeof value.category !== "string") return null;
-  const category: ThreadCategory = (THREAD_CATEGORIES as readonly string[]).includes(value.category)
-    ? (value.category as ThreadCategory)
-    : "other";
-  // Empty is a valid string here; `acceptAnalysis` turns a missing passage into `none`.
-  if (typeof value.intentQuote !== "string" || value.intentQuote.length > MAX_QUOTE_CHARS) {
-    return null;
-  }
-  const amount = "amount" in value ? parseAmount(value.amount) : undefined;
-  if (amount === null) return null;
-  const windowEnd = "windowEnd" in value ? text(value.windowEnd, 10) : undefined;
-  if (windowEnd === null) return null;
-  const forYouQuote = "forYouQuote" in value ? text(value.forYouQuote, MAX_QUOTE_CHARS) : undefined;
-  if (forYouQuote === null) return null;
-  const state = oneOf(value.state, ["onYou", "waiting", "fyi", "none"] as const);
-  const stakes = oneOf(value.stakes, ["none", "money", "contract"] as const);
-  const headline = text(value.headline, MAX_HEADLINE_CHARS);
-  const confidence = value.confidence;
-  if (state === null || stakes === null || headline === null) return null;
-  if (typeof confidence !== "number" || !(confidence >= 0 && confidence <= 1)) return null;
-  if (!Array.isArray(value.facts) || value.facts.length > MAX_FACTS) return null;
-  const facts: AnalysisAnswerFact[] = [];
-  for (const raw of value.facts) {
-    const fact = parseFact(raw);
-    if (fact === null) return null;
-    facts.push(fact);
-  }
-  const consequence = "consequence" in value ? oneOf(value.consequence, CONSEQUENCES) : undefined;
-  if (consequence === null) return null;
-  const said = "consequenceQuote" in value ? text(value.consequenceQuote, MAX_QUOTE_CHARS) : "";
-  if (said === null) return null;
-  const named = value.case;
-  if (named !== undefined && (typeof named !== "string" || named.length > MAX_CASE_CHARS)) {
-    return null;
-  }
-  const anchors: string[] = [];
-  if (value.anchors !== undefined) {
-    if (!Array.isArray(value.anchors) || value.anchors.length > MAX_ANCHORS) return null;
-    for (const raw of value.anchors) {
-      const anchor = text(raw, MAX_ANCHOR_CHARS);
-      if (anchor === null) return null;
-      anchors.push(anchor);
-    }
-  }
-  return {
-    state,
-    headline,
-    facts,
-    stakes,
-    confidence,
-    ...(consequence === undefined ? {} : { consequence }),
-    ...(said === "" ? {} : { consequenceQuote: said }),
-    ...(typeof named === "string" && named.trim() !== "" ? { case: named.trim() } : {}),
-    ...(value.anchors === undefined ? {} : { anchors }),
-    intent,
-    intentQuote: value.intentQuote.trim(),
-    ...(amount === undefined ? {} : { amount }),
-    ...(windowEnd === undefined ? {} : { windowEnd }),
-    forYou,
-    ...(forYouQuote === undefined ? {} : { forYouQuote }),
-    status,
-    category,
-  };
-}
-
 /** The prepared-work answer as it is, or `null`. */
 export function parsePreparedAnswer(value: unknown): PreparedAnswer | null {
   if (!isObject(value)) return null;
@@ -682,8 +418,7 @@ function parseStrings(raw: unknown, max: number, each: number): string[] | null 
 }
 
 /**
- * The plan turn's answer as it is, or `null`. No trail is a valid plan: the state may carry the
- * question. Limits (ADR 0080): at most 5 trails, 3 queries each, 300 characters each. Past 8 queries
+ * The plan turn's answer as it is, or `null`. No trail is a valid plan. Limits (ADR 0080): at most 5 trails, 3 queries each, 300 characters each. Past 8 queries
  * in all, the likeliest trails keep theirs and the rest are dropped, rather than the whole plan.
  */
 export function parseTalkPlan(value: unknown): TalkPlanAnswer | null {
@@ -692,7 +427,7 @@ export function parseTalkPlan(value: unknown): TalkPlanAnswer | null {
     !hasKeys(
       value,
       ["goal", "assumptions", "trails", "traps"],
-      // `vocabulary` is a key of plans cached by an earlier build; it is ignored.
+      // `vocabulary` and `state` are keys of plans cached by earlier builds; they are ignored.
       ["state", "olderThanDays", "followsUp", "time", "vocabulary"],
     )
   ) {
@@ -734,8 +469,6 @@ export function parseTalkPlan(value: unknown): TalkPlanAnswer | null {
     trails.length,
     ...[...kept.entries()].sort((a, b) => a[0] - b[0]).map((e) => e[1]),
   );
-  const state = "state" in value ? oneOf(value.state, ["onYou", "waiting"] as const) : undefined;
-  if (state === null) return null;
   // Absent: a plan from before ADR 0081 stands on its own and weighs recency as it did.
   const followsUp = value.followsUp === undefined ? false : value.followsUp;
   if (typeof followsUp !== "boolean") return null;
@@ -755,7 +488,6 @@ export function parseTalkPlan(value: unknown): TalkPlanAnswer | null {
     traps,
     followsUp,
     time,
-    ...(state === undefined ? {} : { state }),
     ...(days === undefined ? {} : { olderThanDays: days }),
   };
 }

@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentInstruction, PromptThread } from "../src/index.ts";
 import {
-  ANALYSIS_INSTRUCTIONS,
-  buildAnalysisRequest,
   buildPreparedRequest,
   buildRememberRequest,
   MAX_GUIDANCE_CHARS,
@@ -13,9 +11,12 @@ import {
   parseRememberAnswer,
   REMEMBER_INSTRUCTIONS,
   REMEMBER_SCHEMA,
+  renderThread,
   STANDING_CLOSE,
   STANDING_OPEN,
   standingBlock,
+  TALK_ALL_INSTRUCTIONS,
+  withStanding,
 } from "../src/index.ts";
 
 const NOW = Date.UTC(2026, 10, 5, 12);
@@ -31,7 +32,6 @@ const thread: PromptThread = {
     },
   ],
 };
-const reading = { state: "onYou" as const, headline: "Send the offer", facts: [] };
 
 const line = (
   id: number,
@@ -198,21 +198,21 @@ describe("standing instructions in a request", () => {
     line(5, "thread", "OTHER-THREAD", "t2"),
   ];
 
-  it("gives analysis the general, understanding and this thread's lines, in the system prompt", () => {
-    const request = buildAnalysisRequest(thread, NOW, { list: all, threadId: "t1" });
-    expect(request.instructions.startsWith(`${ANALYSIS_INSTRUCTIONS}\n\n${STANDING_OPEN}`)).toBe(
-      true,
-    );
-    expect(request.instructions).toContain("- GENERAL");
-    expect(request.instructions).toContain("- UNDERSTAND");
-    expect(request.instructions).toContain("- THIS-THREAD");
-    expect(request.instructions).not.toContain("WRITE");
-    expect(request.instructions).not.toContain("OTHER-THREAD");
-    expect(request.untrusted).not.toContain("GENERAL");
+  it("gives understanding the general, understanding and this thread's lines, in the system prompt", () => {
+    const instructions = withStanding(TALK_ALL_INSTRUCTIONS, "understand", {
+      list: all,
+      threadId: "t1",
+    });
+    expect(instructions.startsWith(`${TALK_ALL_INSTRUCTIONS}\n\n${STANDING_OPEN}`)).toBe(true);
+    expect(instructions).toContain("- GENERAL");
+    expect(instructions).toContain("- UNDERSTAND");
+    expect(instructions).toContain("- THIS-THREAD");
+    expect(instructions).not.toContain("WRITE");
+    expect(instructions).not.toContain("OTHER-THREAD");
   });
 
   it("gives a draft the general, writing and this thread's lines", () => {
-    const request = buildPreparedRequest(thread, reading, NOW, undefined, {
+    const request = buildPreparedRequest(thread, NOW, undefined, {
       list: all,
       threadId: "t1",
     });
@@ -228,41 +228,40 @@ describe("standing instructions in a request", () => {
   });
 
   it("is byte for byte what it was with none, or with none that apply", () => {
-    const plain = buildAnalysisRequest(thread, NOW);
-    expect(plain.instructions).toBe(ANALYSIS_INSTRUCTIONS);
-    expect(buildAnalysisRequest(thread, NOW, { list: [], threadId: "t1" })).toEqual(plain);
+    expect(withStanding(TALK_ALL_INSTRUCTIONS, "understand", undefined)).toBe(
+      TALK_ALL_INSTRUCTIONS,
+    );
+    expect(withStanding(TALK_ALL_INSTRUCTIONS, "understand", { list: [], threadId: "t1" })).toBe(
+      TALK_ALL_INSTRUCTIONS,
+    );
     expect(
-      buildAnalysisRequest(thread, NOW, { list: [line(1, "write", "W")], threadId: "t1" }),
-    ).toEqual(plain);
-    const draft = buildPreparedRequest(thread, reading, NOW);
+      withStanding(TALK_ALL_INSTRUCTIONS, "understand", {
+        list: [line(1, "write", "W")],
+        threadId: "t1",
+      }),
+    ).toBe(TALK_ALL_INSTRUCTIONS);
+    const draft = buildPreparedRequest(thread, NOW);
     expect(draft.instructions).toBe(PREPARED_INSTRUCTIONS);
     expect(
-      buildPreparedRequest(thread, reading, NOW, undefined, {
+      buildPreparedRequest(thread, NOW, undefined, {
         list: [line(1, "understand", "U"), line(2, "thread", "T", "t2")],
         threadId: "t1",
       }),
     ).toEqual(draft);
   });
 
-  it("with no earlier reading says so in one line, and keeps the guidance and the thread", () => {
-    const withReading = buildPreparedRequest(thread, reading, NOW, { direction: "Say yes" });
-    const none = buildPreparedRequest(thread, null, NOW, { direction: "Say yes" });
-    expect(none.untrusted).toContain("There is no earlier reading of this thread.");
-    expect(none.untrusted).not.toContain("Earlier reading of this thread");
-    expect(none.untrusted).not.toContain("State:");
-    expect(none.untrusted).toContain("Direction: Say yes");
-    const threadPart = (text: string) => text.slice(text.indexOf("Direction: Say yes"));
-    expect(threadPart(none.untrusted)).toBe(threadPart(withReading.untrusted));
-    expect(none.instructions).toBe(withReading.instructions);
-    expect(none.instructions).toBe(PREPARED_INSTRUCTIONS);
-    expect(none.schema).toEqual(withReading.schema);
-    expect(buildPreparedRequest(thread, null, NOW).untrusted).toContain(
-      "There is no earlier reading of this thread.",
-    );
+  it("holds the guidance and then the thread, and no reading (ADR 0117, rule 1)", () => {
+    const guided = buildPreparedRequest(thread, NOW, { direction: "Say yes" });
+    expect(guided.untrusted).toContain("Direction: Say yes");
+    expect(guided.untrusted.endsWith(`\n\n${renderThread(thread, NOW)}`)).toBe(true);
+    expect(guided.untrusted).not.toMatch(/earlier reading/i);
+    expect(guided.untrusted).not.toContain("State:");
+    expect(guided.instructions).toBe(PREPARED_INSTRUCTIONS);
+    expect(buildPreparedRequest(thread, NOW).untrusted).toBe(renderThread(thread, NOW));
   });
 
   it("does not change the fixed texts", () => {
-    expect(ANALYSIS_INSTRUCTIONS).not.toContain("standing");
+    expect(TALK_ALL_INSTRUCTIONS).not.toContain("standing");
     expect(PREPARED_INSTRUCTIONS).not.toContain("standing");
   });
 });

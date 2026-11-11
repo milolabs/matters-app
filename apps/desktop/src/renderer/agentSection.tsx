@@ -5,15 +5,15 @@ import type { AccountsStore } from "./accounts.ts";
 import { createInstructions, createJournal, createRules } from "./agent.ts";
 import {
   Choice,
+  ConsentQuestion,
   Limits,
   NotYet,
-  ReadQuestion,
   RuntimeCard,
   WhatDoesWhat,
 } from "./agentConnect.tsx";
+import { instructionScopeWords, ourShare, ruleText } from "./agentText.ts";
 import type { Backend } from "./client.ts";
 import { letterDate } from "./format.ts";
-import { instructionScopeWords, ourShare, ruleText } from "./mattersView.ts";
 import { createStatusOrder } from "./statusOrder.ts";
 import { field, pill, pillPrimary } from "./ui.ts";
 
@@ -24,7 +24,8 @@ const heading = "mb-2 font-semibold";
 export function ledgerWords(entry: LedgerEntry): string {
   switch (entry.purpose) {
     case "analysis":
-      return "Read for what matters";
+      // A line of an earlier version, which read every thread of a window (ADR 0117).
+      return "Read mail, in an earlier version";
     case "prepare":
       return "Prepared a draft";
     case "remember":
@@ -43,7 +44,9 @@ export function ledgerWords(entry: LedgerEntry): string {
 /** How many threads a line names; the choices of the person (`revoke`) name none. */
 export function ledgerThreads(entry: LedgerEntry): string {
   // The choices of the person and the turn on typed words name no thread: no mail went with them.
+  // A consent of an earlier version named the threads its screen counted.
   if (entry.purpose === "revoke" || entry.purpose === "remember") return "";
+  if (entry.purpose === "consent" && entry.threads === 0) return "";
   return entry.threads === 1 ? "1 thread" : `${entry.threads} threads`;
 }
 
@@ -217,10 +220,35 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                   status={s()}
                   idPrefix="settings"
                   onWeekShare={(percent) => void change(props.backend.agentSetWeekShare(percent))}
-                  onWindow={(days) => void change(props.backend.agentSetWindowDays(days))}
                 />
                 <Show when={enabled()}>
                   <p class="mt-3 text-[12px] text-secondary">{ourShare(s())}</p>
+                </Show>
+                <Show when={enabled()}>
+                  <label
+                    class="mt-3 flex cursor-default items-start gap-2.5 text-[13px]"
+                    data-pause-reading
+                  >
+                    <input
+                      type="checkbox"
+                      class="mt-0.5"
+                      checked={s().settings.readingPaused === true}
+                      onChange={(e) =>
+                        void change(
+                          e.currentTarget.checked
+                            ? props.backend.agentPauseReading()
+                            : props.backend.agentResumeReading(),
+                        )
+                      }
+                    />
+                    <span>
+                      Pause reading
+                      <span class="block text-[12px] text-secondary">
+                        Views with a prompt do not read new mail in the background until you turn
+                        this off. What you ask for still runs.
+                      </span>
+                    </span>
+                  </label>
                 </Show>
                 <Show when={enabled()}>
                   <label
@@ -255,8 +283,8 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                   <div class={row} data-ai-off>
                     <h3 class={heading}>AI is off</h3>
                     <p class="mb-3 text-[12.5px] leading-[1.5] text-secondary">
-                      Nothing leaves this Mac until you turn it on. Turning it on names how many
-                      threads go to which assistant.
+                      Nothing leaves this Mac until you turn it on. Turning it on names which
+                      accounts go to which assistant.
                     </p>
                     <Show
                       when={turningOn()}
@@ -277,7 +305,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                       }
                     >
                       <h3 class="mt-1 mb-2 font-serif text-[17px] font-semibold">
-                        Shall I read your last {s().settings.windowDays} days?
+                        Shall I read your mail?
                       </h3>
                       <fieldset class="m-0 mb-4 flex flex-col gap-1.5 border-0 p-0">
                         <legend class="mb-1 text-[12px] text-secondary">Accounts</legend>
@@ -294,7 +322,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                           )}
                         </For>
                       </fieldset>
-                      <ReadQuestion
+                      <ConsentQuestion
                         backend={props.backend}
                         status={s()}
                         accounts={selection()}
@@ -333,7 +361,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                           </label>
                           <Show when={consenting() === a.id && !consented(a.id)}>
                             <div class="rounded-[10px] border border-hairline p-3.5">
-                              <ReadQuestion
+                              <ConsentQuestion
                                 backend={props.backend}
                                 status={s()}
                                 accounts={[a]}

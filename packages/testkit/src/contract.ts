@@ -37,7 +37,6 @@ import type {
   SyncBatch,
   SyncedDocument,
   ThingFeedback,
-  ThreadAnalysis,
   UnitOfWorkPort,
 } from "@matters/core";
 import {
@@ -4593,27 +4592,7 @@ export function describeMoveOutboxContract(name: string, factory: Factory<MoveOu
   });
 }
 
-const analysis = (over: Partial<ThreadAnalysis> = {}): ThreadAnalysis => ({
-  threadId: "t1",
-  lastMessageKey: 10,
-  analyzerVersion: 1,
-  state: "onYou",
-  headline: "Send the offer",
-  facts: [
-    {
-      kind: "promise",
-      who: "you",
-      dueMs: Date.UTC(2024, 2, 5),
-      evidence: { quote: "I will send it by Tuesday", messageKey: 9 },
-    },
-  ],
-  stakes: "money",
-  confidence: 0.9,
-  analyzedAtMs: 1000,
-  ...over,
-});
-
-/** ADR 0051, 0052. Analyses are keyed by thread, last message and analyzer version. */
+/** ADR 0051, 0116. What the agent keeps: verdicts, prepared work, feedback, the journal and the ledger. */
 export function describeAgentInsightStoreContract(
   name: string,
   factory: Factory<AgentInsightStorePort>,
@@ -4734,96 +4713,6 @@ export function describeAgentInsightStoreContract(
       expect(await store().getPromptSearch("k1", "from:office")).not.toBeNull();
     });
 
-    it("round-trips an analysis with every field", async () => {
-      const a = analysis();
-      await store().putAnalysis([a]);
-      expect(await store().getAnalysis("t1", 10, 1)).toEqual(a);
-    });
-
-    it("round-trips the reading of ADR 0066: intent, its passage, amount, window, personal passage, status", async () => {
-      const a = analysis({
-        intent: "decide",
-        intentEvidence: { quote: "You may sign up until 10 December", messageKey: 9 },
-        amount: {
-          value: 1090,
-          currency: "PLN",
-          role: "price",
-          evidence: { quote: "1090 PLN", messageKey: 9 },
-        },
-        windowEndMs: Date.UTC(2024, 11, 10),
-        forYouEvidence: { quote: "your 2023 return", messageKey: 9 },
-        status: "unknown",
-      });
-      await store().putAnalysis([a]);
-      expect(await store().getAnalysis("t1", 10, 1)).toEqual(a);
-      expect(await store().listAnalyses(1)).toEqual([a]);
-    });
-
-    it("leaves the reading out when the analysis has none, so an older one reads as it was", async () => {
-      const a = analysis();
-      await store().putAnalysis([a]);
-      const got = await store().getAnalysis("t1", 10, 1);
-      for (const key of [
-        "intent",
-        "intentEvidence",
-        "amount",
-        "windowEndMs",
-        "forYouEvidence",
-        "status",
-      ]) {
-        expect(got && key in got, key).toBe(false);
-      }
-    });
-
-    it("finds nothing for another thread, last message or version", async () => {
-      await store().putAnalysis([analysis()]);
-      expect(await store().getAnalysis("t2", 10, 1)).toBeNull();
-      expect(await store().getAnalysis("t1", 11, 1)).toBeNull();
-      expect(await store().getAnalysis("t1", 10, 2)).toBeNull();
-    });
-
-    it("keeps a fact without a date and an empty list of facts", async () => {
-      const a = analysis({
-        state: "none",
-        facts: [{ kind: "ask", who: "them", evidence: { quote: "Any news?", messageKey: 3 } }],
-      });
-      const b = analysis({ threadId: "t2", state: "fyi", facts: [] });
-      await store().putAnalysis([a, b]);
-      expect(await store().getAnalysis("t1", 10, 1)).toEqual(a);
-      expect(await store().getAnalysis("t2", 10, 1)).toEqual(b);
-    });
-
-    it("replaces an analysis with the same thread, last message and version", async () => {
-      await store().putAnalysis([analysis()]);
-      await store().putAnalysis([analysis({ headline: "Changed", confidence: 0.5 })]);
-      expect(await store().getAnalysis("t1", 10, 1)).toMatchObject({
-        headline: "Changed",
-        confidence: 0.5,
-      });
-      expect(await store().listAnalyses(1)).toHaveLength(1);
-    });
-
-    it("lists the latest analysis of each thread for a version", async () => {
-      await store().putAnalysis([
-        analysis({ lastMessageKey: 5, headline: "old" }),
-        analysis({ lastMessageKey: 10, headline: "new" }),
-        analysis({ threadId: "t2", lastMessageKey: 7 }),
-        analysis({ threadId: "t3", analyzerVersion: 2 }),
-      ]);
-      const list = await store().listAnalyses(1);
-      expect(list.map((a) => `${a.threadId}:${a.headline}`).sort()).toEqual([
-        "t1:new",
-        "t2:Send the offer",
-      ]);
-      expect((await store().listAnalyses(2)).map((a) => a.threadId)).toEqual(["t3"]);
-    });
-
-    it("limits the list to the threads asked for", async () => {
-      await store().putAnalysis([analysis(), analysis({ threadId: "t2" })]);
-      expect((await store().listAnalyses(1, ["t2"])).map((a) => a.threadId)).toEqual(["t2"]);
-      expect(await store().listAnalyses(1, [])).toEqual([]);
-    });
-
     it("keeps prepared work per thread and last message, drafts and questions alike", async () => {
       const draft: PreparedRecord = {
         threadId: "t1",
@@ -4940,7 +4829,7 @@ export function describeAgentInsightStoreContract(
           j.action !== "ruleAdded" && j.action !== "instructionAdded",
       );
 
-    it("keeps how many older threads a feedback also covered, and nothing when none", async () => {
+    it("journals a closing with no count of older threads it covered (ADR 0117, rule 1)", async () => {
       const fb = (threadId: string, atMs: number): ThingFeedback => ({
         threadId,
         lastMessageKey: 10,
@@ -4948,10 +4837,11 @@ export function describeAgentInsightStoreContract(
         kind: "closed",
         atMs,
       });
-      await store().recordFeedback(fb("t1", 1), { actor: "person", alsoCovers: 8 });
+      await store().recordFeedback(fb("t1", 1), { actor: "agent", headline: "Offer" });
       await store().recordFeedback(fb("t2", 2), { actor: "person" });
       const [second, first] = await feedbackJournal(2);
-      expect(first?.alsoCovers).toBe(8);
+      expect(first).toMatchObject({ threadId: "t1", actor: "agent", headline: "Offer" });
+      expect(first).not.toHaveProperty("alsoCovers");
       expect(second).not.toHaveProperty("alsoCovers");
     });
 
@@ -5288,12 +5178,7 @@ export function describeAgentInsightStoreContract(
       expect(await store().listLedger(0)).toEqual([]);
     });
 
-    it("forgets the readings, prepared work and feedback of removed threads, and keeps the ledger", async () => {
-      await store().putAnalysis([
-        analysis(),
-        analysis({ threadId: "t2" }),
-        analysis({ threadId: "t3" }),
-      ]);
+    it("forgets the prepared work and feedback of removed threads, and keeps the ledger", async () => {
       await store().putPrepared([
         {
           threadId: "t1",
@@ -5321,7 +5206,6 @@ export function describeAgentInsightStoreContract(
         { atMs: 1, runtimeId: "r", accountId: "a", purpose: "analysis", threads: 3 },
       ]);
       await store().removeForThreads(["t1", "t2", "unknown"]);
-      expect((await store().listAnalyses(1)).map((a) => a.threadId)).toEqual(["t3"]);
       expect(await store().getPrepared("t1", 10)).toBeNull();
       expect(await store().getPrepared("t2", 10)).toBeNull();
       expect(await store().listFeedback()).toEqual([]);
@@ -5422,7 +5306,6 @@ export function describeAgentInsightStoreContract(
                 subject: "Quote",
                 note: "waits",
                 lastMessageMs: 5,
-                state: "waiting",
               },
               {
                 threadId: "t2",
@@ -5430,7 +5313,6 @@ export function describeAgentInsightStoreContract(
                 subject: "Deck",
                 note: "asks",
                 lastMessageMs: 6,
-                state: null,
               },
             ],
           }) as const;
@@ -5646,12 +5528,10 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
         enabled: false,
         models: {
           understand: "haiku",
-          draftAhead: "haiku",
           write: "sonnet",
           answer: "sonnet",
           titles: "haiku",
         },
-        windowDays: 30,
         weekSharePercent: 10,
         usedByUsPercent: 0,
       });
@@ -5661,19 +5541,17 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
       const next = await settings().update({
         enabled: true,
         runtimeId: "claude-code",
-        windowDays: 14,
       });
       expect(next).toMatchObject({
         enabled: true,
         runtimeId: "claude-code",
-        windowDays: 14,
         weekSharePercent: 10,
       });
       expect(await settings().get()).toEqual(next);
       await settings().update({ weekSharePercent: 25 });
       expect(await settings().get()).toMatchObject({
         enabled: true,
-        windowDays: 14,
+        runtimeId: "claude-code",
         weekSharePercent: 25,
       });
     });
@@ -5682,17 +5560,16 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
       expect((await settings().get()).readingPaused).toBeUndefined();
       await settings().update({ readingPaused: true });
       expect((await settings().get()).readingPaused).toBe(true);
-      await settings().update({ windowDays: 14 });
+      await settings().update({ weekSharePercent: 25 });
       expect((await settings().get()).readingPaused).toBe(true);
       await settings().update({ readingPaused: false });
       expect((await settings().get()).readingPaused).toBe(false);
     });
 
-    it("keeps the models as a whole and 'off' for drafting ahead and for titles", async () => {
+    it("keeps the models as a whole and 'off' for titles", async () => {
       await settings().update({
         models: {
           understand: "sonnet",
-          draftAhead: "off",
           write: "opus",
           answer: "sonnet",
           titles: "off",
@@ -5700,7 +5577,6 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
       });
       expect((await settings().get()).models).toEqual({
         understand: "sonnet",
-        draftAhead: "off",
         write: "opus",
         answer: "sonnet",
         titles: "off",

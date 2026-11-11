@@ -1,6 +1,6 @@
 # 0061. A series is one row
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-06
 - Amends: [0059](0059-bundles-and-a-map-of-what-depends-on-what.md) (a bundle stays ordinary rows)
 - Amended by: [0065](0065-a-closing-covers-only-its-own-ask.md) (a closing covers only its own ask, and says how many)

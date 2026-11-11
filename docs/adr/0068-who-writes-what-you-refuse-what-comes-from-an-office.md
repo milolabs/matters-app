@@ -1,6 +1,6 @@
 # 0068. Who writes, what you refuse, what comes from an office
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-06
 - Amends: [0066](0066-what-you-would-regret-not-seeing.md) (relation to the sender, when a decision is for now, what may become a thing), [0067](0067-what-the-owners-labels-taught.md) (how long a reading may stay unsure, what is checked)
 

@@ -88,7 +88,7 @@ createRoot((dispose) => {
       hasMessages: store.messages().length > 0,
       threadOpen: store.thread() !== null,
       aiOn: agent.enabled(),
-      thingsLoaded: agent.loaded(),
+      viewsLoaded: views.loaded(),
     });
     if (!ready) return;
     dispose();

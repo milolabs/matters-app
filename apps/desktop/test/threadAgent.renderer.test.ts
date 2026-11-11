@@ -13,8 +13,6 @@ const question: PreparedWork = { kind: "needs", missing: "Which day?", direction
 
 const view = (over: Partial<ThreadAgentView> = {}): ThreadAgentView => ({
   available: true,
-  reading: null,
-  facts: [],
   prepared: null,
   ...over,
 });
@@ -112,37 +110,17 @@ describe("the agent in an ordinary thread (ADR 0063)", () => {
     expect(s.ta.prepared()).toBeNull();
   });
 
-  it("hands on the facts of the reading, and none for another thread's view (ADR 0075)", async () => {
-    const facts = [
-      { kind: "promise" as const, who: "you" as const, quote: "I will", messageKey: 1 },
-    ];
+  it("shows the work when there is some, and nothing when AI is not available", async () => {
     const s = setup((id) =>
-      id === "a"
-        ? view({ reading: { state: "onYou", headline: "x" }, facts })
-        : view({ reading: { state: "onYou", headline: "y" } }),
+      id === "a" ? view({ prepared: question }) : { available: false, prepared: null },
     );
     s.openThread(A());
     await flush();
-    expect(s.ta.facts()).toEqual(facts);
-    s.openThread(B());
-    expect(s.ta.facts()).toEqual([]);
-    await flush();
-    expect(s.ta.facts()).toEqual([]);
-  });
-
-  it("shows the reading when there is one, and nothing when AI is not available", async () => {
-    const s = setup((id) =>
-      id === "a"
-        ? view({ reading: { state: "onYou", headline: "Send the offer" } })
-        : { available: false, reading: null, facts: [], prepared: null },
-    );
-    s.openThread(A());
-    await flush();
-    expect(s.ta.reading()).toEqual({ state: "onYou", headline: "Send the offer" });
+    expect(s.ta.prepared()).toEqual(question);
     s.openThread(B());
     await flush();
     expect(s.ta.available()).toBe(false);
-    expect(s.ta.reading()).toBeNull();
+    expect(s.ta.prepared()).toBeNull();
   });
 
   it("drops an answer that comes after the person moved on, and never shows one thread's work on another", async () => {
@@ -348,7 +326,7 @@ describe("the agent in an ordinary thread (ADR 0063)", () => {
   });
 
   it("opening threads never calls agentPrepare", async () => {
-    const s = setup(() => view({ reading: { state: "onYou", headline: "h" }, prepared: question }));
+    const s = setup(() => view({ prepared: question }));
     for (let i = 0; i < 5; i++) {
       s.openThread(A(10 + i));
       s.openThread(B(20 + i));

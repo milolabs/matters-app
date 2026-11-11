@@ -31,7 +31,6 @@ import type {
   NotificationPrefs,
   PersonStats,
   PersonSuggestion,
-  PreparedWork,
   PrepareResult,
   PromptBadge,
   PromptCount,
@@ -53,7 +52,6 @@ import type {
   TalkEntry,
   TalkResult,
   TalkSummary,
-  Thing,
   Thread,
   ThreadAgentView,
   TransportSecurity,
@@ -599,22 +597,6 @@ export interface AgentStatusRequest {
   readonly requestId: RequestId;
 }
 
-/** The best things that matter (ADR 0055); all of them without a limit. Empty while AI is off. */
-export interface AgentThingsRequest {
-  readonly type: "agentThings";
-  readonly requestId: RequestId;
-  readonly limit?: number;
-  /** Only the things whose thread matches this search (ADR 0056, rule 2). */
-  readonly query?: string;
-}
-
-/** The draft or question prepared for a thread as it stands now. */
-export interface AgentPreparedRequest {
-  readonly type: "agentPrepared";
-  readonly requestId: RequestId;
-  readonly threadId: string;
-}
-
 /** What the agent already has for one thread, in an ordinary thread view (ADR 0063). A local read. */
 export interface AgentThreadRequest {
   readonly type: "agentThread";
@@ -622,7 +604,7 @@ export interface AgentThreadRequest {
   readonly threadId: string;
 }
 
-/** What was done with things, newest first (ADR 0054, rule 6). A local read. */
+/** What the agent and the person did, newest first (ADR 0054, rule 6). A local read. */
 export interface AgentJournalRequest {
   readonly type: "agentJournal";
   readonly requestId: RequestId;
@@ -687,21 +669,12 @@ export interface AgentRemoveRuleRequest {
   readonly ruleId: number;
 }
 
-/** How many threads reading this window would send; counted locally for the consent screen. */
-export interface AgentReadEstimateRequest {
-  readonly type: "agentReadEstimate";
-  readonly requestId: RequestId;
-  readonly accountIds: readonly string[];
-  readonly windowDays: number;
-}
-
 /** Turns AI on: records the consent for these accounts and this runtime. */
 export interface AgentSetEnabledRequest {
   readonly type: "agentSetEnabled";
   readonly requestId: RequestId;
   readonly accountIds: readonly string[];
   readonly runtimeId: string;
-  readonly windowDays: number;
 }
 
 /** Turns AI off and takes every consent back. */
@@ -728,12 +701,6 @@ export interface AgentSetTalkLoopRequest {
   readonly type: "agentSetTalkLoop";
   readonly requestId: RequestId;
   readonly on: boolean;
-}
-
-export interface AgentSetWindowDaysRequest {
-  readonly type: "agentSetWindowDays";
-  readonly requestId: RequestId;
-  readonly days: number;
 }
 
 /** Looks at the runtime again. Sends no mail and spends nothing from the plan. */
@@ -903,15 +870,6 @@ export interface AgentUndoFeedbackRequest {
   readonly kind: "notImportant" | "later" | "closed";
 }
 
-export interface AgentFeedbackRequest {
-  readonly type: "agentFeedback";
-  readonly requestId: RequestId;
-  readonly threadId: string;
-  readonly kind: "notImportant" | "later" | "closed";
-  /** What a closing meant (ADR 0066, rule 7). Only with `closed`; absent counts as `done`. */
-  readonly outcome?: "done" | "taken" | "declined";
-}
-
 /**
  * Makes a reply draft with this text, by the composer's reply rules. It is a draft and nothing
  * else: the page sends it with `requestSend`, or opens the composer on it.
@@ -998,8 +956,6 @@ export type BackendRequest =
   | AgentPromptBadgeRequest
   | AgentPromptRunRequest
   | AgentPromptStopRequest
-  | AgentThingsRequest
-  | AgentPreparedRequest
   | AgentThreadRequest
   | AgentJournalRequest
   | AgentRulesRequest
@@ -1010,12 +966,10 @@ export type BackendRequest =
   | AgentRuleOfferRequest
   | AgentAddRuleRequest
   | AgentRemoveRuleRequest
-  | AgentReadEstimateRequest
   | AgentSetEnabledRequest
   | AgentDisableRequest
   | AgentSetModelsRequest
   | AgentSetWeekShareRequest
-  | AgentSetWindowDaysRequest
   | AgentSetTalkLoopRequest
   | AgentInspectRequest
   | AgentTestRuntimeRequest
@@ -1036,7 +990,6 @@ export type BackendRequest =
   | AgentTalkRenameRequest
   | AgentTalkDeleteRequest
   | AgentTalkDeleteAllRequest
-  | AgentFeedbackRequest
   | AgentUndoFeedbackRequest
   | AgentRevokeConsentRequest
   | AgentDraftFromPreparedRequest
@@ -1703,7 +1656,6 @@ export interface AgentStatusResponse {
     | "agentRevokeConsent"
     | "agentSetModels"
     | "agentSetWeekShare"
-    | "agentSetWindowDays"
     | "agentSetTalkLoop"
     | "agentInspect"
     | "agentPauseReading"
@@ -1712,25 +1664,6 @@ export interface AgentStatusResponse {
   readonly requestId: RequestId;
   readonly ok: true;
   readonly status: AgentStatus;
-}
-
-export interface AgentThingsResponse {
-  readonly type: "agentThings";
-  readonly requestId: RequestId;
-  readonly ok: true;
-  readonly things: readonly Thing[];
-  /** How many there are in all; `things` may hold fewer. */
-  readonly total: number;
-  /** How many of them are for now (ADR 0058, rule 2). Absent: the list has no sections. */
-  readonly now?: number;
-}
-
-export interface AgentPreparedResponse {
-  readonly type: "agentPrepared";
-  readonly requestId: RequestId;
-  readonly ok: true;
-  /** Null: nothing prepared for the thread as it is now. */
-  readonly prepared: PreparedWork | null;
 }
 
 export interface AgentThreadResponse {
@@ -1799,15 +1732,6 @@ export interface AgentRemoveRuleResponse {
   readonly type: "agentRemoveRule";
   readonly requestId: RequestId;
   readonly ok: true;
-}
-
-export interface AgentReadEstimateResponse {
-  readonly type: "agentReadEstimate";
-  readonly requestId: RequestId;
-  readonly ok: true;
-  readonly threads: number;
-  /** The window holds more threads than were counted. */
-  readonly capped: boolean;
 }
 
 export interface AgentPrepareResponse {
@@ -1913,14 +1837,6 @@ export interface AgentTalkDeleteAllResponse {
   readonly count: number;
 }
 
-export interface AgentFeedbackResponse {
-  readonly type: "agentFeedback";
-  readonly requestId: RequestId;
-  readonly ok: true;
-  /** How many older threads of its series went with it (ADR 0065). */
-  readonly alsoCovers: number;
-}
-
 export interface AgentUndoFeedbackResponse {
   readonly type: "agentUndoFeedback";
   readonly requestId: RequestId;
@@ -1987,8 +1903,6 @@ export type BackendResponse =
   | AgentPromptBadgeResponse
   | AgentPromptRunResponse
   | AgentPromptStopResponse
-  | AgentThingsResponse
-  | AgentPreparedResponse
   | AgentThreadResponse
   | AgentJournalResponse
   | AgentRulesResponse
@@ -1999,7 +1913,6 @@ export type BackendResponse =
   | AgentRuleOfferResponse
   | AgentAddRuleResponse
   | AgentRemoveRuleResponse
-  | AgentReadEstimateResponse
   | AgentPrepareResponse
   | AgentTalkResponse
   | AgentRewriteDraftResponse
@@ -2015,7 +1928,6 @@ export type BackendResponse =
   | AgentTalkRenameResponse
   | AgentTalkDeleteResponse
   | AgentTalkDeleteAllResponse
-  | AgentFeedbackResponse
   | AgentUndoFeedbackResponse
   | AgentDraftFromPreparedResponse
   | AgentMatchActResponse

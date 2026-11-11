@@ -16,9 +16,9 @@ import type {
 import { MAX_TALK_QUERY_CHARS } from "../domain/agentSchemas.ts";
 import type { SavedView } from "../domain/views.ts";
 import { MAX_VIEW_NAME } from "../domain/views.ts";
+import { clean } from "./agentRequests.ts";
 import { type QueryCount, sameQueryText } from "./mailCounts.ts";
 import { isEmptyQuery, type ParsedQuery, parseQuery } from "./parseQuery.ts";
-import { clean } from "./thingsThatMatter.ts";
 import { viewNameProblem, viewQueryProblem } from "./views.ts";
 
 // --- Limits. Starting values (ADR 0102). ---

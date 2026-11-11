@@ -16,9 +16,7 @@ import type {
   PlanLimits,
   PreparedRecord,
   TalkEntry,
-  ThingEdge,
   ThingFeedback,
-  ThreadAnalysis,
 } from "../domain/agent.ts";
 import type {
   AttachmentState,
@@ -69,8 +67,8 @@ import type { SendOperation, SendStateKind } from "../domain/send.ts";
 import type { FailureDetail } from "../domain/signIn.ts";
 import type { TalkSummary, TalkTitleBy } from "../domain/talks.ts";
 import type { SavedView } from "../domain/views.ts";
+import type { CandidateThread } from "../usecases/agentRequests.ts";
 import type { ParsedQuery } from "../usecases/parseQuery.ts";
-import type { CandidateThread } from "../usecases/thingsThatMatter.ts";
 
 /** Opaque, adapter-defined JSON (e.g. UIDVALIDITY / UID / MODSEQ for IMAP). */
 export type SyncCursor = Readonly<Record<string, string | number | boolean | null>>;
@@ -1470,25 +1468,6 @@ export interface AgentRuntimePort {
 
 /** What agents found and made, kept locally. Batch-shaped, like the other stores. */
 export interface AgentInsightStorePort {
-  /** The analysis of a thread as it stood at `lastMessageKey`, by this analyzer version. */
-  getAnalysis(
-    threadId: string,
-    lastMessageKey: number,
-    analyzerVersion: number,
-  ): Promise<ThreadAnalysis | null>;
-  /** Replaces an analysis with the same thread, last message and version. */
-  putAnalysis(analyses: readonly ThreadAnalysis[]): Promise<void>;
-  /**
-   * The latest analysis (highest `lastMessageKey`) of each thread for this version, in no
-   * particular order. `threadIds` limits it to those threads.
-   */
-  listAnalyses(
-    analyzerVersion: number,
-    threadIds?: readonly string[],
-  ): Promise<readonly ThreadAnalysis[]>;
-  /** What was said about what blocks what in these threads at these messages (ADR 0059). */
-  getBundleRead(signature: string): Promise<readonly ThingEdge[] | null>;
-  putBundleRead(signature: string, edges: readonly ThingEdge[], atMs: number): Promise<void>;
   /** Replaces the work prepared for the same thread and last message. */
   putPrepared(records: readonly PreparedRecord[]): Promise<void>;
   getPrepared(threadId: string, lastMessageKey: number): Promise<PreparedRecord | null>;

@@ -20,6 +20,7 @@ import {
   threadsOf,
   trailStepLabel,
 } from "./agentTalk.ts";
+import { modelName, planButton } from "./agentText.ts";
 import type { Backend } from "./client.ts";
 import { letterDate, listDate } from "./format.ts";
 import {
@@ -34,7 +35,6 @@ import {
 } from "./icons.tsx";
 import type { PaneWidth } from "./listDivider.tsx";
 import { PaneDivider } from "./listDivider.tsx";
-import { modelName, planButton } from "./mattersView.ts";
 import { OVERLAY_BELOW, WIDE_STRIP, WIDE_TEXT } from "./paneWidth.ts";
 import { PlansLine } from "./plansLine.tsx";
 import { createMenuAnchor, menuPoint, PopMenu } from "./popMenu.tsx";
@@ -1049,22 +1049,11 @@ function FoundEntry(props: {
                     class="grid min-h-[34px] w-full cursor-default grid-cols-[11px_minmax(0,1fr)_auto_auto] items-center gap-x-2 gap-y-0.5 border-t border-hairline px-0.5 py-1.5 text-left first:border-t-0 hover:bg-fill"
                     onClick={() => props.onOpenHit(hit)}
                   >
-                    <Ring
-                      size={11}
-                      color={hit.state === "onYou" ? "var(--late)" : "var(--secondary)"}
-                    />
+                    <Ring size={11} color="var(--secondary)" />
                     <span class="truncate font-semibold">
                       {hit.who !== "" ? hit.who : hit.subject}
                     </span>
-                    <span
-                      class="text-[12px]"
-                      classList={{
-                        "text-late": hit.state === "onYou",
-                        "text-secondary": hit.state !== "onYou",
-                      }}
-                    >
-                      {letterDate(hit.lastMessageMs)}
-                    </span>
+                    <span class="text-[12px] text-secondary">{letterDate(hit.lastMessageMs)}</span>
                     <span class="text-secondary" aria-hidden="true">
                       ›
                     </span>

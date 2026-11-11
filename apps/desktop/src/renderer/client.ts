@@ -7,18 +7,15 @@ import type {
   AgentAnswerQuestionsResponse,
   AgentCheckReplyResponse,
   AgentDraftFromPreparedResponse,
-  AgentFeedbackResponse,
   AgentFillGapsResponse,
   AgentInstructionsResponse,
   AgentJournalResponse,
   AgentMatchActResponse,
-  AgentPreparedResponse,
   AgentPrepareResponse,
   AgentPromptBadgeResponse,
   AgentPromptCountResponse,
   AgentPromptRunResponse,
   AgentPromptVerdictsResponse,
-  AgentReadEstimateResponse,
   AgentRememberResponse,
   AgentRewriteDraftResponse,
   AgentRuleOfferResponse,
@@ -30,7 +27,6 @@ import type {
   AgentTalkEntriesResponse,
   AgentTalkResponse,
   AgentTalksResponse,
-  AgentThingsResponse,
   AgentThreadResponse,
   AttachmentInfo,
   BackendEvent,
@@ -111,7 +107,6 @@ import type {
   NotificationPrefs,
   PersonStats,
   PersonSuggestion,
-  PreparedWork,
   PrepareResult,
   PromptBadge,
   PromptCount,
@@ -129,7 +124,6 @@ import type {
   TalkEntry,
   TalkResult,
   TalkSummary,
-  ThingsPage,
   ThreadAgentView,
   UndoMoveResult,
   UndoResult,
@@ -293,15 +287,12 @@ export interface Backend {
     cap: number;
     beforeKey?: number;
   }): Promise<{ count: number; nextBeforeKey?: number }>;
-  // --- Agents (ADR 0051, 0052). None of these waits for a model except `agentPrepare`. ---
+  // --- Agents (ADR 0051). None of these waits for a model except `agentPrepare`. ---
   /** Settings, consent, the runtime as last looked at, reading progress and the ledger. */
   agentStatus(): Promise<AgentStatus>;
-  /** The best `limit` and how many there are in all; empty while AI is off. A local read. */
-  agentThings(limit: number, query?: string): Promise<ThingsPage>;
-  agentPrepared(threadId: string): Promise<PreparedWork | null>;
-  /** What the agent already has for one thread: its reading and prepared work. Local; no model. */
+  /** What the agent already has for one thread: work prepared on request. Local; no model. */
   agentThread(threadId: string): Promise<ThreadAgentView>;
-  /** What was done with things, newest first (ADR 0054, rule 6). A local read; 50 by default. */
+  /** What the agent and the person did, newest first (ADR 0054, rule 6). A local read; 50 by default. */
   agentJournal(limit?: number): Promise<readonly JournalEntry[]>;
   /** The active rules (ADR 0054, rule 7), in the order they were added. A local read. */
   agentRules(): Promise<readonly AgentRule[]>;
@@ -321,22 +312,12 @@ export interface Backend {
   /** Adds a rule as the person. Rejects with the backend's sentence when the subject is invalid. */
   agentAddRule(input: AddRuleInput): Promise<AgentRule>;
   agentRemoveRule(ruleId: number): Promise<void>;
-  /** Threads a read of this window would send; counted locally. */
-  agentReadEstimate(
-    accountIds: readonly string[],
-    windowDays: number,
-  ): Promise<{ threads: number; capped: boolean }>;
   /** Turns AI on for these accounts. Sends nothing by itself beyond what reading then does. */
-  agentSetEnabled(args: {
-    accountIds: readonly string[];
-    runtimeId: string;
-    windowDays: number;
-  }): Promise<AgentStatus>;
+  agentSetEnabled(args: { accountIds: readonly string[]; runtimeId: string }): Promise<AgentStatus>;
   agentDisable(): Promise<AgentStatus>;
   agentRevokeConsent(accountId: string): Promise<AgentStatus>;
   agentSetModels(models: Partial<AgentModels>): Promise<AgentStatus>;
   agentSetWeekShare(percent: number): Promise<AgentStatus>;
-  agentSetWindowDays(days: number): Promise<AgentStatus>;
   agentSetTalkLoop(on: boolean): Promise<AgentStatus>;
   /** Looks at the runtime again. Spends nothing. */
   agentInspect(): Promise<AgentStatus>;
@@ -391,12 +372,6 @@ export interface Backend {
   agentTalkDelete(talkId: number): Promise<void>;
   /** Returns how many talks went. */
   agentTalkDeleteAll(): Promise<number>;
-  /** Resolves to how many older threads of its series went with it (ADR 0065). */
-  agentFeedback(
-    threadId: string,
-    kind: "notImportant" | "later" | "closed",
-    outcome?: "done" | "taken" | "declined",
-  ): Promise<number>;
   agentUndoFeedback(threadId: string, kind: "notImportant" | "later" | "closed"): Promise<void>;
   /** A reply draft with this text by the composer's rules; sending it is a separate step. */
   agentDraftFromPrepared(
@@ -638,18 +613,8 @@ export function createBackend(port: MessagePort): Backend {
       };
     },
     agentStatus: async () => (await request<AgentStatusResponse>({ type: "agentStatus" })).status,
-    agentThings: async (limit, query) => {
-      const r = await request<AgentThingsResponse>({
-        type: "agentThings",
-        limit,
-        ...(query === undefined ? {} : { query }),
-      });
-      return { things: r.things, total: r.total, ...(r.now === undefined ? {} : { now: r.now }) };
-    },
     agentThread: async (threadId) =>
       (await request<AgentThreadResponse>({ type: "agentThread", threadId })).view,
-    agentPrepared: async (threadId) =>
-      (await request<AgentPreparedResponse>({ type: "agentPrepared", threadId })).prepared,
     agentJournal: async (limit) =>
       (
         await request<AgentJournalResponse>({
@@ -675,14 +640,6 @@ export function createBackend(port: MessagePort): Backend {
     agentRemoveRule: async (ruleId) => {
       await request({ type: "agentRemoveRule", ruleId });
     },
-    agentReadEstimate: async (accountIds, windowDays) => {
-      const r = await request<AgentReadEstimateResponse>({
-        type: "agentReadEstimate",
-        accountIds,
-        windowDays,
-      });
-      return { threads: r.threads, capped: r.capped };
-    },
     agentSetEnabled: async (args) =>
       (await request<AgentStatusResponse>({ type: "agentSetEnabled", ...args })).status,
     agentDisable: async () => (await request<AgentStatusResponse>({ type: "agentDisable" })).status,
@@ -694,8 +651,6 @@ export function createBackend(port: MessagePort): Backend {
       (await request<AgentStatusResponse>({ type: "agentSetWeekShare", percent })).status,
     agentSetTalkLoop: async (on) =>
       (await request<AgentStatusResponse>({ type: "agentSetTalkLoop", on })).status,
-    agentSetWindowDays: async (days) =>
-      (await request<AgentStatusResponse>({ type: "agentSetWindowDays", days })).status,
     agentInspect: async () => (await request<AgentStatusResponse>({ type: "agentInspect" })).status,
     agentPauseReading: async () =>
       (await request<AgentStatusResponse>({ type: "agentPauseReading" })).status,
@@ -763,15 +718,6 @@ export function createBackend(port: MessagePort): Backend {
     },
     agentTalkDeleteAll: async () =>
       (await request<AgentTalkDeleteAllResponse>({ type: "agentTalkDeleteAll" })).count,
-    agentFeedback: async (threadId, kind, outcome) =>
-      (
-        await request<AgentFeedbackResponse>({
-          type: "agentFeedback",
-          threadId,
-          kind,
-          ...(outcome === undefined ? {} : { outcome }),
-        })
-      ).alsoCovers,
     agentUndoFeedback: async (threadId, kind) => {
       await request({ type: "agentUndoFeedback", threadId, kind });
     },

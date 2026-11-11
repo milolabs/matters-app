@@ -1,10 +1,8 @@
 /**
- * Agents run on the person's own plans (ADR 0051) and find the things that matter in mail
- * (ADR 0052). This file holds the vocabulary and the one pure rule that decides whether work may
+ * Agents run on the person's own plans (ADR 0051) and read mail for the person's prompts (ADR 0116,
+ * 0117), asks and drafts. This file holds the vocabulary and the one pure rule that decides whether work may
  * run now. Nothing here talks to a runtime or reads mail.
  */
-
-import type { ThreadFactView } from "./promiseLines.ts";
 
 export type AgentRuntimeId = string;
 
@@ -166,52 +164,7 @@ function spareFrom(week: PlanWindow | undefined, nowMs: number): number | undefi
   return Math.ceil(week.resetsAtMs - (left / 100) * WEEK_MS);
 }
 
-// --- What the model says about a thread (ADR 0052) ---
-
-/** `onYou`: the person owes something. `waiting`: someone owes the person. */
-export type ThreadState = "onYou" | "waiting" | "fyi" | "none";
-
-/** A passage of a message, kept only if it occurs in that message. */
-export interface Evidence {
-  readonly quote: string;
-  /** The message's chronological key (`messageKey`). */
-  readonly messageKey: number;
-}
-
-export interface ThreadFact {
-  readonly kind: "promise" | "ask";
-  /** Who is on the hook: the person (`you`) or the other side (`them`). */
-  readonly who: "you" | "them";
-  readonly dueMs?: number;
-  readonly evidence: Evidence;
-}
-
-export type Stakes = "none" | "money" | "contract";
-
-/**
- * What the thread asks of the person, apart from who owes what (ADR 0066).
- * - `reply`: someone expects an answer.
- * - `act`: pay, upload, confirm, renew: an act outside a reply.
- * - `decide`: the person may take or refuse something; nobody owes anything.
- * - `wait`: someone owes the person.
- * - `know`: it changes something for the person and there is nothing to do.
- */
-export type AnalysisIntent = "reply" | "act" | "decide" | "wait" | "know" | "none";
-
-/** What the main amount of a thread is: 1090 as a price, a debt and a refund are different things. */
-export type AmountRole = "debt" | "price" | "refund" | "other";
-
-/** The main amount of a thread, with the passage it was read from (found in the mail by code). */
-export interface MatterAmount {
-  readonly value: number;
-  /** Upper case, three letters ("PLN"). */
-  readonly currency: string;
-  readonly role: AmountRole;
-  readonly evidence: Evidence;
-}
-
-/** Whether the thread itself shows the matter finished. Separate from the intent. */
-export type CaseStatus = "open" | "done" | "unknown";
+// --- Kinds of mail (ADR 0068) ---
 
 /**
  * What kind of mail a thread is (ADR 0068). The model names it; code uses it for rules the person
@@ -247,77 +200,18 @@ export const THREAD_CATEGORIES: readonly ThreadCategory[] = [
   "other",
 ];
 
-/** The values this build knows; a stored value outside them reads as absent. */
-export const ANALYSIS_INTENTS: readonly AnalysisIntent[] = [
-  "reply",
-  "act",
-  "decide",
-  "wait",
-  "know",
-  "none",
-];
-export const AMOUNT_ROLES: readonly AmountRole[] = ["debt", "price", "refund", "other"];
-export const CASE_STATUSES: readonly CaseStatus[] = ["open", "done", "unknown"];
-
-export interface ThreadAnalysis {
-  readonly threadId: string;
-  readonly lastMessageKey: number;
-  readonly analyzerVersion: number;
-  readonly state: ThreadState;
-  /** The model's one line. Shown as the title; never used for ranking or for "why". */
-  readonly headline: string;
-  readonly facts: readonly ThreadFact[];
-  readonly stakes: Stakes;
-  /** 0 to 1. */
-  readonly confidence: number;
-  readonly analyzedAtMs: number;
-  /** What ignoring it costs. Absent: not asked for, and counted as `minor` (ADR 0058). */
-  readonly consequence?: Consequence;
-  /** The model's name for the matter, for bundling threads later (ADR 0058, rule 6). Text only. */
-  readonly caseName?: string;
-  /** What identifies the matter, each one found word for word in the thread. */
-  readonly anchors?: readonly string[];
-  /** What the thread asks of the person (ADR 0066). Absent on readings made before it. */
-  readonly intent?: AnalysisIntent;
-  /** The passage that shows the intent; present for every intent but `none`. */
-  readonly intentEvidence?: Evidence;
-  /** The main amount, when the thread has one and the passage was found. */
-  readonly amount?: MatterAmount;
-  /** When an offer or chance ends. Midnight UTC of that day. */
-  readonly windowEndMs?: number;
-  /** Present only when the thread is about this person's own matter, on a passage that was found. */
-  readonly forYouEvidence?: Evidence;
-  /** Whether the thread itself shows the matter finished; absent on older readings. */
-  readonly status?: CaseStatus;
-  /** What kind of mail it is (ADR 0068). Absent on older readings. */
-  readonly category?: ThreadCategory;
-}
-
-/** `real`: a passage of the mail shows that something is lost if nothing is done. */
-export type Consequence = "none" | "minor" | "real";
-
 /** What preparing a thing gives: a draft, or what is missing with up to three ways forward. */
 export type PreparedWork =
   | { readonly kind: "draft"; readonly body: string; readonly nudge: boolean }
   | { readonly kind: "needs"; readonly missing: string; readonly directions: readonly string[] };
 
 /**
- * What the agent already has for one ordinary thread (ADR 0063). `available` is false while AI is
- * off or the thread's account has no consent; then nothing else is read. `reading` is the
- * thread's own reading when it is current and passes the one condition of the list (`shownPath`,
- * ADR 0066): sure enough, not hidden, not done, and let in by a quoted fact or by what it asks.
+ * What the agent already has for one ordinary thread (ADR 0063, as amended by ADR 0117): work the
+ * person asked for, for the thread as it stands. `available` is false while AI is off or the
+ * thread's account has no consent; then nothing else is read.
  */
 export interface ThreadAgentView {
   readonly available: boolean;
-  readonly reading: {
-    readonly state: ThreadState;
-    readonly headline: string;
-  } | null;
-  /**
-   * The reading's promises and asks with their quotes (ADR 0075), for the lines under the messages
-   * and the strip's summary. Empty exactly when `reading` is null.
-   */
-  readonly facts: readonly ThreadFactView[];
   readonly prepared: PreparedWork | null;
 }
 
@@ -325,9 +219,7 @@ export interface ThreadAgentView {
  * What preparing for a person gives: the work, or a closing in their own words (ADR 0054). A
  * closing is recorded as feedback and is never stored as prepared work.
  */
-export type PrepareResult =
-  | PreparedWork
-  | { readonly kind: "closed"; readonly reason: string; readonly alsoCovers?: number };
+export type PrepareResult = PreparedWork | { readonly kind: "closed"; readonly reason: string };
 
 /**
  * A passage an answer in a talk rests on, shown as a citation (ADR 0064, rule 11). The code
@@ -359,8 +251,6 @@ export interface TalkHit {
   /** The model's one line on why this thread, shown as text only. */
   readonly note: string;
   readonly lastMessageMs: number;
-  /** The reading of the thread when it has a current one on the person or waiting; else null. */
-  readonly state: "onYou" | "waiting" | null;
 }
 
 /**
@@ -537,90 +427,6 @@ export interface TalkResult {
   readonly entries: readonly TalkEntry[];
   /** Across all mail: the talk the turn was asked in, maybe one it started (ADR 0086). */
   readonly talkId?: number;
-  /** A closing: how many older threads of its series went with it (ADR 0065). */
-  readonly alsoCovers?: number;
-}
-
-/** The best things that matter, and how many there are in all (ADR 0055). */
-export interface ThingsPage {
-  readonly things: readonly Thing[];
-  readonly total: number;
-  /** How many of `total` are for now; they come first. Absent: the list has no sections. */
-  readonly now?: number;
-}
-
-/** One item on the list of things that matter. */
-export interface Thing {
-  readonly threadId: string;
-  readonly accountId: string;
-  /** The other person, as the person knows them. */
-  readonly who: string;
-  readonly headline: string;
-  readonly dueMs?: number;
-  readonly lateByDays?: number;
-  readonly quote: Evidence;
-  /** Derived from the facts by code, never taken from the model's prose. */
-  readonly why: string;
-  readonly score: number;
-  readonly prepared?: PreparedWork;
-  /** The thread has a newer message than this was read from; a new reading is on its way. */
-  readonly updating?: boolean;
-  /** For now rather than for later (ADR 0058, rule 2). */
-  readonly now?: boolean;
-  /** The matter this is one thread of, when it shares one with others (ADR 0059). */
-  readonly bundle?: ThingBundle;
-  /** The same ask, sent again and again: this row stands for all of them (ADR 0061). */
-  readonly series?: ThingSeries;
-  /** What the thread asks of the person (ADR 0066); absent when the reading did not say. */
-  readonly intent?: AnalysisIntent;
-  readonly amount?: MatterAmount;
-  /** When an offer or chance ends. */
-  readonly windowEndMs?: number;
-  /** Nothing has come for a while, so it is not known whether it is still open (ADR 0066, rule 4). */
-  readonly check?: boolean;
-  /** It asks for money or an act from a sender nobody can vouch for (ADR 0066, rule 5). */
-  readonly suspect?: boolean;
-  /**
-   * The sender's domain did not confirm it sent the mail (authentication `fail`, ADR 0048). A
-   * warning only: the thing keeps its place and its section (ADR 0079).
-   */
-  readonly unverified?: boolean;
-  /** What kind of mail the reading says it is; for the "Not like this" control (ADR 0068). */
-  readonly category?: ThreadCategory;
-  /** It comes from a public office (ADR 0068, rule 4). */
-  readonly official?: boolean;
-}
-
-/** Mails that repeat one matter from one sender, in threads of their own. */
-export interface ThingSeries {
-  /** Model text: shown as text only. */
-  readonly name: string;
-  /** Newest first, this thing's own thread among them. */
-  readonly mails: readonly {
-    readonly threadId: string;
-    readonly headline: string;
-    readonly dateMs: number;
-  }[];
-}
-
-/** One open commitment holds up another, on a quote from the mail. */
-export interface ThingEdge {
-  readonly blocker: string;
-  readonly blocked: string;
-  readonly quote: string;
-}
-
-export interface ThingBundle {
-  readonly id: string;
-  /** Model text or mail text: shown as text only. */
-  readonly name: string;
-  readonly members: readonly {
-    readonly threadId: string;
-    readonly who: string;
-    readonly headline: string;
-    readonly lateByDays?: number;
-  }[];
-  readonly edges: readonly ThingEdge[];
 }
 
 /**
@@ -638,13 +444,13 @@ export const FEEDBACK_OUTCOMES: readonly FeedbackOutcome[] = [
 /** What the person did with a thing (ADR 0052, rule 9). */
 export interface ThingFeedback {
   readonly threadId: string;
-  /** The thing it was about; a newer message makes a new thing. */
+  /** The message it was about; a newer message makes it stale. */
   readonly lastMessageKey: number;
-  /** Lowercase address of the other person; lowers the score of later things from them. */
+  /** Lowercase address of the other person; what a rule offer for the sender counts. */
   readonly senderAddress: string;
   /**
-   * `notImportant` and `closed` hide it for good; `later` hides it until `untilMs`. Only
-   * `notImportant` lowers the score of the sender.
+   * `closed`: nothing to answer (from a talk or from typed words). `notImportant` and `later`
+   * are kept from earlier versions, which set them on rows of the built-in list (ADR 0117).
    */
   readonly kind: "notImportant" | "later" | "closed";
   readonly atMs: number;
@@ -819,7 +625,6 @@ export interface JournalMemo {
   readonly actor: "person" | "agent";
   readonly headline?: string;
   readonly words?: string;
-  readonly alsoCovers?: number;
 }
 
 /** What went to which runtime. It holds no mail text (ADR 0051, rule 8). */
@@ -830,9 +635,11 @@ export interface LedgerEntry {
   /**
    * `remember` is the turn that keeps what the person typed (ADR 0054): `threads` is 0, since no
    * thread's mail went. `talk` is a turn of the person's talk (ADR 0064): about a thread, one
-   * thread went; across all mail, the threads that were sent for the answer. `consent` and `revoke` record the person's choice: for `consent`, `threads` is how many
-   * threads the screen said would go; for `revoke` it is 0. `prompt` is one batch of a prompt in
-   * the query bar (ADR 0116, rule 9): the threads of that account that went.
+   * thread went; across all mail, the threads that were sent for the answer. `consent` and `revoke`
+   * record the person's choice, with `threads` 0 (lines of earlier versions may count the threads
+   * the screen named). `prompt` is one batch of a prompt (ADR 0116, rule 9): the threads of that
+   * account that went. `analysis` is a reading of an earlier version (ADR 0117), kept in the
+   * ledger as it was.
    */
   readonly purpose: "analysis" | "prepare" | "remember" | "talk" | "prompt" | "consent" | "revoke";
   readonly threads: number;
@@ -848,12 +655,10 @@ export interface PreparedRecord {
 
 // --- Settings and consent (ADR 0051, rule 6) ---
 
-/** Which model does which kind of work. `draftAhead: "off"` turns drafts before asking off. */
+/** Which model does which kind of work. */
 export interface AgentModels {
-  /** Reading threads for what is open (`P1`, `P3`). */
+  /** Reading mail for a prompt, and other turns that understand mail (`P0` to `P3`). */
   readonly understand: string;
-  /** Drafts prepared before the person asks (`P2`). */
-  readonly draftAhead: string;
   /** A draft or question the person asked for (`P0`). */
   readonly write: string;
   /** Answering the person's questions about all their mail (ADR 0064, rule 8). */
@@ -864,16 +669,10 @@ export interface AgentModels {
 
 export const DEFAULT_AGENT_MODELS: AgentModels = {
   understand: "haiku",
-  draftAhead: "haiku",
   write: "sonnet",
   answer: "sonnet",
   titles: "haiku",
 };
-
-export const DEFAULT_WINDOW_DAYS = 30;
-
-/** The value of `models.draftAhead` that turns drafting ahead off. */
-export const DRAFT_AHEAD_OFF = "off";
 
 /** The value of `models.titles` that turns the naming of talks off (ADR 0086, rule 8). */
 export const TITLES_OFF = "off";
@@ -884,8 +683,6 @@ export interface AgentSettings {
   /** The runtime they chose; absent while none is. */
   readonly runtimeId?: AgentRuntimeId;
   readonly models: AgentModels;
-  /** How far back threads are read (ADR 0052, rule 3). */
-  readonly windowDays: number;
   /** Share of the plan's week that background work may use, in percent (ADR 0051, rule 7). */
   readonly weekSharePercent: number;
   /** The plan's windows as last seen. */
@@ -895,8 +692,9 @@ export interface AgentSettings {
   /** The reset time of the week `usedByUsPercent` was counted in; a different one starts it again. */
   readonly usedWeekResetsAtMs?: number;
   /**
-   * The person stopped the reading (ADR 0053, rule 8). It lasts until they continue it, across
-   * restarts. Absent in settings stored before it existed, which reads as not paused.
+   * The person stopped the reading in the background (ADR 0053, rule 8; ADR 0117, rule 3). It
+   * lasts until they continue it, across restarts. Absent in settings stored before it existed,
+   * which reads as not paused.
    */
   readonly readingPaused?: boolean;
   /**
@@ -914,7 +712,6 @@ export interface AgentSettings {
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   enabled: false,
   models: DEFAULT_AGENT_MODELS,
-  windowDays: DEFAULT_WINDOW_DAYS,
   weekSharePercent: DEFAULT_WEEK_SHARE_PERCENT,
   usedByUsPercent: 0,
 };
@@ -941,20 +738,16 @@ export interface AgentRuntimeRecord {
 
 // --- What the service says about itself ---
 
-/** Where the reading of the window stands (ADR 0052, rule 3). */
+/** Where the reading in the background stands (ADR 0117, rule 3). */
 export interface ReadingProgress {
   /**
-   * - `idle`: nothing left to read, or the rest waits for new mail.
+   * - `idle`: nothing is being read in the background, or the rest waits for new mail.
    * - `checking`: looking at the runtime, or running the made-up test (ADR 0051, rule 5).
    * - `reading`: a pass is running.
    * - `paused`: waiting for the plan's allowance or for the person; `reason` says which.
    * - `off`: AI is off, has no consent, or the runtime is not ready.
    */
   readonly state: "idle" | "checking" | "reading" | "paused" | "off";
-  /** Threads of the window that have a reading of their latest message. */
-  readonly done: number;
-  /** Threads of the window that may be read. */
-  readonly total: number;
   readonly reason?:
     | MayRunReason
     | "limit"
@@ -965,17 +758,8 @@ export interface ReadingProgress {
     | "disabled"
     | "pausedByPerson";
   readonly untilMs?: number;
-  /** How many things show now (ADR 0052, rule 6). */
-  readonly found?: number;
-  /**
-   * Time left in this reading, from the turns finished so far (ADR 0053, rule 5). Absent until at
-   * least 3 turns have finished; never from a constant.
-   */
-  readonly etaMs?: number;
   /** The runtime's reason when it cannot be used. Fixed sentences written by us; never mail. */
   readonly problem?: string;
-  /** No thread of the window can be read: nothing to wait for. */
-  readonly windowEmpty?: true;
 }
 
 export interface AgentStatus {

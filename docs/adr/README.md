@@ -59,34 +59,34 @@ Format: copy [`template.md`](template.md).
 | [0049](0049-fluid-reading-column.md) | The reading column fills the pane (amends 0038) | Accepted |
 | [0050](0050-choosing-the-sender.md) | Choosing the sender of a message | Accepted |
 | [0051](0051-agents-on-the-users-own-plans.md) | Agents run on the user's own plans | Accepted |
-| [0052](0052-things-that-matter.md) | Things that matter | Accepted |
-| [0053](0053-reading-that-shows-itself.md) | Reading that shows itself (amends 0052) | Accepted |
-| [0054](0054-closing-in-the-persons-own-words.md) | Closing a thing in the person's own words, and what the agent remembers (amends 0052) | Accepted |
-| [0055](0055-every-thing-shows.md) | Every thing that matters shows (amends 0052) | Accepted |
-| [0056](0056-acting-on-rows-of-the-list.md) | Acting on rows of the list: search in Matters, row menus, several rows | Accepted |
-| [0057](0057-what-the-mail-itself-says-about-a-thing.md) | What the mail itself says about a thing (amends 0052) | Accepted |
-| [0058](0058-what-ignoring-it-costs.md) | What ignoring it costs, what is for now, and learning from no (amends 0052) | Accepted |
-| [0059](0059-bundles-and-a-map-of-what-depends-on-what.md) | Bundles, and a map of what depends on what | Accepted |
-| [0060](0060-the-mail-itself-shows-in-matters.md) | The mail itself shows in Matters | Accepted |
-| [0061](0061-a-series-is-one-row.md) | A series is one row (amends 0059) | Accepted |
-| [0062](0062-the-list-holds-still-after-you-act.md) | The list holds still after you act | Accepted |
+| [0052](0052-things-that-matter.md) | Things that matter | Superseded by 0117 |
+| [0053](0053-reading-that-shows-itself.md) | Reading that shows itself (amends 0052) | Superseded by 0117 |
+| [0054](0054-closing-in-the-persons-own-words.md) | Closing a thing in the person's own words, and what the agent remembers (amends 0052) | Superseded by 0117 |
+| [0055](0055-every-thing-shows.md) | Every thing that matters shows (amends 0052) | Superseded by 0117 |
+| [0056](0056-acting-on-rows-of-the-list.md) | Acting on rows of the list: search in Matters, row menus, several rows | Superseded by 0117 |
+| [0057](0057-what-the-mail-itself-says-about-a-thing.md) | What the mail itself says about a thing (amends 0052) | Superseded by 0117 |
+| [0058](0058-what-ignoring-it-costs.md) | What ignoring it costs, what is for now, and learning from no (amends 0052) | Superseded by 0117 |
+| [0059](0059-bundles-and-a-map-of-what-depends-on-what.md) | Bundles, and a map of what depends on what | Superseded by 0117 |
+| [0060](0060-the-mail-itself-shows-in-matters.md) | The mail itself shows in Matters | Superseded by 0117 |
+| [0061](0061-a-series-is-one-row.md) | A series is one row (amends 0059) | Superseded by 0117 |
+| [0062](0062-the-list-holds-still-after-you-act.md) | The list holds still after you act | Superseded by 0117 |
 | [0063](0063-the-agent-in-ordinary-threads.md) | The agent in ordinary threads (amends 0052) | Accepted |
 | [0064](0064-one-prompt-for-a-thread-or-all-mail.md) | One prompt for a thread or all mail (amends 0051, 0063) | Accepted |
-| [0065](0065-a-closing-covers-only-its-own-ask.md) | A closing covers only its own ask (amends 0061) | Accepted |
-| [0066](0066-what-you-would-regret-not-seeing.md) | What you would regret not seeing (amends 0052, 0057, 0058) | Accepted |
-| [0067](0067-what-the-owners-labels-taught.md) | What the owner's labels taught (amends 0066) | Accepted |
-| [0068](0068-who-writes-what-you-refuse-what-comes-from-an-office.md) | Who writes, what you refuse, what comes from an office (amends 0066, 0067) | Accepted |
+| [0065](0065-a-closing-covers-only-its-own-ask.md) | A closing covers only its own ask (amends 0061) | Superseded by 0117 |
+| [0066](0066-what-you-would-regret-not-seeing.md) | What you would regret not seeing (amends 0052, 0057, 0058) | Superseded by 0117 |
+| [0067](0067-what-the-owners-labels-taught.md) | What the owner's labels taught (amends 0066) | Superseded by 0117 |
+| [0068](0068-who-writes-what-you-refuse-what-comes-from-an-office.md) | Who writes, what you refuse, what comes from an office (amends 0066, 0067) | Superseded by 0117 |
 | [0069](0069-the-agent-has-its-own-column.md) | The agent has its own column (amends 0052, 0064) | Accepted |
 | [0070](0070-the-window-opens-with-the-mail.md) | The window opens with the mail (amends 0046) | Accepted |
 | [0071](0071-notifications.md) | Notifications: banners, notices inside, and the badge | Accepted |
 | [0072](0072-the-name-matters.md) | The name is Matters | Accepted |
 | [0073](0073-the-thread-on-one-grid.md) | The thread on one grid | Accepted |
 | [0074](0074-finding-files-by-name.md) | Finding files by name | Accepted |
-| [0075](0075-promises-under-the-message.md) | Promises under the message | Accepted |
+| [0075](0075-promises-under-the-message.md) | Promises under the message | Superseded by 0117 |
 | [0076](0076-live-search-under-cmd-k.md) | Live search under ⌘K | Accepted |
 | [0077](0077-showing-what-was-found.md) | Showing what was found | Accepted |
 | [0078](0078-the-sender-leads.md) | The sender leads | Accepted |
-| [0079](0079-a-sender-that-failed-and-matters-leads-with-the-sender.md) | A sender that failed shows it, and Matters leads with the sender too | Accepted |
+| [0079](0079-a-sender-that-failed-and-matters-leads-with-the-sender.md) | A sender that failed shows it, and Matters leads with the sender too | Superseded by 0117 |
 | [0080](0080-the-agent-follows-the-trail.md) | The agent follows the trail (amends 0064) | Accepted |
 | [0081](0081-finding-what-the-question-means.md) | Finding what the question means (amends 0080) | Accepted |
 | [0082](0082-what-the-plan-asks-for-is-not-put-behind.md) | What the plan asks for is not put behind (amends 0080) | Accepted |
@@ -116,7 +116,7 @@ Format: copy [`template.md`](template.md).
 | [0106](0106-notifications-that-matter.md) | Notifications that matter: by arrival, across a restart, and from the agent (amends 0071) | Accepted |
 | [0107](0107-matters-runs-on-macos-as-its-own-app.md) | Matters runs on macOS as its own app | Accepted |
 | [0108](0108-banners-act-and-leave.md) | Banners act and leave; the system's part is said (amends 0106, 0107) | Accepted |
-| [0109](0109-the-badge-counts-what-is-in-matters.md) | The badge counts what is in Matters (amends 0071) | Accepted |
+| [0109](0109-the-badge-counts-what-is-in-matters.md) | The badge counts what is in Matters (amends 0071) | Superseded by 0117 |
 | [0110](0110-one-instance-per-data-folder.md) | One running copy per data folder (amends 0105, 0107) | Accepted |
 | [0111](0111-bulk-mail-says-so-at-its-foot.md) | Bulk mail says so at its foot (amends 0052, 0066) | Accepted |
 | [0112](0112-what-you-answered-waits-for-its-reading.md) | What you answered waits for its reading (amends 0052, 0109) | Accepted |

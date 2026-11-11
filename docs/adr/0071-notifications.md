@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-11-07
 - Amended by: [0106](0106-notifications-that-matter.md) (new mail by arrival, a state kept across a restart with a catch-up, and a fourth kind for what the agent says matters), [0109](0109-the-badge-counts-what-is-in-matters.md) (the badge counts what is in Matters by default)
+- Amended by: [0117](0117-matters-is-a-view-with-a-prompt.md) (the badge counts a view, the starter view by default; no notice kind for the agent's list)
 
 ## Context
 

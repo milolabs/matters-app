@@ -35,11 +35,6 @@ const KINDS: readonly { kind: NoticeKind; label: string; hint: string }[] = [
   { kind: "replies", label: "Replies to you", hint: "A thread you wrote in got an answer" },
   { kind: "people", label: "Other mail from people", hint: "Someone wrote to you" },
   { kind: "lists", label: "Lists and programs", hint: "Newsletters, receipts, alerts" },
-  {
-    kind: "matters",
-    label: "What matters",
-    hint: "The agent put it in Matters, or it is due within a day",
-  },
 ];
 
 const CHANNELS: readonly { key: keyof NoticeChannels; label: string; icon: () => JSX.Element }[] = [
@@ -55,7 +50,6 @@ const CONTENT: readonly { value: BannerContent; label: string }[] = [
 ];
 
 const BADGE: readonly { value: BadgeSource; label: string }[] = [
-  { value: "matters", label: "What is in Matters" },
   { value: "view", label: "The number of a view" },
   { value: "notified", label: "Mail you were told about" },
   { value: "inbox", label: "All unread in the Inbox" },
@@ -373,15 +367,13 @@ export function NotificationsSection(props: { backend: Backend; accounts: Accoun
             </Show>
           </div>
           <p class={`${hint} mt-2`}>
-            {p().badge.source === "matters"
-              ? "The same number as the Matters tab: what is still on you."
-              : p().badge.source === "view"
-                ? "The same number as that view's tab. With no view, or AI off for a view with a prompt, the unread in the Inbox."
-                : p().badge.source === "notified"
-                  ? "The mail ticked in the Badge column, until you read it."
-                  : p().badge.source === "inbox"
-                    ? "Every unread message in the Inbox, up to 999."
-                    : "The icon stays clean."}
+            {p().badge.source === "view"
+              ? "The same number as that view's tab. With no view, or AI off for a view with a prompt, the unread in the Inbox."
+              : p().badge.source === "notified"
+                ? "The mail ticked in the Badge column, until you read it."
+                : p().badge.source === "inbox"
+                  ? "Every unread message in the Inbox, up to 999."
+                  : "The icon stays clean."}
           </p>
         </div>
 

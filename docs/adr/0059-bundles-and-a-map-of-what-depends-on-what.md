@@ -1,6 +1,6 @@
 # 0059. Bundles, and a map of what depends on what
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-05
 - Amended by: [0061](0061-a-series-is-one-row.md) (repeats of one ask fold into one row)
 

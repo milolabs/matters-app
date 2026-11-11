@@ -15,12 +15,8 @@ export interface ViewTab {
 
 export const ALL_MAIL: ViewTab = { id: ALL_MAIL_ID, name: "All mail", query: "" };
 
-/** ADR 0052, rule 1. Built in like `All mail`: it is not a saved view and has no query. */
-export const MATTERS_ID = "matters";
-export const MATTERS: ViewTab = { id: MATTERS_ID, name: "Matters", query: "" };
-
-/** The tabs that are not saved views: they cannot be renamed, moved or deleted. */
-export const isBuiltInView = (id: string): boolean => id === ALL_MAIL_ID || id === MATTERS_ID;
+/** The tab that is not a saved view: it cannot be renamed, moved or deleted. */
+export const isBuiltInView = (id: string): boolean => id === ALL_MAIL_ID;
 
 /** A badge counts up to this many and says `99+` at it. */
 export const BADGE_CAP = 99;
@@ -69,14 +65,12 @@ export function createViewsStore(backend: Backend, store: MailStore, options: Vi
   const [problem, setProblem] = createSignal("");
   // Unread count per view id; absent: nothing to show (not counted yet, zero, or a failed count).
   const [counts, setCounts] = createSignal<Readonly<Record<string, number>>>({});
-  // `Matters` exists while AI is on (ADR 0052, rule 1). The person's own choice of a tab, or text
-  // in the bar, ends the right of the app to open it by default.
-  const [mattersOn, setMattersOn] = createSignal(false);
+  // The person's own choice of a tab, or text in the bar, ends the right of the app to open the
+  // starter view by default (ADR 0117, rule 2).
   let chose = false;
   const openedListeners = new Set<(view: ViewTab) => void>();
 
-  const views = (): readonly ViewTab[] =>
-    mattersOn() ? [MATTERS, ALL_MAIL, ...saved()] : [ALL_MAIL, ...saved()];
+  const views = (): readonly ViewTab[] => [ALL_MAIL, ...saved()];
   const active = (): ViewTab => views().find((v) => v.id === activeId()) ?? ALL_MAIL;
   /** The text in the bar differs from the active view's saved text. */
   const changed = () => store.query() !== active().query;
@@ -176,8 +170,7 @@ export function createViewsStore(backend: Backend, store: MailStore, options: Vi
     }
   }
 
-  // Typing abandons the run and starts the quiet time over. Text in the bar searches the active
-  // view, and in Matters that is its own list (ADR 0056, rule 1).
+  // Typing abandons the run and starts the quiet time over.
   store.onQueryChange((text) => {
     restartBadges(quietMs);
     if (text !== "") chose = true;
@@ -349,12 +342,10 @@ export function createViewsStore(backend: Backend, store: MailStore, options: Vi
     move,
     submitName,
     /** The bar's text could be saved as a new view: constrained or a prompt on `All mail`, any text in a view. */
-    canSaveAs: () => activeId() !== MATTERS_ID && savable(),
+    canSaveAs: () => savable(),
     /** Opens the naming row for a new view; true when it is open. */
     startNaming(): boolean {
       if (naming()) return true;
-      // A search of Matters is not a saved view: a view searches mail (ADR 0056, rule 1).
-      if (activeId() === MATTERS_ID) return false;
       if (!savable()) return false;
       setNaming({ mode: "new" });
       return true;
@@ -377,25 +368,8 @@ export function createViewsStore(backend: Backend, store: MailStore, options: Vi
     /** A `changes` event: counts may have moved. */
     noteChanges: () => restartBadges(quietMs),
     /**
-     * AI turned on or off. Turning on opens Matters unless the person already chose a tab or typed;
-     * turning off takes the tab away and leaves the app as it was before.
-     */
-    setMattersAvailable(on: boolean) {
-      if (on === mattersOn()) return;
-      batch(() => {
-        setMattersOn(on);
-        if (on && !chose && store.query() === "") {
-          setActiveId(MATTERS_ID);
-          setNaming(null);
-          setProblem("");
-        } else if (!on && activeId() === MATTERS_ID) {
-          setActiveId(ALL_MAIL_ID);
-        }
-      });
-    },
-    /**
-     * ADR 0117, rule 2: opens `Needs you` while the person has neither chosen a tab nor typed, as
-     * `setMattersAvailable` opens Matters; true when it did. Not wired while Matters exists.
+     * ADR 0117, rule 2: opens `Needs you` while the person has neither chosen a tab nor typed;
+     * true when it did.
      */
     openStarter(): boolean {
       if (chose || store.query() !== "") return false;

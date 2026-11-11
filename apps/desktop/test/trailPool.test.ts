@@ -50,7 +50,6 @@ async function mailbox() {
     consented: new Set(["acc1"]),
     accounts: [{ id: "acc1", address: ME, displayName: "Me" }],
     rules: [],
-    onlyThreads: null,
     olderThanDays: undefined,
     carry: undefined,
     fragments: false,

@@ -114,16 +114,15 @@ class Responder {
     if (request.untrusted.includes(TEST_PROMPT_QUOTE)) {
       return {
         value: {
-          state: "waiting",
-          headline: "Waiting for the contract",
-          facts: [{ kind: "promise", who: "them", message: 1, quote: TEST_PROMPT_QUOTE }],
-          stakes: "none",
-          confidence: 0.9,
-          intent: "none",
-          intentQuote: "",
-          forYou: "generic",
-          status: "open",
-          category: "other",
+          verdicts: [
+            {
+              thread: 1,
+              fit: 3,
+              why: "It promises the contract.",
+              message: 1,
+              quote: TEST_PROMPT_QUOTE,
+            },
+          ],
         },
       };
     }
@@ -248,7 +247,7 @@ async function build(
 
   /** AI on for the first account, its runtime tested, the background reading paused. */
   async function ready(): Promise<void> {
-    await service.setEnabled({ accountIds: ["acc1"], runtimeId: runtime.id, windowDays: 30 });
+    await service.setEnabled({ accountIds: ["acc1"], runtimeId: runtime.id });
     await service.pauseReading();
     await service.testRuntime();
   }

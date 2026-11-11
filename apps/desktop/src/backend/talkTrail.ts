@@ -81,18 +81,6 @@ export async function followTrail(
       ctx.step({ kind: "search", query, threads });
     });
 
-  // A question about what waits on the person has no words to search: the list of Matters is it.
-  const stateOnly = ctx.onlyThreads !== null && plan.trails.length === 0;
-  if (stateOnly) {
-    lists.push(
-      [...(ctx.onlyThreads ?? [])].map((threadId, i) => ({
-        threadId,
-        accountId: "",
-        messageKey: 0,
-        score: 100 - i * 0.01,
-      })),
-    );
-  }
   let round = 0;
   let queries = firstRoundQueries(plan, ran);
   for (;;) {
@@ -168,7 +156,7 @@ export async function followTrail(
     firstQuery: log[0]?.query ?? "",
     hypothesis,
     dropped: pool.dropped,
-    nothingRan: log.length === 0 && !stateOnly && ctx.carry === undefined,
+    nothingRan: log.length === 0 && ctx.carry === undefined,
     summariesSent,
   };
 }

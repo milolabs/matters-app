@@ -1,7 +1,7 @@
 import type { PreparedWork } from "@matters/core";
 import { For, type JSX, Show } from "solid-js";
+import { type Piece, questionButtonText } from "./agentText.ts";
 import { Ring } from "./icons.tsx";
-import { type Piece, questionButtonText } from "./mattersView.ts";
 import { pill, pillAgent, pillPrimary } from "./ui.ts";
 
 const mac = navigator.userAgent.includes("Macintosh");
@@ -90,7 +90,7 @@ export function Sheet(props: {
 
 /**
  * A draft the agent wrote: the proposal frame, the sheet that would go out, and the only Send.
- * Matters and the thread view draw it alike; `aside` holds the buttons on the left.
+ * `aside` holds the buttons on the left.
  */
 export function DraftFrame(props: {
   to: string;

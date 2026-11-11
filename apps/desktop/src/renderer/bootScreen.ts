@@ -12,7 +12,7 @@ export const LOADER_MIN_MS = 300;
 export const LOADER_FADE_MS = 140;
 /**
  * A seen screen whose first screen never says so leaves this long after the mail is loaded anyway:
- * the mail is there, and an open thread or the list of things comes in its own time.
+ * the mail is there, and an open thread or the starter view comes in its own time.
  */
 const LOADED_FALLBACK_MS = 2000;
 

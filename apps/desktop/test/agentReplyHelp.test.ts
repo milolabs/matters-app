@@ -94,7 +94,7 @@ async function build(spoil: Spoil = "none", automated = false) {
     onChanged: () => {},
   });
   const enable = async () => {
-    await service.setEnabled({ accountIds: ["acc1"], runtimeId: demo.id, windowDays: 30 });
+    await service.setEnabled({ accountIds: ["acc1"], runtimeId: demo.id });
     await service.pauseReading();
     await service.testRuntime();
   };

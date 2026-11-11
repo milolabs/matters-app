@@ -66,9 +66,10 @@ apps/
     src/main/         thin: windows, tray, menus, process supervision
     src/backend/      utilityProcess: router (reads) + sync worker (writes, sync)
     src/renderer/     SolidJS UI
-                      agent.ts (store), matters.tsx (the Matters view), plansLine.tsx (status of
-                      the plans), agentLayer.tsx (the agent colour, dashed frame and ring),
-                      agentSection.tsx and agentSetup.tsx (Settings and first run); ADR 0051, 0052
+                      agent.ts (store), threadAgent.tsx (the agent in a thread), promptLine.tsx
+                      (a view with a prompt), plansLine.tsx (status of the plans), agentLayer.tsx
+                      (the agent colour, dashed frame and ring), agentSection.tsx and
+                      agentSetup.tsx (Settings and first run); ADR 0051, 0116, 0117
 packages/
   core/               domain + use cases + ports
   contracts/          IPC schema shared by renderer and backend

@@ -12,15 +12,13 @@ import type {
 } from "@matters/core";
 import {
   AgentRunError,
-  ANALYSIS_INSTRUCTIONS,
-  ANALYZER_VERSION,
   buildRememberRequest,
   MAX_GUIDANCE_CHARS,
   MAX_INSTRUCTION_CHARS,
   MAX_INSTRUCTIONS,
   MAX_TALK_THREADS,
-  newSendOperation,
   PREPARED_INSTRUCTIONS,
+  PROMPT_INSTRUCTIONS,
   REMEMBER_INSTRUCTIONS,
   TALK_ALL_FACTS_RULES,
   TALK_ALL_INSTRUCTIONS,
@@ -45,15 +43,12 @@ import {
   InvalidAgentSettingError,
   ThingNotFoundError,
 } from "../src/backend/agentApi.ts";
-import { shownReading } from "../src/backend/agentReads.ts";
 import {
   AgentService,
   type AgentServiceDeps,
   KICK_DEBOUNCE_MS,
-  nextMorning,
   OFFERS_ONLY,
-  PAUSE_RETRY_MS,
-  PUBLISH_EVERY_MS,
+  TEST_PROMPT,
   TEST_PROMPT_QUOTE,
 } from "../src/backend/agentService.ts";
 
@@ -102,28 +97,27 @@ class Responder {
     return out;
   }
 
-  /** The requests that carry the thread text, without the one made-up test. */
+  /** The requests that carry mail, without the one made-up test. */
   get mailCalls() {
-    return this.calls.filter(
-      (c) =>
-        c.instructions.startsWith(ANALYSIS_INSTRUCTIONS) &&
-        !c.untrusted.includes(TEST_PROMPT_QUOTE),
-    );
+    return this.calls.filter((c) => !c.untrusted.includes(TEST_PROMPT_QUOTE));
   }
 }
 
-const analysisOf = (quote: string, over: Record<string, unknown> = {}) => ({
-  state: "onYou",
-  headline: "Send the offer",
-  facts: [{ kind: "ask", who: "you", message: 1, quote }],
-  stakes: "none",
-  confidence: 0.9,
-  intent: "none",
-  intentQuote: "",
-  forYou: "generic",
-  status: "open",
-  category: "other",
-  ...over,
+/**
+ * The answer to the runtime test (ADR 0051, rule 5): the verdict turn of a prompt (ADR 0116), in
+ * the shape of `PROMPT_SCHEMA`, quoting the made-up message unless told otherwise.
+ */
+const testVerdict = (over: Record<string, unknown> = {}) => ({
+  verdicts: [
+    {
+      thread: 1,
+      fit: 3,
+      why: "It promises the signed contract.",
+      message: 1,
+      quote: TEST_PROMPT_QUOTE,
+      ...over,
+    },
+  ],
 });
 
 const limits = (week: number, session = 5, over: Partial<PlanLimits> = {}): PlanLimits => ({
@@ -134,17 +128,11 @@ const limits = (week: number, session = 5, over: Partial<PlanLimits> = {}): Plan
   ...over,
 });
 
-/** Answers the test with the constant, and every other request with the quote it finds. */
+/** Answers the test with its verdict, and every other request with what `find` gives. */
 function answering(r: Responder, find: (request: AgentRunRequest) => unknown, lim?: PlanLimits) {
   r.handler = (request) => {
     if (request.untrusted.includes(TEST_PROMPT_QUOTE)) {
-      return {
-        value: analysisOf(TEST_PROMPT_QUOTE, {
-          state: "waiting",
-          facts: [{ kind: "promise", who: "them", message: 1, quote: TEST_PROMPT_QUOTE }],
-        }),
-        ...(lim ? { limits: lim } : {}),
-      };
+      return { value: testVerdict(), ...(lim ? { limits: lim } : {}) };
     }
     return { value: find(request), ...(lim ? { limits: lim } : {}) };
   };
@@ -170,7 +158,6 @@ let seq = 0;
 
 async function build(
   options: {
-    stepThreads?: number;
     readFile?: AgentServiceDeps["readFile"];
     wholeFile?: AgentServiceDeps["wholeFile"];
     takesFiles?: boolean;
@@ -185,6 +172,8 @@ async function build(
   if (options.takesFiles === true) runtime.takesFiles = true;
   await storage.accounts.add(account("acc1", "me@example.com"));
   const changes = { count: 0 };
+  /** How often a pass came past its gates to the views with a prompt (ADR 0117, rule 3). */
+  const background = { reads: 0 };
   const steps: [string, number][] = [];
   const trail: { kind: string; query: string; threads: number; note?: string }[] = [];
   const drafts: Draft[] = [];
@@ -197,8 +186,12 @@ async function build(
     insights,
     settings,
     drafts: storage.drafts,
-    sends: { outbox: storage.outbox, drafts: storage.drafts },
-    views: storage.views,
+    views: {
+      list: () => {
+        background.reads++;
+        return storage.views.list();
+      },
+    },
     saveDraft: async (content) => {
       const draft: Draft = {
         ...content,
@@ -218,7 +211,6 @@ async function build(
       if (kind === undefined) steps.push([query, threads]);
       else trail.push({ kind, query, threads, ...(note === undefined ? {} : { note }) });
     },
-    ...(options.stepThreads === undefined ? {} : { stepThreads: options.stepThreads }),
     ...(options.readFile === undefined ? {} : { readFile: options.readFile }),
     ...(options.wholeFile === undefined ? {} : { wholeFile: options.wholeFile }),
   };
@@ -265,8 +257,7 @@ async function build(
     return keys;
   }
 
-  const enable = (accountIds = ["acc1"]) =>
-    service.setEnabled({ accountIds, runtimeId: "fake", windowDays: 30 });
+  const enable = (accountIds = ["acc1"]) => service.setEnabled({ accountIds, runtimeId: "fake" });
 
   async function pass() {
     service.kick();
@@ -285,6 +276,7 @@ async function build(
     /** A new service over the same stores: the app after a restart. */
     restarted: () => new AgentService(deps),
     changes,
+    background,
     steps,
     trail,
     drafts,
@@ -300,6 +292,16 @@ const offerThread = (id = "t1", dateMs = NOW - DAY): MailSpec => ({
   messages: [{ dateMs, text: `Hello,\n\n${OFFER}.\n\nAnna` }],
 });
 
+type Rig = Awaited<ReturnType<typeof build>>;
+
+/** The work prepared for a thread as it stands now (ADR 0063), as a window reads it. */
+const preparedOf = async (h: Rig, threadId: string) =>
+  (await h.service.threadAgent(threadId)).prepared;
+
+/** The key of the newest visible message of a thread. */
+const lastKeyOf = async (h: Rig, threadId: string) =>
+  (await h.storage.store.getThread(threadId, { visibleOnly: true }))?.thread.lastMessageKey ?? 0;
+
 describe("AgentService: nothing happens without a yes", () => {
   it("does nothing while AI is off, and does not even ask the program who is signed in", async () => {
     const h = await build();
@@ -308,8 +310,9 @@ describe("AgentService: nothing happens without a yes", () => {
     await h.pass();
     expect(h.runtime.calls).toEqual([]);
     expect(h.runtime.inspected).toBe(0);
-    expect((await h.service.things()).things).toEqual([]);
-    expect((await h.service.status()).progress).toMatchObject({ state: "off", reason: "disabled" });
+    expect(await h.service.threadAgent("t1")).toEqual({ available: false, prepared: null });
+    expect(h.background.reads).toBe(0);
+    expect((await h.service.status()).progress).toEqual({ state: "off", reason: "disabled" });
   });
 
   it("does not ask the program for the status while AI is off, only when the person inspects", async () => {
@@ -344,7 +347,8 @@ describe("AgentService: nothing happens without a yes", () => {
     await h.settings.update({ enabled: true, runtimeId: "fake" });
     await h.pass();
     expect(h.runtime.calls).toEqual([]);
-    expect((await h.service.status()).progress).toMatchObject({ state: "off", reason: "consent" });
+    expect(h.background.reads).toBe(0);
+    expect((await h.service.status()).progress).toEqual({ state: "off", reason: "consent" });
   });
 
   it("sends nothing of an account that was not agreed to", async () => {
@@ -357,67 +361,58 @@ describe("AgentService: nothing happens without a yes", () => {
       messages: [{ dateMs: NOW - DAY, text: "SECRET-OF-ACCOUNT-TWO please reply" }],
     });
     h.runtime.info = { ...h.runtime.info, status: "ready" };
-    answering(h.runtime, () => analysisOf(OFFER));
+    answering(h.runtime, () => ({ kind: "draft", body: "Hi", nudge: false }));
     await h.enable(["acc1"]);
     await h.service.idle();
     await h.pass();
+    await expect(h.service.prepare("t2")).rejects.toBeInstanceOf(AgentUnavailableError);
+    await expect(h.service.prepare("t1")).resolves.toMatchObject({ kind: "draft" });
     expect(h.runtime.mailCalls.length).toBe(1);
     expect(h.runtime.calls.some((c) => c.untrusted.includes("SECRET-OF-ACCOUNT-TWO"))).toBe(false);
   });
-
   it("refuses a choice of accounts it does not know", async () => {
     const h = await build();
     await expect(h.enable(["nope"])).rejects.toBeInstanceOf(InvalidAgentSettingError);
     await expect(h.enable([])).rejects.toBeInstanceOf(InvalidAgentSettingError);
     await expect(
-      h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "other", windowDays: 30 }),
-    ).rejects.toBeInstanceOf(InvalidAgentSettingError);
-    await expect(
-      h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "fake", windowDays: 0 }),
+      h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "other" }),
     ).rejects.toBeInstanceOf(InvalidAgentSettingError);
     expect((await h.settings.get()).enabled).toBe(false);
     expect(await h.settings.listConsents()).toEqual([]);
   });
 
-  it("records consent and says in the ledger how many threads the choice named", async () => {
+  it("records consent, and its line in the ledger names no thread (ADR 0117)", async () => {
     const h = await build();
     await h.addMail(offerThread("t1"));
     await h.addMail(offerThread("t2", NOW - 2 * DAY));
-    await h.addMail(offerThread("old", NOW - 90 * DAY));
     h.runtime.info = { ...h.runtime.info, status: "ready" };
-    answering(h.runtime, () => analysisOf(OFFER));
+    answering(h.runtime, () => null);
     await h.enable();
     expect(await h.settings.listConsents()).toEqual([
       { accountId: "acc1", runtimeId: "fake", grantedAtMs: NOW },
     ]);
     expect(await h.insights.listLedger(5)).toEqual([
-      { atMs: NOW, runtimeId: "fake", accountId: "acc1", purpose: "consent", threads: 2 },
+      { atMs: NOW, runtimeId: "fake", accountId: "acc1", purpose: "consent", threads: 0 },
     ]);
-    expect(await h.service.readEstimate({ accountIds: ["acc1"], windowDays: 30 })).toEqual({
-      threads: 2,
-      capped: false,
-    });
-    expect(await h.service.readEstimate({ accountIds: ["acc1"], windowDays: 120 })).toEqual({
-      threads: 3,
-      capped: false,
-    });
-    expect(await h.service.readEstimate({ accountIds: [], windowDays: 30 })).toEqual({
-      threads: 0,
-      capped: false,
-    });
   });
 });
 
 describe("AgentService: the runtime is tested before it gets any mail", () => {
-  it("runs the made-up message first, then reads, and marks the runtime ready", async () => {
+  it("runs the made-up message by itself once AI is on, in the verdict turn, and marks the runtime ready", async () => {
     const h = await build();
     await h.addMail(offerThread());
-    answering(h.runtime, () => analysisOf(OFFER), limits(10));
+    answering(h.runtime, () => null, limits(10));
+    // Turning AI on starts the pass at once: no debounce, no kick.
     await h.enable();
-    await h.pass();
-    expect(h.runtime.calls[0]?.untrusted).toContain(TEST_PROMPT_QUOTE);
-    expect(h.runtime.calls[0]?.untrusted).not.toContain(OFFER);
-    expect(h.runtime.calls[1]?.untrusted).toContain(OFFER);
+    await h.service.idle();
+    expect(h.runtime.calls).toHaveLength(1);
+    const [test] = h.runtime.calls;
+    expect(test?.untrusted).toContain(TEST_PROMPT_QUOTE);
+    expect(test?.untrusted).toContain(TEST_PROMPT);
+    expect(test?.untrusted).not.toContain(OFFER);
+    expect(test?.instructions).toBe(PROMPT_INSTRUCTIONS);
+    const props = (test?.schema as { properties?: object } | undefined)?.properties ?? {};
+    expect(Object.keys(props)).toEqual(["verdicts"]);
     const status = await h.service.status();
     expect(status.runtime?.status).toBe("ready");
     expect(await h.settings.getRuntimeRecord("fake")).toMatchObject({
@@ -425,8 +420,10 @@ describe("AgentService: the runtime is tested before it gets any mail", () => {
       plan: "pro",
     });
     expect((await h.settings.get()).limits?.week?.usedPercent).toBe(10);
+    // Then the pass goes on to the views with a prompt, and ends.
+    expect(h.background.reads).toBe(1);
+    expect(status.progress).toEqual({ state: "idle" });
   });
-
   it("marks it failed and sends no mail when the answer is not in the right shape", async () => {
     const h = await build();
     await h.addMail(offerThread());
@@ -438,16 +435,28 @@ describe("AgentService: the runtime is tested before it gets any mail", () => {
     expect((await h.service.status()).runtime).toMatchObject({ status: "failed" });
     expect(await h.settings.getRuntimeRecord("fake")).toMatchObject({ status: "failed" });
     expect((await h.service.status()).progress).toMatchObject({ state: "off", reason: "runtime" });
+    expect(h.background.reads).toBe(0);
   });
 
-  it("fails the test when the answer quotes what the message does not say", async () => {
+  it("fails the test when the answer quotes what the message does not say, or names no thread sent", async () => {
+    for (const over of [
+      { quote: "a sentence that is not there" },
+      { message: 2 },
+      { thread: 2 },
+      { fit: 0 },
+    ]) {
+      const h = await build();
+      h.runtime.handler = () => ({ value: testVerdict(over) });
+      await h.service.inspect();
+      const status = await h.service.testRuntime();
+      expect(status.runtime?.status, JSON.stringify(over)).toBe("failed");
+    }
+    // A verdict with no quote proves nothing either.
     const h = await build();
-    h.runtime.handler = () => ({ value: analysisOf("a sentence that is not there") });
+    h.runtime.handler = () => ({ value: { verdicts: [{ thread: 1, fit: 2, why: "Yes." }] } });
     await h.service.inspect();
-    const status = await h.service.testRuntime();
-    expect(status.runtime?.status).toBe("failed");
+    expect((await h.service.testRuntime()).runtime?.status).toBe("failed");
   });
-
   it("does not run for a program that is missing or signed out", async () => {
     const h = await build();
     h.runtime.info = { ...h.runtime.info, status: "missing", problem: "not installed" };
@@ -458,7 +467,7 @@ describe("AgentService: the runtime is tested before it gets any mail", () => {
 
   it("stays ready after a restart while the plan is the same, and is tested again on a new plan", async () => {
     const h = await build();
-    answering(h.runtime, () => analysisOf(OFFER));
+    answering(h.runtime, () => null);
     await h.service.testRuntime();
     expect(h.runtime.calls.length).toBe(1);
     const again = new AgentService({
@@ -485,93 +494,50 @@ describe("AgentService: the runtime is tested before it gets any mail", () => {
   it("stops everything and says so when the program is signed out", async () => {
     const h = await build();
     await h.addMail(offerThread("t1"));
-    await h.addMail(offerThread("t2", NOW - 2 * DAY));
-    h.runtime.handler = (request) =>
-      request.untrusted.includes(TEST_PROMPT_QUOTE)
-        ? { value: analysisOf(TEST_PROMPT_QUOTE) }
-        : new AgentRunError("notSignedIn", "no");
+    h.runtime.handler = () => new AgentRunError("notSignedIn", "no");
     await h.enable();
     await h.pass();
-    // The two threads started together; neither answer was kept, and no third turn began.
-    expect(h.runtime.mailCalls.length).toBe(2);
+    expect(h.runtime.calls).toHaveLength(1);
     const status = await h.service.status();
     expect(status.runtime?.status).toBe("signedOut");
-    expect(status.progress).toMatchObject({ state: "paused", reason: "signedOut" });
+    expect(status.progress).toMatchObject({ reason: "signedOut" });
+    expect(h.background.reads).toBe(0);
     // It waits for the person: a later kick does not try again by itself.
     await h.pass();
-    expect(h.runtime.mailCalls.length).toBe(2);
+    expect(h.runtime.calls).toHaveLength(1);
+    expect((await h.service.status()).progress).toMatchObject({
+      state: "paused",
+      reason: "signedOut",
+    });
     expect(h.clock.pendingDelays()).toEqual([]);
     // Asking again clears it.
-    h.runtime.handler = (request) => ({
-      value: analysisOf(request.untrusted.includes(TEST_PROMPT_QUOTE) ? TEST_PROMPT_QUOTE : OFFER),
-    });
+    answering(h.runtime, () => null);
     await h.service.inspect();
+    await h.service.idle();
+    expect((await h.service.status()).runtime?.status).toBe("ready");
+    expect(h.background.reads).toBe(1);
+  });
+
+  it("says so when the program is not on the person's plan", async () => {
+    const h = await build();
+    h.runtime.handler = () => new AgentRunError("notPlan", "no");
+    await h.enable();
     await h.pass();
-    expect(h.runtime.mailCalls.length).toBeGreaterThan(1);
+    expect((await h.service.status()).runtime).toMatchObject({
+      status: "signedOut",
+      problem: "The assistant is not using your Claude plan.",
+    });
+    await h.pass();
+    expect((await h.service.status()).progress).toMatchObject({
+      state: "paused",
+      reason: "notPlan",
+    });
+    expect(h.runtime.calls).toHaveLength(1);
   });
 });
 
-describe("AgentService: reading", () => {
-  it("reads recent threads first, in small steps, and shows results as they arrive", async () => {
-    const h = await build({ stepThreads: 2 });
-    for (let i = 1; i <= 5; i++) await h.addMail(offerThread(`new${i}`, NOW - i * 3_600_000));
-    for (let i = 1; i <= 3; i++) await h.addMail(offerThread(`old${i}`, NOW - (10 + i) * DAY));
-    const stored: Promise<number>[] = [];
-    answering(
-      h.runtime,
-      (request) => {
-        // What is stored at the moment each thread is sent: results are there before the pass ends.
-        if (request.instructions === ANALYSIS_INSTRUCTIONS) {
-          stored.push(h.insights.listAnalyses(ANALYZER_VERSION).then((l) => l.length));
-        }
-        return analysisOf(OFFER);
-      },
-      limits(1, 1),
-    );
-    await h.enable();
-    await h.pass();
-    const order = h.runtime.mailCalls.map((c) => /Subject: About (\S+)/.exec(c.untrusted)?.[1]);
-    expect(order.slice(0, 5).sort()).toEqual(["new1", "new2", "new3", "new4", "new5"]);
-    expect(order.slice(5).sort()).toEqual(["old1", "old2", "old3"]);
-    // The newest of the recent ones goes first.
-    expect(order[0]).toBe("new1");
-    // Steps of two threads run side by side, so each pair is sent when the earlier pairs are
-    // stored: results are there before the pass ends.
-    expect(await Promise.all(stored)).toEqual([0, 0, 2, 2, 4, 4, 6, 6]);
-    expect(await h.insights.listAnalyses(ANALYZER_VERSION)).toHaveLength(8);
-    expect((await h.service.status()).progress).toEqual({
-      state: "idle",
-      done: 8,
-      total: 8,
-      // All of them count, however many there are (ADR 0055).
-      found: 8,
-    });
-    // The ledger counts what was sent, per account, without text.
-    const ledger = await h.insights.listLedger(20);
-    expect(ledger.filter((e) => e.purpose === "analysis").reduce((n, e) => n + e.threads, 0)).toBe(
-      8,
-    );
-    expect(JSON.stringify(ledger)).not.toContain(OFFER);
-  });
-
-  it("reads again only what changed, and not what is already read", async () => {
-    const h = await build();
-    await h.addMail(offerThread("t1"));
-    answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
-    await h.enable();
-    await h.pass();
-    expect(h.runtime.mailCalls.length).toBe(1);
-    await h.pass();
-    expect(h.runtime.mailCalls.length).toBe(1);
-    await h.addMail({
-      threadId: "t1",
-      messages: [{ dateMs: NOW - 1000, text: `Thanks. ${OFFER}.` }],
-    });
-    await h.pass();
-    expect(h.runtime.mailCalls.length).toBe(2);
-  });
-
-  it("leaves a thread written only by programs alone, but keeps an automated message as context", async () => {
+describe("AgentService: the thread a model sees, and the pass", () => {
+  it("keeps an automated message as context of a thread it reads", async () => {
     const h = await build();
     await h.addMail({
       threadId: "news",
@@ -589,14 +555,10 @@ describe("AgentService: reading", () => {
         { dateMs: NOW - DAY, text: `Please see above. ${OFFER}.` },
       ],
     });
-    answering(
-      h.runtime,
-      () =>
-        analysisOf(OFFER, { facts: [{ kind: "promise", who: "you", message: 2, quote: OFFER }] }),
-      limits(1, 1),
-    );
+    answering(h.runtime, () => ({ kind: "draft", body: "Hi", nudge: false }), limits(1, 1));
     await h.enable();
     await h.pass();
+    await h.service.prepare("mixed");
     expect(h.runtime.mailCalls.length).toBe(1);
     const sent = h.runtime.mailCalls[0]?.untrusted ?? "";
     expect(sent).toContain("RECEIPT-FROM-A-SHOP");
@@ -613,14 +575,10 @@ describe("AgentService: reading", () => {
         { dateMs: NOW - DAY, text: `${OFFER}.`, fromAddress: "me@example.com", fromName: "Me" },
       ],
     });
-    answering(
-      h.runtime,
-      () =>
-        analysisOf(OFFER, { facts: [{ kind: "promise", who: "you", message: 2, quote: OFFER }] }),
-      limits(1, 1),
-    );
+    answering(h.runtime, () => ({ kind: "draft", body: "Hi", nudge: false }), limits(1, 1));
     await h.enable();
     await h.pass();
+    await h.service.prepare("t1");
     const sent = h.runtime.mailCalls[0]?.untrusted ?? "";
     expect(sent).toContain("From: You");
     expect(sent).toContain("From: Anna Northwind");
@@ -640,40 +598,13 @@ describe("AgentService: reading", () => {
         },
       ],
     });
-    answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
+    answering(h.runtime, () => ({ kind: "draft", body: "Hi", nudge: false }), limits(1, 1));
     await h.enable();
     await h.pass();
+    await h.service.prepare("t1");
     const sent = h.runtime.mailCalls[0]?.untrusted ?? "";
     expect(sent).toContain(OFFER);
     expect(sent).not.toContain("HIDDEN-WORDS");
-  });
-
-  it("skips Trash, and a thread whose newest visible message is old", async () => {
-    const h = await build();
-    await h.addMail({
-      threadId: "t1",
-      messages: [{ dateMs: NOW - DAY, text: OFFER, labelIds: ["trash"] }],
-    });
-    await h.addMail(offerThread("t2"));
-    answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
-    await h.enable();
-    await h.pass();
-    expect(h.runtime.mailCalls.length).toBe(1);
-  });
-
-  it("does not retry a thread forever when its answers are not accepted", async () => {
-    const h = await build();
-    await h.addMail(offerThread("bad"));
-    h.runtime.handler = (request) =>
-      request.untrusted.includes(TEST_PROMPT_QUOTE)
-        ? { value: analysisOf(TEST_PROMPT_QUOTE) }
-        : { value: { garbage: 1 } };
-    await h.enable();
-    await h.pass();
-    await h.pass();
-    await h.pass();
-    expect(h.runtime.mailCalls.length).toBe(2);
-    expect((await h.service.status()).progress.state).toBe("idle");
   });
 
   it("one pass at a time: a kick during a pass makes one more pass after it", async () => {
@@ -685,107 +616,65 @@ describe("AgentService: reading", () => {
     });
     let active = 0;
     let most = 0;
+    // The pass waits on the runtime test, which runs by itself once the person agreed.
     h.runtime.run = async (request: AgentRunRequest) => {
       active++;
       most = Math.max(most, active);
       h.runtime.calls.push(request);
-      if (!request.untrusted.includes(TEST_PROMPT_QUOTE)) await gate;
+      await gate;
       active--;
-      return {
-        value: analysisOf(
-          request.untrusted.includes(TEST_PROMPT_QUOTE) ? TEST_PROMPT_QUOTE : OFFER,
-        ),
-        limits: limits(1, 1),
-      };
+      return { value: testVerdict(), limits: limits(1, 1) };
     };
     await h.enable();
-    h.service.kick();
-    await h.clock.advance(KICK_DEBOUNCE_MS + 10);
     await settle();
     // A new message arrives and another sync batch is committed meanwhile.
     await h.addMail(offerThread("t2", NOW - 2 * 3_600_000));
     h.service.kick();
     await h.clock.advance(KICK_DEBOUNCE_MS + 10);
+    expect(h.background.reads).toBe(0);
     release();
     await h.service.idle();
     expect(most).toBe(1);
-    expect(h.runtime.mailCalls.length).toBe(2);
+    expect(h.runtime.calls).toHaveLength(1);
+    expect(h.background.reads).toBe(2);
   });
-
   it("debounces a burst of kicks into one pass", async () => {
     const h = await build();
     await h.addMail(offerThread("t1"));
-    answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
+    answering(h.runtime, () => null, limits(1, 1));
     await h.enable();
+    await h.service.idle();
+    const before = h.background.reads;
     for (let i = 0; i < 5; i++) {
       h.service.kick();
       await h.clock.advance(500);
     }
+    expect(h.background.reads).toBe(before);
     await h.clock.advance(KICK_DEBOUNCE_MS + 100);
     await h.service.idle();
-    expect(h.runtime.mailCalls.length).toBe(1);
+    expect(h.background.reads).toBe(before + 1);
+    // The runtime was tested once, by the first pass.
+    expect(h.runtime.calls).toHaveLength(1);
   });
 });
 
 describe("AgentService: the budget", () => {
-  it("stops when the week is above the ceiling, says until when, and tries again then", async () => {
-    const h = await build();
-    await h.addMail(offerThread("t1"));
-    await h.addMail(offerThread("t2", NOW - 3_600_000));
-    // The test teaches the windows: the week is already at 85%, above the ceiling for P1.
-    const resets = NOW + 3 * DAY;
-    answering(h.runtime, () => analysisOf(OFFER), limits(85, 5));
-    await h.enable();
-    await h.pass();
-    expect(h.runtime.mailCalls.length).toBe(0);
-    const progress = (await h.service.status()).progress;
-    expect(progress).toMatchObject({ state: "paused", reason: "weekLimit", untilMs: resets });
-    // A retry is scheduled at the reset time through the injected clock.
-    expect(h.clock.pendingDelays()).toContain(resets - h.clock.now());
-    // The week resets: the runtime now reports little use, and the pass resumes by itself.
-    answering(h.runtime, () => analysisOf(OFFER), {
-      ...limits(2, 1),
-      week: { usedPercent: 2, resetsAtMs: resets + 7 * DAY },
-    });
-    await h.clock.advance(resets - NOW + KICK_DEBOUNCE_MS + 100);
-    await h.service.idle();
-    expect(h.runtime.mailCalls.length).toBe(2);
-  });
-
-  it("retries after fifteen minutes when a stop does not say when it ends", async () => {
-    const h = await build();
-    await h.addMail(offerThread("t1"));
-    answering(h.runtime, () => analysisOf(OFFER), { usingOverage: true, seenAtMs: NOW });
-    await h.enable();
-    await h.pass();
-    expect(h.runtime.mailCalls.length).toBe(0);
-    expect((await h.service.status()).progress).toMatchObject({
-      state: "paused",
-      reason: "overage",
-    });
-    // Scheduled when the pass paused, a little before the clock now stands.
-    expect(
-      h.clock
-        .pendingDelays()
-        .some((d) => d <= PAUSE_RETRY_MS && d > PAUSE_RETRY_MS - 2 * KICK_DEBOUNCE_MS),
-    ).toBe(true);
-  });
-
   it("keeps the plan's windows and our share, and starts our share again in a new week", async () => {
-    const h = await build({ stepThreads: 1 });
+    const h = await build();
     await h.addMail(offerThread("t1"));
     await h.addMail(offerThread("t2", NOW - 3_600_000));
-    await h.service.setModels({ draftAhead: "off" });
     let week = 10;
     h.runtime.handler = (request) => {
       if (request.untrusted.includes(TEST_PROMPT_QUOTE)) {
-        return { value: analysisOf(TEST_PROMPT_QUOTE), limits: limits(week) };
+        return { value: testVerdict(), limits: limits(week) };
       }
       week += 1.5;
-      return { value: analysisOf(OFFER), limits: limits(week) };
+      return { value: { kind: "draft", body: "Hi", nudge: false }, limits: limits(week) };
     };
     await h.enable();
     await h.pass();
+    await h.service.prepare("t1");
+    await h.service.prepare("t2");
     const s = await h.settings.get();
     expect(s.limits?.week?.usedPercent).toBe(13);
     expect(s.usedByUsPercent).toBeCloseTo(3, 5);
@@ -794,11 +683,11 @@ describe("AgentService: the budget", () => {
     await h.clock.advance(4 * DAY);
     await h.addMail(offerThread("t3", NOW + 4 * DAY - 1000));
     await h.service.setWeekShare(10);
-    h.runtime.handler = (request) => ({
-      value: analysisOf(request.untrusted.includes(TEST_PROMPT_QUOTE) ? TEST_PROMPT_QUOTE : OFFER),
+    h.runtime.handler = () => ({
+      value: { kind: "draft", body: "Hi", nudge: false },
       limits: { ...limits(5), week: { usedPercent: 5, resetsAtMs: NOW + 10 * DAY } },
     });
-    await h.pass();
+    await h.service.prepare("t3");
     const later = await h.settings.get();
     expect(later.usedByUsPercent).toBe(0);
     expect(later.usedWeekResetsAtMs).toBe(NOW + 10 * DAY);
@@ -807,264 +696,79 @@ describe("AgentService: the budget", () => {
 
 describe("AgentService: a new week", () => {
   it("starts our share from nothing when the plan's week has another reset time", async () => {
-    const h = await build({ stepThreads: 1 });
+    const h = await build();
     await h.addMail(offerThread("t1"));
     await h.addMail(offerThread("t2", NOW - 3_600_000));
-    await h.service.setModels({ draftAhead: "off" });
     let n = 0;
     h.runtime.handler = (request) => {
       if (request.untrusted.includes(TEST_PROMPT_QUOTE)) {
-        return { value: analysisOf(TEST_PROMPT_QUOTE), limits: limits(10) };
+        return { value: testVerdict(), limits: limits(10) };
       }
       n++;
-      // The second thread is read after the plan moved to a new week.
+      // The second thread is asked about after the plan moved to a new week.
       const resetsAtMs = n === 1 ? NOW + 3 * DAY : NOW + 10 * DAY;
       return {
-        value: analysisOf(OFFER),
+        value: { kind: "draft", body: "Hi", nudge: false },
         limits: { ...limits(10 + n), week: { usedPercent: 10 + n, resetsAtMs } },
       };
     };
     await h.enable();
     await h.pass();
+    await h.service.prepare("t1");
+    await h.service.prepare("t2");
     const s = await h.settings.get();
     expect(s.usedWeekResetsAtMs).toBe(NOW + 10 * DAY);
     expect(s.usedByUsPercent).toBe(0);
   });
 });
 
-describe("AgentService: things", () => {
-  async function readOne(h: Awaited<ReturnType<typeof build>>, over: Record<string, unknown> = {}) {
-    answering(h.runtime, () => analysisOf(OFFER, over), limits(1, 1));
+describe("AgentService: the journal and the rules (ADR 0054)", () => {
+  /** AI on with one thread, the runtime ready; a closing in the person's words when asked. */
+  async function withThread(h: Rig) {
+    answering(h.runtime, () => ({ kind: "closed", reason: "Nothing to do" }), limits(1, 1));
     await h.addMail(offerThread("t1"));
     await h.enable();
     await h.pass();
   }
 
-  it("lists what matters with the other person's name and the quoted words", async () => {
-    const h = await build();
-    await readOne(h, { stakes: "money" });
-    const things = (await h.service.things()).things;
-    expect(things).toHaveLength(1);
-    expect(things[0]).toMatchObject({
-      threadId: "t1",
-      accountId: "acc1",
-      who: "Anna Northwind",
-      headline: "Send the offer",
-      quote: { quote: OFFER },
-    });
-    expect(things[0]?.why).toContain("They asked you for this.");
-  });
-
-  it("does not list a reading the model was not sure of, or that says nothing is owed", async () => {
-    const h = await build();
-    await readOne(h, { confidence: 0.4 });
-    expect((await h.service.things()).things).toEqual([]);
-  });
-
-  it("keeps a thing while a newer message waits for its new reading, and marks it", async () => {
-    const h = await build();
-    await readOne(h);
-    await h.addMail({ threadId: "t1", messages: [{ dateMs: NOW - 1000, text: "Any news?" }] });
-    const things = (await h.service.things()).things;
-    expect(things.map((t) => [t.threadId, t.updating])).toEqual([["t1", true]]);
-  });
-
-  it("leaves out what the person answered until the next reading, which decides (ADR 0112)", async () => {
-    const h = await build();
-    await readOne(h);
-    await h.addMail({
-      threadId: "t1",
-      messages: [
-        {
-          dateMs: NOW - 1000,
-          text: "Sent it, see attachment.",
-          fromAddress: "me@example.com",
-          fromName: "Me",
-          labelIds: ["sent"],
-        },
-      ],
-    });
-    // Not listed and not counted: the tab, the badge and every window say the same.
-    expect(await h.service.things()).toMatchObject({ things: [], total: 0 });
-    // The next reading says nothing is owed any more.
-    h.runtime.handler = (request) => ({
-      value: request.untrusted.includes(TEST_PROMPT_QUOTE)
-        ? analysisOf(TEST_PROMPT_QUOTE)
-        : analysisOf("", { state: "fyi", headline: "Done", facts: [] }),
-      limits: limits(1, 1),
-    });
-    await h.pass();
-    expect((await h.service.things()).things).toEqual([]);
-  });
-
-  const MY_REPLY = {
-    dateMs: NOW - 1000,
-    text: "I will look at it tomorrow.",
-    fromAddress: "me@example.com",
-    fromName: "Me",
-    labelIds: ["sent"],
-  };
-
-  it("brings back what the person answered when the new reading still puts it on them", async () => {
-    const h = await build();
-    await readOne(h);
-    await h.addMail({ threadId: "t1", messages: [MY_REPLY] });
-    expect((await h.service.things()).total).toBe(0);
-    await h.pass();
-    const after = await h.service.things();
-    expect(after.total).toBe(1);
-    expect(after.things.map((t) => [t.threadId, t.updating])).toEqual([["t1", undefined]]);
-  });
-
-  it("keeps listing it, marked, when someone writes after the person's answer", async () => {
-    const h = await build();
-    await readOne(h);
-    await h.addMail({ threadId: "t1", messages: [MY_REPLY] });
-    await h.addMail({ threadId: "t1", messages: [{ dateMs: NOW - 500, text: "Any news?" }] });
-    const things = (await h.service.things()).things;
-    expect(things.map((t) => [t.threadId, t.updating])).toEqual([["t1", true]]);
-  });
-
-  it("leaves out a thing whose reply is in the outbox, and brings it back when the send is undone", async () => {
-    const h = await build();
-    await readOne(h);
-    const draft: Draft = {
-      id: "d1",
-      accountId: "acc1",
-      from: { name: "Me", address: "me@example.com" },
-      to: [{ name: "Anna Northwind", address: "anna@northwind.example" }],
-      cc: [],
-      bcc: [],
-      subject: "Re: offer",
-      bodyMarkdown: "Here it is.",
-      inReplyTo: "",
-      references: [],
-      threadId: "t1",
-      version: 1,
-      fingerprint: "f",
-      updatedAtMs: NOW,
-    };
-    await h.storage.drafts.put(draft);
-    const op = newSendOperation({
-      id: "op1",
-      accountId: "acc1",
-      approval: {
-        draftId: "d1",
-        version: 1,
-        fingerprint: "f",
-        threadContext: null,
-        approvedAtMs: NOW,
-      },
-      nowMs: NOW,
-      notBeforeMs: NOW + 10_000,
-    });
-    await h.storage.outbox.enqueue(op);
-    expect(await h.service.things()).toMatchObject({ things: [], total: 0 });
-    // What notifications ask agrees with the list (ADR 0106, rule 4).
-    const reads = {
-      insights: h.insights,
-      settings: h.settings,
-      store: h.storage.store,
-      accounts: h.storage.accounts,
-      sends: { outbox: h.storage.outbox, drafts: h.storage.drafts },
-    };
-    expect(await shownReading(reads, "t1", NOW)).toBeNull();
-    // Sent: until its copy is in the thread the draft is there, and the send still answers it.
-    await h.storage.outbox.update({ ...op, state: { kind: "succeeded", providerMessageId: "m" } });
-    expect((await h.service.things()).total).toBe(0);
-    // Undone instead: nothing went, so it is on the person again.
-    await h.storage.outbox.update({ ...op, state: { kind: "cancelled" } });
-    expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["t1"]);
-    expect(await shownReading(reads, "t1", NOW)).not.toBeNull();
-    // A failed send did not answer either.
-    await h.storage.outbox.update({ ...op, state: { kind: "failed", reason: "refused" } });
-    expect((await h.service.things()).total).toBe(1);
-  });
-
-  it("hides a thing that is not important, and one marked for later until 06:00", async () => {
-    const h = await build();
-    await readOne(h);
-    const at = h.clock.now();
-    await h.service.feedback("t1", "later");
-    expect((await h.service.things()).things).toEqual([]);
-    const [fb] = await h.insights.listFeedback();
-    expect(fb).toMatchObject({
-      threadId: "t1",
-      kind: "later",
-      senderAddress: "anna@northwind.example",
-      atMs: at,
-    });
-    expect(fb?.untilMs).toBe(nextMorning(at));
-    await h.clock.advance(fb?.untilMs ? fb.untilMs - at + 1 : 0);
-    expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["t1"]);
-    await h.service.feedback("t1", "notImportant");
-    await h.clock.advance(10 * DAY);
-    expect((await h.service.things()).things).toEqual([]);
-    // A newer message makes a new thing.
-    expect((await h.insights.listFeedback()).map((f) => f.kind)).toEqual(["later", "notImportant"]);
-  });
-
-  it("takes feedback back when the person presses Undo, and the thing returns", async () => {
-    const h = await build();
-    await readOne(h);
-    await h.service.feedback("t1", "notImportant");
-    expect((await h.service.things()).things).toEqual([]);
-    const before = h.changes.count;
-    await h.service.undoFeedback("t1", "notImportant");
-    expect(await h.insights.listFeedback()).toEqual([]);
-    expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["t1"]);
-    expect(h.changes.count).toBeGreaterThan(before);
-  });
-
   describe("the journal (ADR 0054, rule 6)", () => {
-    it("logs a button's feedback as the person's, with the headline, and reads newest first", async () => {
-      const h = await build();
-      await readOne(h);
-      const [analysis] = await h.insights.listAnalyses(ANALYZER_VERSION, ["t1"]);
-      const at = h.clock.now();
-      await h.service.feedback("t1", "notImportant");
-      await h.service.feedback("t1", "later");
-      const lines = await h.service.journal();
-      expect(lines.map((j) => [j.action, j.actor])).toEqual([
-        ["later", "person"],
-        ["notImportant", "person"],
-      ]);
-      expect(lines[1]).toMatchObject({
-        threadId: "t1",
-        lastMessageKey: analysis?.lastMessageKey,
-        senderAddress: "anna@northwind.example",
-        headline: analysis?.headline,
-        atMs: at,
-      });
-      expect(lines[1]?.words).toBeUndefined();
-      expect(lines[0]).toMatchObject({ untilMs: nextMorning(at) });
-    });
-
     it("limits what it returns: 50 by default, and between 1 and 200", async () => {
       const h = await build();
-      await readOne(h);
-      for (let i = 0; i < 60; i++) await h.service.feedback("t1", "notImportant");
+      await withThread(h);
+      const key = await lastKeyOf(h, "t1");
+      for (let i = 0; i < 60; i++) {
+        await h.insights.recordFeedback(
+          {
+            threadId: "t1",
+            lastMessageKey: key,
+            senderAddress: "anna@northwind.example",
+            kind: "closed",
+            atMs: NOW + i,
+            outcome: "done",
+          },
+          { actor: "agent", headline: "About t1" },
+        );
+      }
       expect(await h.service.journal()).toHaveLength(50);
       expect(await h.service.journal(3)).toHaveLength(3);
       expect(await h.service.journal(0)).toHaveLength(1);
       expect(await h.service.journal(10_000)).toHaveLength(60);
       expect(await h.service.journal(Number.NaN)).toHaveLength(50);
     });
-
     it("marks the line undone, with the time, when the person presses Undo, and keeps it", async () => {
       const h = await build();
-      await readOne(h);
-      await h.service.feedback("t1", "notImportant");
+      await withThread(h);
+      await h.service.prepare("t1", { answer: "No reply needed" });
       await h.clock.advance(5000);
-      await h.service.undoFeedback("t1", "notImportant");
+      await h.service.undoFeedback("t1", "closed");
       const [line] = await h.service.journal();
-      expect(line).toMatchObject({ action: "notImportant", undoneAtMs: h.clock.now() });
+      expect(line).toMatchObject({ action: "closed", undoneAtMs: h.clock.now() });
     });
-
     it("forgets the lines of a thread whose mail is removed", async () => {
       const h = await build();
-      await readOne(h);
-      await h.service.feedback("t1", "notImportant");
+      await withThread(h);
+      await h.service.prepare("t1", { answer: "No reply needed" });
+      expect(await h.service.journal()).toHaveLength(1);
       await h.insights.removeForThreads(["t1"]);
       expect(await h.service.journal()).toEqual([]);
     });
@@ -1073,85 +777,9 @@ describe("AgentService: things", () => {
   describe("rules in code (ADR 0054, rule 7)", () => {
     const ANNA = "anna@northwind.example";
 
-    it("never sends a covered thread to the runtime, and spends nothing on it", async () => {
-      const h = await build();
-      answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
-      await h.addMail(offerThread("t1"));
-      await h.service.addRule({ scope: "sender", subject: " Anna@Northwind.example " });
-      await h.enable();
-      await h.pass();
-      expect(h.runtime.mailCalls).toEqual([]);
-      expect((await h.service.things()).things).toEqual([]);
-      expect((await h.service.status()).progress).toMatchObject({ total: 0 });
-      expect(await h.service.readEstimate({ accountIds: ["acc1"], windowDays: 30 })).toEqual({
-        threads: 0,
-        capped: false,
-      });
-    });
-
-    it("hides an already read thing with no new turn, and brings it back when the rule goes", async () => {
-      const h = await build();
-      await readOne(h);
-      const turns = h.runtime.calls.length;
-      expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["t1"]);
-      const before = h.changes.count;
-      const rule = await h.service.addRule({ threadId: "t1", scope: "sender" });
-      expect(rule).toMatchObject({
-        scope: "sender",
-        subject: ANNA,
-        actor: "person",
-        action: "noReply",
-      });
-      expect(h.changes.count).toBeGreaterThan(before);
-      expect((await h.service.things()).things).toEqual([]);
-      await h.pass();
-      expect(h.runtime.calls.length).toBe(turns);
-      await h.service.removeRule(rule.id);
-      await h.pass();
-      expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["t1"]);
-      expect(h.runtime.calls.length).toBe(turns);
-      expect(await h.service.rules()).toEqual([]);
-    });
-
-    it("makes threads that a rule kept from reading readable again, without the person asking", async () => {
-      const h = await build();
-      answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
-      await h.addMail(offerThread("t1"));
-      const rule = await h.service.addRule({ scope: "domain", subject: "@Northwind.example" });
-      await h.enable();
-      await h.pass();
-      expect(h.runtime.mailCalls).toEqual([]);
-      await h.service.removeRule(rule.id);
-      // No kick of ours: removing the rule wakes the reading by itself.
-      await h.clock.advance(KICK_DEBOUNCE_MS + 100);
-      await h.service.idle();
-      await settle();
-      expect(h.runtime.mailCalls).toHaveLength(1);
-      expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["t1"]);
-    });
-
-    it("keeps a thread another person also wrote in", async () => {
-      const h = await build();
-      answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
-      await h.addMail({
-        threadId: "mixed",
-        messages: [
-          { dateMs: NOW - 2 * DAY, fromAddress: "alerts@x.example", text: `${OFFER}.` },
-          { dateMs: NOW - DAY, text: "Anna here, ok." },
-        ],
-      });
-      await h.service.addRule({ scope: "sender", subject: "alerts@x.example" });
-      await h.enable();
-      await h.pass();
-      expect(h.runtime.mailCalls).toHaveLength(1);
-      expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["mixed"]);
-      await h.service.addRule({ scope: "sender", subject: ANNA });
-      expect((await h.service.things()).things).toEqual([]);
-    });
-
     it("writes one journal line, adds nothing the second time, and marks the line when removed", async () => {
       const h = await build();
-      await readOne(h);
+      await withThread(h);
       const first = await h.service.addRule({ threadId: "t1", scope: "sender" });
       const again = await h.service.addRule({ scope: "sender", subject: ANNA.toUpperCase() });
       expect(again).toEqual(first);
@@ -1172,7 +800,7 @@ describe("AgentService: things", () => {
 
     it("refuses an address of the person's own, an invalid subject, and a thread with no sender", async () => {
       const h = await build();
-      await readOne(h);
+      await withThread(h);
       await h.addMail({
         threadId: "mine",
         messages: [{ dateMs: NOW - DAY, fromAddress: "me@example.com", text: "Note to self" }],
@@ -1197,25 +825,9 @@ describe("AgentService: things", () => {
       await expect(h.service.removeRule(0)).rejects.toBeInstanceOf(InvalidAgentSettingError);
     });
 
-    it("keeps a type rule and applies it only to addresses that look like programs", async () => {
-      const h = await build();
-      answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
-      await h.addMail({
-        threadId: "prog",
-        messages: [{ dateMs: NOW - DAY, fromAddress: "alerts@x.example", text: `${OFFER}.` }],
-      });
-      await h.addMail(offerThread("person"));
-      await h.service.addRule({ scope: "type", subject: "programLike" });
-      await h.enable();
-      await h.pass();
-      expect(h.runtime.mailCalls).toHaveLength(1);
-      expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["person"]);
-      expect((await h.service.rules())[0]).toMatchObject({ scope: "type", subject: "programLike" });
-    });
-
     it("offers a rule for the sender of a thread, and nothing when there is none to offer", async () => {
       const h = await build();
-      await readOne(h);
+      await withThread(h);
       await h.addMail({
         threadId: "mine",
         messages: [{ dateMs: NOW - DAY, fromAddress: "me@example.com", text: "Note to self" }],
@@ -1228,24 +840,23 @@ describe("AgentService: things", () => {
     });
   });
 
-  it("refuses feedback for a thread that was never read", async () => {
-    const h = await build();
-    await expect(h.service.feedback("nothing", "later")).rejects.toBeInstanceOf(ThingNotFoundError);
-  });
-
   it("shows nothing again once AI is turned off, and takes the consent back", async () => {
     const h = await build();
-    await readOne(h);
-    expect((await h.service.things()).things).toHaveLength(1);
+    await withThread(h);
+    answering(h.runtime, () => ({ kind: "draft", body: "Hi", nudge: false }), limits(1, 1));
+    await h.service.prepare("t1");
+    expect(await h.service.threadAgent("t1")).toMatchObject({ available: true });
     const status = await h.service.disable();
     expect(status.settings.enabled).toBe(false);
     expect(status.consents).toEqual([]);
-    expect((await h.service.things()).things).toEqual([]);
+    expect(await h.service.threadAgent("t1")).toEqual({ available: false, prepared: null });
     expect((await h.insights.listLedger(3))[0]?.purpose).toBe("revoke");
     const before = h.runtime.calls.length;
+    const reads = h.background.reads;
     await h.addMail(offerThread("t9", NOW - 1000));
     await h.pass();
     expect(h.runtime.calls.length).toBe(before);
+    expect(h.background.reads).toBe(reads);
   });
 });
 
@@ -1254,7 +865,7 @@ describe("AgentService: drafts", () => {
     const h = await build();
     h.runtime.handler = (request) => {
       if (request.untrusted.includes(TEST_PROMPT_QUOTE)) {
-        return { value: analysisOf(TEST_PROMPT_QUOTE), limits: limits(1, 1) };
+        return { value: testVerdict(), limits: limits(1, 1) };
       }
       if (request.instructions === PREPARED_INSTRUCTIONS) {
         return {
@@ -1262,89 +873,16 @@ describe("AgentService: drafts", () => {
           limits: limits(2, 1),
         };
       }
-      return { value: analysisOf(OFFER), limits: limits(1, 1) };
+      return { value: null };
     };
     return h;
   }
-
-  it("drafts ahead for what shows, at P2, in rank order, and stores it under the reading", async () => {
-    const h = await ready();
-    await h.addMail(offerThread("t1"));
-    await h.addMail(offerThread("t2", NOW - 2 * 3_600_000));
-    await h.enable();
-    await h.pass();
-    const drafts = h.runtime.calls.filter((c) => c.instructions === PREPARED_INSTRUCTIONS);
-    expect(drafts).toHaveLength(2);
-    const things = (await h.service.things()).things;
-    expect(things.map((t) => t.prepared?.kind)).toEqual(["draft", "draft"]);
-    const [analysis] = await h.insights.listAnalyses(ANALYZER_VERSION, ["t1"]);
-    expect((await h.insights.getPrepared("t1", analysis?.lastMessageKey ?? 0))?.work).toMatchObject(
-      { kind: "draft" },
-    );
-    expect(await h.service.prepared("t1")).toMatchObject({ kind: "draft" });
-    // A new message makes it stale.
-    await h.addMail({ threadId: "t1", messages: [{ dateMs: NOW - 500, text: "Ping" }] });
-    expect(await h.service.prepared("t1")).toBeNull();
-    const after = (await h.service.things()).things.find((t) => t.threadId === "t1");
-    expect(after?.prepared).toBeUndefined();
-    expect(after?.updating).toBe(true);
-    const ledger = await h.insights.listLedger(50);
-    expect(ledger.filter((e) => e.purpose === "prepare")).toHaveLength(2);
-  });
-
-  it("shows every thing but drafts ahead only for the best seven (ADR 0055)", async () => {
-    const h = await ready();
-    for (let i = 1; i <= 9; i++) await h.addMail(offerThread(`t${i}`, NOW - i * 3_600_000));
-    await h.enable();
-    await h.pass();
-    const drafts = h.runtime.calls.filter((c) => c.instructions === PREPARED_INSTRUCTIONS);
-    expect(drafts).toHaveLength(7);
-    const { things, total } = await h.service.things();
-    expect(total).toBe(9);
-    expect(things.map((t) => t.threadId)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => `t${i}`));
-    expect(things.map((t) => t.prepared !== undefined)).toEqual([
-      ...Array.from({ length: 7 }, () => true),
-      false,
-      false,
-    ]);
-    // A limit keeps the best ones and still says how many there are.
-    const page = await h.service.things(2);
-    expect(page.things.map((t) => t.threadId)).toEqual(["t1", "t2"]);
-    expect(page.total).toBe(9);
-    expect((await h.service.status()).progress.found).toBe(9);
-  });
-
-  it("does not draft ahead when that is off, or while the budget says no for P2", async () => {
-    const h = await ready();
-    await h.addMail(offerThread("t1"));
-    await h.enable();
-    await h.service.setModels({ draftAhead: "off" });
-    await h.pass();
-    expect(h.runtime.calls.some((c) => c.instructions === PREPARED_INSTRUCTIONS)).toBe(false);
-    expect((await h.service.things()).things[0]?.prepared).toBeUndefined();
-  });
-
-  it("holds drafts back above the P2 ceiling but still reads (P1)", async () => {
-    const h = await ready();
-    await h.addMail(offerThread("t1"));
-    h.runtime.handler = (request) => ({
-      value: analysisOf(request.untrusted.includes(TEST_PROMPT_QUOTE) ? TEST_PROMPT_QUOTE : OFFER),
-      limits: limits(75, 5),
-    });
-    await h.enable();
-    await h.pass();
-    expect(h.runtime.mailCalls).toHaveLength(1);
-    expect((await h.service.status()).progress).toMatchObject({
-      state: "paused",
-      reason: "weekLimit",
-    });
-  });
 
   it("prepares on request with the write model, and the person's words as theirs", async () => {
     const h = await ready();
     await h.addMail(offerThread("t1"));
     await h.enable();
-    await h.service.setModels({ draftAhead: "off", write: "large" });
+    await h.service.setModels({ write: "large" });
     await h.pass();
     const work = await h.service.prepare("t1", {
       direction: "Say Tuesday works",
@@ -1356,7 +894,12 @@ describe("AgentService: drafts", () => {
     expect(call?.untrusted).toContain("Direction: Say Tuesday works");
     expect(call?.untrusted).toContain("In their own words: Tuesday 10:00");
     expect(JSON.stringify(call?.schema)).toContain('"enum":["draft","closed"]');
-    expect(await h.service.prepared("t1")).toMatchObject({ kind: "draft" });
+    expect(await preparedOf(h, "t1")).toMatchObject({ kind: "draft" });
+    const key = await lastKeyOf(h, "t1");
+    expect((await h.insights.getPrepared("t1", key))?.work).toMatchObject({ kind: "draft" });
+    expect(await h.insights.listLedger(1)).toEqual([
+      { atMs: h.clock.now(), runtimeId: "fake", accountId: "acc1", purpose: "prepare", threads: 1 },
+    ]);
   });
 
   describe("closing in the person's own words (ADR 0054)", () => {
@@ -1364,7 +907,6 @@ describe("AgentService: drafts", () => {
       const h = await ready();
       await h.addMail(offerThread("t1"));
       await h.enable();
-      await h.service.setModels({ draftAhead: "off" });
       await h.pass();
       const base = h.runtime.handler;
       h.runtime.handler = (request, n) =>
@@ -1379,17 +921,17 @@ describe("AgentService: drafts", () => {
     const prepareLedger = async (h: Awaited<ReturnType<typeof build>>) =>
       (await h.insights.listLedger(50)).filter((e) => e.purpose === "prepare").length;
 
-    it("with the person's words: records closed with the reason, stores no work, and hides the thing", async () => {
+    it("with the person's words: records closed with the reason, and stores no work", async () => {
       const h = await withClosing();
       const before = h.changes.count;
       const ledgerBefore = await prepareLedger(h);
-      const [analysis] = await h.insights.listAnalyses(ANALYZER_VERSION, ["t1"]);
+      const key = await lastKeyOf(h, "t1");
       const result = await h.service.prepare("t1", { answer: "Don't write, this is automatic" });
       expect(result).toEqual({ kind: "closed", reason: "An automatic notification" });
       expect(await h.insights.listFeedback()).toEqual([
         {
           threadId: "t1",
-          lastMessageKey: analysis?.lastMessageKey,
+          lastMessageKey: key,
           senderAddress: "anna@northwind.example",
           kind: "closed",
           atMs: h.clock.now(),
@@ -1398,16 +940,14 @@ describe("AgentService: drafts", () => {
           outcome: "done",
         },
       ]);
-      expect(await h.insights.getPrepared("t1", analysis?.lastMessageKey ?? 0)).toBeNull();
-      expect(await h.service.prepared("t1")).toBeNull();
-      expect((await h.service.things()).things).toEqual([]);
+      expect(await h.insights.getPrepared("t1", key)).toBeNull();
+      expect(await preparedOf(h, "t1")).toBeNull();
       expect(await prepareLedger(h)).toBe(ledgerBefore + 1);
       expect(h.changes.count).toBeGreaterThan(before);
     });
-
     it("logs the closing as the agent's, with the person's words and the reason, and Undo marks it", async () => {
       const h = await withClosing();
-      const [analysis] = await h.insights.listAnalyses(ANALYZER_VERSION, ["t1"]);
+      const key = await lastKeyOf(h, "t1");
       await h.service.prepare("t1", { answer: "  Don't write, this is automatic  " });
       expect(await h.service.journal()).toEqual([
         {
@@ -1416,9 +956,10 @@ describe("AgentService: drafts", () => {
           action: "closed",
           actor: "agent",
           threadId: "t1",
-          lastMessageKey: analysis?.lastMessageKey,
+          lastMessageKey: key,
           senderAddress: "anna@northwind.example",
-          headline: analysis?.headline,
+          // Named by the thread's subject: there is no reading to name it (ADR 0117).
+          headline: "About t1",
           words: "Don't write, this is automatic",
           reason: "An automatic notification",
         },
@@ -1427,20 +968,10 @@ describe("AgentService: drafts", () => {
       await h.service.undoFeedback("t1", "closed");
       expect((await h.service.journal())[0]).toMatchObject({ undoneAtMs: h.clock.now() });
     });
-
     it("cuts the words to the length the model was given", async () => {
       const h = await withClosing();
       await h.service.prepare("t1", { answer: "x".repeat(MAX_GUIDANCE_CHARS + 500) });
       expect((await h.service.journal())[0]?.words).toHaveLength(MAX_GUIDANCE_CHARS);
-    });
-
-    it("logs a button closing as the person's, with no reason", async () => {
-      const h = await withClosing();
-      await h.service.feedback("t1", "closed");
-      const [line] = await h.service.journal();
-      expect(line).toMatchObject({ action: "closed", actor: "person" });
-      expect(line && "reason" in line).toBe(false);
-      expect(line && "words" in line).toBe(false);
     });
 
     it("logs nothing when the closing is refused", async () => {
@@ -1452,15 +983,13 @@ describe("AgentService: drafts", () => {
       expect(await h.service.journal()).toEqual([]);
     });
 
-    it("brings the thing back on Undo", async () => {
+    it("forgets the closing on Undo", async () => {
       const h = await withClosing();
       await h.service.prepare("t1", { answer: "No reply needed" });
-      expect((await h.service.things()).things).toEqual([]);
+      expect(await h.insights.listFeedback()).toHaveLength(1);
       await h.service.undoFeedback("t1", "closed");
       expect(await h.insights.listFeedback()).toEqual([]);
-      expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["t1"]);
     });
-
     it("refuses closed when the person only chose a direction, and records nothing", async () => {
       const h = await withClosing();
       const ledgerBefore = await prepareLedger(h);
@@ -1471,7 +1000,6 @@ describe("AgentService: drafts", () => {
         h.service.prepare("t1", { direction: "Ask for a date", answer: "  " }),
       ).rejects.toBeInstanceOf(AgentUnavailableError);
       expect(await h.insights.listFeedback()).toEqual([]);
-      expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["t1"]);
       // What was sent is still counted.
       expect(await prepareLedger(h)).toBe(ledgerBefore + 2);
     });
@@ -1480,35 +1008,7 @@ describe("AgentService: drafts", () => {
       const h = await withClosing();
       await expect(h.service.prepare("t1")).rejects.toBeInstanceOf(AgentUnavailableError);
       expect(await h.insights.listFeedback()).toEqual([]);
-      const [analysis] = await h.insights.listAnalyses(ANALYZER_VERSION, ["t1"]);
-      expect(await h.insights.getPrepared("t1", analysis?.lastMessageKey ?? 0)).toBeNull();
-    });
-
-    it("refuses a closed answer to a draft prepared ahead", async () => {
-      const h = await ready();
-      await h.addMail(offerThread("t1"));
-      const base = h.runtime.handler;
-      h.runtime.handler = (request, n) =>
-        request.instructions === PREPARED_INSTRUCTIONS
-          ? { value: { kind: "closed", reason: "Nothing to do" }, limits: limits(2, 1) }
-          : base(request, n);
-      await h.enable();
-      await h.pass();
-      expect(h.runtime.calls.some((c) => c.instructions === PREPARED_INSTRUCTIONS)).toBe(true);
-      expect(await h.insights.listFeedback()).toEqual([]);
-      expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["t1"]);
-    });
-
-    it("records a direct closing with no reason", async () => {
-      const h = await ready();
-      await h.addMail(offerThread("t1"));
-      await h.enable();
-      await h.pass();
-      await h.service.feedback("t1", "closed");
-      const [fb] = await h.insights.listFeedback();
-      expect(fb).toMatchObject({ kind: "closed", senderAddress: "anna@northwind.example" });
-      expect(fb && "reason" in fb).toBe(false);
-      expect((await h.service.things()).things).toEqual([]);
+      expect(await h.insights.getPrepared("t1", await lastKeyOf(h, "t1"))).toBeNull();
     });
   });
 
@@ -1516,7 +1016,6 @@ describe("AgentService: drafts", () => {
     const h = await ready();
     await h.addMail(offerThread("t1"));
     await h.enable();
-    await h.service.setModels({ draftAhead: "off" });
     await h.pass();
     const base = h.runtime.handler;
     h.runtime.handler = (request, n) =>
@@ -1548,7 +1047,6 @@ describe("AgentService: drafts", () => {
       await h.enable();
       await h.service.pauseReading();
       await h.service.testRuntime();
-      expect(await h.insights.listAnalyses(ANALYZER_VERSION, ["t1"])).toEqual([]);
       return h;
     }
     const preparedCalls = (h: Awaited<ReturnType<typeof build>>) =>
@@ -1561,48 +1059,31 @@ describe("AgentService: drafts", () => {
       expect(work).toMatchObject({ kind: "draft" });
       expect(h.runtime.calls.length).toBe(turns + 1);
       const asked = preparedCalls(h)[0];
-      expect(asked?.untrusted).toContain("There is no earlier reading of this thread.");
+      // There is no stored reading of a thread any more, and no line that says so (ADR 0117).
+      expect(asked?.untrusted).not.toMatch(/earlier reading/i);
       expect(asked?.untrusted).not.toContain("State:");
-      const view = await h.storage.store.getThread("t1", { visibleOnly: true });
-      const key = view?.thread.lastMessageKey as number;
+      expect(asked?.untrusted).toContain(OFFER);
+      const key = await lastKeyOf(h, "t1");
       expect((await h.insights.getPrepared("t1", key))?.work).toMatchObject({ kind: "draft" });
-      expect(await h.service.prepared("t1")).toMatchObject({ kind: "draft" });
+      expect(await preparedOf(h, "t1")).toMatchObject({ kind: "draft" });
     });
 
-    it("does not use a reading of an earlier message, and stores under the newer one", async () => {
-      const h = await ready();
-      await h.addMail(offerThread("t1"));
-      await h.enable();
-      await h.service.setModels({ draftAhead: "off" });
-      await h.pass();
-      const [old] = await h.insights.listAnalyses(ANALYZER_VERSION, ["t1"]);
+    it("stores under the newer message once the thread grows, and the older work no longer shows", async () => {
+      const h = await unread();
+      await h.service.prepare("t1");
+      const old = await lastKeyOf(h, "t1");
       await h.addMail({
         threadId: "t1",
         messages: [{ dateMs: NOW - 3_600_000, text: "Any news about the offer?" }],
       });
-      const view = await h.storage.store.getThread("t1", { visibleOnly: true });
-      const key = view?.thread.lastMessageKey as number;
-      expect(key).not.toBe(old?.lastMessageKey);
+      const key = await lastKeyOf(h, "t1");
+      expect(key).not.toBe(old);
+      expect(await preparedOf(h, "t1")).toBeNull();
       await h.service.prepare("t1");
-      const asked = preparedCalls(h).at(-1);
-      expect(asked?.untrusted).toContain("There is no earlier reading of this thread.");
-      expect(asked?.untrusted).not.toContain("Send the offer");
+      expect(preparedCalls(h).at(-1)?.untrusted).toContain("Any news about the offer?");
       expect((await h.insights.getPrepared("t1", key))?.work).toMatchObject({ kind: "draft" });
-      expect(await h.insights.getPrepared("t1", old?.lastMessageKey as number)).toBeNull();
+      expect(await preparedOf(h, "t1")).toMatchObject({ kind: "draft" });
     });
-
-    it("uses the reading when it is of the last message", async () => {
-      const h = await ready();
-      await h.addMail(offerThread("t1"));
-      await h.enable();
-      await h.service.setModels({ draftAhead: "off" });
-      await h.pass();
-      await h.service.prepare("t1");
-      const asked = preparedCalls(h).at(-1);
-      expect(asked?.untrusted).toContain("Earlier reading of this thread");
-      expect(asked?.untrusted).toContain("Send the offer");
-    });
-
     it("still refuses without AI, without consent and for a missing thread", async () => {
       const h = await ready();
       await h.addMail(offerThread("t1"));
@@ -1626,7 +1107,7 @@ describe("AgentService: drafts", () => {
         kind: "needs",
         missing: "Which day?",
       });
-      expect(await h.service.prepared("t1")).toMatchObject({ kind: "needs" });
+      expect(await preparedOf(h, "t1")).toMatchObject({ kind: "needs" });
     });
 
     it("accepts closed only with the person's words, and names the thread by its subject", async () => {
@@ -1656,7 +1137,6 @@ describe("AgentService: drafts", () => {
     const h = await ready();
     await h.addMail(offerThread("t1"));
     await h.enable();
-    await h.service.setModels({ draftAhead: "off" });
     await h.pass();
     await h.settings.update({ limits: limits(100, 10) });
     await expect(h.service.prepare("t1")).rejects.toBeInstanceOf(AgentUnavailableError);
@@ -1703,33 +1183,36 @@ describe("AgentService: drafts", () => {
 });
 
 describe("AgentService: settings", () => {
-  it("validates models against the runtime, and the window and share", async () => {
+  it("validates models against the runtime, and the share of the week", async () => {
     const h = await build();
     await h.service.inspect();
     await h.service.setModels({ understand: "large" });
     expect((await h.settings.get()).models.understand).toBe("large");
-    await h.service.setModels({ draftAhead: "off" });
     await expect(h.service.setModels({ write: "off" })).rejects.toBeInstanceOf(
       InvalidAgentSettingError,
     );
     await expect(h.service.setModels({ understand: "gpt-9" })).rejects.toBeInstanceOf(
       InvalidAgentSettingError,
     );
+    // There is no model for drafts ahead any more (ADR 0117, rule 1): a key of it is not kept.
+    await h.service.setModels({ draftAhead: "off" } as never);
+    expect(Object.keys((await h.settings.get()).models).sort()).toEqual([
+      "answer",
+      "titles",
+      "understand",
+      "write",
+    ]);
     await expect(h.service.setWeekShare(-1)).rejects.toBeInstanceOf(InvalidAgentSettingError);
     await expect(h.service.setWeekShare(101)).rejects.toBeInstanceOf(InvalidAgentSettingError);
-    await expect(h.service.setWindowDays(0)).rejects.toBeInstanceOf(InvalidAgentSettingError);
-    await expect(h.service.setWindowDays(400)).rejects.toBeInstanceOf(InvalidAgentSettingError);
     await h.service.setWeekShare(25);
-    await h.service.setWindowDays(60);
-    expect(await h.settings.get()).toMatchObject({ weekSharePercent: 25, windowDays: 60 });
+    expect(await h.settings.get()).toMatchObject({ weekSharePercent: 25 });
+    expect(await h.settings.get()).not.toHaveProperty("windowDays");
   });
-
   it("reports settings, the runtime, limits, progress and the last ledger entries", async () => {
     const h = await build();
     await h.addMail(offerThread("t1"));
-    answering(h.runtime, () => analysisOf(OFFER), limits(7, 3));
+    answering(h.runtime, () => null, limits(7, 3));
     await h.enable();
-    await h.service.setModels({ draftAhead: "off" });
     await h.pass();
     const status = await h.service.status();
     expect(status.settings.enabled).toBe(true);
@@ -1739,31 +1222,26 @@ describe("AgentService: settings", () => {
       limits: { week: { usedPercent: 7 } },
     });
     expect(status.consents).toHaveLength(1);
-    expect(status.progress).toEqual({ state: "idle", done: 1, total: 1, found: 1 });
-    expect(status.ledger.map((e) => e.purpose).sort()).toEqual(["analysis", "consent"]);
+    expect(status.progress).toEqual({ state: "idle" });
+    // The test sends no mail, so it has no line of its own.
+    expect(status.ledger.map((e) => e.purpose)).toEqual(["consent"]);
   });
 
   it("does nothing after stop", async () => {
     const h = await build();
     await h.addMail(offerThread("t1"));
-    answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
+    answering(h.runtime, () => null, limits(1, 1));
     await h.enable();
     await h.service.stop();
+    const calls = h.runtime.calls.length;
+    const reads = h.background.reads;
     await h.pass();
-    expect(h.runtime.mailCalls).toEqual([]);
+    expect(h.runtime.calls.length).toBe(calls);
+    expect(h.background.reads).toBe(reads);
   });
 });
 
-describe("nextMorning", () => {
-  it("is the next local 06:00, today when it has not come yet", () => {
-    const at = (h: number, m = 0) => new Date(2026, 10, 5, h, m).getTime();
-    expect(nextMorning(at(2))).toBe(at(6));
-    expect(nextMorning(at(6))).toBe(new Date(2026, 10, 6, 6).getTime());
-    expect(nextMorning(at(23, 59))).toBe(new Date(2026, 10, 6, 6).getTime());
-  });
-});
-
-describe("AgentService: reading that shows itself (ADR 0053)", () => {
+describe("AgentService: the state of the pass, and the pause (ADR 0053, ADR 0117)", () => {
   /** Calls `look` as each request starts, so a test sees the state while a turn is running. */
   function watching(
     h: Awaited<ReturnType<typeof build>>,
@@ -1776,118 +1254,25 @@ describe("AgentService: reading that shows itself (ADR 0053)", () => {
     };
   }
 
-  it("says it is checking while the made-up message is tested, then reads, then is idle", async () => {
+  it("says it is checking while the made-up message is tested, then is idle", async () => {
     const h = await build();
     await h.addMail(offerThread("t1"));
-    await h.addMail(offerThread("t2", NOW - 2 * DAY));
-    answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
+    answering(h.runtime, () => null, limits(1, 1));
     await h.settings.update({
-      models: {
-        understand: "small",
-        draftAhead: "off",
-        write: "large",
-        answer: "large",
-        titles: "small",
-      },
+      models: { understand: "small", write: "large", answer: "large", titles: "small" },
     });
-    const seen: { test: boolean; state: string; done: number; total: number }[] = [];
+    const seen: { test: boolean; state: string }[] = [];
     watching(h, async (request) => {
       const p = (await h.service.status()).progress;
-      seen.push({
-        test: request.untrusted.includes(TEST_PROMPT_QUOTE),
-        state: p.state,
-        done: p.done,
-        total: p.total,
-      });
+      seen.push({ test: request.untrusted.includes(TEST_PROMPT_QUOTE), state: p.state });
     });
     await h.enable();
     await h.pass();
-    expect(seen[0]).toMatchObject({ test: true, state: "checking" });
-    const reads = seen.filter((x) => !x.test);
-    expect(reads.length).toBe(2);
-    for (const r of reads) expect(r).toMatchObject({ state: "reading", total: 2 });
-    expect((await h.service.status()).progress).toMatchObject({
-      state: "idle",
-      done: 2,
-      total: 2,
-    });
+    expect(seen).toEqual([{ test: true, state: "checking" }]);
+    // The test runs on the model for understanding.
+    expect(h.runtime.calls[0]?.model).toBe("small");
+    expect((await h.service.status()).progress).toEqual({ state: "idle" });
   });
-
-  it("says the window is empty when there is nothing to read in it", async () => {
-    const h = await build();
-    await h.addMail(offerThread("old", NOW - 40 * DAY));
-    answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
-    await h.enable();
-    await h.pass();
-    expect(h.runtime.mailCalls).toEqual([]);
-    expect((await h.service.status()).progress).toMatchObject({
-      state: "idle",
-      total: 0,
-      windowEmpty: true,
-    });
-  });
-
-  it("does not say the window is empty when its threads are all read", async () => {
-    const h = await build();
-    await h.addMail(offerThread("t1"));
-    answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
-    await h.enable();
-    await h.pass();
-    expect((await h.service.status()).progress.windowEmpty).toBeUndefined();
-  });
-
-  it("gives no time left before three turns have finished, and measures it after", async () => {
-    const h = await build({ stepThreads: 1 });
-    for (let i = 1; i <= 7; i++) await h.addMail(offerThread(`t${i}`, NOW - i * 3_600_000));
-    answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
-    await h.enable();
-    await h.service.setModels({ draftAhead: "off" });
-    // The manual clock cannot be advanced from inside a pass, so time is read from here.
-    let t = NOW;
-    h.clock.now = () => t;
-    const seen: { turns: number; eta?: number; done: number; total: number }[] = [];
-    watching(h, async (request) => {
-      if (request.untrusted.includes(TEST_PROMPT_QUOTE)) return;
-      const p = (await h.service.status()).progress;
-      seen.push({
-        turns: h.runtime.mailCalls.length,
-        ...(p.etaMs === undefined ? {} : { eta: p.etaMs }),
-        done: p.done,
-        total: p.total,
-      });
-      // Each turn takes one second.
-      t += 1000;
-    });
-    await h.pass();
-    // Turn k starts after k-1 turns finished: no figure for the first three, then a measured one.
-    expect(seen.slice(0, 3).map((x) => x.eta)).toEqual([undefined, undefined, undefined]);
-    const fourth = seen[3];
-    expect(fourth?.eta).toBeDefined();
-    // Three turns in three seconds, four threads still unread: four seconds.
-    expect(fourth?.eta).toBe(4000);
-    // It falls as the reading goes on.
-    expect(seen[5]?.eta).toBeLessThan(fourth?.eta ?? 0);
-    expect((await h.service.status()).progress.etaMs).toBeUndefined();
-  });
-
-  it("counts the things that show", async () => {
-    const h = await build();
-    await h.addMail(offerThread("t1"));
-    await h.addMail(offerThread("t2", NOW - 2 * DAY));
-    h.runtime.handler = (request) => ({
-      value: request.untrusted.includes(TEST_PROMPT_QUOTE)
-        ? analysisOf(TEST_PROMPT_QUOTE)
-        : request.untrusted.includes("About t1")
-          ? analysisOf(OFFER)
-          : analysisOf(OFFER, { state: "fyi", facts: [] }),
-      limits: limits(1, 1),
-    });
-    await h.enable();
-    await h.service.setModels({ draftAhead: "off" });
-    await h.pass();
-    expect((await h.service.status()).progress).toMatchObject({ done: 2, found: 1 });
-  });
-
   it("carries the runtime's reason when it cannot be used, and nothing else", async () => {
     const h = await build();
     await h.addMail(offerThread("t1"));
@@ -1906,162 +1291,99 @@ describe("AgentService: reading that shows itself (ADR 0053)", () => {
     expect(h.runtime.calls).toEqual([]);
   });
 
-  it("asks for low effort when it understands, drafts ahead and tests, and sets none when the person asks", async () => {
+  it("asks for low effort when it tests, and sets none when the person asks", async () => {
     const h = await build();
     await h.addMail(offerThread("t1"));
     h.runtime.handler = (request) => {
       if (request.untrusted.includes(TEST_PROMPT_QUOTE)) {
-        return { value: analysisOf(TEST_PROMPT_QUOTE), limits: limits(1, 1) };
+        return { value: testVerdict(), limits: limits(1, 1) };
       }
-      if (request.instructions === PREPARED_INSTRUCTIONS) {
-        return { value: { kind: "draft", body: "Hi", nudge: false }, limits: limits(2, 1) };
-      }
-      return { value: analysisOf(OFFER), limits: limits(1, 1) };
+      return { value: { kind: "draft", body: "Hi", nudge: false }, limits: limits(2, 1) };
     };
     await h.enable();
     await h.pass();
     const test = h.runtime.calls.find((c) => c.untrusted.includes(TEST_PROMPT_QUOTE));
     expect(test?.effort).toBe("low");
-    expect(h.runtime.mailCalls.map((c) => c.effort)).toEqual(["low"]);
-    const ahead = h.runtime.calls.filter((c) => c.instructions === PREPARED_INSTRUCTIONS);
-    expect(ahead.map((c) => c.effort)).toEqual(["low"]);
     await h.service.prepare("t1", { direction: "Say yes" });
     const asked = h.runtime.calls.at(-1);
     expect(asked?.instructions).toBe(PREPARED_INSTRUCTIONS);
     expect(asked).not.toHaveProperty("effort");
   });
-
-  it("runs up to three turns at once", async () => {
-    const h = await build();
-    for (let i = 1; i <= 8; i++) await h.addMail(offerThread(`t${i}`, NOW - i * 3_600_000));
-    answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
-    let running = 0;
-    let peak = 0;
-    const inner = h.runtime.run.bind(h.runtime);
-    h.runtime.run = async (request) => {
-      running++;
-      peak = Math.max(peak, running);
-      await new Promise((r) => setTimeout(r, 5));
-      try {
-        return await inner(request);
-      } finally {
-        running--;
-      }
-    };
-    await h.enable();
-    await h.pass();
-    await h.service.idle();
-    expect(peak).toBe(3);
-    expect(await h.insights.listAnalyses(ANALYZER_VERSION)).toHaveLength(8);
-  });
-
-  it("publishes a burst of results as a few changes, not one per result", async () => {
-    const h = await build();
-    for (let i = 1; i <= 9; i++) await h.addMail(offerThread(`t${i}`, NOW - i * 3_600_000));
-    answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
-    await h.enable();
-    await h.service.setModels({ draftAhead: "off" });
-    const before = h.changes.count;
-    await h.pass();
-    const during = h.changes.count - before;
-    // Nine results, and the manual clock never reached the end of the throttle.
-    expect(during).toBeLessThan(9);
-    await h.clock.advance(PUBLISH_EVERY_MS);
-  });
-
   describe("pause", () => {
     async function paused() {
       const h = await build();
       for (let i = 1; i <= 4; i++) await h.addMail(offerThread(`t${i}`, NOW - i * 3_600_000));
-      answering(h.runtime, () => analysisOf(OFFER), limits(1, 1));
+      answering(h.runtime, () => ({ kind: "draft", body: "Hi", nudge: false }), limits(1, 1));
       await h.enable();
-      await h.service.setModels({ draftAhead: "off" });
+      await h.service.idle();
       return h;
     }
 
     it("is saved, starts nothing, and is not undone by a kick or a sync", async () => {
       const h = await paused();
+      const reads = h.background.reads;
       await h.service.pauseReading();
       expect((await h.settings.get()).readingPaused).toBe(true);
       await h.pass();
       await h.pass();
-      expect(h.runtime.mailCalls).toEqual([]);
-      expect((await h.service.status()).progress).toMatchObject({
+      expect(h.background.reads).toBe(reads);
+      expect((await h.service.status()).progress).toEqual({
         state: "paused",
         reason: "pausedByPerson",
-        done: 0,
-        total: 4,
       });
     });
-
-    it("holds after a restart, and says how far it got", async () => {
+    it("holds after a restart, and says so", async () => {
       const h = await paused();
-      await h.pass();
-      expect(h.runtime.mailCalls).toHaveLength(4);
       await h.addMail(offerThread("t5", NOW - 1000));
       await h.service.pauseReading();
       const callsBefore = h.runtime.calls.length;
+      const reads = h.background.reads;
       const again = h.restarted();
       await again.start();
       await h.clock.advance(KICK_DEBOUNCE_MS + 100);
       await again.idle();
       expect(h.runtime.calls.length).toBe(callsBefore);
-      expect((await again.status()).progress).toMatchObject({
+      expect((await again.status()).progress).toEqual({
         state: "paused",
         reason: "pausedByPerson",
-        done: 4,
-        total: 5,
       });
       again.kick();
       await h.clock.advance(KICK_DEBOUNCE_MS + 100);
       await again.idle();
       expect(h.runtime.calls.length).toBe(callsBefore);
+      expect(h.background.reads).toBe(reads);
       await again.stop();
     });
-
     it("continues when the person says so, without waiting for a debounce", async () => {
       const h = await paused();
       await h.service.pauseReading();
+      const reads = h.background.reads;
       await h.service.resumeReading();
       await h.service.idle();
       await settle();
       expect((await h.settings.get()).readingPaused).toBe(false);
-      expect(h.runtime.mailCalls).toHaveLength(4);
-      expect((await h.service.status()).progress).toMatchObject({ state: "idle", done: 4 });
+      expect(h.background.reads).toBe(reads + 1);
+      expect((await h.service.status()).progress).toEqual({ state: "idle" });
     });
-
-    it("lets the turns that run finish and keeps their results, and starts no more", async () => {
-      const h = await paused();
-      let first = true;
-      watching(h, async (request) => {
-        if (request.untrusted.includes(TEST_PROMPT_QUOTE) || !first) return;
-        first = false;
+    it("lets the turn that runs finish and keeps its result, and ends paused", async () => {
+      const h = await build();
+      answering(h.runtime, () => null, limits(1, 1));
+      // The person pauses while the runtime test is running in the pass.
+      watching(h, async () => {
         await h.service.pauseReading();
       });
-      await h.pass();
+      await h.enable();
       await h.service.idle();
-      const stored = await h.insights.listAnalyses(ANALYZER_VERSION);
-      const mail = h.runtime.mailCalls.length;
-      expect(mail).toBeGreaterThanOrEqual(1);
-      expect(mail).toBeLessThan(4);
-      // Every turn that began has its result.
-      expect(stored).toHaveLength(mail);
-      expect((await h.service.status()).progress).toMatchObject({
+      expect(h.runtime.calls).toHaveLength(1);
+      // The test that began has its result.
+      expect((await h.service.status()).runtime?.status).toBe("ready");
+      expect((await h.service.status()).progress).toEqual({
         state: "paused",
         reason: "pausedByPerson",
-        done: mail,
-        total: 4,
       });
     });
-
     it("still prepares what the person asks for", async () => {
       const h = await paused();
-      await h.pass();
-      const base = h.runtime.handler;
-      h.runtime.handler = (request, n) =>
-        request.instructions === PREPARED_INSTRUCTIONS
-          ? { value: { kind: "draft", body: "Hi", nudge: false } }
-          : base(request, n);
       await h.service.pauseReading();
       const work = await h.service.prepare("t1", { direction: "Say yes" });
       expect(work).toMatchObject({ kind: "draft" });
@@ -2079,14 +1401,14 @@ describe("AgentService: reading that shows itself (ADR 0053)", () => {
 describe("AgentService: instructions and what writes them (ADR 0054, rules 7 to 10)", () => {
   const WORDS = "zawsze pisz krótko";
 
-  /** One thing read and ready to be written for, with the turn that remembers answered by `answer`. */
+  /** One thread ready to be written for, with the turn that remembers answered by `answer`. */
   async function withReading(
     answer: unknown = { items: [{ scope: "write", text: "Write briefly" }] },
   ) {
     const h = await build();
     h.runtime.handler = (request) => {
       if (request.untrusted.includes(TEST_PROMPT_QUOTE)) {
-        return { value: analysisOf(TEST_PROMPT_QUOTE), limits: limits(1, 1) };
+        return { value: testVerdict(), limits: limits(1, 1) };
       }
       if (request.instructions === REMEMBER_INSTRUCTIONS) {
         return answer instanceof Error ? answer : { value: answer, limits: limits(2, 1) };
@@ -2094,15 +1416,13 @@ describe("AgentService: instructions and what writes them (ADR 0054, rules 7 to 
       if (request.instructions.startsWith(PREPARED_INSTRUCTIONS)) {
         return { value: { kind: "draft", body: "Hi", nudge: false }, limits: limits(2, 1) };
       }
-      return { value: analysisOf(OFFER), limits: limits(1, 1) };
+      return { value: null };
     };
     await h.addMail(offerThread("t1"));
     await h.enable();
-    await h.service.setModels({ draftAhead: "off" });
     await h.pass();
     return h;
   }
-  type Rig = Awaited<ReturnType<typeof withReading>>;
   const rememberTurns = (h: Rig) =>
     h.runtime.calls.filter((c) => c.instructions === REMEMBER_INSTRUCTIONS);
   const rememberLedger = async (h: Rig) =>
@@ -2112,25 +1432,18 @@ describe("AgentService: instructions and what writes them (ADR 0054, rules 7 to 
     const h = await build();
     h.runtime.handler = (request) => {
       if (request.untrusted.includes(TEST_PROMPT_QUOTE)) {
-        return { value: analysisOf(TEST_PROMPT_QUOTE), limits: limits(1, 1) };
+        return { value: testVerdict(), limits: limits(1, 1) };
       }
       if (request.instructions === REMEMBER_INSTRUCTIONS) {
         return { value: { items: [{ scope: "thread", text: "Answer in Polish" }] } };
       }
-      if (request.instructions.startsWith(PREPARED_INSTRUCTIONS)) {
-        return { value: { kind: "draft", body: "Hi", nudge: false } };
-      }
-      return {
-        value: analysisOf(OFFER, { headline: "HEADLINE-MARKER open" }),
-        limits: limits(1, 1),
-      };
+      return { value: { kind: "draft", body: "Hi", nudge: false } };
     };
     await h.addMail({
       threadId: "SUBJECT-MARKER",
       messages: [{ dateMs: NOW - DAY, text: `BODY-MARKER ${OFFER}.` }],
     });
     await h.enable();
-    await h.service.setModels({ draftAhead: "off" });
     await h.pass();
     await h.service.prepare("SUBJECT-MARKER", { answer: WORDS });
     // Preparing sends no remembering turn by itself: the page asks for it, separately.
@@ -2144,13 +1457,7 @@ describe("AgentService: instructions and what writes them (ADR 0054, rules 7 to 
       effort: "low",
     });
     const sent = JSON.stringify(turns[0]);
-    for (const marker of [
-      "BODY-MARKER",
-      "SUBJECT-MARKER",
-      "HEADLINE-MARKER",
-      "northwind",
-      "Anna",
-    ]) {
+    for (const marker of ["BODY-MARKER", "SUBJECT-MARKER", "northwind", "Anna"]) {
       expect(sent, marker).not.toContain(marker);
     }
     expect(sent).toContain(WORDS);
@@ -2168,17 +1475,16 @@ describe("AgentService: instructions and what writes them (ADR 0054, rules 7 to 
     const h = await build();
     h.runtime.handler = (request) =>
       request.untrusted.includes(TEST_PROMPT_QUOTE)
-        ? { value: analysisOf(TEST_PROMPT_QUOTE), limits: limits(1, 1) }
+        ? { value: testVerdict(), limits: limits(1, 1) }
         : request.instructions === REMEMBER_INSTRUCTIONS
           ? { value: { items: [] } }
-          : {
-              value: analysisOf("Please send me the signed contract when you can"),
-              limits: limits(1, 1),
-            };
+          : { value: { kind: "draft", body: "Hi", nudge: false }, limits: limits(1, 1) };
     await h.addMail({ threadId: "t1", messages: [{ dateMs: NOW - DAY, text: body }] });
     await h.enable();
     await h.pass();
-    expect(h.runtime.mailCalls).toHaveLength(1);
+    // The hostile mail went to a turn the person asked for, then the remembering turn.
+    await h.service.prepare("t1", { answer: WORDS });
+    expect(h.runtime.mailCalls[0]?.untrusted).toContain("IGNORE-ALL-PREVIOUS-INSTRUCTIONS");
     await h.service.remember("t1", WORDS);
     const turn = h.runtime.calls.find((c) => c.instructions === REMEMBER_INSTRUCTIONS);
     expect(turn).toBeDefined();
@@ -2239,7 +1545,7 @@ describe("AgentService: instructions and what writes them (ADR 0054, rules 7 to 
       actor: "agent",
       subject: "anna@northwind.example",
     });
-    expect((await h.service.things()).things).toEqual([]);
+    expect(await h.service.rules()).toHaveLength(1);
     // Again: the rule is there, so nothing new is made.
     expect((await h.service.remember("t1", "wszystko od tego nadawcy ignoruj")).items).toEqual([]);
   });
@@ -2314,7 +1620,7 @@ describe("AgentService: instructions and what writes them (ADR 0054, rules 7 to 
     expect((await h.service.remember("t1", WORDS)).items).toEqual([]);
     expect(rememberTurns(h)).toEqual([]);
     expect(await rememberLedger(h)).toEqual([]);
-    await h.clock.advance(PAUSE_RETRY_MS * 2);
+    await h.clock.advance(30 * 60_000);
     await settle();
     expect(rememberTurns(h)).toEqual([]);
   });
@@ -2394,11 +1700,9 @@ describe("AgentService: instructions and what writes them (ADR 0054, rules 7 to 
   });
 
   describe("on the turns that follow", () => {
-    it("sends each instruction only where its scope says, and reads nothing again", async () => {
+    it("sends each instruction only where its scope says, and with the person's words, never the mail", async () => {
       const h = await withReading();
       await h.addMail(offerThread("t2"));
-      await h.pass();
-      expect(h.runtime.mailCalls).toHaveLength(2);
       await h.service.addInstruction({ scope: "general", text: "GENERAL-LINE" });
       await h.service.addInstruction({ scope: "understand", text: "UNDERSTAND-LINE" });
       await h.service.addInstruction({ scope: "write", text: "WRITE-LINE" });
@@ -2410,37 +1714,25 @@ describe("AgentService: instructions and what writes them (ADR 0054, rules 7 to 
         { scope: "thread", threadId: "t2", text: "T2-LINE", actor: "person" },
         1,
       );
-      await h.pass();
-      // Nothing that was read is read again, and its analysis is not stale.
-      expect(h.runtime.mailCalls).toHaveLength(2);
-      expect(await h.insights.listAnalyses(ANALYZER_VERSION)).toHaveLength(2);
-
-      await h.addMail(offerThread("t3"));
-      await h.pass();
-      const analysis = h.runtime.mailCalls[2]?.instructions ?? "";
-      expect(analysis.startsWith(ANALYSIS_INSTRUCTIONS)).toBe(true);
-      expect(analysis).toContain("GENERAL-LINE");
-      expect(analysis).toContain("UNDERSTAND-LINE");
-      expect(analysis).not.toContain("WRITE-LINE");
-      expect(analysis).not.toContain("T1-LINE");
-      expect(analysis).not.toContain("T2-LINE");
-      // The instructions are the person's, so they are in the system prompt and never with the mail.
-      expect(h.runtime.mailCalls[2]?.untrusted).not.toContain("GENERAL-LINE");
-
+      // Adding them starts no turn.
       const before = h.runtime.calls.length;
+      await h.pass();
+      expect(h.runtime.calls.length).toBe(before);
+
       await h.service.prepare("t1", { direction: "Say yes" });
-      const prepared = h.runtime.calls[before]?.instructions ?? "";
+      const call = h.runtime.calls[before];
+      const prepared = call?.instructions ?? "";
       expect(prepared.startsWith(PREPARED_INSTRUCTIONS)).toBe(true);
       expect(prepared).toContain("GENERAL-LINE");
       expect(prepared).toContain("WRITE-LINE");
       expect(prepared).toContain("T1-LINE");
       expect(prepared).not.toContain("UNDERSTAND-LINE");
       expect(prepared).not.toContain("T2-LINE");
+      // The instructions are the person's, so they are in the system prompt and never with the mail.
+      expect(call?.untrusted).not.toContain("GENERAL-LINE");
     });
-
     it("sends a request exactly as before when there are no instructions", async () => {
       const h = await withReading();
-      expect(h.runtime.mailCalls[0]?.instructions).toBe(ANALYSIS_INSTRUCTIONS);
       await h.service.prepare("t1", { direction: "Say yes" });
       expect(h.runtime.calls.at(-1)?.instructions).toBe(PREPARED_INSTRUCTIONS);
     });
@@ -2478,10 +1770,10 @@ describe("AgentService: a talk about one thread (ADR 0064)", () => {
     };
     h.runtime.handler = (request) => {
       if (request.untrusted.includes(TEST_PROMPT_QUOTE)) {
-        return { value: analysisOf(TEST_PROMPT_QUOTE), limits: limits(1, 1) };
+        return { value: testVerdict(), limits: limits(1, 1) };
       }
       if (isTalk(request)) return { value: reply, limits: limits(2, 1) };
-      return { value: analysisOf(OFFER), limits: limits(1, 1) };
+      return { value: null };
     };
     await h.addMail(offerThread("t1"));
     await h.enable();
@@ -2538,7 +1830,7 @@ describe("AgentService: a talk about one thread (ADR 0064)", () => {
     expect(sent?.model).toBe((await h.settings.get()).models.write);
     expect(sent && "effort" in sent).toBe(false);
     expect(entries[1]).toMatchObject({ model: sent?.model });
-    expect(await h.service.prepared("t1")).toBeNull();
+    expect(await preparedOf(h, "t1")).toBeNull();
     // One line of counts in the ledger, and no text.
     const lines = await talkLedger(h);
     expect(lines).toEqual([
@@ -2552,7 +1844,8 @@ describe("AgentService: a talk about one thread (ADR 0064)", () => {
     h.says({ kind: "answer", text: "Tuesday.", quotes: [] });
     await h.service.talk("t1", "And when?");
     const [first, second] = talkCalls(h);
-    expect(first?.untrusted).toContain("There is no earlier reading of this thread.");
+    // No stored reading goes with the thread, and no line that says there is none (ADR 0117).
+    expect(first?.untrusted).not.toMatch(/earlier reading/i);
     expect(first?.untrusted).toContain("[Message 1]");
     expect(first?.untrusted).toContain(WORDS);
     expect(first?.untrusted).not.toContain("Earlier in this talk");
@@ -2575,14 +1868,14 @@ describe("AgentService: a talk about one thread (ADR 0064)", () => {
       text: "",
       quotes: [],
     });
-    expect(await h.service.prepared("t1")).toMatchObject({
+    expect(await preparedOf(h, "t1")).toMatchObject({
       kind: "draft",
       body: "Hi Anna,\n\nTuesday works.",
     });
     h.says({ kind: "needs", missing: "Which day?", directions: ["Monday", "Friday"] });
     const asked = await h.service.talk("t1", "Reply with a date");
     expect(asked.entries[1]).toMatchObject({ kind: "question", text: "" });
-    expect(await h.service.prepared("t1")).toEqual({
+    expect(await preparedOf(h, "t1")).toEqual({
       kind: "needs",
       missing: "Which day?",
       directions: ["Monday", "Friday"],
@@ -2606,20 +1899,7 @@ describe("AgentService: a talk about one thread (ADR 0064)", () => {
       words: "This is done, no reply needed",
     });
     expect(JSON.stringify(line)).toContain("About t1");
-    expect(await h.service.prepared("t1")).toBeNull();
-  });
-
-  it("uses a reading only when it is of the last message", async () => {
-    const h = await unread();
-    await h.service.resumeReading();
-    await h.pass();
-    await h.service.talk("t1", WORDS);
-    expect(talkCalls(h)[0]?.untrusted).toContain("Earlier reading of this thread");
-    expect(talkCalls(h)[0]?.untrusted).toContain("Send the offer");
-    await h.service.pauseReading();
-    await h.addMail({ threadId: "t1", messages: [{ dateMs: NOW - 500, text: "Ping" }] });
-    await h.service.talk("t1", WORDS);
-    expect(talkCalls(h)[1]?.untrusted).toContain("There is no earlier reading of this thread.");
+    expect(await preparedOf(h, "t1")).toBeNull();
   });
 
   it("refuses blank words with a sentence and sends nothing", async () => {
@@ -2641,7 +1921,7 @@ describe("AgentService: a talk about one thread (ADR 0064)", () => {
     const h = await build();
     h.runtime.handler = (request) => ({
       value: request.untrusted.includes(TEST_PROMPT_QUOTE)
-        ? analysisOf(TEST_PROMPT_QUOTE)
+        ? testVerdict()
         : { kind: "answer", text: "x", quotes: [] },
       limits: limits(1, 1),
     });
@@ -2692,7 +1972,7 @@ describe("AgentService: a talk about one thread (ADR 0064)", () => {
     }
     expect(await h.insights.listTalk("t1", 10)).toEqual([]);
     expect(await h.insights.listFeedback()).toEqual([]);
-    expect(await h.service.prepared("t1")).toBeNull();
+    expect(await preparedOf(h, "t1")).toBeNull();
     expect(await talkLedger(h)).toHaveLength(4);
   });
 
@@ -2891,12 +2171,12 @@ describe("AgentService: a talk across all mail (ADR 0064, rules 7 to 12; ADR 008
     };
     h.runtime.handler = (request, n) => {
       if (request.untrusted.includes(TEST_PROMPT_QUOTE)) {
-        return { value: analysisOf(TEST_PROMPT_QUOTE), limits: limits(1, 1) };
+        return { value: testVerdict(), limits: limits(1, 1) };
       }
       if (isPlan(request)) return { value: reply.plan, limits: limits(1, 1) };
       if (isFollow(request)) return { value: reply.follow(request, n), limits: limits(1, 1) };
       if (isAnswer(request)) return { value: reply.answer, limits: limits(2, 1) };
-      return { value: analysisOf(OFFER), limits: limits(1, 1) };
+      return { value: null };
     };
     await mail(h, offerThread("t1"));
     await h.enable();
@@ -2906,7 +2186,7 @@ describe("AgentService: a talk across all mail (ADR 0064, rules 7 to 12; ADR 008
       ...h,
       /** The plan: a query as the old single-search turn gave it, or any value as it is. */
       searches: (value: unknown) => {
-        const v = value as { query?: unknown; state?: unknown; olderThanDays?: unknown } | null;
+        const v = value as { query?: unknown; olderThanDays?: unknown } | null;
         if (v !== null && typeof v === "object" && typeof v.query === "string") {
           const { query, ...rest } = v;
           reply.plan = planOf(query.trim() === "" ? [] : [query], rest);
@@ -2963,7 +2243,6 @@ describe("AgentService: a talk across all mail (ADR 0064, rules 7 to 12; ADR 008
           subject: "About t1",
           note: "wants it by Tuesday",
           lastMessageMs: NOW - DAY,
-          state: null,
         },
       ],
       quotes: [{ text: OFFER, from: "Anna Northwind", threadId: "t1" }],
@@ -3821,7 +3100,6 @@ describe("AgentService: a talk across all mail (ADR 0064, rules 7 to 12; ADR 008
       null,
       "offer",
       { query: 3 },
-      { query: "a", state: "fyi" },
       { query: "a", olderThanDays: -1 },
       {},
       planOf(["a", "b", "c", "d"], {
@@ -3939,46 +3217,27 @@ describe("AgentService: a talk across all mail (ADR 0064, rules 7 to 12; ADR 008
     expect(entries[1]).toMatchObject({ threads: MAX_TALK_THREADS });
   });
 
-  it("takes `state` from the list of things, so what was closed stays out, and `olderThanDays` from the last message", async () => {
+  it("takes `olderThanDays` from the last message, and ignores a `state` a plan still carries (ADR 0117)", async () => {
     const h = await ready();
     await mail(h, offerThread("t2", NOW - 20 * DAY));
-    await h.service.resumeReading();
-    await h.pass();
-    await h.service.pauseReading();
-    h.searches({ query: "", state: "onYou" });
-    await h.service.talkAll(WORDS);
-    let sent = answerCalls(h)[0]?.untrusted ?? "";
-    expect(sent).toContain("About t1");
-    expect(sent).toContain("About t2");
-    // A question that is only a state has no words to search: no follow turn.
-    expect(followCalls(h)).toEqual([]);
-    // Older than a week: only t2. Both given: the intersection.
-    h.searches({ query: "offer", state: "onYou", olderThanDays: 7 });
+    // Older than a week: only t2.
+    h.searches({ query: "offer", olderThanDays: 7 });
     h.answers({ text: "Old.", threads: [] });
     await h.service.talkAll(WORDS);
-    sent = answerCalls(h)[1]?.untrusted ?? "";
+    let sent = answerCalls(h)[0]?.untrusted ?? "";
     expect(sent).toContain("About t2");
     expect(sent).not.toContain("About t1");
-    // The person set t2 aside: the same question no longer finds it.
-    await h.service.feedback("t2", "closed");
+    // A plan with the old `state` is read as if it had none: both threads match the words.
+    h.searches({ query: "offer", state: "onYou" });
     await h.service.talkAll(WORDS);
-    sent = answerCalls(h)[2]?.untrusted ?? "";
-    expect(sent).not.toContain("About t2");
-    // A state with nothing in the list finds nothing, and `waiting` is another list.
-    h.searches({ query: "", state: "waiting" });
+    sent = answerCalls(h)[1]?.untrusted ?? "";
+    expect(sent).toContain("About t1");
+    expect(sent).toContain("About t2");
+    // A question with no words to search finds nothing: there is no list of things to give it.
+    h.searches({ query: "", state: "onYou" });
     const { entries } = await h.service.talkAll(WORDS);
     expect(entries[1]).toMatchObject({ threads: 0 });
   });
-
-  it("shows the reading's state on a hit only when it is current", async () => {
-    const h = await ready();
-    await h.service.resumeReading();
-    await h.pass();
-    await h.service.pauseReading();
-    const { entries } = await h.service.talkAll(WORDS);
-    expect(entries[1]).toMatchObject({ hits: [{ threadId: "t1", state: "onYou" }] });
-  });
-
   it("rejects the whole answer for a thread that was not sent, a repeat, or a quote that is not in the mail", async () => {
     const h = await ready();
     const cite = (thread: number, quote = OFFER) => ({
@@ -4009,7 +3268,7 @@ describe("AgentService: a talk across all mail (ADR 0064, rules 7 to 12; ADR 008
   it("counts what went to a model per account in the ledger: the summaries of the follow turn, then the threads of the answer", async () => {
     const h = await ready();
     await h.storage.accounts.add(account("acc2", "other@example.com"));
-    await h.service.setEnabled({ accountIds: ["acc1", "acc2"], runtimeId: "fake", windowDays: 30 });
+    await h.service.setEnabled({ accountIds: ["acc1", "acc2"], runtimeId: "fake" });
     await h.service.pauseReading();
     await mail(h, { ...offerThread("t2", NOW - 2 * DAY), accountId: "acc2" });
     await mail(h, { ...offerThread("t3", NOW - 3 * DAY), accountId: "acc2" });
@@ -4505,7 +3764,7 @@ describe("AgentService: a talk across all mail (ADR 0064, rules 7 to 12; ADR 008
   });
 });
 
-describe("AgentService: what the person would regret not seeing (ADR 0066)", () => {
+describe("AgentService: the history of the sender (ADR 0066, rule 1)", () => {
   const PROPOSAL = "We propose our premium accounting package for 1090 PLN";
   const PERSONAL = "This concerns your 2025 return";
   const proposalText = `Hello,\n\n${PROPOSAL}. ${PERSONAL}. Offer valid until 2026-11-30.\n\nAnna`;
@@ -4523,124 +3782,23 @@ describe("AgentService: what the person would regret not seeing (ADR 0066)", () 
       },
     ],
   });
-  const decision = (over: Record<string, unknown> = {}) =>
-    analysisOf(PROPOSAL, {
-      state: "fyi",
-      facts: [],
-      stakes: "money",
-      headline: "Accounting package offer",
-      case: "Oferta księgowości",
-      anchors: [],
-      intent: "decide",
-      intentQuote: PROPOSAL,
-      amount: { value: 1090, currency: "PLN", role: "price", quote: "1090 PLN" },
-      windowEnd: "2026-11-30",
-      forYou: "specific",
-      forYouQuote: PERSONAL,
-      ...over,
-    });
 
-  /** Proposals read as decisions, everything else as the offer to send; a draft for what is asked. */
+  /** A draft for whatever is asked. */
   async function ready() {
     const h = await build();
     h.runtime.handler = (request) => {
       if (request.untrusted.includes(TEST_PROMPT_QUOTE)) {
-        return { value: analysisOf(TEST_PROMPT_QUOTE), limits: limits(1, 1) };
-      }
-      if (request.instructions === PREPARED_INSTRUCTIONS) {
-        return {
-          value: { kind: "draft", body: "Hi Anna,\n\nTuesday works.\n\nMe", nudge: false },
-          limits: limits(2, 1),
-        };
+        return { value: testVerdict(), limits: limits(1, 1) };
       }
       return {
-        value: request.untrusted.includes(PROPOSAL) ? decision() : analysisOf(OFFER),
-        limits: limits(1, 1),
+        value: { kind: "draft", body: "Hi Anna,\n\nTuesday works.\n\nMe", nudge: false },
+        limits: limits(2, 1),
       };
     };
     return h;
   }
   const prepareCalls = (h: Awaited<ReturnType<typeof build>>) =>
     h.runtime.calls.filter((c) => c.instructions === PREPARED_INSTRUCTIONS);
-
-  it("shows a decision on a personal passage, with its amount and its end, and drafts nothing for it", async () => {
-    const h = await ready();
-    await h.addMail(offerThread("reply"));
-    await h.addMail(proposal("offer"));
-    await h.enable();
-    await h.pass();
-    const { things } = await h.service.things();
-    const offer = things.find((t) => t.threadId === "offer");
-    expect(offer).toMatchObject({
-      intent: "decide",
-      amount: { value: 1090, currency: "PLN", role: "price" },
-      windowEndMs: Date.UTC(2026, 10, 30),
-      quote: { quote: PROPOSAL },
-    });
-    // Nobody wrote to this sender: the offer is in the rest, however personal the model finds it.
-    expect(offer?.now).toBeUndefined();
-    expect(offer?.why).toContain("You can take this or leave it. It is about your own matter.");
-    expect(offer?.prepared).toBeUndefined();
-    // The reply gets its draft, as before; the decision gets none.
-    expect(prepareCalls(h)).toHaveLength(1);
-    expect(prepareCalls(h)[0]?.untrusted).toContain(OFFER);
-    expect(prepareCalls(h).some((c) => c.untrusted.includes(PROPOSAL))).toBe(false);
-  });
-
-  it("does not draft ahead for what may be stale or suspect", async () => {
-    const h = await ready();
-    // Sent mail exists, so a sender nobody wrote to is a stranger and not a matter of unknowns.
-    await h.addMail({
-      threadId: "sent",
-      messages: [
-        {
-          dateMs: NOW - 5 * DAY,
-          text: "Hello",
-          fromAddress: "me@example.com",
-          labelIds: ["sent"],
-          toAddress: "bob@elsewhere.example",
-        },
-      ],
-    });
-    h.runtime.handler = (request) => {
-      if (request.untrusted.includes(TEST_PROMPT_QUOTE)) {
-        return { value: analysisOf(TEST_PROMPT_QUOTE), limits: limits(1, 1) };
-      }
-      if (request.instructions === PREPARED_INSTRUCTIONS) {
-        return { value: { kind: "draft", body: "Hi", nudge: false }, limits: limits(2, 1) };
-      }
-      return {
-        value: request.untrusted.includes("Pay now")
-          ? analysisOf("Pay now", { stakes: "money" })
-          : analysisOf(OFFER),
-        limits: limits(1, 1),
-      };
-    };
-    await h.addMail({
-      threadId: "scam",
-      messages: [
-        { dateMs: NOW - 1000, text: "Pay now 500 PLN or lose it", fromAddress: "pay@gmail.com" },
-      ],
-    });
-    await h.addMail({
-      threadId: "stale",
-      messages: [{ dateMs: NOW - 35 * DAY, text: `Hello,\n\n${OFFER}.` }],
-    });
-    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "fake", windowDays: 60 });
-    await h.pass();
-    const { things } = await h.service.things();
-    const byId = new Map(things.map((t) => [t.threadId, t]));
-    expect(byId.get("scam")).toMatchObject({ suspect: true });
-    expect(byId.get("scam")?.why).toContain("It may not be genuine.");
-    expect(byId.get("stale")).toMatchObject({ check: true });
-    expect(byId.get("stale")?.now).toBeUndefined();
-    // They show, after the rest, and no draft was written for either.
-    expect(things.at(-1)?.suspect === true || things.at(-1)?.check === true).toBe(true);
-    for (const call of prepareCalls(h)) {
-      expect(call.untrusted).not.toContain("Pay now");
-      expect(call.untrusted).not.toContain(`Subject: About stale`);
-    }
-  });
 
   it("sends the history of the sender's company to the model, from counts and with no address", async () => {
     const h = await ready();
@@ -4661,8 +3819,10 @@ describe("AgentService: what the person would regret not seeing (ADR 0066)", () 
     await h.addMail(proposal("other", { from: "sales@elsewhere.example" }));
     await h.enable();
     await h.pass();
-    const known = h.runtime.mailCalls.find((c) => c.untrusted.includes("Subject: About offer"));
-    const unknown = h.runtime.mailCalls.find((c) => c.untrusted.includes("Subject: About other"));
+    await h.service.prepare("offer");
+    await h.service.prepare("other");
+    const known = prepareCalls(h).find((c) => c.untrusted.includes("Subject: About offer"));
+    const unknown = prepareCalls(h).find((c) => c.untrusted.includes("Subject: About other"));
     expect(known?.untrusted).toContain(
       "History: You wrote 1 message to this company, the last in 2025",
     );
@@ -4675,194 +3835,15 @@ describe("AgentService: what the person would regret not seeing (ADR 0066)", () 
     await h.addMail(proposal("offer"));
     await h.enable();
     await h.pass();
-    expect(h.runtime.mailCalls[0]?.untrusted).not.toContain("History:");
-  });
-
-  describe("why it was closed (rule 7)", () => {
-    it("writes what a closing meant, and nothing for Later", async () => {
-      const h = await ready();
-      for (const id of ["a", "b", "c", "d", "e"]) await h.addMail(offerThread(id));
-      await h.enable();
-      await h.pass();
-      await h.service.feedback("a", "closed");
-      await h.service.feedback("b", "closed", "taken");
-      await h.service.feedback("c", "notImportant");
-      await h.service.feedback("d", "later");
-      await h.service.feedback("e", "closed", "declined");
-      const outcomes = Object.fromEntries(
-        (await h.insights.listFeedback()).map((f) => [f.threadId, f.outcome]),
-      );
-      expect(outcomes).toEqual({
-        a: "done",
-        b: "taken",
-        c: "notRelevant",
-        d: undefined,
-        e: "declined",
-      });
-    });
-
-    it("does not count a closing against the sender: ten closed, the next thing scores the same", async () => {
-      const h = await ready();
-      for (let i = 0; i < 11; i++) await h.addMail(offerThread(`t${i}`, NOW - 3_600_000 * (i + 1)));
-      await h.enable();
-      await h.pass();
-      const before = (await h.service.things()).things.find((t) => t.threadId === "t10")?.score;
-      for (let i = 0; i < 10; i++) await h.service.feedback(`t${i}`, "closed", "done");
-      const after = (await h.service.things()).things.find((t) => t.threadId === "t10")?.score;
-      expect(after).toBe(before);
-    });
-
-    it("keeps a declined offer closed for the year, by company and name, and Undo opens it", async () => {
-      const h = await ready();
-      await h.addMail(proposal("first", { from: "sales@northwind.example" }));
-      await h.enable();
-      await h.pass();
-      await h.service.feedback("first", "closed", "declined");
-      expect(await h.insights.listFeedback()).toEqual([
-        expect.objectContaining({
-          threadId: "first",
-          outcome: "declined",
-          caseKey: "oferta ksiegowosci",
-          amountValue: 1090,
-        }),
-      ]);
-
-      // The same offer, from another person of the company, in a thread of its own.
-      await h.addMail(
-        proposal("again", { from: "marketing@mail.northwind.example", dateMs: NOW - 1000 }),
-      );
-      await h.pass();
-      expect((await h.service.things()).things.map((t) => t.threadId)).toEqual([]);
-
-      // Undo opens it again.
-      await h.service.undoFeedback("first", "closed");
-      const ids = (await h.service.things()).things.map((t) => t.threadId).sort();
-      expect(ids).toEqual(["again", "first"]);
-    });
-
-    it("opens a declined offer again for a new name, a changed amount, or a new year", async () => {
-      const h = await ready();
-      await h.addMail(proposal("first", { from: "sales@northwind.example" }));
-      await h.enable();
-      await h.pass();
-      await h.service.feedback("first", "closed", "declined");
-
-      const read = (over: Record<string, unknown>) => {
-        const was = h.runtime.handler;
-        h.runtime.handler = (request, n) =>
-          request.untrusted.includes("Subject: About varied")
-            ? { value: decision(over), limits: limits(1, 1) }
-            : was(request, n);
-      };
-      read({ case: "Oferta ubezpieczenia" });
-      await h.addMail(proposal("varied", { from: "sales@northwind.example", dateMs: NOW - 500 }));
-      await h.pass();
-      expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["varied"]);
-      await h.service.feedback("varied", "closed", "done");
-
-      await h.addMail(proposal("varied", { from: "sales@northwind.example", dateMs: NOW - 400 }));
-      read({
-        amount: { value: 1290, currency: "PLN", role: "price", quote: "1090 PLN" },
-      });
-      await h.pass();
-      expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["varied"]);
-
-      // A new year: the same name and amount, dated in 2027.
-      await h.service.feedback("varied", "closed", "done");
-      read({});
-      await h.addMail(
-        proposal("next-year", {
-          from: "sales@northwind.example",
-          dateMs: Date.UTC(2027, 0, 8),
-        }),
-      );
-      await h.pass();
-      expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["next-year"]);
-    });
+    await h.service.prepare("offer");
+    expect(prepareCalls(h)[0]?.untrusted).toContain(PROPOSAL);
+    expect(prepareCalls(h)[0]?.untrusted).not.toContain("History:");
   });
 });
 
-describe("AgentService: who writes, what you refuse, what comes from an office (ADR 0068)", () => {
-  const NOTICE = "Prosimy o uzupełnienie wniosku do piątku";
-  const noticeThread = (
-    id: string,
-    from: string,
-    over: { automated?: boolean } = {},
-  ): MailSpec => ({
-    threadId: id,
-    messages: [
-      {
-        dateMs: NOW - DAY,
-        text: `Zawiadomienie.\n\n${NOTICE}.`,
-        fromAddress: from,
-        fromName: "Urzad",
-        subject: "Zawiadomienie",
-        ...(over.automated === undefined ? {} : { automated: over.automated }),
-      },
-    ],
-  });
-  const office = () =>
-    analysisOf(NOTICE, {
-      state: "fyi",
-      facts: [],
-      category: "official",
-      intent: "act",
-      intentQuote: NOTICE,
-      headline: "A form to complete",
-    });
-
-  async function ready() {
-    const h = await build();
-    h.runtime.handler = (request) => {
-      if (request.untrusted.includes(TEST_PROMPT_QUOTE)) {
-        return { value: analysisOf(TEST_PROMPT_QUOTE), limits: limits(1, 1) };
-      }
-      if (request.instructions === PREPARED_INSTRUCTIONS) {
-        return { value: { kind: "draft", body: "Hi", nudge: false }, limits: limits(2, 1) };
-      }
-      return {
-        value: request.untrusted.includes(NOTICE)
-          ? office()
-          : analysisOf(OFFER, { category: "bill" }),
-        limits: limits(1, 1),
-      };
-    };
-    return h;
-  }
-  const drafts = (h: Awaited<ReturnType<typeof build>>) =>
-    h.runtime.calls.filter((c) => c.instructions === PREPARED_INSTRUCTIONS);
-
-  it("hides a kind the person refused at read time, brings it back when the rule goes, and spends no reading", async () => {
-    const h = await ready();
-    await h.addMail(offerThread("t1"));
-    await h.enable();
-    await h.pass();
-    expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["t1"]);
-    const reads = h.runtime.mailCalls.length;
-
-    const rule = await h.service.addRule({ scope: "category", subject: "Bill" });
-    expect(rule).toMatchObject({ scope: "category", subject: "bill", actor: "person" });
-    expect((await h.service.things()).things).toEqual([]);
-    expect((await h.service.status()).progress.found).toBe(0);
-    await h.pass();
-    expect(h.runtime.mailCalls.length).toBe(reads);
-
-    await h.service.removeRule(rule.id);
-    expect((await h.service.things()).things.map((t) => t.threadId)).toEqual(["t1"]);
-  });
-
-  it("writes no draft ahead for a thing a rule about its kind covers", async () => {
-    const h = await ready();
-    await h.service.addRule({ scope: "category", subject: "bill" });
-    await h.addMail(offerThread("t1"));
-    await h.enable();
-    await h.pass();
-    expect((await h.service.things()).things).toEqual([]);
-    expect(drafts(h)).toHaveLength(0);
-  });
-
+describe("AgentService: a rule about a kind of mail (ADR 0068)", () => {
   it("refuses a kind that is not in the list, and shows in the journal and the rules", async () => {
-    const h = await ready();
+    const h = await build();
     await expect(h.service.addRule({ scope: "category", subject: "cats" })).rejects.toBeInstanceOf(
       InvalidAgentSettingError,
     );
@@ -4879,69 +3860,5 @@ describe("AgentService: who writes, what you refuse, what comes from an office (
     });
     await h.service.removeRule(rule.id);
     expect(await h.service.rules()).toEqual([]);
-  });
-
-  it("is for now when an offer comes from someone the person wrote to lately, and not otherwise", async () => {
-    const h = await build();
-    h.runtime.handler = (request) =>
-      request.untrusted.includes(TEST_PROMPT_QUOTE)
-        ? { value: analysisOf(TEST_PROMPT_QUOTE), limits: limits(1, 1) }
-        : {
-            value: analysisOf("We propose a package", {
-              state: "fyi",
-              facts: [],
-              intent: "decide",
-              intentQuote: "We propose a package",
-              forYou: "specific",
-              forYouQuote: "your 2025 return",
-            }),
-            limits: limits(1, 1),
-          };
-    await h.service.setModels({ draftAhead: "off" });
-    await h.addMail({
-      threadId: "sent",
-      messages: [
-        {
-          dateMs: NOW - 20 * DAY,
-          text: "Hello",
-          fromAddress: "me@example.com",
-          labelIds: ["sent"],
-          toAddress: "tax@mail.northwind.example",
-        },
-      ],
-    });
-    const offer = (id: string, from: string): MailSpec => ({
-      threadId: id,
-      messages: [
-        {
-          dateMs: NOW - DAY,
-          text: "We propose a package for your 2025 return.",
-          fromAddress: from,
-        },
-      ],
-    });
-    await h.addMail(offer("known", "sales@northwind.example"));
-    await h.addMail(offer("unknown", "sales@elsewhere.example"));
-    await h.enable();
-    await h.pass();
-    const things = new Map((await h.service.things()).things.map((t) => [t.threadId, t]));
-    expect(things.get("known")?.now).toBe(true);
-    expect(things.get("known")?.why).toContain("You last wrote to this company 20 days ago.");
-    expect(things.get("unknown")?.now).toBeUndefined();
-  });
-
-  it("reads a no-reply notice from an office, drops its bulletin, and marks the notice as official", async () => {
-    const h = await ready();
-    await h.addMail(noticeThread("notice", "noreply@mf.gov.pl", { automated: true }));
-    await h.addMail(noticeThread("bulletin", "newsletter@mf.gov.pl", { automated: true }));
-    await h.enable();
-    await h.pass();
-    const read = h.runtime.mailCalls.map((c) => c.untrusted);
-    expect(read.some((u) => u.includes("Subject: Zawiadomienie"))).toBe(true);
-    expect(read).toHaveLength(1);
-    const { things } = await h.service.things();
-    expect(things.map((t) => t.threadId)).toEqual(["notice"]);
-    expect(things[0]).toMatchObject({ official: true, category: "official", now: true });
-    expect(things[0]?.score).toBe(25);
   });
 });

@@ -10,10 +10,10 @@ import { promptLine } from "./promptView.ts";
 const mini =
   "h-[22px] shrink-0 cursor-default rounded-[6px] bg-button px-2 text-[11.5px] text-ink disabled:opacity-35";
 
-export function PromptLine(props: { prompt: PromptRunStore; shown: () => boolean }) {
+export function PromptLine(props: { prompt: PromptRunStore }) {
   const { prompt } = props;
   const line = () =>
-    props.shown() && prompt.has()
+    prompt.has()
       ? promptLine({
           count: prompt.count(),
           progress: prompt.progress(),

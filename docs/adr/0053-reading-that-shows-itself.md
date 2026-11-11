@@ -1,6 +1,6 @@
 # 0053. Reading that shows itself
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-05
 - Amends: [0052](0052-things-that-matter.md) (order of reading, what an empty list says)
 

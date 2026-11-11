@@ -9,11 +9,10 @@ import {
   type NewMailDeps,
   type NoticeText,
   type NotificationPrefs,
-  type ThreadAnalysis,
 } from "@matters/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { handle } from "../src/backend/handler.ts";
-import { type MattersSource, Notifier, type PromptSource } from "../src/backend/notifier.ts";
+import { Notifier, type PromptSource } from "../src/backend/notifier.ts";
 import {
   bundleIdOf,
   bundleOf,
@@ -108,55 +107,11 @@ function mailbox() {
   };
 }
 
-/**
- * The settings most of these tests run with: the badge counts mail it told about, as it did
- * before ADR 0109 made what is in Matters the default.
- */
+/** The settings most of these tests run with: the badge counts mail it told about. */
 const NOTIFIED: NotificationPrefs = {
   ...DEFAULT_NOTIFICATION_PREFS,
   badge: { source: "notified", style: "count" },
 };
-
-/** The agent's readings, as the reader connection would give them. */
-function agent() {
-  const readings = new Map<string, ThreadAnalysis>();
-  const shows = new Set<string>();
-  // What the Matters tab would count, and how often it was counted (ADR 0109).
-  const matters = { count: 0, reads: 0, fails: false };
-  const things: MattersSource = {
-    count: async () => {
-      matters.reads += 1;
-      if (matters.fails) throw new Error("read failed");
-      return matters.count;
-    },
-    readings: async (ids) =>
-      [...readings.values()].filter((a) => ids === undefined || ids.includes(a.threadId)),
-    shown: async (threadId) => {
-      const analysis = readings.get(threadId);
-      return analysis !== undefined && shows.has(threadId) ? { analysis, accountId: "a1" } : null;
-    },
-  };
-  return {
-    things,
-    matters,
-    /** The agent read the thread at `atMs`; `matters` says whether it shows in Matters. */
-    reads(threadId: string, atMs: number, matters: boolean, facts: ThreadAnalysis["facts"] = []) {
-      readings.set(threadId, {
-        threadId,
-        lastMessageKey: 1,
-        analyzerVersion: 1,
-        state: "onYou",
-        headline: `Thing of ${threadId}`,
-        facts,
-        stakes: "none",
-        confidence: 0.9,
-        analyzedAtMs: atMs,
-      });
-      if (matters) shows.add(threadId);
-      else shows.delete(threadId);
-    },
-  };
-}
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -168,22 +123,17 @@ interface RigOptions {
   readonly statePath?: string | null;
   readonly minute?: number;
   readonly box?: ReturnType<typeof mailbox>;
-  readonly brain?: ReturnType<typeof agent>;
   readonly clock?: { now: number };
   readonly catchUpMaxMs?: number;
-  readonly dueEveryMs?: number;
   /** The settings to start from; NOTIFIED when absent. */
   readonly prefs?: NotificationPrefs;
   readonly countGapMs?: number;
-  /** Without the agent's readings at all. */
-  readonly noThings?: boolean;
   /** The verdicts of views with a prompt (ADR 0117). */
   readonly prompts?: PromptSource;
 }
 
 function rig(prefsPath: string | null = null, minute = 12 * 60, more: RigOptions = {}) {
   const box = more.box ?? mailbox();
-  const brain = more.brain ?? agent();
   const clock = more.clock ?? { now: 1_000_000_000 };
   // A zone where the rig's start is `minute` past local midnight.
   const offset = minute - (Math.floor(clock.now / 60_000) % (24 * 60));
@@ -194,7 +144,6 @@ function rig(prefsPath: string | null = null, minute = 12 * 60, more: RigOptions
     prefsPath,
     statePath: more.statePath ?? null,
     prefs: more.prefs ?? NOTIFIED,
-    ...(more.noThings === true ? {} : { things: brain.things }),
     ...(more.prompts === undefined ? {} : { prompts: more.prompts }),
     ...(more.countGapMs === undefined ? {} : { countGapMs: more.countGapMs }),
     toMain: (e) => toMain.push(e),
@@ -204,19 +153,12 @@ function rig(prefsPath: string | null = null, minute = 12 * 60, more: RigOptions
     delayMs: 0,
     agentDelayMs: 0,
     ...(more.catchUpMaxMs === undefined ? {} : { catchUpMaxMs: more.catchUpMaxMs }),
-    ...(more.dueEveryMs === undefined ? {} : { dueEveryMs: more.dueEveryMs }),
   });
-  return { box, brain, clock, toMain, events, notifier };
+  return { box, clock, toMain, events, notifier };
 }
 
 async function settle(r: ReturnType<typeof rig>) {
   r.notifier.touched();
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  await r.notifier.idle();
-}
-
-async function agentDone(r: ReturnType<typeof rig>) {
-  r.notifier.agentChanged();
   await new Promise((resolve) => setTimeout(resolve, 5));
   await r.notifier.idle();
 }
@@ -415,265 +357,7 @@ describe("Notifier, a catch-up that cannot wait for the sync (ADR 0106, rule 2)"
   });
 });
 
-describe("Notifier, what the agent says matters (ADR 0106, rule 3)", () => {
-  async function started() {
-    const r = rig();
-    await r.notifier.start();
-    await r.notifier.idle();
-    return r;
-  }
-
-  it("rings when the agent finds that a quiet list's mail matters", async () => {
-    const r = await started();
-    const list = msg({ automated: true, from: { name: "Bank", address: "bank@x.example" } });
-    r.box.deliver(list);
-    await settle(r);
-    expect(bannersOf(r)).toEqual([]);
-    expect(noticesOf(r)).toEqual([]);
-
-    // A reading from before the mail came says nothing about it.
-    r.brain.reads(list.threadId, r.clock.now - 10 * 60_000, true);
-    await agentDone(r);
-    expect(bannersOf(r)).toEqual([]);
-
-    r.clock.now += 5 * 60_000;
-    r.brain.reads(list.threadId, r.clock.now, true);
-    await agentDone(r);
-    expect(bannersOf(r)).toEqual([
-      expect.objectContaining({ title: "Bank", body: `Thing of ${list.threadId}` }),
-    ]);
-    expect(noticesOf(r)).toHaveLength(1);
-    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "1" });
-
-    // Decided: another pass rings nothing.
-    await agentDone(r);
-    expect(bannersOf(r)).toHaveLength(1);
-  });
-
-  it("adds no second banner to mail that already rang, and nothing for what does not show", async () => {
-    const r = await started();
-    const anna = msg({ from: { name: "Anna", address: "anna@x.example" } });
-    const other = msg();
-    r.box.deliver(anna);
-    r.box.deliver(other);
-    await settle(r);
-    expect(bannersOf(r)).toHaveLength(2);
-    expect(noticesOf(r)).toHaveLength(2);
-    r.clock.now += 60_000;
-    r.brain.reads(anna.threadId, r.clock.now, true);
-    r.brain.reads(other.threadId, r.clock.now, false);
-    await agentDone(r);
-    expect(bannersOf(r)).toHaveLength(2);
-    expect(noticesOf(r)).toHaveLength(2);
-  });
-
-  it("keeps quiet hours, and never rings for mail read since", async () => {
-    const r = rig(null, 23 * 60);
-    await r.notifier.start();
-    await r.notifier.set({
-      ...NOTIFIED,
-      quiet: { on: true, fromMin: 1320, toMin: 420 },
-    });
-    const a = msg({ automated: true });
-    const b = msg({ automated: true });
-    r.box.deliver(a);
-    r.box.deliver(b);
-    await settle(r);
-    r.box.store.set(b.key, { ...b, flags: { ...b.flags, seen: true } });
-    r.clock.now += 60_000;
-    r.brain.reads(a.threadId, r.clock.now, true);
-    r.brain.reads(b.threadId, r.clock.now, true);
-    await agentDone(r);
-    expect(bannersOf(r)).toEqual([]);
-    expect(noticesOf(r).map((n) => n.key)).toEqual([a.key]);
-  });
-
-  it("says a deadline once when its day ends within a day, also across a restart", async () => {
-    const statePath = join(await tempDir(), "notifications-state.json");
-    const day = 86_400_000;
-    const clock = { now: 20 * day + 3_600_000 };
-    const brain = agent();
-    const box = mailbox();
-    brain.reads("t-due", 0, true, [
-      {
-        kind: "promise",
-        who: "you",
-        dueMs: 20 * day,
-        evidence: { quote: "I will pay", messageKey: 1 },
-      },
-    ]);
-    brain.reads("t-later", 0, true, [
-      { kind: "ask", who: "you", dueMs: 25 * day, evidence: { quote: "later", messageKey: 1 } },
-    ]);
-    const first = rig(null, 12 * 60, { statePath, brain, box, clock });
-    await first.notifier.start();
-    await first.notifier.idle();
-    expect(bannersOf(first)).toEqual([
-      expect.objectContaining({ title: "Due within a day", body: "Thing of t-due" }),
-    ]);
-    first.notifier.stop();
-
-    const second = rig(null, 12 * 60, { statePath, brain, box, clock });
-    await second.notifier.start();
-    await second.notifier.idle();
-    expect(bannersOf(second)).toEqual([]);
-    second.notifier.stop();
-  });
-});
-describe("Notifier, a badge of what is in Matters (ADR 0109)", () => {
-  const badgesOf = (r: ReturnType<typeof rig>) =>
-    r.toMain.flatMap((e) => (e.type === "badge" ? [e.text] : []));
-
-  it("counts what is in Matters by default, at the start and after every agent write", async () => {
-    const r = rig(null, 12 * 60, { prefs: DEFAULT_NOTIFICATION_PREFS });
-    expect(r.notifier.get().badge.source).toBe("matters");
-    r.brain.matters.count = 3;
-    await r.notifier.start();
-    await r.notifier.idle();
-    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "3" });
-
-    // The person closed one; the agent's write says so.
-    r.brain.matters.count = 2;
-    await agentDone(r);
-    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "2" });
-
-    // Nothing left (or AI off: the tab's read counts nothing then): no badge.
-    r.brain.matters.count = 0;
-    await agentDone(r);
-    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "" });
-    r.notifier.stop();
-  });
-
-  it("does not count unread mail it told about, only what is in Matters", async () => {
-    const r = rig(null, 12 * 60, { prefs: DEFAULT_NOTIFICATION_PREFS, countGapMs: 0 });
-    r.brain.matters.count = 1;
-    await r.notifier.start();
-    await r.notifier.idle();
-    r.box.deliver(msg());
-    r.box.deliver(msg());
-    await settle(r);
-    expect(bannersOf(r)).toHaveLength(2);
-    expect(badgesOf(r)).toEqual(["1"]);
-    r.notifier.stop();
-  });
-
-  it("counts again after mail commits, at most once per gap, and at once on an agent write", async () => {
-    const r = rig(null, 12 * 60, { prefs: DEFAULT_NOTIFICATION_PREFS, countGapMs: 60_000 });
-    r.brain.matters.count = 4;
-    await r.notifier.start();
-    await r.notifier.idle();
-    expect(r.brain.matters.reads).toBe(1);
-    // A run of commits waits for the gap: no read each.
-    r.brain.matters.count = 3;
-    await settle(r);
-    await settle(r);
-    await settle(r);
-    expect(r.brain.matters.reads).toBe(1);
-    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "4" });
-    // An agent write does not wait, and takes the waiting count along.
-    await agentDone(r);
-    expect(r.brain.matters.reads).toBe(2);
-    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "3" });
-    r.notifier.stop();
-
-    // With no gap, a commit that took a thing's mail away counts at once.
-    const s = rig(null, 12 * 60, { prefs: DEFAULT_NOTIFICATION_PREFS, countGapMs: 0 });
-    s.brain.matters.count = 2;
-    await s.notifier.start();
-    await s.notifier.idle();
-    s.brain.matters.count = 1;
-    await settle(s);
-    expect(s.toMain.at(-1)).toEqual({ type: "badge", text: "1" });
-    s.notifier.stop();
-  });
-
-  it("tells the windows when mail alone changed the count, and counts at once for the outbox (ADR 0112)", async () => {
-    const changed = (r: ReturnType<typeof rig>) =>
-      r.events.filter((e) => e.type === "agentChanged").length;
-    const r = rig(null, 12 * 60, { prefs: DEFAULT_NOTIFICATION_PREFS, countGapMs: 0 });
-    r.brain.matters.count = 2;
-    await r.notifier.start();
-    await r.notifier.idle();
-    // The first count has nothing to compare with; the windows read the list themselves.
-    expect(changed(r)).toBe(0);
-    // A commit that changes nothing in Matters says nothing.
-    await settle(r);
-    expect(changed(r)).toBe(0);
-    // The person answered from another app: the commit takes the thing out, and the windows hear it.
-    r.brain.matters.count = 1;
-    await settle(r);
-    expect(changed(r)).toBe(1);
-    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "1" });
-    // After an agent write the windows read the list already: no second event.
-    r.brain.matters.count = 0;
-    await agentDone(r);
-    expect(changed(r)).toBe(1);
-    // A reply put in the outbox and undone: counted at once, with no gap to wait for.
-    r.brain.matters.count = 1;
-    const reads = r.brain.matters.reads;
-    r.notifier.thingsChanged();
-    await r.notifier.idle();
-    expect(r.brain.matters.reads).toBe(reads + 1);
-    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "1" });
-    r.notifier.stop();
-  });
-
-  it("keeps the last count when a read fails, and shows a dot when asked", async () => {
-    const r = rig(null, 12 * 60, { prefs: DEFAULT_NOTIFICATION_PREFS });
-    r.brain.matters.count = 5;
-    await r.notifier.start();
-    await r.notifier.idle();
-    r.brain.matters.fails = true;
-    r.brain.matters.count = 9;
-    await agentDone(r);
-    expect(badgesOf(r)).toEqual(["5"]);
-    r.brain.matters.fails = false;
-    await r.notifier.set({
-      ...DEFAULT_NOTIFICATION_PREFS,
-      badge: { source: "matters", style: "dot" },
-    });
-    await r.notifier.idle();
-    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "•" });
-    r.notifier.stop();
-  });
-
-  it("counts nothing without the agent, while notifications are off, or for another source", async () => {
-    const none = rig(null, 12 * 60, { prefs: DEFAULT_NOTIFICATION_PREFS, noThings: true });
-    await none.notifier.start();
-    await none.notifier.idle();
-    expect(badgesOf(none)).toEqual([""]);
-
-    const r = rig(null, 12 * 60, { prefs: DEFAULT_NOTIFICATION_PREFS });
-    r.brain.matters.count = 2;
-    await r.notifier.start();
-    await r.notifier.idle();
-    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "2" });
-    await r.notifier.set({ ...DEFAULT_NOTIFICATION_PREFS, enabled: false });
-    await r.notifier.idle();
-    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "" });
-
-    // The Inbox's unread, as before; the Matters count is not read for it.
-    const reads = r.brain.matters.reads;
-    r.box.deliver(msg({ automated: true }));
-    await r.notifier.set({
-      ...DEFAULT_NOTIFICATION_PREFS,
-      badge: { source: "inbox", style: "count" },
-    });
-    await settle(r);
-    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "1" });
-    await agentDone(r);
-    expect(r.brain.matters.reads).toBe(reads);
-
-    // Back to Matters: counted at once.
-    await r.notifier.set(DEFAULT_NOTIFICATION_PREFS);
-    await r.notifier.idle();
-    expect(r.brain.matters.reads).toBe(reads + 1);
-    expect(r.toMain.at(-1)).toEqual({ type: "badge", text: "2" });
-    r.notifier.stop();
-  });
-});
-
-describe("Notifier: banners that act and leave, the pause, old mail, deadlines (ADR 0108)", () => {
+describe("Notifier: banners that act and leave, the pause, old mail (ADR 0108)", () => {
   const closesOf = (r: ReturnType<typeof rig>) =>
     r.toMain.flatMap((e) => (e.type === "close" ? e.keys : []));
   const seen = (m: Message): Message => ({ ...m, flags: { ...m.flags, seen: true } });
@@ -788,79 +472,6 @@ describe("Notifier: banners that act and leave, the pause, old mail, deadlines (
     expect(r.events).toEqual([
       { type: "notificationTestFailed", reason: "Notifications are not allowed" },
     ]);
-  });
-
-  it("looks at a held deadline again by itself when the pause ends", async () => {
-    const day = 86_400_000;
-    const clock = { now: 20 * day + 12 * 3_600_000 };
-    const brain = agent();
-    brain.reads("t-due", 0, true, [
-      { kind: "ask", who: "you", dueMs: 20 * day, evidence: { quote: "Send it", messageKey: 1 } },
-    ]);
-    const r = rig(null, 12 * 60, { brain, clock });
-    await r.notifier.set({ ...DEFAULT_NOTIFICATION_PREFS, pausedUntilMs: clock.now + 5 });
-    await r.notifier.start();
-    await r.notifier.idle();
-    expect(bannersOf(r)).toEqual([]);
-    expect(noticesOf(r)).toHaveLength(1);
-    clock.now += 10;
-    // The retry waits for the pause's end and a second more.
-    await new Promise((resolve) => setTimeout(resolve, 1100));
-    await r.notifier.idle();
-    expect(bannersOf(r)).toEqual([expect.objectContaining({ title: "Due within a day" })]);
-    expect(noticesOf(r)).toHaveLength(1);
-    r.notifier.stop();
-  });
-
-  it("holds a deadline's banner through quiet hours and shows it after, inside once", async () => {
-    const day = 86_400_000;
-    const hour = 3_600_000;
-    // 01:00 local on the due day (the rig's zone puts its start at 01:00).
-    const clock = { now: 20 * day + hour };
-    const brain = agent();
-    brain.reads("t-due", 0, true, [
-      {
-        kind: "promise",
-        who: "you",
-        dueMs: 20 * day,
-        evidence: { quote: "I will pay", messageKey: 1 },
-      },
-    ]);
-    const statePath = join(await tempDir(), "notifications-state.json");
-    const r = rig(null, 60, { brain, clock, statePath, dueEveryMs: 10 });
-    await r.notifier.set({
-      ...DEFAULT_NOTIFICATION_PREFS,
-      quiet: { on: true, fromMin: 22 * 60, toMin: 7 * 60 },
-    });
-    await r.notifier.start();
-    await r.notifier.idle();
-    expect(bannersOf(r)).toEqual([]);
-    expect(noticesOf(r).map((x) => x.title)).toEqual(["Due within a day"]);
-    // Another hour, still quiet: nothing again.
-    clock.now += hour;
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    await r.notifier.idle();
-    expect(bannersOf(r)).toEqual([]);
-    expect(noticesOf(r)).toHaveLength(1);
-    r.notifier.stop();
-
-    // A restart at 08:00: the banner that was owed goes, the notice inside does not repeat.
-    clock.now = 20 * day + 7 * hour;
-    const later = rig(null, 8 * 60, { brain, clock, statePath, dueEveryMs: 10 });
-    await later.notifier.set({
-      ...DEFAULT_NOTIFICATION_PREFS,
-      quiet: { on: true, fromMin: 22 * 60, toMin: 7 * 60 },
-    });
-    await later.notifier.start();
-    await later.notifier.idle();
-    expect(bannersOf(later)).toEqual([
-      expect.objectContaining({ title: "Due within a day", body: "Thing of t-due" }),
-    ]);
-    expect(noticesOf(later)).toEqual([]);
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    await later.notifier.idle();
-    expect(bannersOf(later)).toHaveLength(1);
-    later.notifier.stop();
   });
 });
 

@@ -93,13 +93,10 @@ export interface SqliteReadPorts {
   readonly attachments: Pick<AttachmentStorePort, "get" | "forDraft">;
   readonly views: Pick<SavedViewStorePort, "get" | "list" | "recentSearches">;
   readonly imageRules: Pick<ImageRuleStorePort, "get" | "list" | "getGeneral">;
-  /** What agents found and made, for the list of things that matter (ADR 0052). */
+  /** What agents made and keep: prepared work, the journal, rules, talks, verdicts (ADR 0051). */
   readonly agentInsights: Pick<
     AgentInsightStorePort,
-    | "getAnalysis"
-    | "listAnalyses"
     | "getPrepared"
-    | "getBundleRead"
     | "listFeedback"
     | "listLedger"
     | "listJournal"

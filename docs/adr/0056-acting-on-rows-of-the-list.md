@@ -1,6 +1,6 @@
 # 0056. Acting on rows of the list
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-05
 
 ## Context

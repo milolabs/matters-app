@@ -18,7 +18,6 @@ import type {
   DeleteForeverResult,
   Draft,
   DraftContent,
-  FeedbackOutcome,
   FetchOutcome,
   GapSuggestion,
   GeneralImages,
@@ -123,18 +122,16 @@ export type WorkerCommand =
   | { readonly name: "compactDatabase" }
   /** Empties the text the agent read from attached files (ADR 0087, rule 11). */
   | { readonly name: "clearFileText" }
-  /** Agents (ADR 0051, 0052): what runs a model or writes settings runs here. */
+  /** Agents (ADR 0051): what runs a model or writes settings runs here. */
   | { readonly name: "agentStatus" }
   | {
       readonly name: "agentSetEnabled";
       readonly accountIds: readonly string[];
       readonly runtimeId: string;
-      readonly windowDays: number;
     }
   | { readonly name: "agentDisable" }
   | { readonly name: "agentSetModels"; readonly models: Partial<AgentModels> }
   | { readonly name: "agentSetWeekShare"; readonly percent: number }
-  | { readonly name: "agentSetWindowDays"; readonly days: number }
   | { readonly name: "agentSetTalkLoop"; readonly on: boolean }
   | { readonly name: "agentInspect" }
   | { readonly name: "agentTestRuntime" }
@@ -167,12 +164,6 @@ export type WorkerCommand =
   | { readonly name: "agentTalkRename"; readonly talkId: number; readonly title: string }
   | { readonly name: "agentTalkDelete"; readonly talkId: number }
   | { readonly name: "agentTalkDeleteAll" }
-  | {
-      readonly name: "agentFeedback";
-      readonly threadId: string;
-      readonly kind: "notImportant" | "later" | "closed";
-      readonly outcome?: FeedbackOutcome;
-    }
   | { readonly name: "agentRevokeConsent"; readonly accountId: string }
   | {
       readonly name: "agentUndoFeedback";
@@ -257,7 +248,6 @@ export interface CommandResults {
   readonly agentDisable: AgentStatus;
   readonly agentSetModels: AgentStatus;
   readonly agentSetWeekShare: AgentStatus;
-  readonly agentSetWindowDays: AgentStatus;
   readonly agentSetTalkLoop: AgentStatus;
   readonly agentInspect: AgentStatus;
   readonly agentTestRuntime: AgentStatus;
@@ -275,7 +265,6 @@ export interface CommandResults {
   readonly agentTalkRename: null;
   readonly agentTalkDelete: null;
   readonly agentTalkDeleteAll: number;
-  readonly agentFeedback: number;
   readonly agentUndoFeedback: null;
   readonly agentRemember: RememberResult;
   readonly agentAddInstruction: AgentInstruction;

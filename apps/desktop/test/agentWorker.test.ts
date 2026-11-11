@@ -114,34 +114,39 @@ async function until(check: () => Promise<boolean>, what: string): Promise<void>
   throw new Error(`timed out waiting for ${what}`);
 }
 
+/** A thread of the demo account with mail from someone else in it, which a turn may read. */
+async function someThread(storage: ReturnType<typeof createSqliteStorage>): Promise<string> {
+  const own = new Set((await storage.accounts.list()).map((a) => a.address.toLowerCase()));
+  const threads = await storage.store.listThreadsSince(0, 500);
+  const found = threads.find(
+    (t) =>
+      t.accountId === "acc1" &&
+      !t.lastFromOwn &&
+      t.messages.some((m) => !own.has(m.from.toLowerCase()) && m.automated !== true),
+  );
+  if (found === undefined) throw new Error("no thread");
+  return found.threadId;
+}
+
 describe("agents in the sync worker", () => {
   it("do nothing at all with AI off: nothing is asked, nothing is posted", async () => {
     const h = await boot({ agent: true });
     await new Promise((r) => setTimeout(r, 50));
     expect(h.posted.filter((m) => m.type === "agent")).toEqual([]);
-    expect(await h.ask({ type: "agentThings" })).toMatchObject({ things: [] });
-    expect(
-      await h.ask({ type: "agentReadEstimate", accountIds: ["acc1"], windowDays: 30 }),
-    ).toMatchObject({
-      threads: expect.any(Number),
+    expect(await h.ask({ type: "agentJournal" })).toMatchObject({ entries: [] });
+    const threadId = await someThread(h.storage);
+    expect(await h.ask({ type: "agentThread", threadId })).toMatchObject({
+      view: { available: false, prepared: null },
     });
     expect(h.commands).toEqual([]);
   });
 
-  it("turns on over the wire, reads in the background, tells the router, and lists things from the reader", async () => {
+  it("turns on over the wire, tests the runtime by itself, tells the router, and reads from the reader", async () => {
     const h = await boot({ agent: true });
-    const estimate = (await h.ask({
-      type: "agentReadEstimate",
-      accountIds: ["acc1"],
-      windowDays: 30,
-    })) as unknown as { threads: number };
-    expect(estimate.threads).toBeGreaterThan(5);
-
     const on = await h.ask({
       type: "agentSetEnabled",
       accountIds: ["acc1"],
       runtimeId: "claude-code",
-      windowDays: 30,
     });
     expect(on).toMatchObject({
       type: "agentSetEnabled",
@@ -151,32 +156,30 @@ describe("agents in the sync worker", () => {
 
     await until(async () => {
       const r = (await h.ask({ type: "agentStatus" })) as unknown as {
-        status: { progress: { state: string; done: number; total: number } };
+        status: { progress: { state: string }; runtime: { status: string } | null };
       };
-      return r.status.progress.state === "idle" && r.status.progress.done === estimate.threads;
-    }, "the window to be read");
+      return r.status.progress.state === "idle" && r.status.runtime?.status === "ready";
+    }, "the runtime to be tested and the pass to end");
     expect(h.posted.some((m) => m.type === "agent")).toBe(true);
 
-    const things = (await h.ask({ type: "agentThings" })) as unknown as {
-      things: { threadId: string; prepared?: { kind: string } }[];
-    };
-    expect(things.things.length).toBeGreaterThan(0);
-    const first = things.things[0];
-    if (first === undefined) throw new Error("no thing");
+    const threadId = await someThread(h.storage);
+    expect(await h.ask({ type: "agentThread", threadId })).toMatchObject({
+      view: { available: true, prepared: null },
+    });
 
     // The person asks for a draft, and sends it by the existing path: here only a draft is made.
-    const prepared = await h.ask({
-      type: "agentPrepare",
-      threadId: first.threadId,
-      answer: "Piątek pasuje.",
-    });
+    const prepared = await h.ask({ type: "agentPrepare", threadId, answer: "Piątek pasuje." });
     expect(prepared, JSON.stringify(prepared)).toMatchObject({
       type: "agentPrepare",
       prepared: { kind: "draft" },
     });
+    // What was prepared is read back from the reader, under the thread's last message.
+    expect(await h.ask({ type: "agentThread", threadId })).toMatchObject({
+      view: { available: true, prepared: { kind: "draft" } },
+    });
     const made = (await h.ask({
       type: "agentDraftFromPrepared",
-      threadId: first.threadId,
+      threadId,
       body: "Dzień dobry,\n\nPiątek pasuje.",
     })) as unknown as { draftId: string; existing: boolean };
     expect(made.existing).toBe(false);
@@ -186,21 +189,17 @@ describe("agents in the sync worker", () => {
     // Nothing was queued for sending.
     expect(await h.storage.outbox.listVisible(0)).toEqual([]);
 
-    await h.ask({ type: "agentFeedback", threadId: first.threadId, kind: "notImportant" });
-    const after = (await h.ask({ type: "agentThings" })) as unknown as {
-      things: { threadId: string }[];
-    };
-    expect(after.things.map((t) => t.threadId)).not.toContain(first.threadId);
-
     const off = await h.ask({ type: "agentDisable" });
     expect(off).toMatchObject({ status: { settings: { enabled: false }, consents: [] } });
-    expect(await h.ask({ type: "agentThings" })).toMatchObject({ things: [] });
+    expect(await h.ask({ type: "agentThread", threadId })).toMatchObject({
+      view: { available: false, prepared: null },
+    });
   });
 
   it("answers that agents are not available when no runtime was given", async () => {
     const h = await boot({ agent: false });
     expect(await h.ask({ type: "agentStatus" })).toMatchObject({ type: "error", code: "internal" });
     // The reads still work on the reader: AI is simply off.
-    expect(await h.ask({ type: "agentThings" })).toMatchObject({ things: [] });
+    expect(await h.ask({ type: "agentJournal" })).toMatchObject({ entries: [] });
   });
 });

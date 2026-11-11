@@ -23,9 +23,7 @@ import type {
   TalkEntry,
   TalkSummary,
   TalkTitleBy,
-  ThingEdge,
   ThingFeedback,
-  ThreadAnalysis,
 } from "@matters/core";
 import { cutTitle, DEFAULT_AGENT_SETTINGS } from "@matters/core";
 
@@ -93,7 +91,6 @@ function publicInstruction(i: AgentInstruction & { removed?: true }): AgentInstr
 }
 
 export class InMemoryAgentInsightStore implements AgentInsightStorePort {
-  private analyses: ThreadAnalysis[] = [];
   private prepared: PreparedRecord[] = [];
   private feedback: ThingFeedback[] = [];
   private ledger: LedgerEntry[] = [];
@@ -176,48 +173,6 @@ export class InMemoryAgentInsightStore implements AgentInsightStorePort {
     return before - this.verdicts.length;
   }
 
-  async getAnalysis(threadId: string, lastMessageKey: number, analyzerVersion: number) {
-    return (
-      this.analyses.find(
-        (a) =>
-          a.threadId === threadId &&
-          a.lastMessageKey === lastMessageKey &&
-          a.analyzerVersion === analyzerVersion,
-      ) ?? null
-    );
-  }
-
-  private bundleReads = new Map<string, readonly ThingEdge[]>();
-
-  async getBundleRead(signature: string): Promise<readonly ThingEdge[] | null> {
-    return this.bundleReads.get(signature) ?? null;
-  }
-
-  async putBundleRead(signature: string, edges: readonly ThingEdge[]): Promise<void> {
-    this.bundleReads.set(signature, edges);
-  }
-
-  async putAnalysis(analyses: readonly ThreadAnalysis[]): Promise<void> {
-    for (const a of analyses) {
-      this.analyses = this.analyses.filter(
-        (x) => !(same(x, a) && x.analyzerVersion === a.analyzerVersion),
-      );
-      this.analyses.push(a);
-    }
-  }
-
-  async listAnalyses(analyzerVersion: number, threadIds?: readonly string[]) {
-    const wanted = threadIds === undefined ? undefined : new Set(threadIds);
-    const latest = new Map<string, ThreadAnalysis>();
-    for (const a of this.analyses) {
-      if (a.analyzerVersion !== analyzerVersion) continue;
-      if (wanted !== undefined && !wanted.has(a.threadId)) continue;
-      const seen = latest.get(a.threadId);
-      if (seen === undefined || a.lastMessageKey > seen.lastMessageKey) latest.set(a.threadId, a);
-    }
-    return [...latest.values()];
-  }
-
   async putPrepared(records: readonly PreparedRecord[]): Promise<void> {
     for (const r of records) {
       this.prepared = this.prepared.filter((x) => !same(x, r));
@@ -246,7 +201,6 @@ export class InMemoryAgentInsightStore implements AgentInsightStorePort {
       ...(memo?.words === undefined ? {} : { words: memo.words }),
       ...(feedback.reason === undefined ? {} : { reason: feedback.reason }),
       ...(feedback.untilMs === undefined ? {} : { untilMs: feedback.untilMs }),
-      ...(memo?.alsoCovers === undefined ? {} : { alsoCovers: memo.alsoCovers }),
     });
   }
 
@@ -488,7 +442,6 @@ export class InMemoryAgentInsightStore implements AgentInsightStorePort {
             }
           : t,
       );
-    this.analyses = this.analyses.filter((a) => !gone.has(a.threadId));
     this.verdicts = this.verdicts.filter((v) => !gone.has(v.threadId));
     this.prepared = this.prepared.filter((p) => !gone.has(p.threadId));
     this.feedback = this.feedback.filter((f) => !gone.has(f.threadId));

@@ -3,9 +3,7 @@ import { MAILBOX_BIT } from "../domain/mailbox.ts";
 import {
   type ArrivalMark,
   arrivalsBetween,
-  type DueSaid,
   MAX_BADGED,
-  MAX_DUES,
   MAX_MARKS,
   MAX_TOLD,
   type NewMail,
@@ -33,7 +31,7 @@ export interface NewMailDeps {
 }
 
 export interface NewMailOptions {
-  /** What was told is remembered this long; `matters` can ring for it until then. */
+  /** What was told is remembered this long; a view with a prompt can ring for it until then. */
   readonly keepMs?: number;
   /** The most new messages one look takes; the rest arrived too, and is not announced. */
   readonly limit?: number;
@@ -70,10 +68,6 @@ export class NewMailWatch {
   private readonly told = new Map<number, ToldMail>();
   /** Keys the badge counts while they stay unread. */
   private readonly badged = new Set<number>();
-  /** Deadlines already said, with the end of their day. */
-  private readonly dues = new Map<string, number>();
-  /** Deadlines said inside the window whose banner is still owed, with the end of their day. */
-  private readonly duesHeld = new Map<string, number>();
 
   constructor(deps: NewMailDeps, options: NewMailOptions = {}) {
     this.deps = deps;
@@ -96,8 +90,6 @@ export class NewMailWatch {
     this.marks = state.marks;
     for (const key of state.badged.slice(0, MAX_BADGED)) this.badged.add(key);
     for (const t of state.told) this.told.set(t.key, t);
-    for (const [id, end] of Object.entries(state.dues)) this.dues.set(id, end);
-    for (const [id, end] of Object.entries(state.duesHeld)) this.duesHeld.set(id, end);
     this.forgetOld();
     return true;
   }
@@ -109,8 +101,6 @@ export class NewMailWatch {
       marks: this.marks.slice(0, MAX_MARKS),
       badged: [...this.badged],
       told: [...this.told.values()].slice(-MAX_TOLD),
-      dues: Object.fromEntries(this.dues),
-      duesHeld: Object.fromEntries(this.duesHeld),
     };
   }
 
@@ -163,7 +153,6 @@ export class NewMailWatch {
         threadId: m.message.threadId,
         atMs: now,
         channels: NO_CHANNELS,
-        decided: m.fromMe,
         ...(waiting.length > 0 ? { waiting } : {}),
       });
     }
@@ -186,19 +175,6 @@ export class NewMailWatch {
     }
   }
 
-  /** Mail whose reading the agent may still give, newest first. */
-  undecided(): readonly ToldMail[] {
-    return [...this.told.values()].filter((t) => !t.decided).sort((a, b) => b.key - a.key);
-  }
-
-  /** The agent's reading after these messages came was looked at. */
-  decide(keys: readonly number[]): void {
-    for (const key of keys) {
-      const t = this.told.get(key);
-      if (t !== undefined) this.told.set(key, { ...t, decided: true });
-    }
-  }
-
   /**
    * Mail that views with a prompt still wait to hear about (ADR 0117, rule 6), newest first: each
    * until its thread's verdict is looked at, or the mail is let go after `keepMs`.
@@ -217,35 +193,6 @@ export class NewMailWatch {
     const left = t.waiting.filter((id) => !gone.has(id));
     const { waiting: _was, ...rest } = t;
     this.told.set(key, left.length > 0 ? { ...rest, waiting: left } : rest);
-  }
-
-  /** Deadlines already said, by `dueId`. */
-  saidDues(): ReadonlySet<string> {
-    return new Set(this.dues.keys());
-  }
-
-  /** Deadlines said inside the window whose banner quiet or a pause held back. */
-  heldDues(): ReadonlySet<string> {
-    return new Set(this.duesHeld.keys());
-  }
-
-  /**
-   * These deadlines were said: `done` ones for good, the others with their banner still owed.
-   * Each is let go once its day (`endMs`) is over. When the list is full, the one whose day ends
-   * first gives way: a deadline not kept as said would be said again every hour.
-   */
-  sayDues(dues: readonly DueSaid[]): void {
-    for (const d of dues) {
-      this.duesHeld.delete(d.id);
-      this.dues.delete(d.id);
-      const into = d.done ? this.dues : this.duesHeld;
-      into.set(d.id, d.endMs);
-      while (this.dues.size + this.duesHeld.size > MAX_DUES) {
-        const first = soonest(this.duesHeld) ?? soonest(this.dues);
-        if (first === undefined) break;
-        if (!this.duesHeld.delete(first)) this.dues.delete(first);
-      }
-    }
   }
 
   /** The badge follows these keys (`notified`) until they are read. */
@@ -347,23 +294,9 @@ export class NewMailWatch {
     }
   }
 
-  /** What was told is let go after `keepMs`, and a deadline once its day is over. */
+  /** What was told is let go after `keepMs`. */
   private forgetOld(): void {
     const now = this.deps.now();
     for (const [key, t] of this.told) if (t.atMs < now - this.keepMs) this.told.delete(key);
-    for (const [id, end] of this.dues) if (end <= now) this.dues.delete(id);
-    for (const [id, end] of this.duesHeld) if (end <= now) this.duesHeld.delete(id);
   }
-}
-
-function soonest(ends: ReadonlyMap<string, number>): string | undefined {
-  let id: string | undefined;
-  let at = Number.POSITIVE_INFINITY;
-  for (const [k, end] of ends) {
-    if (end < at) {
-      at = end;
-      id = k;
-    }
-  }
-  return id;
 }

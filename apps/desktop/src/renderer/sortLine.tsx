@@ -3,8 +3,8 @@
 import { Match, Show, Switch } from "solid-js";
 import type { SortRunStore } from "./sortRun.ts";
 
-export function SortLine(props: { sort: SortRunStore; shown: () => boolean }) {
-  const line = () => (props.shown() ? props.sort.line() : null);
+export function SortLine(props: { sort: SortRunStore }) {
+  const line = () => props.sort.line();
   // A mouse down must not take the focus from where it is.
   const hold = (e: MouseEvent) => e.preventDefault();
   return (

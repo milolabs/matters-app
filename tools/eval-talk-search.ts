@@ -163,7 +163,6 @@ async function main(): Promise<void> {
           displayName: a.displayName,
         })),
         rules: [],
-        onlyThreads: null,
         olderThanDays: undefined,
         carry: undefined,
         fragments: false,

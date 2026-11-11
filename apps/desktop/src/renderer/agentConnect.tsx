@@ -1,8 +1,8 @@
 import type { AccountInfo } from "@matters/contracts";
 import type { AgentModels, AgentRuntimeInfo, AgentStatus } from "@matters/core";
-import { createEffect, createSignal, For, Index, onCleanup, Show } from "solid-js";
+import { createSignal, For, Index, Show } from "solid-js";
+import { modelName, SIGN_IN_COMMAND, vendorName, windowLine } from "./agentText.ts";
 import type { Backend } from "./client.ts";
-import { modelName, SIGN_IN_COMMAND, vendorName, windowLine } from "./mattersView.ts";
 import { field, pill, pillPrimary } from "./ui.ts";
 
 // The pieces that first run and Settings share when they talk about agents (ADR 0051, 0052). The
@@ -11,12 +11,7 @@ import { field, pill, pillPrimary } from "./ui.ts";
 
 /** The kinds of work, in the order and with the words the person sees. */
 export const WORK: readonly { key: keyof AgentModels; label: string; hint: string }[] = [
-  { key: "understand", label: "Understanding mail", hint: "Reading threads for what is open." },
-  {
-    key: "draftAhead",
-    label: "Drafts before you ask",
-    hint: "Only for what shows in Matters.",
-  },
+  { key: "understand", label: "Understanding mail", hint: "Reading threads for a prompt." },
   { key: "write", label: "Writing when you ask", hint: "A draft you asked for." },
   { key: "answer", label: "Questions about your mail", hint: "For the prompt that comes later." },
   {
@@ -27,21 +22,6 @@ export const WORK: readonly { key: keyof AgentModels; label: string; hint: strin
 ];
 
 export const WEEK_SHARES: readonly number[] = [5, 10, 25];
-export const WINDOW_CHOICES: readonly number[] = [14, 30, 90];
-
-/** `a` for 1, `N` for more: `1 thread`, `12 threads`, `200+ threads`. */
-export function threadsText(threads: number, capped: boolean): string {
-  const n = `${threads}${capped ? "+" : ""}`;
-  return `${n} ${threads === 1 && !capped ? "thread" : "threads"}`;
-}
-
-/** The sentence under the question of first run: how much goes where. */
-export function sendLine(threads: number, capped: boolean, accounts: number, who: string): string {
-  const what = threadsText(threads, capped);
-  return `${what} from ${accounts === 1 ? "this account" : "these accounts"} go${
-    threads === 1 && !capped ? "es" : ""
-  } to ${who}.`;
-}
 
 const STATUS_WORDS: Record<AgentRuntimeInfo["status"], string> = {
   ready: "Ready",
@@ -282,9 +262,7 @@ export function WhatDoesWhat(props: {
             label={work.label}
             value={props.status.settings.models[work.key]}
             options={[
-              ...(work.key === "draftAhead" || work.key === "titles"
-                ? ([["off", "Off"]] as const)
-                : []),
+              ...(work.key === "titles" ? ([["off", "Off"]] as const) : []),
               ...names().map((m) => [m, `${modelName(m)} · ${by()}`] as const),
             ]}
             onChange={(value) => props.onChange({ [work.key]: value })}
@@ -295,43 +273,29 @@ export function WhatDoesWhat(props: {
   );
 }
 
-/** The background limit and the look-back, which both Settings and first run name. */
+/** The background limit, which both Settings and first run name. */
 export function Limits(props: {
   status: AgentStatus;
   idPrefix: string;
   onWeekShare: (percent: number) => void;
-  onWindow: (days: number) => void;
-  only?: "window";
 }) {
   return (
-    <div class="flex flex-col gap-3">
-      <Show when={props.only !== "window"}>
-        <Choice
-          id={`${props.idPrefix}-share`}
-          label="Background limit"
-          hint="On plans that show limits. It stops there, never on paid credits."
-          value={String(props.status.settings.weekSharePercent)}
-          options={WEEK_SHARES.map((n) => [String(n), `Up to ${n}% of my week`] as const)}
-          onChange={(v) => props.onWeekShare(Number(v))}
-        />
-      </Show>
-      <Choice
-        id={`${props.idPrefix}-window`}
-        label="Look back"
-        hint="How far back threads are read."
-        value={String(props.status.settings.windowDays)}
-        options={WINDOW_CHOICES.map((n) => [String(n), `Last ${n} days`] as const)}
-        onChange={(v) => props.onWindow(Number(v))}
-      />
-    </div>
+    <Choice
+      id={`${props.idPrefix}-share`}
+      label="Background limit"
+      hint="On plans that show limits. It stops there, never on paid credits."
+      value={String(props.status.settings.weekSharePercent)}
+      options={WEEK_SHARES.map((n) => [String(n), `Up to ${n}% of my week`] as const)}
+      onChange={(v) => props.onWeekShare(Number(v))}
+    />
   );
 }
 
 /**
- * Shall I read your last N days? The one place where mail is agreed to go to a runtime (ADR 0051,
- * rule 6). Nothing starts before `Start reading`; `agentReadEstimate` only counts, locally.
+ * Shall I read your mail? The one place where mail is agreed to go to a runtime (ADR 0051, rule 6).
+ * Nothing is sent before `Turn on`.
  */
-export function ReadQuestion(props: {
+export function ConsentQuestion(props: {
   backend: Backend;
   status: AgentStatus;
   /** The accounts this answer is about. */
@@ -343,39 +307,11 @@ export function ReadQuestion(props: {
   onStatus: (status: AgentStatus) => void;
   declineLabel?: string;
 }) {
-  const [estimate, setEstimate] = createSignal<{ threads: number; capped: boolean } | null>(null);
   const [changing, setChanging] = createSignal(false);
   const [starting, setStarting] = createSignal(false);
   const [problem, setProblem] = createSignal("");
   const runtime = () => props.status.runtime;
-  const days = () => props.status.settings.windowDays;
   const ids = () => props.accounts.map((a) => a.id);
-
-  // Counting is local; it runs again when the window or the accounts change.
-  let asked = 0;
-  createEffect(() => {
-    const accountIds = ids();
-    const windowDays = days();
-    const mine = ++asked;
-    setEstimate(null);
-    props.backend.agentReadEstimate(accountIds, windowDays).then(
-      (r) => {
-        if (mine === asked) setEstimate(r);
-      },
-      () => {},
-    );
-  });
-  onCleanup(() => {
-    asked++;
-  });
-
-  async function setWindow(value: string) {
-    try {
-      props.onStatus(await props.backend.agentSetWindowDays(Number(value)));
-    } catch (e) {
-      setProblem(e instanceof Error ? e.message : "That did not work.");
-    }
-  }
 
   async function setUnderstand(model: string) {
     try {
@@ -394,11 +330,10 @@ export function ReadQuestion(props: {
       const next = await props.backend.agentSetEnabled({
         accountIds: ids(),
         runtimeId: r.id,
-        windowDays: days(),
       });
       props.onStarted(next);
     } catch (e) {
-      setProblem(e instanceof Error ? e.message : "Reading could not be started.");
+      setProblem(e instanceof Error ? e.message : "AI could not be turned on.");
     } finally {
       setStarting(false);
     }
@@ -406,13 +341,6 @@ export function ReadQuestion(props: {
 
   return (
     <div class="flex flex-col gap-5">
-      <Choice
-        id="read-window"
-        label="Look back"
-        value={String(days())}
-        options={WINDOW_CHOICES.map((n) => [String(n), `Last ${n} days`] as const)}
-        onChange={(v) => void setWindow(v)}
-      />
       <div class="flex items-baseline gap-2.5 text-[13px]">
         <span class="min-w-0 flex-1 truncate">
           Read by{" "}
@@ -457,19 +385,10 @@ export function ReadQuestion(props: {
           </button>
         </div>
       </Show>
-      <p
-        class="min-h-[28px] font-serif text-[19px] leading-[1.35] text-balance"
-        role="status"
-        aria-live="polite"
-        data-estimate
-      >
-        <Show when={estimate()}>
-          {(e) => sendLine(e().threads, e().capped, props.accounts.length, vendorName(runtime()))}
-        </Show>
-      </p>
       <p class="text-[12.5px] leading-[1.5] text-secondary">
-        Newsletters, automated mail and everything older stay on this Mac. Your{" "}
-        {vendorName(runtime())} privacy settings apply to what is sent.
+        Mail goes to {vendorName(runtime())} only when you ask about it, and for views with a
+        prompt, such as Needs you, which read new mail as it comes. Your {vendorName(runtime())}{" "}
+        privacy settings apply to what is sent.
       </p>
       <Show when={problem() !== ""}>
         <p role="alert" class="text-[13px] text-late">
@@ -480,11 +399,11 @@ export function ReadQuestion(props: {
         <button
           type="button"
           class={pillPrimary}
-          data-start-reading
+          data-turn-on
           disabled={starting() || runtime() === null || props.accounts.length === 0}
           onClick={() => void start()}
         >
-          {starting() ? "Starting…" : "Start reading"}
+          {starting() ? "Turning on…" : "Turn on"}
         </button>
         <button type="button" class={pill} onClick={() => props.onDeclined()}>
           {props.declineLabel ?? "Use without AI"}

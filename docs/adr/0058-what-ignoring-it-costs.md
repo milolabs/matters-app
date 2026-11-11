@@ -1,6 +1,6 @@
 # 0058. What ignoring it costs, what is for now, and learning from no
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-05
 - Amended by: [0066](0066-what-you-would-regret-not-seeing.md) (closing is not complaining, and what may be stale goes after the rest)
 

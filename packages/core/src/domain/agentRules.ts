@@ -2,7 +2,7 @@
  * Rules in code (ADR 0054, rule 7): which threads the person does not want to see or have read,
  * decided from addresses alone. Pure; no model is involved.
  */
-import type { AgentRule, RuleScope, ThreadAnalysis, ThreadCategory } from "./agent.ts";
+import type { AgentRule, RuleScope, ThreadCategory } from "./agent.ts";
 import { PROGRAM_LIKE, THREAD_CATEGORIES } from "./agent.ts";
 import { looksLikeProgram } from "./automated.ts";
 
@@ -81,16 +81,15 @@ export function rulesCoverThread(
 }
 
 /**
- * Whether a rule of the person says "do not show this kind of mail" for this reading (ADR 0068,
- * rule 3). Unlike a sender rule it cannot stop a thread from being read, since the kind is only known
- * from the reading, so it hides at read time. The one helper of the list, of the count a closing
- * covers, of drafting ahead (through the list) and of a thread's own banner.
+ * Whether a rule of the person says "do not show this kind of mail" for a thread a model named the
+ * kind of (ADR 0068, rule 3). Unlike a sender rule it cannot stop a thread from being read, since
+ * the kind is only known from a model's answer, so it hides after it.
  */
 export function categoryRuleCovers(
   rules: readonly AgentRule[],
-  analysis: Pick<ThreadAnalysis, "category">,
+  named: { readonly category?: ThreadCategory },
 ): boolean {
-  const kind: ThreadCategory | undefined = analysis.category;
+  const kind: ThreadCategory | undefined = named.category;
   return (
     kind !== undefined &&
     kind !== "other" &&

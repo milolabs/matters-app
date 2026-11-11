@@ -12,8 +12,7 @@ import { registrableDomain } from "@matters/adapter-publicsuffix";
 import type { RpcPort } from "@matters/adapter-secrets";
 import { createSqliteReader, createSqliteReaderIfCurrent } from "@matters/adapter-sqlite";
 import type { BackendEvent, NoticeToMain } from "@matters/contracts";
-import { ANALYZER_VERSION, type SyncStatus } from "@matters/core";
-import { shownReading } from "./agentReads.ts";
+import type { SyncStatus } from "@matters/core";
 import { toAttachmentInfo } from "./attachmentInfo.ts";
 import {
   BOOT_STAGE_MESSAGE,
@@ -179,18 +178,9 @@ async function createBackend(): Promise<Backend> {
         else committedEarly = true;
         notifier?.touched();
       },
-      onOutbox: () => {
-        void publishOutbox();
-        // A reply in the outbox takes its thing out of Matters, and an undone or failed one brings
-        // it back (ADR 0112): every window reads the list again, and the badge counts again.
-        announceAgent();
-        notifier?.thingsChanged();
-      },
+      onOutbox: () => void publishOutbox(),
       onMoves: () => void publishMoves(),
-      onAgent: () => {
-        announceAgent();
-        notifier?.agentChanged();
-      },
+      onAgent: () => announceAgent(),
       onAgentTalkStep: (query, threads, kind, note) =>
         broadcast({
           type: "agentTalkStep",
@@ -387,12 +377,6 @@ async function createBackend(): Promise<Backend> {
     },
     prefsPath: path === ":memory:" ? null : join(dirname(path), "notifications.json"),
     statePath: path === ":memory:" ? null : join(dirname(path), "notifications-state.json"),
-    things: {
-      readings: (threadIds) => readNow.agentInsights.listAnalyses(ANALYZER_VERSION, threadIds),
-      shown: (threadId) => shownReading(agentReads(readNow), threadId),
-      // The Matters tab's own read, on the read thread; no row is filled (ADR 0109).
-      count: async () => (await heavy.ask({ name: "things", limit: 0 })).total,
-    },
     prompts: {
       fits: (query, threadIds) =>
         promptFits({ store: readNow.store, insights: readNow.agentInsights }, query, threadIds),

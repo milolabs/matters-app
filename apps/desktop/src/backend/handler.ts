@@ -66,7 +66,6 @@ import {
   searchFiles,
   searchMessages,
   suggestPeople,
-  threadsMatching,
 } from "@matters/core";
 import type { AgentApi } from "./agentApi.ts";
 import { toAttachmentInfo } from "./attachmentInfo.ts";
@@ -438,7 +437,7 @@ function isTalkId(v: unknown): v is number {
   return typeof v === "number" && Number.isSafeInteger(v) && v > 0;
 }
 
-const MODEL_KEYS = ["understand", "draftAhead", "write", "answer", "titles"] as const;
+const MODEL_KEYS = ["understand", "write", "answer", "titles"] as const;
 
 function shortString(v: unknown, max: number): v is string {
   return typeof v === "string" && v.length > 0 && v.length <= max;
@@ -483,26 +482,6 @@ function parseAgentRequest(
       return isTalkId(raw.talkId)
         ? { type, requestId, talkId: raw.talkId }
         : "talkId must be a positive integer";
-    case "agentThings": {
-      const limit = raw.limit;
-      if (
-        limit !== undefined &&
-        !(typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0)
-      ) {
-        return "limit must be a positive whole number";
-      }
-      if (raw.query !== undefined && typeof raw.query !== "string") return "query must be a string";
-      return {
-        type,
-        requestId,
-        ...(limit === undefined ? {} : { limit: limit as number }),
-        ...(raw.query === undefined ? {} : { query: raw.query as string }),
-      };
-    }
-    case "agentPrepared":
-      return shortString(raw.threadId, 1000)
-        ? { type, requestId, threadId: raw.threadId }
-        : "threadId must be a string";
     case "agentThread":
       return shortString(raw.threadId, 1000)
         ? { type, requestId, threadId: raw.threadId }
@@ -563,7 +542,6 @@ function parseAgentRequest(
       return typeof raw.ruleId === "number" && Number.isInteger(raw.ruleId) && raw.ruleId >= 1
         ? { type, requestId, ruleId: raw.ruleId }
         : "ruleId must be a positive integer";
-    case "agentReadEstimate":
     case "agentSetEnabled": {
       const ids = raw.accountIds;
       if (
@@ -573,20 +551,8 @@ function parseAgentRequest(
       ) {
         return "accountIds must be a list of account ids";
       }
-      if (typeof raw.windowDays !== "number" || !Number.isInteger(raw.windowDays)) {
-        return "windowDays must be an integer";
-      }
-      if (type === "agentReadEstimate") {
-        return { type, requestId, accountIds: ids as string[], windowDays: raw.windowDays };
-      }
       return shortString(raw.runtimeId, 100)
-        ? {
-            type,
-            requestId,
-            accountIds: ids as string[],
-            runtimeId: raw.runtimeId,
-            windowDays: raw.windowDays,
-          }
+        ? { type, requestId, accountIds: ids as string[], runtimeId: raw.runtimeId }
         : "runtimeId must be a string";
     }
     case "agentSetModels": {
@@ -594,7 +560,7 @@ function parseAgentRequest(
       const models: Partial<Record<(typeof MODEL_KEYS)[number], string>> = {};
       for (const [key, value] of Object.entries(raw.models)) {
         if (!(MODEL_KEYS as readonly string[]).includes(key) || !shortString(value, 64)) {
-          return "models holds understand, draftAhead, write, answer and titles, as short strings";
+          return "models holds understand, write, answer and titles, as short strings";
         }
         models[key as (typeof MODEL_KEYS)[number]] = value;
       }
@@ -608,10 +574,6 @@ function parseAgentRequest(
       return typeof raw.on === "boolean"
         ? { type, requestId, on: raw.on }
         : "on must be true or false";
-    case "agentSetWindowDays":
-      return typeof raw.days === "number" && Number.isInteger(raw.days)
-        ? { type, requestId, days: raw.days }
-        : "days must be an integer";
     case "agentPrepare": {
       if (!shortString(raw.threadId, 1000)) return "threadId must be a string";
       for (const text of [raw.direction, raw.answer]) {
@@ -681,22 +643,6 @@ function parseAgentRequest(
         (raw.kind === "notImportant" || raw.kind === "later" || raw.kind === "closed")
         ? { type, requestId, threadId: raw.threadId, kind: raw.kind }
         : "threadId and a kind (notImportant, later or closed) are required";
-    case "agentFeedback": {
-      if (
-        !shortString(raw.threadId, 1000) ||
-        !(raw.kind === "notImportant" || raw.kind === "later" || raw.kind === "closed")
-      ) {
-        return "threadId and a kind (notImportant, later or closed) are required";
-      }
-      // What the person meant (ADR 0066, rule 7): only a closing carries it, and only a known one.
-      if (raw.outcome === undefined) {
-        return { type, requestId, threadId: raw.threadId, kind: raw.kind };
-      }
-      return raw.kind === "closed" &&
-        (raw.outcome === "done" || raw.outcome === "taken" || raw.outcome === "declined")
-        ? { type, requestId, threadId: raw.threadId, kind: raw.kind, outcome: raw.outcome }
-        : "outcome (done, taken or declined) goes only with closed";
-    }
     case "agentRevokeConsent":
       return shortString(raw.accountId, 200)
         ? { type, requestId, accountId: raw.accountId }
@@ -1741,7 +1687,6 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           status: await needAgent(deps).setEnabled({
             accountIds: request.accountIds,
             runtimeId: request.runtimeId,
-            windowDays: request.windowDays,
           }),
         };
       case "agentSetModels":
@@ -1764,58 +1709,6 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           requestId,
           ok: true,
           status: await needAgent(deps).setTalkLoop(request.on),
-        };
-      case "agentSetWindowDays":
-        return {
-          type: "agentSetWindowDays",
-          requestId,
-          ok: true,
-          status: await needAgent(deps).setWindowDays(request.days),
-        };
-      case "agentThings": {
-        const agent = needAgent(deps);
-        const text = request.query ?? "";
-        if (text.trim() === "") {
-          return {
-            type: "agentThings",
-            requestId,
-            ok: true,
-            ...(await agent.things(request.limit)),
-          };
-        }
-        // Every thing, then the search over their threads: ranking stays the one order there is.
-        const all = await agent.things();
-        const found = await threadsMatching(
-          {
-            index: deps.index,
-            store: deps.store,
-            accounts: deps.accountStore,
-            ...(deps.now === undefined ? {} : { now: deps.now }),
-          },
-          text,
-          // A series is searched whole: words of an older mail find the row that stands for it.
-          all.things.flatMap((t) => t.series?.mails.map((m) => m.threadId) ?? [t.threadId]),
-        );
-        const things =
-          found === null
-            ? all.things
-            : all.things.filter(
-                (t) => found.has(t.threadId) || t.series?.mails.some((m) => found.has(m.threadId)),
-              );
-        return {
-          type: "agentThings",
-          requestId,
-          ok: true,
-          things: request.limit === undefined ? things : things.slice(0, request.limit),
-          total: things.length,
-        };
-      }
-      case "agentPrepared":
-        return {
-          type: "agentPrepared",
-          requestId,
-          ok: true,
-          prepared: await needAgent(deps).prepared(request.threadId),
         };
       case "agentThread":
         return {
@@ -1881,13 +1774,6 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
       case "agentRemoveRule":
         await needAgent(deps).removeRule(request.ruleId);
         return { type: "agentRemoveRule", requestId, ok: true };
-      case "agentReadEstimate": {
-        const estimate = await needAgent(deps).readEstimate({
-          accountIds: request.accountIds,
-          windowDays: request.windowDays,
-        });
-        return { type: "agentReadEstimate", requestId, ok: true, ...estimate };
-      }
       case "agentPrepare":
         return {
           type: "agentPrepare",
@@ -1981,17 +1867,6 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           requestId,
           ok: true,
           count: await needAgent(deps).deleteAllTalks(),
-        };
-      case "agentFeedback":
-        return {
-          type: "agentFeedback",
-          requestId,
-          ok: true,
-          alsoCovers: await needAgent(deps).feedback(
-            request.threadId,
-            request.kind,
-            request.outcome,
-          ),
         };
       case "agentUndoFeedback":
         await needAgent(deps).undoFeedback(request.threadId, request.kind);

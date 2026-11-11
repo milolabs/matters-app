@@ -1,6 +1,6 @@
 # 0052. Things that matter
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-05
 - Amended by: [0066](0066-what-you-would-regret-not-seeing.md) (what may become a thing, with the reading of what a thread asks of the person)
 - Amended by: [0069](0069-the-agent-has-its-own-column.md) (the plans sit in the agent's column, and `Write the draft` is in the agent colour, not black)

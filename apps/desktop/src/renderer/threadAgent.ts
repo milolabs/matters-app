@@ -1,6 +1,6 @@
-// The agent in an ordinary thread (ADR 0063). Nothing is made ahead for ordinary mail: this store
-// shows what the agent already has for the open thread (its reading and prepared work, a local read
-// that spends nothing) and asks for a turn only when the person does. What it shows is whatever the
+// The agent in an ordinary thread (ADR 0063). Nothing is made ahead: this store shows what the
+// agent already has for the open thread (work prepared on request, a local read that spends
+// nothing) and asks for a turn only when the person does. What it shows is whatever the
 // backend holds for the thread as it stands now, so a new message makes old work disappear by
 // itself. It does not depend on a mounted component, and it uses no effects of its own: `sync` is
 // called when the open thread or its last message may have changed.
@@ -35,8 +35,6 @@ const realSchedule = (run: () => void, ms: number) => {
   const timer = setTimeout(run, ms);
   return () => clearTimeout(timer);
 };
-
-const NO_FACTS: ThreadAgentView["facts"] = [];
 
 /** What a read answered, and for which thread at which last message. */
 interface Loaded {
@@ -121,7 +119,6 @@ export function createThreadAgent(options: ThreadAgentOptions) {
     const thread = open();
     if (thread === null) return;
     const typed = (words ?? "").trim();
-    const reading = current()?.view.reading;
     const result = await agent.prepare(
       thread.id,
       typed === "" && direction === undefined
@@ -130,7 +127,7 @@ export function createThreadAgent(options: ThreadAgentOptions) {
             ...(direction === undefined ? {} : { direction }),
             ...(typed === "" ? {} : { answer: typed }),
           },
-      reading?.headline ?? thread.subject ?? "",
+      thread.subject ?? "",
     );
     // Work that was set aside shows again only if this ask made new work; a failure or a closing
     // leaves the offer as it was. The backend's store is the truth, so it is read again either way.
@@ -145,12 +142,12 @@ export function createThreadAgent(options: ThreadAgentOptions) {
     await load();
   }
 
-  /** Sends the draft shown, by the same path as in Matters. */
+  /** Sends the draft shown. */
   async function send(): Promise<"sent" | "openedExisting" | "failed" | "none"> {
     const thread = open();
     const work = prepared();
     if (thread === null || work?.kind !== "draft") return "none";
-    const outcome = await agent.send({ threadId: thread.id }, work.body);
+    const outcome = await agent.send(thread.id, work.body);
     if (outcome === "sent") markGone(thread);
     return outcome;
   }
@@ -160,7 +157,7 @@ export function createThreadAgent(options: ThreadAgentOptions) {
     const thread = open();
     const work = prepared();
     if (thread === null || work?.kind !== "draft") return "none";
-    const outcome = await agent.editMyself({ threadId: thread.id }, work.body);
+    const outcome = await agent.editMyself(thread.id, work.body);
     if (outcome === "took") markGone(thread);
     return outcome;
   }
@@ -200,10 +197,6 @@ export function createThreadAgent(options: ThreadAgentOptions) {
     known: (): boolean => current() !== null,
     /** The agent can be asked here: AI is on and the thread's account agreed. */
     available: (): boolean => current()?.view.available === true,
-    /** What the agent read of the thread, when it is current and shown. */
-    reading: (): ThreadAgentView["reading"] => current()?.view.reading ?? null,
-    /** The reading's promises and asks with their quotes; empty when no reading is shown. */
-    facts: (): ThreadAgentView["facts"] => current()?.view.facts ?? NO_FACTS,
     prepared,
     /** The draft shown, when it is ready to go. */
     readyDraft: (): string | null => {

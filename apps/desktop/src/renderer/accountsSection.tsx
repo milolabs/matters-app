@@ -3,7 +3,7 @@ import type { AgentStatus } from "@matters/core";
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { AccountColor } from "./accountMarks.ts";
 import type { AccountsStore } from "./accounts.ts";
-import { ReadQuestion } from "./agentConnect.tsx";
+import { ConsentQuestion } from "./agentConnect.tsx";
 import type { Backend } from "./client.ts";
 import { signInTrouble } from "./explain.ts";
 import { Ring } from "./icons.tsx";
@@ -173,10 +173,9 @@ export function AccountsSection(props: {
             {(r) => (
               <div class="flex flex-col gap-4 border-b border-hairline px-5 py-4" data-read-new>
                 <h3 class="font-serif text-[17px] font-semibold">
-                  Shall I read the last {r().status.settings.windowDays} days of{" "}
-                  {r().account.address}?
+                  Shall I read the mail of {r().account.address}?
                 </h3>
-                <ReadQuestion
+                <ConsentQuestion
                   backend={props.backend}
                   status={r().status}
                   accounts={[r().account]}

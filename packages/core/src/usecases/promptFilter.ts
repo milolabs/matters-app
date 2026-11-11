@@ -17,9 +17,6 @@ import {
   type PromptSignals,
   type PromptVerdict,
 } from "../domain/prompts.ts";
-import type { ParsedQuery, QuerySortValue } from "./parseQuery.ts";
-import { LOOP_SEARCH_RESULTS, MAX_LOOP_THREADS_READ, MAX_LOOP_TOOL_CALLS } from "./talkLoop.ts";
-import { TALK_QUERY_LANGUAGE } from "./talkTrail.ts";
 import {
   type AgentRequestBody,
   COMMON_RULES,
@@ -28,7 +25,10 @@ import {
   normalizeForQuote,
   type PromptThread,
   renderThread,
-} from "./thingsThatMatter.ts";
+} from "./agentRequests.ts";
+import type { ParsedQuery, QuerySortValue } from "./parseQuery.ts";
+import { LOOP_SEARCH_RESULTS, MAX_LOOP_THREADS_READ, MAX_LOOP_TOOL_CALLS } from "./talkLoop.ts";
+import { TALK_QUERY_LANGUAGE } from "./talkTrail.ts";
 
 /** The prompt with white space folded: what its key is made from (rule 5). */
 export function foldPrompt(text: string): string {

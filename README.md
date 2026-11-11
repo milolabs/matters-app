@@ -15,10 +15,17 @@ is developed and tested on macOS.
 - **Fast by design.** Speed has budgets that are measured on mailboxes of
   8,000, 100,000 and 500,000 messages
   ([ADR 0012](docs/adr/0012-performance-budgets.md)).
-- **Matters.** An agent reads your threads and keeps a short list of the
-  things that need you, with replies prepared for you to check and send. It
-  runs on the Claude plan you already pay for, through Claude Code on your
-  computer; Matters has no server of its own
+- **Views with a prompt.** Write in your own words what you want to find, such
+  as `prompt:"mail that needs my reply or decision"`, and save it as a tab. An
+  agent reads the mail the rest of the query finds, shows what fits with a
+  reason beside each row, and reads new mail for the view as it comes
+  ([ADR 0116](docs/adr/0116-a-prompt-is-a-filter.md),
+  [ADR 0117](docs/adr/0117-matters-is-a-view-with-a-prompt.md)). The first
+  time you turn AI on, a view named `Needs you` is added, and you can change or
+  delete it like any other. You can also ask the agent about a thread or all
+  your mail, and have it draft a reply for you to check and send. It runs on
+  the Claude plan you already pay for, through Claude Code on your computer;
+  Matters has no server of its own
   ([ADR 0051](docs/adr/0051-agents-on-the-users-own-plans.md)). You choose,
   per account, whether the agent may read it, and the app works without AI.
 - **Careful with hostile mail.** Remote content, tracking and active HTML are

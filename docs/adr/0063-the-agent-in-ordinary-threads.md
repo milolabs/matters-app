@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-11-06
 - Amends: 0052
+- Amended by: [0117](0117-matters-is-a-view-with-a-prompt.md) (no stored reading in a thread; what the agent has there is work asked for)
 
 ## Context
 

@@ -132,14 +132,17 @@ export interface SmokeReport {
     readonly keyReset: boolean;
     readonly keptKeys: boolean;
   };
-  /** ADR 0052: AI on with the demo runtime; Matters, its rows, a draft, and its keys. */
-  readonly matters?: {
+  /**
+   * AI on with the demo runtime: the starter view (ADR 0117, rule 2), a draft on request in an
+   * ordinary thread (ADR 0063), a closing from the talk (ADR 0054) and Pause reading (rule 3).
+   */
+  readonly agent?: {
     readonly enabled: boolean;
-    readonly tabPresent: boolean;
-    readonly rows: number;
-    readonly rowHeightPx: number;
-    readonly headingShown: boolean;
-    readonly ringOrDotOnEveryRow: boolean;
+    readonly starterPresent: boolean;
+    readonly starterFirst: boolean;
+    readonly starterOpenedByItself: boolean;
+    readonly starterOpens: boolean;
+    readonly tabFrameMs: readonly number[];
     readonly draftOpened: boolean;
     readonly sheetShown: boolean;
     readonly sendShown: boolean;
@@ -147,67 +150,32 @@ export interface SmokeReport {
     readonly statusLineHasNoInput: boolean;
     readonly editOpenedComposer: boolean;
     readonly closedInOwnWords: boolean;
-    readonly closedUndone: boolean;
-    readonly thingsCounted: number;
-    readonly moreThanTheOldSeven: boolean;
-    readonly tabCountsAll: boolean;
-    readonly lastRowInView: boolean;
-    readonly firstRowShowsHeading: boolean;
-    readonly restStaysOnScreen: boolean;
-    readonly listStaysWhenRowsChange: boolean;
     readonly ruleOffered: boolean;
+    readonly closedUndone: boolean;
     readonly journalRecorded: boolean;
-    readonly ruleHidOne: boolean;
-    readonly ruleCameBack: boolean;
     readonly remembered: boolean;
-    readonly typingStaysInMatters: boolean;
-    readonly sectionsShown: boolean;
-    readonly wholeThreadShown: boolean;
-    readonly mattersTabNotRenamable: boolean;
-    readonly choiceKeepsItsValue: boolean;
-    readonly tabFrameMs: readonly number[];
-    readonly keyFrameMs: readonly number[];
-    /** ADR 0053: the reading screen, Pause and Continue, and frames while three turns run. */
-    readonly readingFresh: boolean;
-    readonly readingScreenShown: boolean;
-    readonly readingScreenText: string;
-    readonly readingTrail: readonly string[];
-    readonly readingTitleOk: boolean;
-    readonly readingTabBadge: string;
-    readonly pauseShown: boolean;
-    readonly pauseBackendReason: string;
     readonly pauseHeld: boolean;
     readonly continueWorked: boolean;
-    readonly readingTotal: number;
-    readonly readingKeyFrameMs: readonly number[];
-    /** The reading's state when those keys began. */
-    readonly readingAtKeys: string;
-    readonly readingFrameGapMs: readonly number[];
-    /** Typing in All mail while the reading runs in the background. */
-    readonly searchFrameMs: readonly number[];
-    readonly searchWorkMs: readonly number[];
-    readonly searchSaysSo: boolean;
-    readonly tabGoneAfterOff: boolean;
-    readonly promiseLineShown: boolean;
-    readonly promiseLineText: string;
-    readonly stripShowsOpen: boolean;
-    /** ADR 0116: a prompt counted, run with ↵, and its rows in its order with a reason. */
-    readonly prompt?: {
-      readonly lineShown: string;
-      readonly ran: boolean;
-      readonly rows: number;
-      readonly inOrder: boolean;
-      readonly whyShown: boolean;
-      readonly noHeadings: boolean;
-      readonly backToFilters: boolean;
-      /** ADR 0116, rule 4b: the same prompt by date shows what fits by date, with a heading. */
-      readonly datedHeadings: boolean;
-      /** Without a prompt, `sort:relevance` is ranked after ↵, with no headings. */
-      readonly relevanceSorted: boolean;
-      readonly detail: string;
-    };
+    readonly choiceKeepsItsValue: boolean;
     readonly detail: string;
   };
+  /** ADR 0116: a prompt counted, run with ↵, and its rows in its order with a reason. */
+  readonly prompt?: {
+    readonly lineShown: string;
+    readonly ran: boolean;
+    readonly rows: number;
+    readonly inOrder: boolean;
+    readonly whyShown: boolean;
+    readonly noHeadings: boolean;
+    readonly backToFilters: boolean;
+    /** ADR 0116, rule 4b: the same prompt by date shows what fits by date, with a heading. */
+    readonly datedHeadings: boolean;
+    /** Without a prompt, `sort:relevance` is ranked after ↵, with no headings. */
+    readonly relevanceSorted: boolean;
+    readonly detail: string;
+  };
+  /** Turning AI off left the starter view: it is the person's (ADR 0117, rule 2). */
+  readonly starterKeptAfterOff?: boolean;
   /**
    * The backend process's memory (KB) around the attachment scenario, sampled by main. There is no
    * Sent copy in it, so every byte of growth is the copies' doing.
@@ -247,8 +215,8 @@ const BUDGET_CHIP_FRAME_MS = 20;
 /** `j` / `k` stay a frame while 120 MB is copied. */
 const BUDGET_KEY_FRAME_MS = 16;
 const MIN_KEY_SAMPLES = 10;
-/** Matters: `j` / `k` and a switch between tabs stay a frame (ADR 0012, 0052). */
-const BUDGET_MATTERS_FRAME_MS = 16;
+/** A switch between tabs stays a frame (ADR 0012). */
+const BUDGET_TAB_FRAME_MS = 16;
 /** The backend holds streams, not files: 120 MB attached may not grow it by more than this. */
 const BUDGET_BACKEND_GROWTH_MB = 16;
 
@@ -569,148 +537,63 @@ export function runSmoke(report: SmokeReport, processStartEpochMs: number, phase
     if (!divider.keptKeys) failures.push("the window's keys acted on a key the list's edge took");
   }
 
-  const matters = report.matters;
-  const mattersKeyFrameMedianMs = median(matters?.keyFrameMs ?? []);
-  const mattersTabFrameMedianMs = median(matters?.tabFrameMs ?? []);
-  if (!matters) failures.push("the Matters scenario did not run");
+  const agent = report.agent;
+  const tabFrameMedianMs = median(agent?.tabFrameMs ?? []);
+  if (!agent) failures.push("the agent scenario did not run");
   else {
-    if (matters.detail !== "") failures.push(`Matters: ${matters.detail}`);
-    if (!matters.enabled) failures.push("AI could not be turned on with the demo runtime");
-    if (!matters.tabPresent) failures.push("the Matters tab did not appear once AI was on");
-    if (matters.tabPresent && matters.rows === 0) failures.push("Matters showed no rows");
-    if (matters.rows > 0) {
-      if (matters.rowHeightPx !== 68) {
-        failures.push(`a Matters row is ${matters.rowHeightPx} px high, not the list's 68`);
-      }
-      if (!matters.headingShown) failures.push("Matters had no 'Things that matter' heading");
-      if (!matters.ringOrDotOnEveryRow) failures.push("a Matters row had neither ring nor dot");
-      if (!matters.draftOpened) failures.push("selecting a draft did not show the agent's frame");
-      if (!matters.sheetShown) failures.push("the draft's sheet was empty or missing");
-      if (!matters.sendShown) failures.push("the draft had no Send button");
-      if (!matters.statusLineShown) failures.push("the status of the plans was missing");
-      if (!matters.statusLineHasNoInput) failures.push("the status of the plans holds an input");
-      if (!matters.editOpenedComposer) failures.push("Edit myself did not open the composer");
-      if (!matters.closedInOwnWords) failures.push("the person's words did not close the thing");
-      if (!matters.closedUndone) failures.push("Undo did not bring a closed thing back");
-      if (!matters.moreThanTheOldSeven) failures.push("Matters did not show more than 7 things");
-      if (!matters.tabCountsAll) failures.push("the Matters tab did not count every thing");
-      if (!matters.lastRowInView) failures.push("j did not walk to the last thing and show it");
-      if (!matters.firstRowShowsHeading)
-        failures.push("back at the first thing, the list was not at its top");
-      if (!matters.listStaysWhenRowsChange) {
-        failures.push("a change in the list scrolled it back to the open thing");
-      }
-      if (!matters.restStaysOnScreen) {
-        failures.push("a thing for now closed the rest, or moved the row being looked at");
-      }
-      if (!matters.ruleOffered) failures.push("a closing did not offer a rule beside Undo");
-      if (!matters.journalRecorded) {
-        failures.push("the journal did not hold the closing, its words, and the Undo");
-      }
-      if (!matters.ruleHidOne) failures.push("a rule for the sender did not hide the thing");
-      if (!matters.ruleCameBack) failures.push("removing the rule did not bring the thing back");
-      if (!matters.remembered) {
-        failures.push("the person's typed words were not kept as an instruction, or not removable");
-      }
-      if (mattersKeyFrameMedianMs >= BUDGET_MATTERS_FRAME_MS) {
+    if (agent.detail !== "") failures.push(`agent: ${agent.detail}`);
+    if (!agent.enabled) failures.push("AI could not be turned on with the demo runtime");
+    if (!agent.starterPresent) failures.push("the starter view Needs you did not appear");
+    else {
+      if (!agent.starterFirst) failures.push("Needs you was not in front of the other views");
+      if (!agent.starterOpens) failures.push("opening Needs you did not show its prompt line");
+      if (tabFrameMedianMs >= BUDGET_TAB_FRAME_MS) {
         failures.push(
-          `Matters j/k median ${mattersKeyFrameMedianMs} ms exceeds ${BUDGET_MATTERS_FRAME_MS} ms`,
-        );
-      }
-      if (mattersTabFrameMedianMs >= BUDGET_MATTERS_FRAME_MS) {
-        failures.push(
-          `switching tabs median ${mattersTabFrameMedianMs} ms exceeds ${BUDGET_MATTERS_FRAME_MS} ms`,
+          `switching tabs median ${tabFrameMedianMs} ms exceeds ${BUDGET_TAB_FRAME_MS} ms`,
         );
       }
     }
-    if (matters.tabPresent) {
-      if (phase === "cold" && !matters.readingFresh) {
-        failures.push("the first run had readings already: the reading screen was not exercised");
-      } else if (!matters.readingFresh) {
-        // A mailbox read in an earlier run shows its things at once; there is no reading to watch.
-      } else if (!matters.readingScreenShown) {
-        failures.push(
-          `the reading screen did not show its numbers while the demo read (saw ${matters.readingTrail.join(" > ")})`,
-        );
-      } else {
-        if (!matters.readingTitleOk)
-          failures.push("the reading screen had no 'Reading your last N days'");
-        if (!/found/.test(matters.readingScreenText)) {
-          failures.push("the reading screen did not say what it found");
-        }
-        if (!/^\d+\/\d+$/.test(matters.readingTabBadge)) {
-          failures.push(`the Matters tab did not show progress (saw '${matters.readingTabBadge}')`);
-        }
-        if (!matters.pauseShown) failures.push("Pause did not show that reading is paused");
-        if (!matters.pauseHeld) {
-          failures.push(`reading did not hold still while paused (${matters.pauseBackendReason})`);
-        }
-        if (!matters.continueWorked) failures.push("Continue did not take the pause away");
-      }
-      const readingKeyMedian = median(matters.readingKeyFrameMs);
-      if (phase === "warm" && matters.readingAtKeys !== "reading") {
-        // The cold run read the whole window: no turns run, so there are no keys to time against
-        // them. The cold run, which always reads, is held to it.
-      } else if (matters.readingKeyFrameMs.length < 3) {
-        failures.push("too few key frames were timed while three turns ran");
-      } else if (readingKeyMedian >= BUDGET_MATTERS_FRAME_MS) {
-        failures.push(
-          `keys while reading: median ${readingKeyMedian} ms exceeds ${BUDGET_MATTERS_FRAME_MS} ms`,
-        );
-      }
+    if (!agent.draftOpened) failures.push("asking for a draft in a thread showed no agent frame");
+    if (!agent.sheetShown) failures.push("the draft's sheet was empty or missing");
+    if (!agent.sendShown) failures.push("the draft had no Send button");
+    if (!agent.statusLineShown) failures.push("the status of the plans was missing");
+    if (!agent.statusLineHasNoInput) failures.push("the status of the plans holds an input");
+    if (!agent.editOpenedComposer) failures.push("Edit myself did not open the composer");
+    if (!agent.closedInOwnWords) failures.push("the person's words did not close the thread");
+    if (!agent.ruleOffered) failures.push("a closing did not offer a rule beside Undo");
+    if (!agent.closedUndone) failures.push("Undo did not take the closing back");
+    if (!agent.journalRecorded) {
+      failures.push("the journal did not record the agent's closing with the person's words");
     }
-    if (matters.searchFrameMs.length > 0) {
-      const frameMedian = median(matters.searchFrameMs);
-      if (frameMedian >= BUDGET_SEARCH_MS) {
-        failures.push(
-          `search median ${frameMedian} ms exceeds ${BUDGET_SEARCH_MS} ms while the agent reads`,
-        );
-      }
-      if (!matters.searchSaysSo)
-        failures.push("the bar did not say a search of Matters was running");
-    } else if (matters.tabPresent) failures.push("no search was timed while the agent read");
-    if (matters.tabPresent && matters.thingsCounted > 0 && !matters.promiseLineShown) {
-      failures.push("no thread showed a promise line under its message");
-    } else if (matters.promiseLineShown && !matters.stripShowsOpen) {
-      failures.push("the agent strip did not name what is still open");
+    if (!agent.remembered) {
+      failures.push("the agent did not keep an instruction from the person's words");
     }
-    const prompt = matters.prompt;
-    if (matters.tabPresent && prompt !== undefined) {
-      if (prompt.lineShown === "") {
-        failures.push(`a prompt in the bar showed no count line (${prompt.detail})`);
-      } else if (!prompt.ran) {
-        failures.push(`↵ with a prompt did not show the prompt's rows (${prompt.detail})`);
-      } else {
-        if (!prompt.inOrder) failures.push("the prompt's rows were not in the order it gave");
-        if (!prompt.whyShown) failures.push("a row the prompt kept did not show its reason");
-        if (!prompt.noHeadings) failures.push("the list under a prompt showed headings");
-        if (!prompt.backToFilters) {
-          failures.push("changing the mail filters did not bring their result back");
-        }
-        if (!prompt.datedHeadings) {
-          failures.push("a prompt under sort:newest did not show what fits by date");
-        }
-        if (!prompt.relevanceSorted) failures.push("sort:relevance did not rank the list after ↵");
-      }
-    }
-    if (matters.tabPresent && !matters.tabGoneAfterOff) {
-      failures.push("turning AI off did not take the Matters tab away");
-    }
-    if (matters.tabPresent && matters.thingsCounted > 0 && !matters.wholeThreadShown) {
-      failures.push("Matters did not show the whole thread");
-    }
-    if (matters.tabPresent && matters.thingsCounted > 0 && !matters.sectionsShown) {
-      failures.push("Matters did not split into now and the rest");
-    }
-    if (matters.tabPresent && !matters.typingStaysInMatters) {
-      failures.push("typing in the query bar left Matters");
-    }
-    if (!matters.choiceKeepsItsValue) {
+    if (!agent.pauseHeld) failures.push("Pause reading did not hold");
+    if (!agent.continueWorked) failures.push("Continue did not take the pause away");
+    if (!agent.choiceKeepsItsValue) {
       failures.push("a settings select lost its value when a new status arrived");
     }
-    if (matters.tabPresent && !matters.mattersTabNotRenamable) {
-      failures.push("the Matters tab offers a menu (rename, move or delete)");
+  }
+  const prompt = report.prompt;
+  if (!prompt) failures.push("the prompt scenario did not run");
+  else if (prompt.lineShown === "") {
+    failures.push(`a prompt in the bar showed no count line (${prompt.detail})`);
+  } else if (!prompt.ran) {
+    failures.push(`↵ with a prompt did not show the prompt's rows (${prompt.detail})`);
+  } else {
+    if (!prompt.inOrder) failures.push("the prompt's rows were not in the order it gave");
+    if (!prompt.whyShown) failures.push("a row the prompt kept did not show its reason");
+    if (!prompt.noHeadings) failures.push("the list under a prompt showed headings");
+    if (!prompt.backToFilters) {
+      failures.push("changing the mail filters did not bring their result back");
     }
+    if (!prompt.datedHeadings) {
+      failures.push("a prompt under sort:newest did not show what fits by date");
+    }
+    if (!prompt.relevanceSorted) failures.push("sort:relevance did not rank the list after ↵");
+  }
+  if (report.starterKeptAfterOff !== true) {
+    failures.push("turning AI off took the starter view away");
   }
 
   const attach = report.attach;
@@ -780,18 +663,11 @@ export function runSmoke(report: SmokeReport, processStartEpochMs: number, phase
       markReadFrameMedianMs,
       archiveFrameMedianMs,
       dividerFrameMedianMs,
-      matters: matters && {
-        thingsCounted: matters.thingsCounted,
-        rows: matters.rows,
-        keyFrameMedianMs: mattersKeyFrameMedianMs,
-        tabFrameMedianMs: mattersTabFrameMedianMs,
-        readingKeyFrameMedianMs: median(matters.readingKeyFrameMs),
-        readingKeyFrameMaxMs: Math.max(0, ...matters.readingKeyFrameMs),
-        readingThreads: matters.readingTotal,
-        searchFrameMedianMs: median(matters.searchFrameMs),
-        searchWorkMedianMs: median(matters.searchWorkMs),
-        prompt: matters.prompt,
+      agent: agent && {
+        starterOpenedByItself: agent.starterOpenedByItself,
+        tabFrameMedianMs,
       },
+      prompt,
       attach: attach && {
         pastedMB: Math.round(attach.pastedBytes / 1e6),
         chipFrameMs: attach.chipFrameMs,

@@ -56,22 +56,21 @@ describe("createStatusOrder", () => {
 
 describe("the agent store", () => {
   it("does not let a status read from before a change undo that change", async () => {
-    const withDays = (windowDays: number) =>
-      ({ settings: { enabled: true, windowDays } }) as unknown as AgentStatus;
+    const withShare = (weekSharePercent: number) =>
+      ({ settings: { enabled: true, weekSharePercent } }) as unknown as AgentStatus;
     const slowRead = deferred<AgentStatus>();
     const backend = {
       agentStatus: () => slowRead.promise,
-      agentThings: async () => ({ things: [], total: 0 }),
       onEvent: () => () => {},
     } as unknown as Backend;
     await createRoot(async (dispose) => {
       const store = createAgentStore(backend, { openDraft: async () => {} });
       const reading = store.refresh();
-      await store.change(Promise.resolve(withDays(90)));
-      expect(store.status()?.settings.windowDays).toBe(90);
-      slowRead.resolve(withDays(30));
+      await store.change(Promise.resolve(withShare(25)));
+      expect(store.status()?.settings.weekSharePercent).toBe(25);
+      slowRead.resolve(withShare(10));
       await reading;
-      expect(store.status()?.settings.windowDays).toBe(90);
+      expect(store.status()?.settings.weekSharePercent).toBe(25);
       dispose();
     });
   });

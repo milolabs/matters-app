@@ -28,21 +28,21 @@ const started = (over: { local?: (read: HeavyRead) => Promise<unknown> } = {}) =
   return { ...fake, local, thread };
 };
 
-const THINGS: HeavyRead = { name: "things", limit: 5 };
+const READ: HeavyRead = { name: "threadAgent", threadId: "t1" };
 
 describe("ReadThread (ADR 0070, rule 2)", () => {
   it("asks the thread, with the time it was asked, and the router does none of the work", async () => {
     const { thread, sent, emit, local } = started();
-    const answer = thread.ask(THINGS);
-    expect(sent[0]).toEqual({ id: 1, read: THINGS, nowMs: 1000 });
-    emit("message", { id: 1, ok: true, value: { things: [] } });
-    await expect(answer).resolves.toEqual({ things: [] });
+    const answer = thread.ask(READ);
+    expect(sent[0]).toEqual({ id: 1, read: READ, nowMs: 1000 });
+    emit("message", { id: 1, ok: true, value: { available: true } });
+    await expect(answer).resolves.toEqual({ available: true });
     expect(local).not.toHaveBeenCalled();
   });
 
   it("matches answers to questions when they come back in another order", async () => {
     const { thread, emit } = started();
-    const first = thread.ask(THINGS);
+    const first = thread.ask(READ);
     const second = thread.ask({ name: "threadAgent", threadId: "t" });
     emit("message", { id: 2, ok: true, value: "second" });
     emit("message", { id: 1, ok: true, value: "first" });
@@ -52,18 +52,18 @@ describe("ReadThread (ADR 0070, rule 2)", () => {
 
   it("answers on the router what the thread could not answer", async () => {
     const { thread, emit, local } = started();
-    const answer = thread.ask(THINGS);
+    const answer = thread.ask(READ);
     emit("message", { id: 1, ok: false });
     await expect(answer).resolves.toBe("here");
-    expect(local).toHaveBeenCalledWith(THINGS, 1000);
+    expect(local).toHaveBeenCalledWith(READ, 1000);
   });
 
   it("loses nothing when the thread dies, and stays on the router after it", async () => {
     const { thread, emit, sent, local } = started();
-    const asked = thread.ask(THINGS);
+    const asked = thread.ask(READ);
     emit("exit", 1);
     await expect(asked).resolves.toBe("here");
-    await expect(thread.ask(THINGS)).resolves.toBe("here");
+    await expect(thread.ask(READ)).resolves.toBe("here");
     expect(sent).toHaveLength(1);
     expect(local).toHaveBeenCalledTimes(2);
   });
@@ -79,7 +79,7 @@ describe("ReadThread (ADR 0070, rule 2)", () => {
       onDown,
     });
     thread.start();
-    await expect(thread.ask(THINGS)).resolves.toBe("here");
+    await expect(thread.ask(READ)).resolves.toBe("here");
     expect(onDown).toHaveBeenCalledWith("no threads today");
   });
 
@@ -89,7 +89,7 @@ describe("ReadThread (ADR 0070, rule 2)", () => {
         throw new Error("no such thread");
       },
     });
-    const answer = thread.ask(THINGS);
+    const answer = thread.ask(READ);
     emit("message", { id: 1, ok: false });
     await expect(answer).rejects.toThrow("no such thread");
   });

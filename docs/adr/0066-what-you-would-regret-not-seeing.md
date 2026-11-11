@@ -1,6 +1,6 @@
 # 0066. What you would regret not seeing
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-06
 - Amended by: [0067](0067-what-the-owners-labels-taught.md) (own threads, dates ahead, ended offers, doubted requests)
 - Amended by: [0068](0068-who-writes-what-you-refuse-what-comes-from-an-office.md) (interaction recency replaces relation by company as support; when a decision is for now; mail from an office)

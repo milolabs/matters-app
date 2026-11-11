@@ -1,6 +1,6 @@
 # 0054. Closing a thing in the person's own words, and what the agent remembers
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-05
 - Amends: 0052
 

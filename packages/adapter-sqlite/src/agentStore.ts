@@ -8,15 +8,10 @@ import type {
   AgentRuntimeRecord,
   AgentSettings,
   AgentSettingsPort,
-  AmountRole,
-  AnalysisIntent,
-  CaseStatus,
-  Evidence,
   FeedbackOutcome,
   JournalEntry,
   JournalMemo,
   LedgerEntry,
-  MatterAmount,
   NewTalkEntry,
   PlanLimits,
   PreparedRecord,
@@ -34,161 +29,16 @@ import type {
   TalkQuote,
   TalkSummary,
   TalkTitleBy,
-  ThingEdge,
   ThingFeedback,
-  ThreadAnalysis,
-  ThreadCategory,
-  ThreadFact,
 } from "@matters/core";
-import {
-  AMOUNT_ROLES,
-  ANALYSIS_INTENTS,
-  CASE_STATUSES,
-  cutTitle,
-  DEFAULT_AGENT_SETTINGS,
-  FEEDBACK_OUTCOMES,
-  THREAD_CATEGORIES,
-} from "@matters/core";
+import { cutTitle, DEFAULT_AGENT_SETTINGS, FEEDBACK_OUTCOMES } from "@matters/core";
 import { type Database, exclusive, write } from "./database.ts";
-
-interface AnalysisRow {
-  thread_id: string;
-  last_message_key: number;
-  analyzer_version: number;
-  state: ThreadAnalysis["state"];
-  headline: string;
-  facts_json: string;
-  stakes: ThreadAnalysis["stakes"];
-  confidence: number;
-  analyzed_at_ms: number;
-  consequence: ThreadAnalysis["consequence"] | null;
-  case_name: string | null;
-  anchors_json: string | null;
-  intent: string | null;
-  reading_json: string | null;
-}
-
-/** What `reading_json` holds: everything of a reading that is not a column (ADR 0066). */
-interface StoredReading {
-  intentEvidence?: Evidence;
-  amount?: MatterAmount;
-  windowEndMs?: number;
-  forYouEvidence?: Evidence;
-  status?: CaseStatus;
-  category?: ThreadCategory;
-}
-
-const isEvidence = (v: unknown): v is Evidence =>
-  typeof v === "object" &&
-  v !== null &&
-  typeof (v as Evidence).quote === "string" &&
-  Number.isInteger((v as Evidence).messageKey);
 
 /** A value this build does not know (a newer one wrote it) reads as absent. */
 function known<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
   return typeof value === "string" && (allowed as readonly string[]).includes(value)
     ? (value as T)
     : undefined;
-}
-
-function readingOf(json: string | null): StoredReading {
-  if (json === null) return {};
-  try {
-    const raw = JSON.parse(json) as Record<string, unknown>;
-    const amount = raw.amount as Partial<MatterAmount> | undefined;
-    const role = known<AmountRole>(amount?.role, AMOUNT_ROLES);
-    const status = known<CaseStatus>(raw.status, CASE_STATUSES);
-    // A kind this build does not know reads as `other` (ADR 0068).
-    const category =
-      typeof raw.category === "string"
-        ? (known<ThreadCategory>(raw.category, THREAD_CATEGORIES) ?? "other")
-        : undefined;
-    return {
-      ...(isEvidence(raw.intentEvidence) ? { intentEvidence: raw.intentEvidence } : {}),
-      ...(amount !== undefined &&
-      role !== undefined &&
-      typeof amount.value === "number" &&
-      Number.isFinite(amount.value) &&
-      typeof amount.currency === "string" &&
-      isEvidence(amount.evidence)
-        ? {
-            amount: {
-              value: amount.value,
-              currency: amount.currency,
-              role,
-              evidence: amount.evidence,
-            },
-          }
-        : {}),
-      ...(typeof raw.windowEndMs === "number" && Number.isFinite(raw.windowEndMs)
-        ? { windowEndMs: raw.windowEndMs }
-        : {}),
-      ...(isEvidence(raw.forYouEvidence) ? { forYouEvidence: raw.forYouEvidence } : {}),
-      ...(status === undefined ? {} : { status }),
-      ...(category === undefined ? {} : { category }),
-    };
-  } catch {
-    return {};
-  }
-}
-
-function readingJson(a: ThreadAnalysis): string | null {
-  const reading: StoredReading = {
-    ...(a.intentEvidence === undefined
-      ? {}
-      : {
-          intentEvidence: {
-            quote: a.intentEvidence.quote,
-            messageKey: a.intentEvidence.messageKey,
-          },
-        }),
-    ...(a.amount === undefined
-      ? {}
-      : {
-          amount: {
-            value: a.amount.value,
-            currency: a.amount.currency,
-            role: a.amount.role,
-            evidence: {
-              quote: a.amount.evidence.quote,
-              messageKey: a.amount.evidence.messageKey,
-            },
-          },
-        }),
-    ...(a.windowEndMs === undefined ? {} : { windowEndMs: a.windowEndMs }),
-    ...(a.forYouEvidence === undefined
-      ? {}
-      : {
-          forYouEvidence: {
-            quote: a.forYouEvidence.quote,
-            messageKey: a.forYouEvidence.messageKey,
-          },
-        }),
-    ...(a.status === undefined ? {} : { status: a.status }),
-    ...(a.category === undefined ? {} : { category: a.category }),
-  };
-  return Object.keys(reading).length === 0 ? null : JSON.stringify(reading);
-}
-
-function toAnalysis(row: AnalysisRow): ThreadAnalysis {
-  const intent = known<AnalysisIntent>(row.intent, ANALYSIS_INTENTS);
-  const reading = readingOf(row.reading_json);
-  return {
-    threadId: row.thread_id,
-    lastMessageKey: row.last_message_key,
-    analyzerVersion: row.analyzer_version,
-    state: row.state,
-    headline: row.headline,
-    facts: JSON.parse(row.facts_json) as ThreadFact[],
-    stakes: row.stakes,
-    confidence: row.confidence,
-    analyzedAtMs: row.analyzed_at_ms,
-    ...(row.consequence === null ? {} : { consequence: row.consequence }),
-    ...(row.case_name === null ? {} : { caseName: row.case_name }),
-    ...(row.anchors_json === null ? {} : { anchors: JSON.parse(row.anchors_json) as string[] }),
-    ...(intent === undefined ? {} : { intent }),
-    ...reading,
-  };
 }
 
 interface TalkRow {
@@ -260,7 +110,6 @@ function storedHit(h: TalkHit): TalkHit {
     subject: h.subject,
     note: h.note,
     lastMessageMs: h.lastMessageMs,
-    state: h.state,
   };
 }
 
@@ -375,16 +224,6 @@ function toTalkEntry(row: TalkRow): TalkEntry {
           ...(row.facts_json === null ? {} : { facts: JSON.parse(row.facts_json) as TalkFact[] }),
         }
       : {}),
-  };
-}
-
-/** A fact as stored: only its own fields, so an extra property of a caller's object is not kept. */
-function storedFact(f: ThreadFact): ThreadFact {
-  return {
-    kind: f.kind,
-    who: f.who,
-    ...(f.dueMs === undefined ? {} : { dueMs: f.dueMs }),
-    evidence: { quote: f.evidence.quote, messageKey: f.evidence.messageKey },
   };
 }
 
@@ -515,25 +354,8 @@ function toJournalEntry(r: JournalRow): JournalEntry {
   };
 }
 
-/**
- * The newest analysis of each thread for a version. The correlated max reads the same index as the
- * outer scan, so the list costs the number of threads analysed, not the size of the mailbox.
- */
-export const LATEST_ANALYSES_SQL = `
-  SELECT a.* FROM agent_analyses a INDEXED BY agent_analyses_latest
-   WHERE a.analyzer_version = ?
-     AND a.last_message_key = (
-       SELECT max(b.last_message_key) FROM agent_analyses b INDEXED BY agent_analyses_latest
-        WHERE b.analyzer_version = a.analyzer_version AND b.thread_id = a.thread_id)`;
-
 export class SqliteAgentInsightStore implements AgentInsightStorePort {
   private readonly db: Database;
-  private readonly selectOne;
-  private readonly upsertAnalysis;
-  private readonly selectLatest;
-  private readonly selectLatestOf;
-  private readonly selectBundleRead;
-  private readonly upsertBundleRead;
   private readonly upsertPrepared;
   private readonly selectPrepared;
   private readonly insertFeedback;
@@ -566,37 +388,11 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
 
   constructor(db: Database) {
     this.db = db;
-    this.selectOne = db.prepare(
-      `SELECT * FROM agent_analyses
-        WHERE thread_id = ? AND last_message_key = ? AND analyzer_version = ?`,
-    );
-    this.upsertAnalysis = db.prepare(`
-      INSERT INTO agent_analyses (thread_id, last_message_key, analyzer_version, state, headline,
-                                  facts_json, stakes, confidence, analyzed_at_ms, consequence,
-                                  case_name, anchors_json, intent, reading_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (thread_id, last_message_key, analyzer_version) DO UPDATE SET
-        state = excluded.state, headline = excluded.headline, facts_json = excluded.facts_json,
-        stakes = excluded.stakes, confidence = excluded.confidence,
-        analyzed_at_ms = excluded.analyzed_at_ms, consequence = excluded.consequence,
-        case_name = excluded.case_name, anchors_json = excluded.anchors_json,
-        intent = excluded.intent, reading_json = excluded.reading_json`);
-    this.selectLatest = db.prepare(LATEST_ANALYSES_SQL);
-    this.selectLatestOf = db.prepare(
-      `${LATEST_ANALYSES_SQL} AND a.thread_id IN (SELECT value FROM json_each(?))`,
-    );
     this.upsertPrepared = db.prepare(`
       INSERT INTO agent_prepared (thread_id, last_message_key, work_json, prepared_at_ms)
       VALUES (?, ?, ?, ?)
       ON CONFLICT (thread_id, last_message_key) DO UPDATE SET
         work_json = excluded.work_json, prepared_at_ms = excluded.prepared_at_ms`);
-    this.selectBundleRead = db.prepare(
-      "SELECT edges_json FROM agent_bundle_reads WHERE signature = ?",
-    );
-    this.upsertBundleRead = db.prepare(`
-      INSERT INTO agent_bundle_reads (signature, edges_json, read_at_ms) VALUES (?, ?, ?)
-      ON CONFLICT (signature) DO UPDATE SET
-        edges_json = excluded.edges_json, read_at_ms = excluded.read_at_ms`);
     this.selectPrepared = db.prepare(
       "SELECT * FROM agent_prepared WHERE thread_id = ? AND last_message_key = ?",
     );
@@ -684,47 +480,6 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
     );
   }
 
-  async getAnalysis(threadId: string, lastMessageKey: number, analyzerVersion: number) {
-    const row = this.selectOne.get(threadId, lastMessageKey, analyzerVersion) as
-      | AnalysisRow
-      | undefined;
-    return row === undefined ? null : toAnalysis(row);
-  }
-
-  async putAnalysis(analyses: readonly ThreadAnalysis[]): Promise<void> {
-    if (analyses.length === 0) return;
-    await write(this.db, () => {
-      for (const a of analyses) {
-        this.upsertAnalysis.run(
-          a.threadId,
-          a.lastMessageKey,
-          a.analyzerVersion,
-          a.state,
-          a.headline,
-          JSON.stringify(a.facts.map(storedFact)),
-          a.stakes,
-          a.confidence,
-          a.analyzedAtMs,
-          a.consequence ?? null,
-          a.caseName ?? null,
-          a.anchors === undefined ? null : JSON.stringify(a.anchors),
-          a.intent ?? null,
-          readingJson(a),
-        );
-      }
-    });
-  }
-
-  async listAnalyses(analyzerVersion: number, threadIds?: readonly string[]) {
-    const rows =
-      threadIds === undefined
-        ? this.selectLatest.all(analyzerVersion)
-        : threadIds.length === 0
-          ? []
-          : this.selectLatestOf.all(analyzerVersion, JSON.stringify(threadIds));
-    return (rows as unknown as AnalysisRow[]).map(toAnalysis);
-  }
-
   async putPrepared(records: readonly PreparedRecord[]): Promise<void> {
     if (records.length === 0) return;
     await write(this.db, () => {
@@ -736,17 +491,6 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
           r.preparedAtMs,
         );
       }
-    });
-  }
-
-  async getBundleRead(signature: string): Promise<readonly ThingEdge[] | null> {
-    const row = this.selectBundleRead.get(signature) as { edges_json: string } | undefined;
-    return row === undefined ? null : (JSON.parse(row.edges_json) as ThingEdge[]);
-  }
-
-  async putBundleRead(signature: string, edges: readonly ThingEdge[], atMs: number): Promise<void> {
-    await write(this.db, () => {
-      this.upsertBundleRead.run(signature, JSON.stringify(edges), atMs);
     });
   }
 
@@ -789,7 +533,7 @@ export class SqliteAgentInsightStore implements AgentInsightStorePort {
         memo?.words ?? null,
         f.reason ?? null,
         f.untilMs ?? null,
-        memo?.alsoCovers ?? null,
+        null,
       );
     });
   }
@@ -1311,11 +1055,19 @@ function readSettings(json: string | undefined): AgentSettings {
     return DEFAULT_AGENT_SETTINGS;
   }
   if (typeof raw !== "object" || raw === null) return DEFAULT_AGENT_SETTINGS;
-  const stored = raw as Partial<AgentSettings>;
+  // `windowDays` and `models.draftAhead` of settings stored before ADR 0117 are not read.
+  const { windowDays: _window, ...stored } = raw as Partial<AgentSettings> & {
+    windowDays?: unknown;
+  };
   // A kind of work added later (ADR 0086: `titles`) keeps its default under models stored before.
   const models =
     typeof stored.models === "object" && stored.models !== null
-      ? { ...DEFAULT_AGENT_SETTINGS.models, ...stored.models }
+      ? {
+          understand: stored.models.understand ?? DEFAULT_AGENT_SETTINGS.models.understand,
+          write: stored.models.write ?? DEFAULT_AGENT_SETTINGS.models.write,
+          answer: stored.models.answer ?? DEFAULT_AGENT_SETTINGS.models.answer,
+          titles: stored.models.titles ?? DEFAULT_AGENT_SETTINGS.models.titles,
+        }
       : DEFAULT_AGENT_SETTINGS.models;
   return { ...DEFAULT_AGENT_SETTINGS, ...stored, models };
 }

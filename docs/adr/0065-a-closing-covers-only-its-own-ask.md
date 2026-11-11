@@ -1,6 +1,6 @@
 # 0065. A closing covers only its own ask
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-06
 - Amends: [0061](0061-a-series-is-one-row.md) (what a series is, and what the newest decides)
 

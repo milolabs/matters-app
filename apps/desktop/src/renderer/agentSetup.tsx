@@ -1,7 +1,7 @@
 import type { AccountInfo } from "@matters/contracts";
 import type { AgentStatus } from "@matters/core";
 import { createSignal, onMount, Show } from "solid-js";
-import { NotYet, ReadQuestion, RuntimeCard, WhatDoesWhat } from "./agentConnect.tsx";
+import { ConsentQuestion, NotYet, RuntimeCard, WhatDoesWhat } from "./agentConnect.tsx";
 import type { Backend } from "./client.ts";
 import { pill, pillPrimary } from "./ui.ts";
 
@@ -146,7 +146,7 @@ export function RuntimeStep(props: {
   );
 }
 
-/** Step two: shall I read your last days? Nothing starts before `Start reading`. */
+/** Step two: shall I read your mail? Nothing is sent before `Turn on`. */
 export function ReadStep(props: {
   backend: Backend;
   headline: string;
@@ -159,10 +159,8 @@ export function ReadStep(props: {
 }) {
   return (
     <div class="settle flex flex-col gap-5" data-step="read">
-      <h1 class={props.headline}>
-        Shall I read your last {props.status.settings.windowDays} days?
-      </h1>
-      <ReadQuestion
+      <h1 class={props.headline}>Shall I read your mail?</h1>
+      <ConsentQuestion
         backend={props.backend}
         status={props.status}
         accounts={props.accounts}

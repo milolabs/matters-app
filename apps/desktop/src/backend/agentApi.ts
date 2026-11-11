@@ -6,11 +6,9 @@ import type {
   AgentModels,
   AgentRule,
   AgentStatus,
-  FeedbackOutcome,
   GapSuggestion,
   JournalEntry,
   PreparedGuidance,
-  PreparedWork,
   PrepareResult,
   PromptBadge,
   PromptCount,
@@ -23,7 +21,6 @@ import type {
   TalkEntry,
   TalkResult,
   TalkSummary,
-  ThingsPage,
   ThreadAgentView,
 } from "@matters/core";
 
@@ -35,15 +32,15 @@ export class AgentUnavailableError extends Error {
   }
 }
 
-/** There is no reading of that thread (or no such thread). */
+/** There is no such thread, or the agent may not read it. */
 export class ThingNotFoundError extends Error {
-  constructor(message = "There is nothing read for that thread") {
+  constructor(message = "That thread is not there") {
     super(message);
     this.name = "ThingNotFoundError";
   }
 }
 
-/** A choice the service refuses (an unknown model, a window that makes no sense). */
+/** A choice the service refuses (an unknown model, a share that makes no sense). */
 export class InvalidAgentSettingError extends Error {
   constructor(message: string) {
     super(message);
@@ -51,32 +48,20 @@ export class InvalidAgentSettingError extends Error {
   }
 }
 
-/** How many threads a read would send, from the local store only. */
-export interface ReadEstimate {
-  readonly threads: number;
-  /** The window holds more threads than are counted. */
-  readonly capped: boolean;
-}
-
 /**
- * What the renderer can ask of agents (ADR 0051, 0052). `AgentService` implements it in the sync
+ * What the renderer can ask of agents (ADR 0051). `AgentService` implements it in the sync
  * worker; the router's `RemoteAgent` answers the reads itself on the reader connection and sends
  * the rest to the worker. There is no method that sends mail: `draftFromPrepared` makes a draft,
  * and the person sends it by the existing path.
  */
 export interface AgentApi {
   status(): Promise<AgentStatus>;
-  /** The best `limit`, or all of them, and how many there are (ADR 0055). Empty while AI is off. */
-  things(limit?: number): Promise<ThingsPage>;
-  /** The draft or question prepared for the thread as it stands now; null when none, or stale. */
-  prepared(threadId: string): Promise<PreparedWork | null>;
   /**
-   * What the agent already has for one ordinary thread (ADR 0063): its reading when current and
-   * shown, and the work prepared for it as it stands. Local only: no model, no worker.
+   * What the agent already has for one ordinary thread (ADR 0063): the work prepared for it on
+   * request, as it stands. Local only: no model, no worker.
    */
   threadAgent(threadId: string): Promise<ThreadAgentView>;
-  readEstimate(input: { accountIds: readonly string[]; windowDays: number }): Promise<ReadEstimate>;
-  /** What was done with things, newest first (ADR 0054, rule 6): 50 by default, at most 200. Local only. */
+  /** What the agent and the person did, newest first (ADR 0054, rule 6): 50 by default, at most 200. Local only. */
   journal(limit?: number): Promise<readonly JournalEntry[]>;
   /** The active rules, in the order they were added (ADR 0054, rule 7). Local only. */
   rules(): Promise<readonly AgentRule[]>;
@@ -106,23 +91,18 @@ export interface AgentApi {
    */
   remember(threadId: string, words: string): Promise<RememberResult>;
   /** Records the person's consent for these accounts and this runtime, and turns AI on. */
-  setEnabled(input: {
-    accountIds: readonly string[];
-    runtimeId: string;
-    windowDays: number;
-  }): Promise<AgentStatus>;
+  setEnabled(input: { accountIds: readonly string[]; runtimeId: string }): Promise<AgentStatus>;
   /** Turns AI off and takes every consent back. */
   disable(): Promise<AgentStatus>;
   /** Takes back the consent for one account; AI stays on for the others. */
   revokeConsent(accountId: string): Promise<AgentStatus>;
   setModels(models: Partial<AgentModels>): Promise<AgentStatus>;
   setWeekShare(percent: number): Promise<AgentStatus>;
-  setWindowDays(days: number): Promise<AgentStatus>;
   /** The agent searches in a loop with tools instead of the plan and follow turns (ADR 0083). */
   setTalkLoop(on: boolean): Promise<AgentStatus>;
   /** Looks at the runtime again; spends nothing and sends no mail. */
   inspect(): Promise<AgentStatus>;
-  /** The person stops the reading; it stays stopped across restarts and syncs (ADR 0053, rule 8). */
+  /** The person stops the reading in the background; it stays stopped across restarts (ADR 0117). */
   pauseReading(): Promise<AgentStatus>;
   resumeReading(): Promise<AgentStatus>;
   /** The test with a made-up message (ADR 0051, rule 5). */
@@ -212,15 +192,9 @@ export interface AgentApi {
   /** Removes every talk across all mail (rule 11), stopping a running turn; returns how many. */
   deleteAllTalks(): Promise<number>;
   /**
-   * Returns how many older threads of its series went with it (ADR 0065). A closing may say what
-   * the person meant by it (ADR 0066, rule 7): done, taken, or declined.
+   * The person pressed Undo: the newest closing of the thread is forgotten. `notImportant` and
+   * `later` undo lines of the journal kept from earlier versions.
    */
-  feedback(
-    threadId: string,
-    kind: "notImportant" | "later" | "closed",
-    outcome?: FeedbackOutcome,
-  ): Promise<number>;
-  /** The person pressed Undo: the newest feedback of that kind for the thread is forgotten. */
   undoFeedback(threadId: string, kind: "notImportant" | "later" | "closed"): Promise<void>;
   /**
    * What the press of a clean-up offer acts on (ADR 0102, rule 7): the query matched in the scope

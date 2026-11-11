@@ -1,4 +1,4 @@
-// Agents in the sync worker (ADR 0051, rule 10; ADR 0052). Everything here is injected, so a test
+// Agents in the sync worker (ADR 0051, rule 10). Everything here is injected, so a test
 // runs it over `FakeAgentRuntime` and the in-memory stores. Nothing logs mail text, subjects or
 // addresses: errors carry fixed sentences only.
 import type {
@@ -19,12 +19,10 @@ import type {
   AgentSettings,
   AgentSettingsPort,
   AgentStatus,
-  CandidateThread,
   ClockPort,
   Draft,
   DraftContent,
   DraftStorePort,
-  FeedbackOutcome,
   FileTextAnswer,
   GapSuggestion,
   MessageBodyPort,
@@ -57,29 +55,24 @@ import type {
   TalkResult,
   TalkSummary,
   ThreadAgentView,
-  ThreadAnalysis,
   WholeFileAnswer,
 } from "@matters/core";
 import {
-  ANALYZER_VERSION,
-  acceptAnalysis,
   acceptAnswers,
-  acceptBlocks,
   acceptCheck,
   acceptFills,
   acceptOffers,
   acceptRewrite,
   acceptTalkAll,
   acceptTalkQuotes,
+  acceptVerdicts,
   actMatches,
   addNeedsYouView,
-  analyzeNext,
-  buildAnalysisRequest,
   buildAnswerQuestionsRequest,
-  buildBlocksRequest,
   buildCheckReplyRequest,
   buildFillGapsRequest,
   buildPreparedRequest,
+  buildPromptRequest,
   buildRememberRequest,
   buildRewriteRequest,
   buildTalkAllRequest,
@@ -87,11 +80,8 @@ import {
   buildTalkPlanRequest,
   buildTalkRequest,
   buildTalkTitleRequest,
-  caseKeyOf,
   clean,
   countQuery,
-  DRAFT_AHEAD_OFF,
-  DRAFTED_AHEAD,
   type DraftParts,
   draftGaps,
   type HelpRefusal,
@@ -108,17 +98,12 @@ import {
   MAX_HELP_DRAFT_CHARS,
   MAX_INSTRUCTION_CHARS,
   MAX_INSTRUCTIONS,
-  MAX_PARALLEL_TURNS,
   MAX_TALK_QUERY_CHARS,
   MAX_TALK_THREADS,
-  type MayRun,
-  type MayRunReason,
   matchQuery,
   mayRun,
-  normalizeForQuote,
   normalizeRuleSubject,
-  orderForReading,
-  outcomeOf,
+  PROMPT_VERSION,
   type PreparedAnswer,
   parsePreparedAnswer,
   parseQuery,
@@ -130,8 +115,6 @@ import {
   parseTalkTitleAnswer,
   prepareReplyDraft,
   REWRITE_HOWS,
-  relatedCards,
-  selectCandidates,
   splitDraft,
   TALK_LOOP_TIME_CAP_MS,
   TALK_LOOP_TIME_MS,
@@ -145,21 +128,13 @@ import {
   type AgentApi,
   AgentUnavailableError,
   InvalidAgentSettingError,
-  type ReadEstimate,
   ThingNotFoundError,
 } from "./agentApi.ts";
 import {
-  type AgentReadDeps,
-  alsoCoveredBy,
-  CANDIDATE_LIMIT,
   consentedAccounts,
-  listThings,
   MAX_TALK_SHOWN,
   otherSenderAddress,
   preparedFor,
-  type RankedThing,
-  rankedThings,
-  readEstimate,
   readInstructions,
   readJournal,
   readRuleOffer,
@@ -175,33 +150,21 @@ import { type MailToolsState, openMailTools, type ReadFileRecord } from "./mailT
 import { PromptService } from "./promptService.ts";
 import { followTrail, type TrailResult } from "./talkTrail.ts";
 
-const DAY_MS = 86_400_000;
-/**
- * Threads sent to the runtime before the pass stops to look at the world again. It is a few
- * rounds of the parallel turns: a step ends with the turns that run being let finish, and a
- * short step would leave workers idle at every end.
- */
-export const STEP_THREADS = 12;
-/** Results are published at most this often while turns finish one after another. */
-export const PUBLISH_EVERY_MS = 250;
-/** Time left is shown only from this many finished turns of the reading (ADR 0053, rule 5). */
-export const MIN_TURNS_FOR_ETA = 3;
 /** Threads with activity in this many days are read before older ones (`P1`, else `P3`). */
 export const RECENT_DAYS = 2;
 export const KICK_DEBOUNCE_MS = 2000;
-/** When a budget stop does not say when it ends. */
-export const PAUSE_RETRY_MS = 15 * 60_000;
-/** A thread is tried this many times before it is left alone until it changes. */
-const FAILURES_BEFORE_SKIP = 2;
 /** The newest messages of a thread that go to a model; older ones are dropped, not clipped. */
 export const MAX_PROMPT_MESSAGES = 40;
 const LEDGER_SHOWN = 10;
 
 /**
- * The made-up message of the runtime test (ADR 0051, rule 5): a constant, never mail. Its quote
- * must be found in the message it names for the test to pass, which also proves the quoting rule.
+ * The made-up message of the runtime test (ADR 0051, rule 5): a constant, never mail. It is judged
+ * against `TEST_PROMPT` in the verdict turn of a prompt (ADR 0116), and its quote must be found in
+ * the message it names for the test to pass, which also proves the quoting rule.
  */
 export const TEST_PROMPT_QUOTE = "I will send you the signed contract by Friday";
+/** The prompt of the runtime test: a constant, never the person's. */
+export const TEST_PROMPT = "a promise to send a signed contract";
 const TEST_THREAD: PromptThread = {
   subject: "Contract",
   messages: [
@@ -218,14 +181,6 @@ const TEST_THREAD: PromptThread = {
 import { textForPrompt } from "./promptText.ts";
 
 export { textForPrompt };
-
-/** 06:00 of the next local day or this one, whichever comes next after `nowMs`. */
-export function nextMorning(nowMs: number): number {
-  const d = new Date(nowMs);
-  d.setHours(6, 0, 0, 0);
-  if (d.getTime() <= nowMs) d.setDate(d.getDate() + 1);
-  return d.getTime();
-}
 
 const lower = (s: string) => s.trim().toLowerCase();
 
@@ -269,11 +224,6 @@ export interface AgentServiceDeps {
   readonly settings: AgentSettingsPort;
   /** Drafts already answering a thread (the composer opens it instead of making another). */
   readonly drafts: Pick<DraftStorePort, "findByThread">;
-  /**
-   * The sends under way: a reply in the outbox answers its thread before it is in it (ADR 0112),
-   * so nothing is drafted ahead for it. Absent in tests that send nothing.
-   */
-  readonly sends?: AgentReadDeps["sends"];
   /** Stores a draft and tells the windows; the existing send path (`SendService.saveDraft`). */
   saveDraft(content: DraftContent): Promise<Draft>;
   readonly clock: ClockPort;
@@ -292,7 +242,7 @@ export interface AgentServiceDeps {
    * the person never reaches a model (ADR 0052, rule 8).
    */
   visibleText(html: string): string;
-  /** Something the windows show changed (settings, progress, an analysis, prepared work). */
+  /** Something the windows show changed (settings, progress, prepared work, a closing). */
   onChanged(): void;
   /**
    * A step of a turn across all mail (ADR 0064, rule 12; ADR 0080): a query that ran with the
@@ -307,7 +257,6 @@ export interface AgentServiceDeps {
   /** How far a prompt in the query bar is searched and read (ADR 0116, rule 9). Not stored. */
   onPromptProgress?(progress: PromptProgress): void;
   onError?(message: string): void;
-  readonly stepThreads?: number;
   readonly kickDebounceMs?: number;
 }
 
@@ -361,12 +310,11 @@ const MAX_LOOP_NOTE_CHARS = 200;
 export class AgentService implements AgentApi {
   private readonly deps: AgentServiceDeps;
   private info: AgentRuntimeInfo | null = null;
-  private progress: ReadingProgress = { state: "off", done: 0, total: 0, reason: "disabled" };
+  private progress: ReadingProgress = { state: "off", reason: "disabled" };
   private pass: Promise<void> | null = null;
   private again = false;
   private blocked: "signedOut" | "notPlan" | null = null;
   private cancelKick: (() => void) | null = null;
-  private cancelRetry: (() => void) | null = null;
   private abort = new AbortController();
   /** The talk turns running, one per thread, each with its own way to be stopped. */
   private readonly talking = new Map<string, AbortController>();
@@ -379,13 +327,8 @@ export class AgentService implements AgentApi {
   /** How often the model was asked to name a talk in this run of the app (ADR 0086, rule 7). */
   private readonly titleTries = new Map<number, number>();
   private stopped = false;
-  /** The person stopped the reading (ADR 0053, rule 8); mirrors the persisted setting. */
+  /** The person paused the reading in the background (ADR 0117, rule 3); mirrors the setting. */
   private readingPaused = false;
-  /** What this reading has measured, for the time left; null while no reading is running. */
-  private measure: { startedAtMs: number; turns: number } | null = null;
-  private cancelPublish: (() => void) | null = null;
-  private publishPending = false;
-  private readonly failures = new Map<string, number>();
   /** The test and the inspection must not run twice at once. */
   private testing: Promise<AgentRuntimeInfo> | null = null;
 
@@ -421,24 +364,21 @@ export class AgentService implements AgentApi {
     return this.deps.clock.now();
   }
 
-  private get stepThreads(): number {
-    return this.deps.stepThreads ?? STEP_THREADS;
-  }
-
   // --- Starting and stopping ---
 
   /**
-   * Looks at the runtime and starts reading, when the person has already turned AI on. With AI off
-   * nothing is started on this machine: the program is not even asked who is signed in.
+   * Looks at the runtime and starts the reading in the background, when the person has already
+   * turned AI on. With AI off nothing is started on this machine: the program is not even asked
+   * who is signed in.
    */
   async start(): Promise<void> {
     const settings = await this.deps.settings.get();
     this.readingPaused = settings.readingPaused === true;
     if (!settings.enabled) return;
     await this.addStarterView();
-    this.setProgress({ state: "checking", done: 0, total: 0 });
+    this.setProgress({ state: "checking" });
     await this.inspectRuntime();
-    // A pause the person made before the restart still holds: the pass only says how far it got.
+    // A pause the person made before the restart still holds: the pass only says so.
     if (this.readingPaused) this.runPass();
     else this.kick();
   }
@@ -447,11 +387,7 @@ export class AgentService implements AgentApi {
   async stop(): Promise<void> {
     this.stopped = true;
     this.cancelKick?.();
-    this.cancelRetry?.();
-    this.cancelPublish?.();
     this.cancelKick = null;
-    this.cancelRetry = null;
-    this.cancelPublish = null;
     this.abort.abort();
     await this.pass?.catch(() => {});
   }
@@ -511,20 +447,19 @@ export class AgentService implements AgentApi {
     const problem = this.info?.problem;
     return {
       state: "off",
-      done: 0,
-      total: 0,
       reason: status === "signedOut" ? "signedOut" : "runtime",
       ...(problem === undefined ? {} : { problem }),
     };
   }
 
   /**
-   * ADR 0051, rule 5: one made-up message through `run`, with the analysis schema. The runtime is
-   * `ready` only when the answer parses and its quote is found in the message. Never mail.
+   * ADR 0051, rule 5: one made-up message through `run`, in the verdict turn of a prompt (ADR
+   * 0116). The runtime is `ready` only when the answer parses against its schema, names the thread
+   * that was sent, and its quote is found in the message. Never mail.
    */
   async testRuntime(): Promise<AgentStatus> {
     const wasOff = this.progress.state === "off" || this.waitingOnRuntime();
-    if (wasOff) this.setProgress({ state: "checking", done: 0, total: 0 });
+    if (wasOff) this.setProgress({ state: "checking" });
     this.testing ??= this.runTest().finally(() => {
       this.testing = null;
     });
@@ -543,7 +478,16 @@ export class AgentService implements AgentApi {
     if (info.status !== "found" && info.status !== "ready" && info.status !== "failed") return info;
     this.blocked = null;
     const settingsNow = await settings.get();
-    const request = buildAnalysisRequest(TEST_THREAD, clock.now());
+    const { request } = buildPromptRequest(
+      [
+        {
+          thread: TEST_THREAD,
+          signals: { unread: true, starred: false, answered: false, messages: 1 },
+        },
+      ],
+      TEST_PROMPT,
+      clock.now(),
+    );
     const model = settingsNow.models.understand;
     let status: AgentRuntimeInfo["status"] = "failed";
     let problem: string | undefined;
@@ -553,14 +497,13 @@ export class AgentService implements AgentApi {
         { signal: this.abort.signal },
       );
       await this.noteRun(run.limits);
-      const analysis = acceptAnalysis(run.value, TEST_THREAD.messages, {
-        threadId: "test",
-        lastMessageKey: 1,
-        analyzerVersion: ANALYZER_VERSION,
-        analyzedAtMs: clock.now(),
-      });
+      const verdicts = acceptVerdicts(
+        run.value,
+        [{ threadId: "test", lastMessageKey: 1, thread: TEST_THREAD }],
+        { promptKey: "test", version: PROMPT_VERSION, atMs: clock.now() },
+      );
       // A quote that was found proves the answer is in the shape and is held to the text.
-      if (analysis !== null && analysis.facts.length > 0) status = "ready";
+      if (verdicts?.some((v) => v.quote !== undefined) === true) status = "ready";
       else problem = "The assistant answered, but not in the form the app needs.";
     } catch (error) {
       if (isAgentRunError(error) && (error.code === "notSignedIn" || error.code === "notPlan")) {
@@ -636,7 +579,6 @@ export class AgentService implements AgentApi {
     return (await this.deps.accounts.list()).map((a) => a.address);
   }
 
-  /** The thread as a model sees it: plain text of what the page shows, oldest last (ADR 0051, rule 8). */
   /**
    * The files with no text of the threads that went, fetched whole and numbered in the order they
    * go (ADR 0090, rules 2, 4 and 8), and the threads again with those numbers in their notes. A
@@ -694,6 +636,7 @@ export class AgentService implements AgentApi {
     return { files, threads, changed };
   }
 
+  /** The thread as a model sees it: plain text of what the page shows, oldest last (ADR 0051, rule 8). */
   private async loadThread(
     threadId: string,
     consented: ReadonlySet<string>,
@@ -742,7 +685,7 @@ export class AgentService implements AgentApi {
     };
   }
 
-  // --- Reading ---
+  // --- Reading in the background (ADR 0117, rule 3) ---
 
   /** Called when AI is turned on and after a committed sync batch. Debounced; one pass at a time. */
   kick(): void {
@@ -796,97 +739,41 @@ export class AgentService implements AgentApi {
 
   private setProgress(progress: ReadingProgress): void {
     this.progress = progress;
-    if (progress.state !== "reading") this.measure = null;
     this.deps.onChanged();
+  }
+
+  private pause(reason: "signedOut" | "notPlan"): void {
+    const problem = this.info?.problem;
+    this.setProgress({ state: "paused", reason, ...(problem === undefined ? {} : { problem }) });
   }
 
   /**
-   * Tells the windows that a result arrived, at most every `PUBLISH_EVERY_MS`: the first at once,
-   * the rest together, so three turns finishing close together are one change (ADR 0012).
+   * One pass behind the gates of background work: AI on for this runtime, an account with consent,
+   * the person's pause, a runtime that is ready (tested by itself once the person agreed). Then
+   * the saved views with a prompt read their new mail; they give way to a run the person starts
+   * and stop with the person's pause.
    */
-  private publishSoon(): void {
-    if (this.cancelPublish !== null) {
-      this.publishPending = true;
-      return;
-    }
-    this.deps.onChanged();
-    this.cancelPublish = this.deps.clock.setTimeout(() => {
-      this.cancelPublish = null;
-      if (this.publishPending) {
-        this.publishPending = false;
-        this.deps.onChanged();
-      }
-    }, PUBLISH_EVERY_MS);
-  }
-
-  /**
-   * The progress with the time left. It comes from the turns of this reading: threads still to
-   * read, over the threads finished per millisecond since the reading began, which already
-   * includes the turns running side by side. Absent before `MIN_TURNS_FOR_ETA` turns.
-   */
-  private progressNow(): ReadingProgress {
-    const { etaMs: _stale, ...p } = this.progress;
-    const m = this.measure;
-    if (p.state !== "reading" || m === null || m.turns < MIN_TURNS_FOR_ETA) return p;
-    const elapsed = this.now - m.startedAtMs;
-    if (elapsed <= 0) return p;
-    const remaining = Math.max(0, p.total - p.done);
-    return { ...p, etaMs: Math.round((remaining * elapsed) / m.turns) };
-  }
-
-  private pausedByPerson(): void {
-    this.setProgress({
-      state: "paused",
-      done: this.progress.done,
-      total: this.progress.total,
-      reason: "pausedByPerson",
-    });
-  }
-
-  private pause(reason: NonNullable<ReadingProgress["reason"]>, untilMs?: number): void {
-    const { etaMs: _eta, untilMs: _until, ...rest } = this.progress;
-    const problem = reason === "signedOut" || reason === "notPlan" ? this.info?.problem : undefined;
-    this.measure = null;
-    this.progress = {
-      ...rest,
-      state: "paused",
-      reason,
-      ...(untilMs === undefined ? {} : { untilMs }),
-      ...(problem === undefined ? {} : { problem }),
-    };
-    this.deps.onChanged();
-    this.cancelRetry?.();
-    const wait = untilMs === undefined ? PAUSE_RETRY_MS : Math.max(1000, untilMs - this.now);
-    this.cancelRetry = this.deps.clock.setTimeout(() => {
-      this.cancelRetry = null;
-      this.kick();
-    }, wait);
-  }
-
   private async passOnce(): Promise<void> {
     const { runtime } = this.deps;
     const first = await this.currentSettings();
     if (!first.enabled || first.runtimeId !== runtime.id) {
-      this.setProgress({ state: "off", done: 0, total: 0, reason: "disabled" });
+      this.setProgress({ state: "off", reason: "disabled" });
       return;
     }
     if ((await consentedAccounts(this.deps, runtime.id)).size === 0) {
-      this.setProgress({ state: "off", done: 0, total: 0, reason: "consent" });
+      this.setProgress({ state: "off", reason: "consent" });
       return;
     }
     if (this.readingPaused) {
-      await this.showPaused(first);
+      this.setProgress({ state: "paused", reason: "pausedByPerson" });
       return;
     }
     if (this.blocked !== null) {
+      // It waits for the person, not for the clock.
       this.pause(this.blocked);
-      this.cancelRetry?.(); // it waits for the person, not for the clock
-      this.cancelRetry = null;
       return;
     }
-    if (this.info === null || this.info.status === "found") {
-      this.setProgress({ state: "checking", done: 0, total: 0 });
-    }
+    if (this.info === null || this.info.status === "found") this.setProgress({ state: "checking" });
     if (this.info === null) await this.inspectRuntime();
     // The person agreed, so the test with a made-up message may run by itself (ADR 0051, rule 5).
     if (this.info?.status === "found") await this.runTest();
@@ -894,9 +781,6 @@ export class AgentService implements AgentApi {
       this.setProgress(this.offProgress());
       return;
     }
-
-    // ADR 0117, rule 3: the saved views with a prompt read their new mail first, behind the same
-    // gates; they give way to a run the person starts and stop with the person's pause.
     try {
       await this.prompts.readInBackground({
         recentDays: RECENT_DAYS,
@@ -908,391 +792,31 @@ export class AgentService implements AgentApi {
       );
     }
     if (this.stopped || this.abort.signal.aborted) return;
-
-    // The budget said no to drafting ahead: reading goes on, and the pause is shown when it ends.
-    let refusedDrafts: { readonly reason: MayRunReason; untilMs?: number } | null = null;
-    for (let guard = 0; guard < 10_000 && !this.stopped && !this.abort.signal.aborted; guard++) {
-      const s = await this.currentSettings();
-      if (!s.enabled) {
-        this.setProgress({ state: "off", done: 0, total: 0, reason: "disabled" });
-        return;
-      }
-      if (this.readingPaused) {
-        await this.showPaused(s);
-        return;
-      }
-      const consented = await consentedAccounts(this.deps, runtime.id);
-      if (consented.size === 0) {
-        this.setProgress({ state: "off", done: 0, total: 0, reason: "consent" });
-        return;
-      }
-      const now = this.now;
-      const scan = await this.scan(s, consented, now);
-      const pending = scan.pending;
-      if (pending.length > 0) {
-        this.measure ??= { startedAtMs: now, turns: 0 };
-        this.setProgress({ state: "reading", done: scan.done, total: scan.total });
-      } else {
-        this.setProgress({
-          state: "idle",
-          done: scan.done,
-          total: scan.total,
-          ...(scan.selected === 0 ? { windowEmpty: true as const } : {}),
-        });
-      }
-
-      // One list, in the order of ADR 0053 rule 1. A thread keeps the priority its age gives it
-      // (`P1` for the last days, else `P3`), so a refused `P3` thread is left for later while
-      // the `P1` threads after it still go.
-      let read: "go" | "end" | "halt" = "end";
-      if (pending.length > 0) {
-        read = await this.readStep(pending, consented, s, now);
-        if (read === "halt") return;
-      }
-      // Drafts for what shows are made between steps, so the first things found get theirs early.
-      let drafted: Awaited<ReturnType<AgentService["draftStep"]>> = "none";
-      if (refusedDrafts === null) {
-        drafted = await this.draftStep(s);
-        if (drafted === "halt") return;
-        if (typeof drafted === "object") refusedDrafts = drafted;
-      }
-      // What blocks what is asked only once there is nothing left to read: until then the bundles
-      // are still changing, and each change would be a new question.
-      if (read === "end" && pending.length === 0) {
-        const asked = await this.bundleStep(s);
-        if (asked === "halt") return;
-        if (asked === "did") continue;
-      }
-      if (read === "go" || drafted === "did") continue;
-      break;
-    }
-    if (this.stopped || this.abort.signal.aborted) return;
-    if (refusedDrafts !== null) {
-      this.pause(refusedDrafts.reason, refusedDrafts.untilMs);
-      return;
-    }
-    const last = this.progress;
-    // Looking again from here is for new mail: a reading that ended is idle, with its count.
-    this.setProgress({
-      state: "idle",
-      done: last.done,
-      total: last.total,
-      ...(last.windowEmpty === true ? { windowEmpty: true as const } : {}),
-    });
-  }
-
-  /** How far the reading got, for a person's pause: no runtime is asked, nothing is sent. */
-  private async showPaused(s: AgentSettings): Promise<void> {
-    const consented = await consentedAccounts(this.deps, this.deps.runtime.id);
-    const scan = await this.scan(s, consented, this.now);
-    this.setProgress({
-      state: "paused",
-      done: scan.done,
-      total: scan.total,
-      reason: "pausedByPerson",
-    });
-  }
-
-  /**
-   * The window's candidates in reading order, and which of them still have no reading of their
-   * latest message. `selected` counts them before threads that failed twice are left out.
-   */
-  private async scan(s: AgentSettings, consented: ReadonlySet<string>, now: number) {
-    const found = await this.deps.store.listThreadsSince(
-      now - s.windowDays * DAY_MS,
-      CANDIDATE_LIMIT,
+    this.setProgress(
+      this.readingPaused ? { state: "paused", reason: "pausedByPerson" } : { state: "idle" },
     );
-    const own = await this.ownAddresses();
-    const selected = selectCandidates(
-      found.filter((t) => consented.has(t.accountId)),
-      {
-        nowMs: now,
-        windowDays: s.windowDays,
-        ownAddresses: own,
-        // A thread the person's rules cover is never read (ADR 0054).
-        rules: await this.deps.insights.listRules(),
-      },
-    );
-    const candidates = orderForReading(
-      selected.filter((c) => (this.failures.get(failureKey(c)) ?? 0) < FAILURES_BEFORE_SKIP),
-      own,
-    );
-    const pending: CandidateThread[] = [];
-    for (const c of candidates) {
-      if (
-        (await this.deps.insights.getAnalysis(c.threadId, c.lastMessageKey, ANALYZER_VERSION)) ===
-        null
-      ) {
-        pending.push(c);
-      }
-    }
-    return {
-      selected: selected.length,
-      total: candidates.length,
-      done: candidates.length - pending.length,
-      pending,
-    };
   }
 
   /**
-   * One step of reading, up to `MAX_PARALLEL_TURNS` turns at once. `go`: look again and continue.
-   * `end`: nothing more can be read now. `halt`: the pass stops here and has said why (paused,
-   * signed out, cut short).
-   */
-  private async readStep(
-    list: readonly CandidateThread[],
-    consented: ReadonlySet<string>,
-    s: AgentSettings,
-    now: number,
-  ): Promise<"go" | "end" | "halt"> {
-    const { runtime } = this.deps;
-    const recentSince = now - RECENT_DAYS * DAY_MS;
-    // What is already known, so that a thread is read knowing the matter it belongs to (ADR 0059).
-    const known = await this.deps.insights.listAnalyses(ANALYZER_VERSION);
-    const result = await analyzeNext(
-      {
-        runtime,
-        store: this.deps.insights,
-        clock: this.deps.clock,
-        loadThread: async (c) => {
-          const loaded = await this.loadThread(c.threadId, consented);
-          // The thread changed while we waited: skip, the next pass reads the new state.
-          if (loaded === null || loaded.lastMessageKey !== c.lastMessageKey) return null;
-          const text = loaded.thread.messages.map((m) => m.text).join("\n");
-          const related = relatedCards(c.threadId, text, known);
-          return related.length === 0 ? loaded.thread : { ...loaded.thread, related };
-        },
-      },
-      list,
-      {
-        model: s.models.understand,
-        // With no windows known yet only `P1` may run, and the first runs teach them.
-        priorityOf: (c) => (s.limits === undefined || c.lastDateMs >= recentSince ? "P1" : "P3"),
-        budget: { weekSharePercent: s.weekSharePercent, usedByUsPercent: s.usedByUsPercent },
-        ...(s.limits === undefined ? {} : { limits: s.limits }),
-        maxThreads: this.stepThreads,
-        parallel: MAX_PARALLEL_TURNS,
-        signal: this.abort.signal,
-        stopWhen: () => this.readingPaused,
-        // Read for every step, so an instruction added meanwhile reaches the next threads; it does
-        // not make anything already read stale (ADR 0054, rule 10).
-        standing: await this.deps.insights.listInstructions(),
-        onStored: () => {
-          // The count moves as results arrive; the windows hear of it at a throttled pace.
-          this.progress = { ...this.progress, done: this.progress.done + 1 };
-          this.publishSoon();
-        },
-        onTurnEnd: () => {
-          if (this.measure !== null) this.measure.turns++;
-        },
-      },
-    );
-    if (result.limits !== undefined) {
-      const reset = result.limits.week?.resetsAtMs;
-      // A different reset time is a different week: our share of it starts from nothing.
-      const newWeek =
-        s.usedWeekResetsAtMs !== undefined && reset !== undefined && reset !== s.usedWeekResetsAtMs;
-      await this.deps.settings.update({
-        limits: result.limits,
-        usedByUsPercent: newWeek ? 0 : result.usedByUsPercent,
-        ...(reset === undefined ? {} : { usedWeekResetsAtMs: reset }),
-      });
-      if (this.info !== null) this.info = { ...this.info, limits: result.limits };
-    }
-    // Remember the threads that were tried and have nothing stored, so a bad one is not retried forever.
-    for (const c of result.unstored) {
-      const key = failureKey(c);
-      this.failures.set(key, (this.failures.get(key) ?? 0) + 1);
-    }
-    const processed = result.done + result.failed + result.skipped;
-    if (result.done > 0) this.deps.onChanged();
-
-    switch (result.stopped) {
-      case "finished":
-      case "maxThreads":
-        // Let the world in between steps: a stop request, a new message, a person's own ask.
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        return processed > 0 ? "go" : "end";
-      case "sessionLimit":
-      case "weekLimit":
-      case "overage":
-      case "budget":
-        this.pause(result.stopped, result.untilMs);
-        return "halt";
-      case "limit":
-        this.pause("limit", result.limits?.session?.resetsAtMs);
-        return "halt";
-      case "paused":
-        this.pausedByPerson();
-        return "halt";
-      case "notSignedIn":
-      case "notPlan": {
-        this.blocked = result.stopped === "notPlan" ? "notPlan" : "signedOut";
-        if (this.info !== null) {
-          this.info = {
-            ...this.info,
-            status: "signedOut",
-            problem:
-              result.stopped === "notPlan"
-                ? "The assistant is not using your Claude plan."
-                : "Not signed in. Sign in with the assistant's own program, then check again.",
-          };
-        }
-        this.pause(this.blocked);
-        return "halt";
-      }
-      case "aborted":
-        return "halt";
-    }
-  }
-
-  /**
-   * Drafts before the person asks (`P2`), for the best few, best first (ADR 0055). One per step.
-   * `none`: nothing to prepare. `did`: one was prepared or tried. `halt`: the pass stops here and
-   * has said why. A refusal by the budget is handed back, not acted on: reading may still go on.
-   */
-  private async draftStep(
-    s: AgentSettings,
-  ): Promise<"none" | "did" | "halt" | { readonly reason: MayRunReason; untilMs?: number }> {
-    if (s.models.draftAhead === DRAFT_AHEAD_OFF || this.readingPaused) return "none";
-    const { ranked } = await rankedThings(this.readDeps(), this.now, DRAFTED_AHEAD);
-    for (const r of ranked) {
-      if (r.thing.prepared !== undefined || r.thing.updating === true) continue;
-      // Drafts are for a reply, a wait or no stated intent. An offer, an act or a piece of news has
-      // no reply to draft, and what may be stale or suspect is not worth a draft until it is looked
-      // at (ADR 0066, rules 4, 5 and 8).
-      if (r.thing.check === true || r.thing.suspect === true) continue;
-      const intent = r.thing.intent;
-      if (intent === "decide" || intent === "act" || intent === "know") continue;
-      const key = `prepare:${r.analysis.threadId}:${r.analysis.lastMessageKey}`;
-      if ((this.failures.get(key) ?? 0) >= FAILURES_BEFORE_SKIP) continue;
-      const gate: MayRun = mayRun(
-        "P2",
-        s.limits,
-        { weekSharePercent: s.weekSharePercent, usedByUsPercent: s.usedByUsPercent },
-        this.now,
-      );
-      if (!gate.ok) {
-        return {
-          reason: gate.reason,
-          ...(gate.untilMs === undefined ? {} : { untilMs: gate.untilMs }),
-        };
-      }
-      try {
-        // Drafting ahead is understanding too: the lower effort is enough (ADR 0053, rule 3).
-        await this.prepareFor(
-          { threadId: r.analysis.threadId, reading: r.analysis },
-          s.models.draftAhead,
-          undefined,
-          "low",
-        );
-      } catch (error) {
-        if (this.abort.signal.aborted) return "halt";
-        if (isAgentRunError(error) && (error.code === "notSignedIn" || error.code === "notPlan")) {
-          this.blocked = error.code === "notPlan" ? "notPlan" : "signedOut";
-          this.pause(this.blocked);
-          return "halt";
-        }
-        if (isAgentRunError(error) && error.code === "limit") {
-          this.pause("limit", s.limits?.session?.resetsAtMs);
-          return "halt";
-        }
-        this.failures.set(key, (this.failures.get(key) ?? 0) + 1);
-      }
-      return "did";
-    }
-    return "none";
-  }
-
-  /**
-   * One short turn over the cards of one bundle, at `P2` like a draft (ADR 0059, rule 4). It sees
-   * what readings already took from the mail, not the mail. A refusal by the budget only leaves it
-   * for later: the list is whole without it.
-   */
-  private async bundleStep(s: AgentSettings): Promise<"none" | "did" | "halt"> {
-    if (this.readingPaused) return "none";
-    const { bundles, ranked } = await rankedThings(this.readDeps(), this.now);
-    for (const b of bundles) {
-      if (b.edges !== null || b.stale || b.cards.length < 2) continue;
-      const key = `bundle:${b.signature}`;
-      if ((this.failures.get(key) ?? 0) >= FAILURES_BEFORE_SKIP) continue;
-      const gate: MayRun = mayRun(
-        "P2",
-        s.limits,
-        { weekSharePercent: s.weekSharePercent, usedByUsPercent: s.usedByUsPercent },
-        this.now,
-      );
-      if (!gate.ok) return "none";
-      const before = s.limits;
-      try {
-        const run = await this.deps.runtime.run(
-          {
-            model: s.models.understand,
-            ...buildBlocksRequest(b.cards, clean),
-            effort: "low",
-          },
-          { signal: this.abort.signal },
-        );
-        await this.noteRun(run.limits, before);
-        await this.deps.insights.putBundleRead(
-          b.signature,
-          acceptBlocks(run.value, b.cards, normalizeForQuote),
-          this.now,
-        );
-        const accounts = new Map<string, number>();
-        for (const r of ranked) {
-          if (!b.threadIds.includes(r.thing.threadId)) continue;
-          accounts.set(r.thing.accountId, (accounts.get(r.thing.accountId) ?? 0) + 1);
-        }
-        await this.deps.insights.appendLedger(
-          [...accounts].map(([accountId, threads]) => ({
-            atMs: this.now,
-            runtimeId: this.deps.runtime.id,
-            accountId,
-            purpose: "analysis" as const,
-            threads,
-          })),
-        );
-        this.deps.onChanged();
-      } catch (error) {
-        if (this.abort.signal.aborted) return "halt";
-        if (isAgentRunError(error) && (error.code === "notSignedIn" || error.code === "notPlan")) {
-          this.blocked = error.code === "notPlan" ? "notPlan" : "signedOut";
-          this.pause(this.blocked);
-          return "halt";
-        }
-        if (isAgentRunError(error) && error.code === "limit") {
-          this.pause("limit", s.limits?.session?.resetsAtMs);
-          return "halt";
-        }
-        this.failures.set(key, (this.failures.get(key) ?? 0) + 1);
-      }
-      return "did";
-    }
-    return "none";
-  }
-
-  /**
-   * Runs the model for one thing and stores what it prepared under the analysis's last message.
+   * Runs the model for one thread and stores what it prepared under the thread's last message.
    * When the person typed words and the model answers `closed`, nothing is stored as prepared
-   * work: it is recorded as feedback, which hides the thing (ADR 0054).
+   * work: it is recorded as a closing (ADR 0054).
    */
   private async prepareFor(
-    subject: { readonly threadId: string; readonly reading: ThreadAnalysis | null },
+    threadId: string,
     model: string,
     guidance?: PreparedGuidance,
     effort?: "low" | "medium" | "high",
   ): Promise<PrepareResult> {
     const { runtime, insights, settings } = this.deps;
     const consented = await consentedAccounts(this.deps, runtime.id);
-    const { threadId, reading } = subject;
     const loaded = await this.loadThread(threadId, consented);
     if (loaded === null)
       throw new ThingNotFoundError("That thread is not available to the assistant");
     const accountId = loaded.accountId;
-    // What is prepared belongs to the thread as it stands now, with or without an earlier reading.
+    // What is prepared belongs to the thread as it stands now.
     const lastMessageKey = loaded.lastMessageKey;
-    const request = buildPreparedRequest(loaded.thread, reading, this.now, guidance, {
+    const request = buildPreparedRequest(loaded.thread, this.now, guidance, {
       list: await insights.listInstructions(),
       threadId,
     });
@@ -1316,15 +840,14 @@ export class AgentService implements AgentApi {
         throw new AgentUnavailableError("The assistant's answer could not be used.");
       }
       if (answer.kind === "closed") {
-        const alsoCovers = await this.recordClosing(
+        await this.recordClosing(
           threadId,
           lastMessageKey,
           answer.reason,
-          reading?.headline ?? clean(loaded.thread.subject).slice(0, 200),
+          clean(loaded.thread.subject).slice(0, 200),
           (guidance?.answer ?? "").trim(),
-          reading,
         );
-        return { kind: "closed", reason: answer.reason, ...(alsoCovers > 0 ? { alsoCovers } : {}) };
+        return { kind: "closed", reason: answer.reason };
       }
       const work = workOf(answer);
       await this.storePrepared(threadId, lastMessageKey, work);
@@ -1344,8 +867,8 @@ export class AgentService implements AgentApi {
   }
 
   /**
-   * A closing the person's own words asked for: feedback, which hides the thing (ADR 0054). Returns
-   * how many older threads of its series went with it (ADR 0065).
+   * A closing the person's own words asked for (ADR 0054): kept in the journal with an Undo, and
+   * counted toward a rule for its sender (ADR 0058, rule 4).
    */
   private async recordClosing(
     threadId: string,
@@ -1353,11 +876,8 @@ export class AgentService implements AgentApi {
     reason: string,
     headline: string,
     words: string,
-    reading: ThreadAnalysis | null,
-  ): Promise<number> {
+  ): Promise<void> {
     const senderAddress = await this.senderOf(threadId);
-    const alsoCovers =
-      reading === null ? 0 : await alsoCoveredBy(this.deps, reading, senderAddress, this.now);
     await this.deps.insights.recordFeedback(
       {
         threadId,
@@ -1372,11 +892,9 @@ export class AgentService implements AgentApi {
         actor: "agent",
         headline,
         words: words.slice(0, MAX_GUIDANCE_CHARS),
-        ...(alsoCovers > 0 ? { alsoCovers } : {}),
       },
     );
     this.deps.onChanged();
-    return alsoCovers;
   }
 
   private async storePrepared(
@@ -1396,29 +914,13 @@ export class AgentService implements AgentApi {
       settings: this.deps.settings,
       store: this.deps.store,
       accounts: this.deps.accounts,
-      ...(this.deps.sends === undefined ? {} : { sends: this.deps.sends }),
     };
   }
 
   // --- AgentApi: reads ---
 
-  async things(limit?: number) {
-    return listThings(this.readDeps(), this.now, limit);
-  }
-
-  prepared(threadId: string): Promise<PreparedWork | null> {
-    return preparedFor(this.readDeps(), threadId);
-  }
-
   threadAgent(threadId: string): Promise<ThreadAgentView> {
-    return readThreadAgent(this.readDeps(), threadId, this.now);
-  }
-
-  readEstimate(input: {
-    accountIds: readonly string[];
-    windowDays: number;
-  }): Promise<ReadEstimate> {
-    return readEstimate(this.readDeps(), this.now, input);
+    return readThreadAgent(this.readDeps(), threadId);
   }
 
   journal(limit?: number) {
@@ -1446,14 +948,11 @@ export class AgentService implements AgentApi {
     // With AI off the program is not asked who is signed in just because a window wants to know
     // whether AI is on (ADR 0051, refinement 4): the person asks with `inspect`.
     if (this.info === null && settings.enabled) await this.inspectRuntime();
-    const progress = this.progressNow();
-    // What shows now is counted when asked, so it is never behind the list the person sees.
-    const found = progress.state === "off" ? undefined : (await this.things(0)).total;
     return {
       settings,
       runtime: this.info,
       consents: consents.filter((c: AgentConsent) => c.runtimeId === this.deps.runtime.id),
-      progress: found === undefined ? progress : { ...progress, found },
+      progress: this.progress,
       ledger,
     };
   }
@@ -1485,22 +984,18 @@ export class AgentService implements AgentApi {
   // --- AgentApi: the person pauses ---
 
   /**
-   * ADR 0053, rule 8. Saved, so it holds after a restart; nothing that is running is cut short
-   * (turns that run finish and keep their results), and no new turn starts. What the person asks
-   * for directly (`prepare`) still works.
+   * ADR 0053, rule 8; ADR 0117, rule 3: the reading in the background stops. Saved, so it holds
+   * after a restart; nothing that is running is cut short (turns that run finish and keep their
+   * results), and no new turn starts in the background. What the person asks for still works.
    */
   async pauseReading(): Promise<AgentStatus> {
     this.readingPaused = true;
     await this.deps.settings.update({ readingPaused: true });
     this.cancelKick?.();
-    this.cancelRetry?.();
     this.cancelKick = null;
-    this.cancelRetry = null;
     const { enabled } = await this.deps.settings.get();
     if (enabled && this.progress.state !== "off") {
-      if (this.pass === null)
-        this.runPass(); // says how far it got
-      else this.pausedByPerson();
+      this.setProgress({ state: "paused", reason: "pausedByPerson" });
     }
     this.deps.onChanged();
     return this.status();
@@ -1513,11 +1008,7 @@ export class AgentService implements AgentApi {
     if (enabled) {
       // Not debounced: the person pressed Continue and expects it to move.
       if (this.progress.state === "paused" && this.progress.reason === "pausedByPerson") {
-        this.setProgress({
-          state: "checking",
-          done: this.progress.done,
-          total: this.progress.total,
-        });
+        this.setProgress({ state: "checking" });
       }
       this.runPass();
     }
@@ -1530,42 +1021,34 @@ export class AgentService implements AgentApi {
   async setEnabled(input: {
     accountIds: readonly string[];
     runtimeId: string;
-    windowDays: number;
   }): Promise<AgentStatus> {
     const { runtime, settings, insights } = this.deps;
     if (input.runtimeId !== runtime.id) {
       throw new InvalidAgentSettingError("That assistant is not available.");
     }
-    const days = this.validWindow(input.windowDays);
     const known = new Set((await this.deps.accounts.list()).map((a) => a.id));
     const accountIds = [...new Set(input.accountIds)];
     if (accountIds.length === 0 || accountIds.some((id) => !known.has(id))) {
       throw new InvalidAgentSettingError("Choose at least one of your accounts.");
     }
     const atMs = this.now;
-    // Each account's line says how many threads the screen named for it, counted the way the
-    // reading counts them, so the ledger can show what the person agreed to.
+    // Each account's line says what the person agreed to; no thread goes with a consent.
     const lines = [];
     for (const accountId of accountIds) {
-      const estimate = await readEstimate(this.readDeps(), atMs, {
-        accountIds: [accountId],
-        windowDays: days,
-      });
       await settings.grantConsent(accountId, runtime.id, atMs);
       lines.push({
         atMs,
         runtimeId: runtime.id,
         accountId,
         purpose: "consent" as const,
-        threads: estimate.threads,
+        threads: 0,
       });
     }
-    await settings.update({ enabled: true, runtimeId: runtime.id, windowDays: days });
+    await settings.update({ enabled: true, runtimeId: runtime.id });
     await insights.appendLedger(lines);
     await this.addStarterView();
     this.blocked = null;
-    this.failures.clear();
-    this.setProgress({ state: "checking", done: 0, total: 0 });
+    this.setProgress({ state: "checking" });
     await this.inspectRuntime();
     this.deps.onChanged();
     this.startNow();
@@ -1575,9 +1058,7 @@ export class AgentService implements AgentApi {
   async disable(): Promise<AgentStatus> {
     const { settings, insights } = this.deps;
     this.cancelKick?.();
-    this.cancelRetry?.();
     this.cancelKick = null;
-    this.cancelRetry = null;
     // A run in flight is cut short: nothing more is sent once the person says no.
     this.abort.abort();
     await this.pass?.catch(() => {});
@@ -1601,7 +1082,7 @@ export class AgentService implements AgentApi {
         })),
       );
     }
-    this.progress = { state: "off", done: 0, total: 0, reason: "disabled" };
+    this.progress = { state: "off", reason: "disabled" };
     this.deps.onChanged();
     return this.status();
   }
@@ -1611,9 +1092,7 @@ export class AgentService implements AgentApi {
     const had = (await settings.listConsents()).filter((c) => c.accountId === accountId);
     if (had.length === 0) return this.status();
     this.cancelKick?.();
-    this.cancelRetry?.();
     this.cancelKick = null;
-    this.cancelRetry = null;
     // A run in flight may hold this account's mail: it is cut short, then the others go on.
     this.abort.abort();
     await this.pass?.catch(() => {});
@@ -1634,28 +1113,18 @@ export class AgentService implements AgentApi {
     return this.status();
   }
 
-  private validWindow(days: number): number {
-    if (!Number.isInteger(days) || days < 1 || days > 365) {
-      throw new InvalidAgentSettingError("The window is 1 to 365 days.");
-    }
-    return days;
-  }
-
   async setModels(models: Partial<AgentModels>): Promise<AgentStatus> {
     const current = await this.deps.settings.get();
     const next = { ...current.models };
     const known = this.info?.models ?? [];
-    for (const key of ["understand", "draftAhead", "write", "answer", "titles"] as const) {
+    for (const key of ["understand", "write", "answer", "titles"] as const) {
       const value = models[key];
       if (value === undefined) continue;
       const ok =
         typeof value === "string" &&
         value.length > 0 &&
         value.length <= 64 &&
-        ((key === "draftAhead" && value === DRAFT_AHEAD_OFF) ||
-          (key === "titles" && value === TITLES_OFF) ||
-          known.length === 0 ||
-          known.includes(value));
+        ((key === "titles" && value === TITLES_OFF) || known.length === 0 || known.includes(value));
       if (!ok) throw new InvalidAgentSettingError("That model is not available.");
       next[key] = value;
     }
@@ -1681,30 +1150,12 @@ export class AgentService implements AgentApi {
     return this.status();
   }
 
-  async setWindowDays(days: number): Promise<AgentStatus> {
-    await this.deps.settings.update({ windowDays: this.validWindow(days) });
-    this.deps.onChanged();
-    this.kick();
-    return this.status();
-  }
-
   // --- AgentApi: the person asks ---
-
-  /** The analysis the person's ask is about, and its thread's account. */
-  private async readingOf(
-    threadId: string,
-  ): Promise<{ analysis: ThreadAnalysis; accountId: string }> {
-    const view = await this.deps.store.getThread(threadId, { visibleOnly: true });
-    const [analysis] = await this.deps.insights.listAnalyses(ANALYZER_VERSION, [threadId]);
-    if (view === null || analysis === undefined) throw new ThingNotFoundError();
-    return { analysis, accountId: view.thread.accountId };
-  }
 
   /**
    * The gates of a turn the person asked for (ADR 0063), in order: AI on for this runtime, the
-   * thread exists, its account agreed, the runtime ready, the plan has room. Gives the settings
-   * and the earlier reading when it is of the last message: a person's ask needs no earlier
-   * reading, and the one turn works from the thread alone otherwise.
+   * thread exists, its account agreed, the runtime ready, the plan has room. Gives the settings;
+   * the one turn works from the thread alone.
    */
   private async gateForAsk(threadId: string) {
     const { runtime } = this.deps;
@@ -1717,12 +1168,7 @@ export class AgentService implements AgentApi {
       throw new AgentUnavailableError(NO_CONSENT);
     }
     await this.gateRuntime(s);
-    const [analysis] = await this.deps.insights.listAnalyses(ANALYZER_VERSION, [threadId]);
-    const reading =
-      analysis !== undefined && analysis.lastMessageKey === view.thread.lastMessageKey
-        ? analysis
-        : null;
-    return { s, reading, accountId };
+    return { s, accountId };
   }
 
   /** The last gates of a turn the person asked for: the runtime is ready and the plan has room. */
@@ -1752,10 +1198,10 @@ export class AgentService implements AgentApi {
   }
 
   async prepare(threadId: string, guidance?: PreparedGuidance): Promise<PrepareResult> {
-    const { s, reading } = await this.gateForAsk(threadId);
+    const { s } = await this.gateForAsk(threadId);
     try {
       return await this.prepareFor(
-        { threadId, reading },
+        threadId,
         s.models.write,
         guidance !== undefined && (guidance.direction ?? guidance.answer) !== undefined
           ? guidance
@@ -1931,8 +1377,8 @@ export class AgentService implements AgentApi {
     const mine = new AbortController();
     this.talking.set(threadId, mine);
     try {
-      const { s, reading } = await this.gateForAsk(threadId);
-      return await this.talkNow(threadId, typed, s.models.write, reading, mine.signal);
+      const { s } = await this.gateForAsk(threadId);
+      return await this.talkNow(threadId, typed, s.models.write, mine.signal);
     } catch (error) {
       if (mine.signal.aborted && !(error instanceof ThingNotFoundError)) {
         throw new AgentUnavailableError("Stopped.");
@@ -1948,7 +1394,6 @@ export class AgentService implements AgentApi {
     threadId: string,
     words: string,
     model: string,
-    reading: ThreadAnalysis | null,
     stop: AbortSignal,
   ): Promise<TalkResult> {
     const { runtime, insights, settings } = this.deps;
@@ -1961,7 +1406,6 @@ export class AgentService implements AgentApi {
     const open = await preparedFor(this.readDeps(), threadId);
     const request = buildTalkRequest(
       loaded.thread,
-      reading,
       this.now,
       await insights.listTalk(threadId, MAX_TALK_SHOWN),
       words,
@@ -1994,19 +1438,17 @@ export class AgentService implements AgentApi {
         model,
         threads: 1,
       };
-      let alsoCovers = 0;
       let reply: Omit<Extract<TalkEntry, { role: "agent" }>, "id">;
       if (answer.kind === "answer") {
         reply = { ...agent, kind: "answer", text: answer.text };
       } else if (answer.kind === "closed") {
         // The person's words are there, since a blank ask is refused; mail cannot ask for this.
-        alsoCovers = await this.recordClosing(
+        await this.recordClosing(
           threadId,
           lastMessageKey,
           answer.reason,
-          reading?.headline ?? clean(loaded.thread.subject).slice(0, 200),
+          clean(loaded.thread.subject).slice(0, 200),
           words,
-          reading,
         );
         reply = { ...agent, kind: "closed", text: answer.reason };
       } else {
@@ -2015,7 +1457,7 @@ export class AgentService implements AgentApi {
       }
       const entries = await insights.appendTalk([{ ...from, role: "you", text: words }, reply]);
       this.deps.onChanged();
-      return { entries, ...(alsoCovers > 0 ? { alsoCovers } : {}) };
+      return { entries };
     } finally {
       // What was sent is counted whether or not it worked: counts only, no text.
       await insights.appendLedger([
@@ -2269,7 +1711,6 @@ export class AgentService implements AgentApi {
       if (plan === null) throw new AgentUnavailableError(TALK_REJECTED);
 
       // 2. The trail, here, by code: rounds of queries and follow turns on summaries.
-      const asked = plan.state === undefined ? null : await this.askedThreads(plan.state);
       const trail = await followTrail(
         {
           store: this.deps.store,
@@ -2285,7 +1726,6 @@ export class AgentService implements AgentApi {
             displayName: a.displayName,
           })),
           rules: await insights.listRules(),
-          onlyThreads: asked,
           olderThanDays: plan.olderThanDays,
           carry,
           follow: understand,
@@ -2321,7 +1761,6 @@ export class AgentService implements AgentApi {
           displayName: a.displayName,
         })),
         rules: await insights.listRules(),
-        onlyThreads: null,
         olderThanDays: undefined,
         carry: undefined,
         // A question about a whole history counts old mail as much as new; the model has after: and before:.
@@ -2555,18 +1994,12 @@ export class AgentService implements AgentApi {
         if (one === undefined) continue;
         const view = await this.deps.store.getThread(one.threadId, { visibleOnly: true });
         if (view === null) throw new AgentUnavailableError(TALK_REJECTED);
-        const [reading] = await insights.listAnalyses(ANALYZER_VERSION, [one.threadId]);
-        const current =
-          reading !== undefined &&
-          reading.lastMessageKey === view.thread.lastMessageKey &&
-          (reading.state === "onYou" || reading.state === "waiting");
         hits.push({
           threadId: one.threadId,
           who: whoOf(view.messages, own),
           subject: view.thread.subject,
           note: item.note,
           lastMessageMs: view.messages.at(-1)?.dateMs ?? 0,
-          state: current ? reading.state : null,
         });
         quotes.push(...item.quotes.map((q) => ({ ...q, threadId: one.threadId })));
       }
@@ -2675,13 +2108,7 @@ export class AgentService implements AgentApi {
     );
   }
 
-  /** The threads on the list of Matters in a state, for a question about what waits (rule 7.2). */
-  private async askedThreads(state: "onYou" | "waiting"): Promise<ReadonlySet<string>> {
-    const { ranked } = await rankedThings(this.readDeps(), this.now);
-    return new Set(ranked.filter((r) => r.analysis.state === state).map((r) => r.thing.threadId));
-  }
-
-  /** The address of the other person in a thread: who it is about, for the score of senders. */
+  /** The address of the other person in a thread: who it is about, for a rule for the sender. */
   private async senderOf(threadId: string): Promise<string> {
     const view = await this.deps.store.getThread(threadId, { visibleOnly: true });
     const own = new Set((await this.ownAddresses()).map(lower));
@@ -2691,40 +2118,10 @@ export class AgentService implements AgentApi {
     return lower(other?.from.address ?? view?.messages.at(-1)?.to[0]?.address ?? "");
   }
 
-  /** Returns how many older threads of its series went with it (ADR 0065). */
-  async feedback(
-    threadId: string,
-    kind: "notImportant" | "later" | "closed",
-    said?: FeedbackOutcome,
-  ): Promise<number> {
-    const { analysis } = await this.readingOf(threadId);
-    const senderAddress = await this.senderOf(threadId);
-    const atMs = this.now;
-    const alsoCovers = await alsoCoveredBy(this.deps, analysis, senderAddress, atMs);
-    const outcome = outcomeOf(kind, said);
-    // A decline remembers the matter and its amount, so that the same offer stays closed in the
-    // same year and another one does not (ADR 0066, rule 7).
-    const caseKey = outcome === "declined" ? caseKeyOf(analysis.caseName) : "";
-    await this.deps.insights.recordFeedback(
-      {
-        threadId,
-        lastMessageKey: analysis.lastMessageKey,
-        senderAddress,
-        kind,
-        atMs,
-        ...(kind === "later" ? { untilMs: nextMorning(atMs) } : {}),
-        ...(outcome === undefined ? {} : { outcome }),
-        ...(caseKey === "" ? {} : { caseKey }),
-        ...(outcome === "declined" && analysis.amount !== undefined
-          ? { amountValue: analysis.amount.value }
-          : {}),
-      },
-      { actor: "person", headline: analysis.headline, ...(alsoCovers > 0 ? { alsoCovers } : {}) },
-    );
-    this.deps.onChanged();
-    return alsoCovers;
-  }
-
+  /**
+   * Undo of the latest closing of a thread, from the tray or the journal; `notImportant` and
+   * `later` are lines of the journal kept from earlier versions.
+   */
   async undoFeedback(threadId: string, kind: "notImportant" | "later" | "closed"): Promise<void> {
     await this.deps.insights.withdrawFeedback(threadId, kind, this.now);
     this.deps.onChanged();
@@ -2911,7 +2308,6 @@ export class AgentService implements AgentApi {
       throw new InvalidAgentSettingError("That rule is not there.");
     await this.deps.insights.removeRule(id, this.now);
     this.deps.onChanged();
-    // Threads the rule kept from reading are readable again, as when the window changes.
     this.kick();
   }
 
@@ -2944,7 +2340,6 @@ export class AgentService implements AgentApi {
   }
 }
 
-/** The prepared work a draft or a question answer stands for. */
 /** What the person is told when a reply helper's answer is not used. */
 function helpRefused(reason: HelpRefusal): string {
   switch (reason) {
@@ -2959,14 +2354,9 @@ function helpRefused(reason: HelpRefusal): string {
   }
 }
 
+/** The prepared work a draft or a question answer stands for. */
 function workOf(answer: Exclude<PreparedAnswer, { kind: "closed" }>): PreparedWork {
   return answer.kind === "draft"
     ? { kind: "draft", body: answer.body, nudge: answer.nudge }
     : { kind: "needs", missing: answer.missing, directions: answer.directions };
 }
-
-function failureKey(c: CandidateThread): string {
-  return `${c.threadId}:${c.lastMessageKey}`;
-}
-
-export type { RankedThing };

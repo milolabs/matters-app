@@ -1,6 +1,6 @@
 # 0109. The badge counts what is in Matters
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-10
 - Amends: [0071](0071-notifications.md) (rule 8: what the badge counts by default)
 - Amended by: [0112](0112-what-you-answered-waits-for-its-reading.md) (consequences: what the

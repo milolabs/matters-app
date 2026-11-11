@@ -55,8 +55,8 @@ export function watchSettingsSection(onAsked: () => void): void {
 const ENABLED = "matters.ai.enabled";
 
 /**
- * Whether AI was on when this window last heard. It lets the window open on Matters in its first
- * frame instead of after the answer of the backend; the answer then corrects it. It is a hint for
+ * Whether AI was on when this window last heard. It lets the window open on the starter view in
+ * its first frame instead of after the answer of the backend; the answer then corrects it. It is a hint for
  * the picture only: nothing is sent or started because of it.
  */
 export function readEnabledHint(): boolean {
@@ -72,7 +72,7 @@ export function writeEnabledHint(on: boolean): void {
     if (on) localStorage.setItem(ENABLED, "1");
     else localStorage.removeItem(ENABLED);
   } catch {
-    // Without storage the tab appears when the backend has answered.
+    // Without storage the starter view opens when the backend has answered.
   }
 }
 

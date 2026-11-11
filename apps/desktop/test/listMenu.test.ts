@@ -1,6 +1,6 @@
-import type { Message, Thing } from "@matters/core";
+import type { Message } from "@matters/core";
 import { describe, expect, it } from "vitest";
-import { mailMenu, thingMenu } from "../src/renderer/listMenu.ts";
+import { mailMenu } from "../src/renderer/listMenu.ts";
 
 const row = (over: Partial<Message> & { seen?: boolean } = {}) =>
   ({
@@ -10,7 +10,6 @@ const row = (over: Partial<Message> & { seen?: boolean } = {}) =>
     flags: { seen: over.seen ?? true },
     ...over,
   }) as unknown as Message;
-const thing = (threadId: string, accountId = "a") => ({ threadId, accountId }) as unknown as Thing;
 const actions = (menu: { sections: readonly (readonly { action: string }[])[] }) =>
   menu.sections.flat().map((i) => i.action);
 
@@ -57,50 +56,5 @@ describe("the menu of mail (ADR 0056, rule 4)", () => {
       deletesForever: false,
     });
     expect(menu.sections.flat().find((i) => i.action === "move")?.disabled).toBe(true);
-  });
-});
-
-describe("the menu of things (ADR 0056, rule 5)", () => {
-  const none = () => undefined;
-  const idle = () => false;
-
-  it("offers one thing its own words and what its work allows", () => {
-    expect(actions(thingMenu([thing("t1")], none, idle))).toEqual([
-      "reply",
-      "replyAll",
-      "forward",
-      "closed",
-      "later",
-      "notImportant",
-      "prepare",
-      "archive",
-      "delete",
-      "spam",
-      "move",
-    ]);
-    const draft = thingMenu([thing("t1")], () => ({ kind: "draft", body: "x" }) as never, idle);
-    expect(actions(draft)).toContain("edit");
-    expect(actions(draft)).not.toContain("prepare");
-  });
-
-  it("says it is preparing, and cannot be asked twice", () => {
-    const item = thingMenu([thing("t1")], none, () => true)
-      .sections.flat()
-      .find((i) => i.action === "prepare");
-    expect(item).toMatchObject({ label: "Preparing…", disabled: true });
-  });
-
-  it("never offers several anything that writes: each draft is read before it goes", () => {
-    const menu = thingMenu([thing("t1"), thing("t2")], none, idle);
-    expect(menu.heading).toBe("2 things");
-    expect(actions(menu)).toEqual([
-      "closed",
-      "later",
-      "notImportant",
-      "archive",
-      "delete",
-      "spam",
-      "move",
-    ]);
   });
 });

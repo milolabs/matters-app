@@ -1,9 +1,9 @@
 import type { AgentModels } from "@matters/core";
 import { createSignal, For, type JSX, onCleanup, onMount, Show } from "solid-js";
 import type { AgentStore } from "./agent.ts";
+import { modelName, ourShare, planButton, seenText, windowLine } from "./agentText.ts";
 import type { Backend } from "./client.ts";
 import { ChevronDownIcon } from "./icons.tsx";
-import { modelName, ourShare, planButton, seenText, windowLine } from "./mattersView.ts";
 
 /**
  * The status of the plans, the foot row of the prompt in the agent's column (ADR 0052, rule 11;

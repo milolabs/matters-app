@@ -1,18 +1,6 @@
 import type { ThreadMessage } from "@matters/contracts";
-import type {
-  ImageChoice,
-  Message,
-  MoveAction,
-  MoveTarget,
-  Participant,
-  PersonStats,
-  PromiseLine,
-  StoppableSource,
-  TalkHit,
-  Thing,
-  ThreadFactView,
-} from "@matters/core";
-import { parseQuery, promiseLines, replyPromptTarget } from "@matters/core";
+import type { ImageChoice, Message, Participant, StoppableSource, TalkHit } from "@matters/core";
+import { parseQuery, replyPromptTarget } from "@matters/core";
 import { createVirtualizer } from "@tanstack/solid-virtual";
 import {
   createEffect,
@@ -72,20 +60,12 @@ import {
 } from "./icons.tsx";
 import { allowingSource, barKind, imageCopy } from "./imageBar.ts";
 import { moveKeyOf, plainKey, type WriteKey, writeKeyOf } from "./keys.ts";
-import { AskNotes, Avatar, FoldRow, leadGrid, PromiseList, underRow } from "./letterRow.tsx";
+import { Avatar, FoldRow, leadGrid, underRow } from "./letterRow.tsx";
 import { isOpenable, misleadingHost, openExternally } from "./links.ts";
 import { createListWidth, createPaneWidth, ListDivider } from "./listDivider.tsx";
 import { HEAD_HEIGHT, itemAt, layoutList, ROW_HEIGHT } from "./listLayout.ts";
 import { createMarks, type Marks } from "./listMarks.ts";
-import {
-  type MailAction,
-  type Menu,
-  mailMenu,
-  type ThingAction,
-  thingMenu,
-  thingsText,
-  threadsText,
-} from "./listMenu.ts";
+import { type MailAction, type Menu, mailMenu, threadsText } from "./listMenu.ts";
 import { ListMenuView } from "./listMenuView.tsx";
 import { queryHitWords } from "./liveSearch.ts";
 import { MailFrame, type MailLink } from "./mailFrame.tsx";
@@ -93,8 +73,6 @@ import type { CleanMail } from "./mailHtml.ts";
 import { mailView } from "./mailTheme.ts";
 import { planReveal } from "./matchNav.ts";
 import { createMatchNavigator, type MatchNavigator } from "./matchNavigator.ts";
-import { MattersList, MattersReader } from "./matters.tsx";
-import { dateOrLateness, mattersTab, readingFooter, rowLine } from "./mattersView.ts";
 import { MovePicker } from "./movePicker.tsx";
 import type { MoveLine, MovesStore } from "./moves.ts";
 import { movePlaces } from "./moveView.ts";
@@ -103,7 +81,6 @@ import type { OutboxStore } from "./outbox.ts";
 import { OVERLAY_BELOW } from "./paneWidth.ts";
 import { personMark } from "./personMark.ts";
 import { createMenuAnchor, menuPoint, PopMenu } from "./popMenu.tsx";
-import { linesByMessage } from "./promiseRows.ts";
 import { PromptLine } from "./promptLine.tsx";
 import { createPromptRun } from "./promptRun.ts";
 import { NOTHING_FITS, promptOff } from "./promptView.ts";
@@ -117,8 +94,6 @@ import {
   type Counterpart,
   counterpart,
   failedBadge,
-  headLine,
-  headName,
   rowPerson,
   verifiedBadge,
 } from "./senderHeader.ts";
@@ -139,7 +114,7 @@ import {
 import { foldRun, letterKeys, sameKeys, sameRun } from "./threadLetters.ts";
 import { type StackItem, ThreadStack } from "./threadStack.tsx";
 import { toolButton } from "./ui.ts";
-import { ALL_MAIL_ID, MATTERS_ID, type ViewsStore } from "./views.ts";
+import { ALL_MAIL_ID, type ViewsStore } from "./views.ts";
 import { ViewStatus, ViewTabs } from "./viewTabs.tsx";
 import { createWindowWidth } from "./windowWidth.ts";
 
@@ -230,12 +205,11 @@ export function App(props: Stores) {
 function Mail(props: Stores) {
   const { store, accounts, outbox, moves, folders, compose, views, agent } = props;
   // A reply is written under its thread; everything else covers the reader (ADR 0100).
-  // Only where the thread itself is shown: from Matters, or with another thread open, it covers the reader.
+  // Only where the thread itself is shown: with another thread open, it covers the reader.
   const inlineReply = () => {
     const session = compose.session();
     return session !== null &&
       session.placement() === "inline" &&
-      !inMatters() &&
       store.thread()?.thread.id === session.base.threadId
       ? session
       : null;
@@ -281,8 +255,7 @@ function Mail(props: Stores) {
   const [dragCount, setDragCount] = createSignal(0);
   const [dropHover, setDropHover] = createSignal<DropTarget | null>(null);
   let bar!: QueryBarHandle;
-  // ADR 0116, rule 11: a prompt does nothing while the agent could not read for it, from the
-  // same state that decides whether Matters is there.
+  // ADR 0116, rule 11: a prompt does nothing while the agent could not read for it.
   const offWhy = createMemo(() => promptOff(agent.enabled(), agent.status()));
   const model = createQueryModel(store, accounts, offWhy);
   const showMarks = createMemo(() =>
@@ -290,19 +263,21 @@ function Mail(props: Stores) {
   );
   // Selecting a view sets the text the way typing would: through the bar.
   views.bindText((text) => bar.setText(text));
-  // `Matters` is a tab while AI is on, and opens first then (ADR 0052, rule 1). With AI off the
-  // window is what it always was.
-  createEffect(() => views.setMattersAvailable(agent.enabled()));
-  const inMatters = () => views.active().id === MATTERS_ID;
-  createEffect(() => agent.setShown(inMatters()));
+  // With AI on, the app opens on the starter view `Needs you` while the person has neither chosen
+  // a tab nor typed (ADR 0117, rule 2). With AI off the window is what it always was.
+  createEffect(
+    on([agent.enabled, views.views], ([on]) => {
+      if (on) untrack(() => views.openStarter());
+    }),
+  );
   // A prompt is a filter (ADR 0116). The bar's text says whether there is one; nothing is asked
   // of the backend on the keystroke, and the list stays the mail filters' until a run or kept
-  // verdicts give it rows (rules 2 and 7). Matters has a list of its own.
+  // verdicts give it rows (rules 2 and 7).
   const prompt = createPromptRun(props.backend);
   onCleanup(() => prompt.dispose());
   createEffect(() => {
     const text = store.query();
-    const has = !inMatters() && model.parsed().prompt !== undefined;
+    const has = model.parsed().prompt !== undefined;
     untrack(() => prompt.setQuery(text, has));
   });
   // A ranked order without a prompt (rule 4b): computed after `↵`, the dated list until then.
@@ -310,7 +285,7 @@ function Mail(props: Stores) {
   onCleanup(() => sorted.dispose());
   createEffect(() => {
     const text = store.query();
-    const mine = inMatters() ? null : rankedSortOf(model.parsed());
+    const mine = rankedSortOf(model.parsed());
     untrack(() => sorted.setQuery(text, mine));
   });
   createEffect(() => {
@@ -348,7 +323,7 @@ function Mail(props: Stores) {
     backend: props.backend,
     agent,
     open: () => {
-      const open = inMatters() ? undefined : store.thread()?.thread;
+      const open = store.thread()?.thread;
       return open === undefined
         ? null
         : { id: open.id, lastMessageKey: open.lastMessageKey, subject: open.subject };
@@ -356,26 +331,14 @@ function Mail(props: Stores) {
   });
   createEffect(() => threadAgent.sync());
   onCleanup(() => threadAgent.dispose());
-  // The bar searches the view it is over, and Matters has a list of its own (ADR 0056, rule 1).
-  createEffect(() => agent.setQuery(inMatters() && store.filtered() ? store.query() : ""));
-  // Several rows chosen at once (ADR 0056, rule 3): a message key in the mail lists, a thread in Matters.
+  // Several rows chosen at once (ADR 0056, rule 3), by message key.
   const rowOrder = createMemo(() => store.messages().map((m) => m.key));
-  const thingOrder = createMemo(() => agent.things().map((t) => t.threadId));
   const marks = createMarks<number>(rowOrder, () => store.messages()[store.selected()]?.key);
-  const thingMarks = createMarks<string>(thingOrder, () => agent.selected()?.threadId);
   const markedRows = createMemo(() =>
     marks.active() ? store.messages().filter((m) => marks.has(m.key)) : [],
   );
-  const markedThings = createMemo(() =>
-    thingMarks.active() ? agent.things().filter((t) => thingMarks.has(t.threadId)) : [],
-  );
   // What is chosen belongs to the list it was chosen in.
-  createEffect(
-    on([() => views.active().id, store.query], () => {
-      marks.clear();
-      thingMarks.clear();
-    }),
-  );
+  createEffect(on([() => views.active().id, store.query], () => marks.clear()));
   // Nobody is reading the open thread while the stack is in its place (ADR 0039).
   createEffect(
     on(
@@ -398,37 +361,21 @@ function Mail(props: Stores) {
     { equals: (a, b) => a.length === b.length && a.every((w, i) => w === b[i]) },
   );
   const matches = createMatchNavigator(
-    () => (inMatters() ? undefined : store.thread()?.messages),
+    () => store.thread()?.messages,
     hitWords,
     () => store.thread()?.thread.id,
   );
-  // The thread the agent looks at now, in either view: the open thread in the mail lists, the open
-  // thing in Matters. While several rows are marked, the reader shows the stack and there is none.
+  // The thread the agent looks at now: the open thread. While several rows are marked, the reader
+  // shows the stack and there is none.
   const talkThread = createMemo((): TalkThreadRef | null => {
-    if (inMatters()) {
-      const thing = thingMarks.active() ? undefined : agent.selected();
-      if (thing === undefined) return null;
-      const detail = agent.detail();
-      const mine = detail?.threadId === thing.threadId ? detail : undefined;
-      const last = mine?.messages.at(-1);
-      return {
-        id: thing.threadId,
-        name: firstName(thing.who),
-        subject: mine?.thread.subject ?? thing.headline,
-        headline: thing.headline,
-        ...(last === undefined ? {} : { lastMessageMs: last.dateMs }),
-      };
-    }
     const open = marks.active() ? null : store.thread();
     if (!open) return null;
     const other = replyPromptTarget(open.messages, [...own()]);
     const last = open.messages.at(-1);
-    const headline = threadAgent.reading()?.headline;
     return {
       id: open.thread.id,
       name: !other || own().has(other.address.toLowerCase()) ? "" : firstName(displayName(other)),
       subject: open.thread.subject,
-      ...(headline === undefined ? {} : { headline }),
       ...(last === undefined ? {} : { lastMessageMs: last.dateMs }),
     };
   });
@@ -439,8 +386,8 @@ function Mail(props: Stores) {
     windowWidth,
     thread: talkThread,
     threadAgent,
-    onMade: (threadId, made, words, headline, alsoCovers) =>
-      agent.talkMade(threadId, made.kind, made.text, words, headline, alsoCovers),
+    onMade: (threadId, made, words, subject) =>
+      agent.talkMade(threadId, made.kind, made.text, words, subject),
   });
   createEffect(() => talk.sync());
   // Back in a window wide enough for the column beside the mail, it follows the kept choice again.
@@ -457,11 +404,10 @@ function Mail(props: Stores) {
   onCleanup(() => talk.dispose());
   // Every way to the prompt first shows the column, if it is hidden (ADR 0069, rule 5).
   onCleanup(registerAgentOpener(() => openAgentPrompt(talk)));
-  /** The work the agent has prepared for that thread, whichever view shows it. */
-  const talkPrepared = () =>
-    inMatters() ? (agent.selected()?.prepared ?? null) : threadAgent.prepared();
-  /** The account was not shared: known only in the mail lists, where the answer is read per thread. */
-  const talkShared = () => inMatters() || !threadAgent.known() || threadAgent.available();
+  /** The work the agent has prepared for the open thread. */
+  const talkPrepared = () => threadAgent.prepared();
+  /** The account was not shared: known once the answer for the thread is read. */
+  const talkShared = () => !threadAgent.known() || threadAgent.available();
   /** The accounts All mail searches: the ones the person agreed to, for this runtime. */
   const talkAddresses = () => {
     const status = agent.status();
@@ -500,17 +446,10 @@ function Mail(props: Stores) {
       talk.setScope("thread");
       return;
     }
-    if (inMatters()) {
-      if (agent.things().some((t) => t.threadId === id)) {
-        agent.select(id);
-        return;
-      }
-    } else {
-      const at = store.messages().findIndex((m) => m.threadId === id);
-      if (at >= 0) {
-        store.select(at);
-        return;
-      }
+    const at = store.messages().findIndex((m) => m.threadId === id);
+    if (at >= 0) {
+      store.select(at);
+      return;
     }
     views.select(ALL_MAIL_ID);
     const phrase = hit.subject.replace(/["()]/g, " ").replace(/\s+/g, " ").trim().slice(0, 100);
@@ -520,15 +459,11 @@ function Mail(props: Stores) {
 
   /**
    * A notice or a banner was clicked (ADR 0071, rule 9): its message opens where it is shown, in
-   * Matters or in the list; otherwise the app goes to All mail, where new mail is on top.
+   * the list; otherwise the app goes to All mail, where new mail is on top.
    */
   function openNotice(key: number, threadId: string) {
-    if (inMatters() && agent.things().some((t) => t.threadId === threadId)) {
-      agent.select(threadId);
-      return;
-    }
     const at = store.messages().findIndex((m) => m.key === key || m.threadId === threadId);
-    if (!inMatters() && at >= 0) {
+    if (at >= 0) {
       store.select(at);
       return;
     }
@@ -622,20 +557,6 @@ function Mail(props: Stores) {
   }
 
   function write(mode: WriteKey) {
-    if (inMatters()) {
-      // The thing in the reader, not the selection of the list nobody sees now.
-      const thing = agent.selected();
-      if (!thing) return;
-      if (mode === "forward") {
-        void compose.open("forward", thing.accountId, thing.threadId, {
-          hidden: false,
-          messages: agent.detail()?.messages ?? [],
-        });
-      } else {
-        void compose.open(mode, thing.accountId, thing.threadId);
-      }
-      return;
-    }
     const open = store.thread();
     if (!open) return;
     if (mode === "forward") {
@@ -661,18 +582,14 @@ function Mail(props: Stores) {
   // The rows it is asked about, when they are not simply the thread in the reader.
   let foreverRows: readonly Message[] | undefined;
   // The menu of a row (ADR 0056, rule 4), and what it acts on.
-  const [listMenu, setListMenu] = createSignal<
-    | { x: number; y: number; rows: readonly Message[] }
-    | { x: number; y: number; things: readonly Thing[] }
-    | null
-  >(null);
+  const [listMenu, setListMenu] = createSignal<{
+    x: number;
+    y: number;
+    rows: readonly Message[];
+  } | null>(null);
   const targetedRow = (key: number) => {
     const m = listMenu();
-    return m !== null && "rows" in m && m.rows.length === 1 && m.rows[0]?.key === key;
-  };
-  const targetedThing = (id: string) => {
-    const m = listMenu();
-    return m !== null && "things" in m && m.things.length === 1 && m.things[0]?.threadId === id;
+    return m !== null && m.rows.length === 1 && m.rows[0]?.key === key;
   };
   let moreButton: HTMLButtonElement | undefined;
 
@@ -733,10 +650,6 @@ function Mail(props: Stores) {
     store.select(store.messages().findIndex((m) => m.key === key));
     listEl.focus({ preventScroll: true });
   };
-  const openThing = (id: string) => {
-    agent.select(id);
-    listEl.focus({ preventScroll: true });
-  };
 
   function menuForRow(e: MouseEvent, row: Message) {
     e.preventDefault();
@@ -746,25 +659,11 @@ function Mail(props: Stores) {
       rows: marks.active() ? markedRows() : [row],
     });
   }
-  function menuForThing(e: MouseEvent, thing: Thing) {
-    e.preventDefault();
-    if (!(thingMarks.active() && thingMarks.has(thing.threadId))) thingMarks.clear();
-    setListMenu({
-      ...menuPoint(e.clientX, e.clientY),
-      things: thingMarks.active() ? markedThings() : [thing],
-    });
-  }
   /** The menu key: the menu of what is chosen, at the row it starts from. */
   function menuFromKeyboard() {
     const el = listEl.querySelector<HTMLElement>('[data-row][aria-selected="true"]');
     const r = el?.getBoundingClientRect();
     const at = menuPoint(r ? r.left + 24 : 80, r ? r.bottom - 12 : 120);
-    if (inMatters()) {
-      const thing = agent.selected();
-      const things = thingMarks.active() ? markedThings() : thing ? [thing] : [];
-      if (things.length > 0) setListMenu({ ...at, things });
-      return;
-    }
     const row = store.messages()[store.selected()];
     const rows = marks.active() ? markedRows() : row ? [row] : [];
     if (rows.length > 0) setListMenu({ ...at, rows });
@@ -774,18 +673,12 @@ function Mail(props: Stores) {
     listEl.focus({ preventScroll: true });
   };
 
-  const moveSubject = (t: Thing): MoveSubject => ({
-    threadId: t.threadId,
-    accountId: t.accountId,
-    subject: t.headline,
-  });
-
   function writeTo(mode: WriteKey, accountId: string, threadId: string) {
     if (mode !== "forward") {
       void compose.open(mode, accountId, threadId);
       return;
     }
-    const hidden = !inMatters() && store.viewAsksHidden();
+    const hidden = store.viewAsksHidden();
     void props.backend
       .openThread(threadId, hidden)
       .then((r) => compose.open("forward", accountId, threadId, { hidden, messages: r.messages }));
@@ -831,66 +724,9 @@ function Mail(props: Stores) {
     }
   }
 
-  /** Moving a thing's mail. What leaves the mail leaves the list; what stays is still on the person. */
-  async function moveThings(
-    things: readonly Thing[],
-    action: MoveAction,
-    target?: MoveTarget,
-  ): Promise<void> {
-    const ids = things.map((t) => t.threadId);
-    const leaves = action === "delete" || action === "spam";
-    if (leaves) agent.hide(ids);
-    const result = await store.moveThreads(things.map(moveSubject), action, target);
-    // A move commits locally at once: the next read of the list no longer has the thread, and an
-    // undo of the move brings it back there (ADR 0112).
-    if (leaves && result === "moved") agent.recorded(ids);
-    else if (leaves) agent.unhide(ids);
-    await agent.refresh();
-  }
-
-  /** What a thing's menu, or the stack, does. */
-  function actOnThings(
-    action: ThingAction,
-    things: readonly Thing[],
-    at: { x: number; y: number },
-  ) {
-    const [thing] = things;
-    if (thing === undefined) return;
-    switch (action) {
-      case "reply":
-      case "replyAll":
-      case "forward":
-        writeTo(action, thing.accountId, thing.threadId);
-        return;
-      case "closed":
-      case "later":
-      case "notImportant":
-        thingMarks.clear();
-        void agent.feedbackMany(things, action);
-        return;
-      case "prepare":
-        void agent.prepare(thing.threadId);
-        return;
-      case "edit": {
-        const work = agent.preparedOf(thing);
-        if (work?.kind === "draft") void agent.editMyself(thing, work.body);
-        return;
-      }
-      case "archive":
-      case "delete":
-      case "spam":
-        thingMarks.clear();
-        void moveThings(things, action);
-        return;
-      case "move":
-        setPicker({ ...at, subjects: things.map(moveSubject) });
-    }
-  }
-
-  /** Undo of a move, by key or by the tray: what came back may be a thing of Matters again. */
+  /** Undo of a move, by key or by the tray. */
   async function undoMoveLine(line: MoveLine): Promise<void> {
     await store.undoMove(line);
-    if (agent.enabled()) await agent.refresh();
   }
 
   /** The keys while several rows are chosen; true when the key was dealt with. */
@@ -898,12 +734,10 @@ function Mail(props: Stores) {
     if (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp") {
       // Walking on is leaving the group.
       marks.clear();
-      thingMarks.clear();
       return false;
     }
     if (/^[1-9]$/.test(key) || key === "/" || key === "c") return false;
     e.preventDefault();
-    if (thingMarks.active()) return true;
     const rows = markedRows();
     const at = menuPoint(window.innerWidth / 2, 120);
     const move = moveKeyOf(key);
@@ -923,8 +757,7 @@ function Mail(props: Stores) {
       if (key === "a" && !e.shiftKey && !compose.isOpen() && listEl.contains(e.target as Node)) {
         // ⌘A in the list chooses everything it has loaded; in the reader it selects the text.
         e.preventDefault();
-        if (inMatters()) thingMarks.all();
-        else marks.all();
+        marks.all();
       } else if (
         key === "k" &&
         !e.shiftKey &&
@@ -947,7 +780,6 @@ function Mail(props: Stores) {
       } else if (
         key === "g" &&
         (mac ? e.metaKey : e.ctrlKey) &&
-        !inMatters() &&
         !compose.isOpen() &&
         forever() === null &&
         matches.total() > 0
@@ -991,24 +823,6 @@ function Mail(props: Stores) {
         }
       } else if (
         key === "enter" &&
-        inMatters() &&
-        !thingMarks.active() &&
-        !compose.isOpen() &&
-        !e.shiftKey
-      ) {
-        // ⌘↵ sends a ready draft, only while no input has the focus, or the draft itself has it.
-        const target = e.target instanceof Element ? e.target : null;
-        if (!isTextTarget(e) || target?.closest("[data-draft]")) {
-          e.preventDefault();
-          if (!e.repeat) {
-            void agent.sendSelected().then((outcome) => {
-              if (outcome !== "none" && outcome !== "failed") toList();
-            });
-          }
-        }
-      } else if (
-        key === "enter" &&
-        !inMatters() &&
         !compose.isOpen() &&
         !e.shiftKey &&
         !isTextTarget(e) &&
@@ -1050,9 +864,8 @@ function Mail(props: Stores) {
     if (e.key === "Escape") {
       e.preventDefault();
       // The group goes first: the search it was chosen from stays as it is.
-      if (marks.active() || thingMarks.active()) {
+      if (marks.active()) {
         marks.clear();
-        thingMarks.clear();
         return;
       }
       // A changed view goes back to its saved text; on All mail that is clearing the query.
@@ -1097,8 +910,7 @@ function Mail(props: Stores) {
       if (key.startsWith("Arrow") && !listEl.contains(e.target as Node)) return;
       e.preventDefault();
       const delta = key === "ArrowDown" || key === "J" ? 1 : -1;
-      if (inMatters()) thingMarks.extendBy(delta);
-      else marks.extendBy(delta);
+      marks.extendBy(delta);
       return;
     }
     if (key === "g" && agent.enabled() && talkThread() !== null && talkShared()) {
@@ -1107,9 +919,8 @@ function Mail(props: Stores) {
       askTheAgent();
       return;
     }
-    if ((marks.active() || thingMarks.active()) && onGroupKey(e, key)) return;
-    if (inMatters() && onMattersKey(e, key)) return;
-    if (!inMatters() && onThreadKey(e, key)) return;
+    if (marks.active() && onGroupKey(e, key)) return;
+    if (onThreadKey(e, key)) return;
     const move = moveKeyOf(key);
     if (move !== null) {
       e.preventDefault();
@@ -1155,10 +966,7 @@ function Mail(props: Stores) {
         break;
       case "c":
         e.preventDefault();
-        void compose.open(
-          "new",
-          inMatters() ? agent.selected()?.accountId : store.thread()?.thread.accountId,
-        );
+        void compose.open("new", store.thread()?.thread.accountId);
         break;
       case "r":
       case "a":
@@ -1189,58 +997,6 @@ function Mail(props: Stores) {
     return false;
   }
 
-  /**
-   * Keys in Matters. Archive, delete, spam and move act on the list's selected row, which is not
-   * what the reader shows here, so they are swallowed rather than allowed to act on mail nobody
-   * is looking at. Returns true when the key was dealt with.
-   */
-  function onMattersKey(e: KeyboardEvent, key: string): boolean {
-    switch (key) {
-      case "j":
-      case "k":
-        e.preventDefault();
-        agent.move(key === "j" ? 1 : -1);
-        return true;
-      case "ArrowDown":
-      case "ArrowUp":
-        if (!listEl.contains(e.target as Node)) return false;
-        e.preventDefault();
-        agent.move(key === "ArrowDown" ? 1 : -1);
-        return true;
-      case "e":
-        e.preventDefault();
-        void agent.editSelected();
-        return true;
-      case "Enter":
-        if (e.target instanceof HTMLButtonElement) return false;
-        e.preventDefault();
-        if (agent.selected()) {
-          store.setZone("reader");
-          reader.focus({ preventScroll: true });
-        }
-        return true;
-      case "r":
-      case "a":
-      case "f":
-        e.preventDefault();
-        write(writeKeyOf(key) as WriteKey);
-        return true;
-      case "u":
-      case "v":
-      case "#":
-      case "!":
-      case "Backspace":
-      case "Delete":
-        e.preventDefault();
-        return true;
-      default:
-        // A digit picks a way forward on a question; with none, it picks the nth tab.
-        if (!/^[1-9]$/.test(key) || !agent.pickDirection(key)) return false;
-        e.preventDefault();
-        return true;
-    }
-  }
-
   onMount(() => {
     window.addEventListener("keydown", onKeyDown);
     onCleanup(() => window.removeEventListener("keydown", onKeyDown));
@@ -1248,10 +1004,9 @@ function Mail(props: Stores) {
       {
         session: compose.session,
         open: async (target) => {
-          const thing = inMatters() ? agent.selected() : undefined;
-          const open = inMatters() ? null : store.thread();
-          const accountId = thing?.accountId ?? open?.thread.accountId;
-          const threadId = thing?.threadId ?? open?.thread.id;
+          const open = store.thread();
+          const accountId = open?.thread.accountId;
+          const threadId = open?.thread.id;
           if (target === "reply" && threadId !== undefined && accountId !== undefined) {
             await compose.open("reply", accountId, threadId);
           } else {
@@ -1280,10 +1035,6 @@ function Mail(props: Stores) {
 
   /** Who a reply would go to (ADR 0042, rule 6). */
   const replyTo = () => {
-    if (inMatters()) {
-      const messages = agent.detail()?.messages;
-      return messages && agent.selected() ? replyPromptName(messages, own()) : null;
-    }
     const open = store.thread();
     return open ? replyPromptName(open.messages, own()) : null;
   };
@@ -1301,7 +1052,6 @@ function Mail(props: Stores) {
         </h1>
         <ViewTabs
           views={views}
-          mattersTab={() => mattersTab(agent.count(), agent.status()?.progress)}
           onPicked={() => {
             paneWidth.setWide(false);
             listEl.focus({ preventScroll: true });
@@ -1338,9 +1088,9 @@ function Mail(props: Stores) {
         model={model}
         viewId={() => views.active().id}
         baseline={() => views.active().query}
-        searching={() => (inMatters() ? agent.searching() : store.searching())}
+        searching={() => store.searching()}
         canAsk={() => agent.enabled() && !compose.isOpen()}
-        promptOff={() => offWhy() !== null || inMatters()}
+        promptOff={() => offWhy() !== null}
         onAsk={askAcrossAll}
         onOpenThread={openFound}
         ref={(handle) => (bar = handle)}
@@ -1351,7 +1101,7 @@ function Mail(props: Stores) {
           style={{ width: `${listWidth.width()}px` }}
           // The strip left beside the widened agent is the way back to the mail.
           onPointerDown={() => paneWidth.setWide(false)}
-          aria-label={inMatters() ? "Things that matter" : "Messages"}
+          aria-label="Messages"
         >
           <ViewStatus
             views={views}
@@ -1359,45 +1109,31 @@ function Mail(props: Stores) {
             focusBar={() => bar.input.focus()}
             focusList={() => listEl.focus({ preventScroll: true })}
           />
-          <PromptLine prompt={prompt} shown={() => !inMatters()} />
-          <SortLine sort={sorted} shown={() => !inMatters()} />
+          <PromptLine prompt={prompt} />
+          <SortLine sort={sorted} />
           <div class="min-h-0 flex-1">
-            <Show
-              when={inMatters()}
-              fallback={
-                <MessageList
-                  store={store}
-                  marks={marks}
-                  targeted={targetedRow}
-                  onPress={(row, e) => pressRow(e, row.key, marks, openRow)}
-                  onMenu={menuForRow}
-                  resultsHeading={() => inAllMail() && store.filtered()}
-                  resultCount={count}
-                  whyOf={(m) => (store.ordered() ? whys().get(m.threadId) : undefined)}
-                  orderedEmpty={() =>
-                    sorted.rows() !== null
-                      ? "Nothing found."
-                      : prompt.progress() === null
-                        ? NOTHING_FITS
-                        : ""
-                  }
-                  words={hitWords}
-                  own={own()}
-                  syncing={accounts.summary().tone === "busy"}
-                  markOf={(m) => (showMarks() ? accounts.marks().get(m.accountId) : undefined)}
-                  ref={(el) => (listEl = el)}
-                />
+            <MessageList
+              store={store}
+              marks={marks}
+              targeted={targetedRow}
+              onPress={(row, e) => pressRow(e, row.key, marks, openRow)}
+              onMenu={menuForRow}
+              resultsHeading={() => inAllMail() && store.filtered()}
+              resultCount={count}
+              whyOf={(m) => (store.ordered() ? whys().get(m.threadId) : undefined)}
+              orderedEmpty={() =>
+                sorted.rows() !== null
+                  ? "Nothing found."
+                  : prompt.progress() === null
+                    ? NOTHING_FITS
+                    : ""
               }
-            >
-              <MattersList
-                agent={agent}
-                marks={thingMarks}
-                targeted={targetedThing}
-                onPress={(thing, e) => pressRow(e, thing.threadId, thingMarks, openThing)}
-                onMenu={menuForThing}
-                ref={(el) => (listEl = el)}
-              />
-            </Show>
+              words={hitWords}
+              own={own()}
+              syncing={accounts.summary().tone === "busy"}
+              markOf={(m) => (showMarks() ? accounts.marks().get(m.accountId) : undefined)}
+              ref={(el) => (listEl = el)}
+            />
           </div>
           <div class="flex h-11 shrink-0 border-t border-hairline bg-chrome">
             <button
@@ -1450,7 +1186,7 @@ function Mail(props: Stores) {
                 role="status"
                 aria-live="polite"
               >
-                {(inMatters() ? readingFooter(agent.status()) : null) ?? accounts.summary().text}
+                {accounts.summary().text}
               </span>
               <span
                 aria-hidden="true"
@@ -1489,7 +1225,7 @@ function Mail(props: Stores) {
               aria-label="Thread"
               class="selectable min-h-0 min-w-0 flex-1 overflow-y-auto outline-none"
             >
-              <Show when={marks.active() && !inMatters()}>
+              <Show when={marks.active()}>
                 <MailStack
                   rows={markedRows()}
                   deletesForever={store.viewAsksTrash()}
@@ -1507,91 +1243,40 @@ function Mail(props: Stores) {
                   onClear={() => marks.clear()}
                 />
               </Show>
-              <Show when={thingMarks.active() && inMatters()}>
-                <ThingStack
-                  agent={agent}
-                  things={markedThings()}
-                  onAct={(action, at) => actOnThings(action, markedThings(), at)}
-                  onOpen={(id) => {
-                    thingMarks.clear();
-                    openThing(id);
-                  }}
-                  onRemove={(id) => {
-                    const left = thingMarks.toggle(id);
-                    if (left !== undefined) openThing(left);
-                  }}
-                  onClear={() => thingMarks.clear()}
-                />
-              </Show>
-              <Show when={inMatters() ? !thingMarks.active() : !marks.active()}>
-                <Show
-                  when={inMatters()}
-                  fallback={
-                    <ThreadView
-                      store={store}
-                      own={own()}
-                      onWrite={write}
-                      onFilter={(token) => bar.setText(addFilter(store.query(), token))}
-                      backend={props.backend}
-                      mark={(id) =>
-                        accounts.accounts().length > 1 ? accounts.marks().get(id) : undefined
-                      }
-                      accountMark={(id) => accounts.marks().get(id)}
-                      onArchive={archive}
-                      onDelete={remove}
-                      onSpam={spam}
-                      onMove={openPicker}
-                      deletesForever={store.viewAsksTrash() && store.trashedKeys().length > 0}
-                      moreRef={(el) => (moreButton = el)}
-                      agent={agent}
-                      threadAgent={threadAgent}
-                      words={hitWords}
-                      matches={matches}
-                      replying={(threadId) => inlineReply()?.base.threadId === threadId}
-                      reply={() => (
-                        <Show when={inlineReply()}>
-                          {(session) => (
-                            <ReplyEditor
-                              session={session()}
-                              dragCount={dragCount}
-                              agent={replyAgent() ?? undefined}
-                            />
-                          )}
-                        </Show>
-                      )}
-                    />
+              <Show when={!marks.active()}>
+                <ThreadView
+                  store={store}
+                  own={own()}
+                  onWrite={write}
+                  onFilter={(token) => bar.setText(addFilter(store.query(), token))}
+                  backend={props.backend}
+                  mark={(id) =>
+                    accounts.accounts().length > 1 ? accounts.marks().get(id) : undefined
                   }
-                >
-                  <MattersReader
-                    agent={agent}
-                    senderHead={(threadId, messages, actions) => (
-                      <SenderHead
-                        threadId={threadId}
-                        messages={messages()}
-                        own={own()}
-                        backend={props.backend}
-                        accountMark={(id) => accounts.marks().get(id)}
-                        onFilter={(token) => bar.setText(addFilter(store.query(), token))}
-                      >
-                        {actions}
-                      </SenderHead>
-                    )}
-                    letters={(messages) => (
-                      <ThreadLetters
-                        messages={messages()}
-                        own={own()}
-                        onFilter={(token) => bar.setText(addFilter(store.query(), token))}
-                        backend={props.backend}
-                        accountMark={(id) => accounts.marks().get(id)}
-                      />
-                    )}
-                    accountMark={(id) => accounts.marks().get(id)}
-                    own={own()}
-                    onWrite={write}
-                    onOpenAllMail={() => views.select(ALL_MAIL_ID)}
-                    onOpenSettings={() => showSettings("agents")}
-                  />
-                </Show>
+                  accountMark={(id) => accounts.marks().get(id)}
+                  onArchive={archive}
+                  onDelete={remove}
+                  onSpam={spam}
+                  onMove={openPicker}
+                  deletesForever={store.viewAsksTrash() && store.trashedKeys().length > 0}
+                  moreRef={(el) => (moreButton = el)}
+                  agent={agent}
+                  threadAgent={threadAgent}
+                  words={hitWords}
+                  matches={matches}
+                  replying={(threadId) => inlineReply()?.base.threadId === threadId}
+                  reply={() => (
+                    <Show when={inlineReply()}>
+                      {(session) => (
+                        <ReplyEditor
+                          session={session()}
+                          dragCount={dragCount}
+                          agent={replyAgent() ?? undefined}
+                        />
+                      )}
+                    </Show>
+                  )}
+                />
               </Show>
             </section>
             <Show when={beside()}>
@@ -1626,7 +1311,7 @@ function Mail(props: Stores) {
                 dragCount={dragCount}
                 agent={replyAgent() ?? undefined}
                 suggest={(prefix) => props.backend.suggestPeople(prefix, 8)}
-                canGoInline={!inMatters() && store.thread()?.thread.id === session().base.threadId}
+                canGoInline={store.thread()?.thread.id === session().base.threadId}
               />
             )}
           </Show>
@@ -1670,12 +1355,7 @@ function Mail(props: Stores) {
               setPicker(null);
               listEl.focus({ preventScroll: true });
               if (subjects === undefined) void store.moveThread("move", target);
-              else if (inMatters()) {
-                const ids = new Set(subjects.map((s) => s.threadId));
-                const things = agent.things().filter((t) => ids.has(t.threadId));
-                thingMarks.clear();
-                void moveThings(things, "move", target);
-              } else {
+              else {
                 marks.clear();
                 void store.moveThreads(subjects, "move", target);
               }
@@ -1710,43 +1390,25 @@ function Mail(props: Stores) {
       <Show when={listMenu()}>
         {(at) => {
           const m = at();
-          if ("rows" in m) {
-            const [row] = m.rows;
-            const name =
-              m.rows.length === 1 &&
-              row !== undefined &&
-              senderToken(row.from.address, false) !== null
-                ? displayName(row.from)
-                : undefined;
-            return (
-              <ListMenuView<MailAction>
-                menu={mailMenu(m.rows, {
-                  deletesForever: store.viewAsksTrash(),
-                  senderName: name,
-                })}
-                label={m.rows.length === 1 ? "Message actions" : "Actions for the chosen messages"}
-                x={m.x}
-                y={m.y}
-                onPick={(action) => {
-                  closeListMenu();
-                  actOnRows(action, m.rows, { x: m.x, y: m.y });
-                }}
-                onClose={(back) => {
-                  setListMenu(null);
-                  if (back) listEl.focus({ preventScroll: true });
-                }}
-              />
-            );
-          }
+          const [row] = m.rows;
+          const name =
+            m.rows.length === 1 &&
+            row !== undefined &&
+            senderToken(row.from.address, false) !== null
+              ? displayName(row.from)
+              : undefined;
           return (
-            <ListMenuView<ThingAction>
-              menu={thingMenu(m.things, agent.preparedOf, agent.busy)}
-              label={m.things.length === 1 ? "Thing actions" : "Actions for the chosen things"}
+            <ListMenuView<MailAction>
+              menu={mailMenu(m.rows, {
+                deletesForever: store.viewAsksTrash(),
+                senderName: name,
+              })}
+              label={m.rows.length === 1 ? "Message actions" : "Actions for the chosen messages"}
               x={m.x}
               y={m.y}
               onPick={(action) => {
                 closeListMenu();
-                actOnThings(action, m.things, { x: m.x, y: m.y });
+                actOnRows(action, m.rows, { x: m.x, y: m.y });
               }}
               onClose={(back) => {
                 setListMenu(null);
@@ -1823,55 +1485,6 @@ function MailStack(props: {
         const list = row ? threads().get(row.threadId) : undefined;
         if (list) props.onRemove(list.map((m) => m.key));
       }}
-      onClear={props.onClear}
-    />
-  );
-}
-
-/** The stack of things. Sending is not among its actions: each draft is read before it goes. */
-function ThingStack(props: {
-  agent: AgentStore;
-  things: readonly Thing[];
-  onAct: (action: ThingAction, at: { x: number; y: number }) => void;
-  onOpen: (id: string) => void;
-  onRemove: (id: string) => void;
-  onClear: () => void;
-}) {
-  const items = createMemo<StackItem[]>(() =>
-    props.things.map((thing) => {
-      const line = rowLine(thing, props.agent.preparedOf(thing));
-      const when = dateOrLateness(thing);
-      return {
-        id: thing.threadId,
-        who: thing.who,
-        when: when.text,
-        late: when.late,
-        title: thing.headline,
-        note: (
-          <>
-            <span classList={{ "text-agent": line.agent, "text-late": !line.agent }}>
-              {line.label}
-            </span>
-            {line.note === "" ? "" : ` · ${line.note}`}
-          </>
-        ),
-      };
-    }),
-  );
-  const menu = createMemo(() => {
-    const whole = thingMenu(props.things, props.agent.preparedOf, props.agent.busy);
-    return { sections: whole.sections };
-  });
-  return (
-    <ThreadStack<ThingAction>
-      title={thingsText(props.things.length)}
-      people={namesLine(props.things.map((t) => t.who))}
-      items={items()}
-      menu={menu()}
-      primary="closed"
-      onAct={(action, button) => props.onAct(action, buttonPoint(button))}
-      onOpen={props.onOpen}
-      onRemove={props.onRemove}
       onClear={props.onClear}
     />
   );
@@ -2497,9 +2110,7 @@ function ThreadView(props: {
                 onFilter={props.onFilter}
                 backend={props.backend}
                 accountMark={props.accountMark}
-                facts={props.threadAgent.facts()}
                 matches={props.matches}
-                onReply={() => props.onWrite("reply")}
                 focus={() => {
                   const row = props.store.messages()[props.store.selected()];
                   return row?.threadId === t().thread.id ? row.key : null;
@@ -2536,7 +2147,7 @@ function ThreadView(props: {
 
 /**
  * The letters of a thread, with what they need around them: where a link goes, and the warning when
- * it goes somewhere else than it says. The thread view and Matters show the same letters.
+ * it goes somewhere else than it says.
  */
 function ThreadLetters(props: {
   messages: readonly ThreadMessage[];
@@ -2546,14 +2157,10 @@ function ThreadLetters(props: {
   backend: Backend;
   /** The colour of an account: the avatar of the person's own messages wears it. */
   accountMark: (accountId: string) => AccountMark | undefined;
-  /** The facts of the agent's reading, for the lines under the messages (ADR 0075). */
-  facts?: readonly ThreadFactView[];
   /** The walk through the marked words; the letters open and scroll when it shows a match (ADR 0077). */
   matches?: MatchNavigator;
   /** The letter of the selected row; picking another row of the open thread goes to its letter. */
   focus?: () => number | null;
-  /** Answers the thread; the agent's notes offer it (ADR 0099). */
-  onReply?: () => void;
 }) {
   const [hoverLink, setHoverLink] = createSignal<string | null>(null);
   const [warning, setWarning] = createSignal<{ shown: string; href: string } | null>(null);
@@ -2574,20 +2181,6 @@ function ThreadLetters(props: {
   // Letters follow message keys: a flag moving must not fold or reload any of them.
   const keys = createMemo(() => letterKeys(props.messages), [], { equals: sameKeys });
   const byKey = createMemo(() => new Map(props.messages.map((m) => [m.key, m])));
-  // The lines are read once per set of facts; a message with one is never folded away.
-  const nowMs = () => Date.now();
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const lineMap = createMemo(() =>
-    linesByMessage(
-      promiseLines(
-        (props.facts ?? []).filter((f) => byKey().has(f.messageKey)),
-        nowMs(),
-        timeZone,
-      ),
-    ),
-  );
-  const NO_LINES: readonly PromiseLine[] = [];
-
   // How each letter starts is decided once, when the letter is first seen: the newest and the
   // unread start open, the rest fold to one line. A later version of the message moves nothing.
   const starts = new Map<number, boolean>();
@@ -2603,7 +2196,7 @@ function ThreadLetters(props: {
           start = i === ks.length - 1 || !message.flags.seen;
           starts.set(k, start);
         }
-        return { open: start, dateMs: message.dateMs, hasPromise: lineMap().has(k) };
+        return { open: start, dateMs: message.dateMs };
       });
       return foldRun(list);
     },
@@ -2721,10 +2314,6 @@ function ThreadLetters(props: {
                     onHoverLink={setHoverLink}
                     initiallyOpen={starts.get(key) === true}
                     forceOpen={forced().has(key)}
-                    lines={lineMap().get(key) ?? NO_LINES}
-                    nowMs={nowMs()}
-                    timeZone={timeZone}
-                    {...(props.onReply === undefined ? {} : { onReply: props.onReply })}
                   />
                 </Show>
               </>
@@ -2912,190 +2501,6 @@ function SenderName(props: {
   );
 }
 
-/**
- * The top of the reader (ADR 0078): who wrote, before what it is about. A 48 px avatar, the name,
- * and under it the address and what the index knows of the person. The name and the avatar open the
- * filters of ADR 0028. The toolbar is the third column. The name and avatar draw at once; the second
- * line has its height from the start, so what the index adds moves nothing.
- */
-function SenderHead(props: {
-  threadId: string;
-  messages: readonly ThreadMessage[];
-  own: ReadonlySet<string>;
-  backend: Backend;
-  accountMark: (accountId: string) => AccountMark | undefined;
-  onFilter: (token: string) => void;
-  children: JSX.Element;
-}) {
-  const who = createMemo(() => counterpart(props.messages, props.own));
-  const address = () => who()?.person.address.trim().toLowerCase() ?? "";
-  const [stats, setStats] = createSignal<PersonStats | undefined>(undefined);
-  // Once per thread opened: the answer is not asked again while the thread stays open.
-  createEffect(
-    on(
-      () => `${props.threadId}\u0000${who()?.role === "self" ? "" : address()}`,
-      (key) => {
-        setStats(undefined);
-        const asked = key.slice(key.indexOf("\u0000") + 1);
-        if (asked === "") return;
-        let live = true;
-        onCleanup(() => {
-          live = false;
-        });
-        props.backend.getPerson(asked).then(
-          (found) => {
-            if (live) setStats(found);
-          },
-          () => {},
-        );
-      },
-    ),
-  );
-  const anchor = createMenuAnchor();
-  const menu = () => {
-    const c = who();
-    return c !== undefined && c.role === "sender" && senderToken(c.person.address, false) !== null
-      ? c.person
-      : null;
-  };
-  const open = (e: MouseEvent & { currentTarget: HTMLElement }) => {
-    if (plainClick(e)) anchor.open(e.currentTarget);
-  };
-  return (
-    <div
-      data-sender-head
-      class="grid grid-cols-[48px_minmax(0,1fr)_auto] grid-rows-[auto_auto] items-center gap-x-[14px] gap-y-0.5"
-    >
-      <Show
-        when={who()}
-        fallback={
-          <>
-            <span aria-hidden="true" />
-            <span aria-hidden="true" />
-          </>
-        }
-      >
-        {(c) => {
-          const mark = () => {
-            const m = c();
-            return personMark(m.person.address, m.person.name);
-          };
-          // Nobody else in the thread: the person's own filled avatar, as in the rows below.
-          const own = () => {
-            const first = props.messages[0];
-            return c().role === "self" && first ? props.accountMark(first.accountId) : undefined;
-          };
-          const avatar = () => {
-            const m = own();
-            return (
-              <Avatar
-                size={48}
-                initials={mark().initials}
-                tint={mark().tint}
-                {...(m ? { own: { fill: m.fill, ink: m.ink } } : {})}
-              />
-            );
-          };
-          return (
-            <>
-              <span class="row-span-2 row-start-1 self-center">
-                <Show when={menu()} fallback={avatar()}>
-                  <button
-                    type="button"
-                    tabIndex={-1}
-                    aria-hidden="true"
-                    class="cursor-default rounded-full focus-visible:outline-1 focus-visible:outline-edge"
-                    onClick={open}
-                  >
-                    {avatar()}
-                  </button>
-                </Show>
-              </span>
-              {/* The name sits beside the actions; the line under it runs under them too, so the
-                  address and the history are never cut short by the toolbar. */}
-              <div class="contents">
-                <div class="col-start-2 row-start-1 flex min-w-0 items-center gap-x-3 self-end">
-                  <Show
-                    when={menu()}
-                    fallback={
-                      <span
-                        data-sender-name
-                        class="truncate text-[17px] leading-[22px] font-semibold"
-                      >
-                        {headName(c())}
-                      </span>
-                    }
-                  >
-                    {(person) => (
-                      <button
-                        type="button"
-                        data-sender-name
-                        aria-haspopup="menu"
-                        aria-expanded={anchor.at() !== null}
-                        title={person().address}
-                        class="selectable min-w-0 cursor-default truncate rounded-[4px] text-left text-[17px] leading-[22px] font-semibold hover:bg-fill focus-visible:outline-1 focus-visible:outline-edge"
-                        onClick={open}
-                      >
-                        {headName(c())}
-                      </button>
-                    )}
-                  </Show>
-                  <Show when={failedBadge(c())}>
-                    {(badge) => (
-                      <span
-                        data-sender-not-verified
-                        title="The sender's domain did not confirm that it sent this mail. The name and the address may not be who they say."
-                        class="flex shrink-0 items-center gap-1 text-[12px] font-medium text-late"
-                      >
-                        <WarnIcon />
-                        {badge()}
-                      </span>
-                    )}
-                  </Show>
-                  <Show when={verifiedBadge(c())}>
-                    {(badge) => (
-                      <span
-                        data-sender-verified
-                        class="flex shrink-0 items-center gap-1 text-[12px] text-good"
-                      >
-                        <ShieldCheckIcon />
-                        {badge()}
-                      </span>
-                    )}
-                  </Show>
-                </div>
-                <p
-                  data-sender-line
-                  class="selectable col-start-2 col-end-4 row-start-2 h-4 self-start truncate text-[12px] leading-4 text-secondary"
-                >
-                  {headLine(c().person.address, stats(), Date.now())}
-                </p>
-              </div>
-              <Show when={anchor.at()}>
-                {(at) => {
-                  const person = menu();
-                  return person === null ? null : (
-                    <SenderMenu
-                      person={person}
-                      label={displayName(person)}
-                      at={at()}
-                      onFilter={props.onFilter}
-                      close={anchor.close}
-                    />
-                  );
-                }}
-              </Show>
-            </>
-          );
-        }}
-      </Show>
-      <div class="col-start-3 row-start-1 flex shrink-0 items-center gap-0.5 self-end">
-        {props.children}
-      </div>
-    </div>
-  );
-}
-
 /** One message of a thread: folded to a line, or open as a letter or as its sender laid it out. */
 function Letter(props: {
   message: ThreadMessage;
@@ -3107,15 +2512,9 @@ function Letter(props: {
   initiallyOpen: boolean;
   /** Match navigation asks for this letter to be open (ADR 0077). */
   forceOpen: boolean;
-  /** The promises and asks found in this message, to show under it (ADR 0075). */
-  lines: readonly PromiseLine[];
-  nowMs: number;
-  timeZone?: string;
   backend: Backend;
   onLink: (link: MailLink) => void;
   onHoverLink: (href: string | null) => void;
-  /** Answers the thread, from a note of the agent (ADR 0099). */
-  onReply?: () => void;
 }) {
   const [open, setOpen] = createSignal(props.initiallyOpen);
   createEffect(() => {
@@ -3157,32 +2556,22 @@ function Letter(props: {
     <Show
       when={open()}
       fallback={
-        <>
-          <button
-            type="button"
-            data-letter-key={m().key}
-            aria-expanded="false"
-            class={`${leadGrid} w-full cursor-default text-left text-[13px] hover:bg-soft focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-edge`}
-            onClick={() => setOpen(true)}
-          >
-            {avatar()}
-            <span class="truncate">
-              <span class="font-medium">{props.fromName(m())}</span>
-              <span class="ml-2 text-secondary">
-                <HitText text={m().snippet} />
-              </span>
+        <button
+          type="button"
+          data-letter-key={m().key}
+          aria-expanded="false"
+          class={`${leadGrid} w-full cursor-default text-left text-[13px] hover:bg-soft focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-edge`}
+          onClick={() => setOpen(true)}
+        >
+          {avatar()}
+          <span class="truncate">
+            <span class="font-medium">{props.fromName(m())}</span>
+            <span class="ml-2 text-secondary">
+              <HitText text={m().snippet} />
             </span>
-            <span class="text-[12px] text-secondary tabular-nums">{listDate(m().dateMs)}</span>
-          </button>
-          <Show when={props.lines.length > 0}>
-            <PromiseList
-              lines={props.lines}
-              under="row"
-              nowMs={props.nowMs}
-              {...(props.timeZone === undefined ? {} : { timeZone: props.timeZone })}
-            />
-          </Show>
-        </>
+          </span>
+          <span class="text-[12px] text-secondary tabular-nums">{listDate(m().dateMs)}</span>
+        </button>
       }
     >
       <section data-letter-key={m().key}>
@@ -3309,14 +2698,6 @@ function Letter(props: {
             />
           </Show>
         </div>
-        <Show when={props.lines.length > 0}>
-          <AskNotes
-            lines={props.lines}
-            nowMs={props.nowMs}
-            {...(props.timeZone === undefined ? {} : { timeZone: props.timeZone })}
-            {...(props.onReply === undefined ? {} : { onReply: props.onReply })}
-          />
-        </Show>
         <ReceivedStrip message={m()} backend={props.backend} />
       </section>
     </Show>

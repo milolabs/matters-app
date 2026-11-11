@@ -1,7 +1,7 @@
 // Naming a talk across all mail with a cheap model (ADR 0086, rule 6). The model sees only the
 // person's own first questions of that talk, as untrusted text: never mail, answers or quotes.
 import { cutTitle, MAX_TALK_TITLE_CHARS, TALK_TITLE_QUESTIONS } from "../domain/talks.ts";
-import { type AgentRequestBody, clean, MAX_GUIDANCE_CHARS } from "./thingsThatMatter.ts";
+import { type AgentRequestBody, clean, MAX_GUIDANCE_CHARS } from "./agentRequests.ts";
 
 /** The most words a name may have; the instructions ask for six. */
 export const MAX_TALK_TITLE_WORDS = 8;

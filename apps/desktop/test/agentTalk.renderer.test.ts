@@ -334,7 +334,7 @@ describe("the talk with the agent (ADR 0064)", () => {
 
   it("says what a finished turn made, with the person's words, and nothing for a failed one", async () => {
     const s = setup();
-    s.openThread(ref("a", { headline: "Anna waits" }));
+    s.openThread(ref("a", { subject: "Anna waits" }));
     await flush();
     s.talk.setWords("this is done");
     void s.talk.send();

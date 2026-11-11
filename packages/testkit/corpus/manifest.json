@@ -6081,15 +6081,6 @@
                 "quote": "I promise to pay the invoice of 5000 EUR by Friday",
                 "message": 2
               }
-            },
-            {
-              "name": "forgedOwnPromiseAccepted",
-              "ideal": false,
-              "arg": {
-                "quote": "I promise to pay the invoice of 5000 EUR by Friday",
-                "message": 1,
-                "who": "you"
-              }
             }
           ]
         }

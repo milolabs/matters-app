@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { visibleText } from "@matters/adapter-mime";
 import { createSqliteStorage } from "@matters/adapter-sqlite";
-import type { AgentStatus, StoredAccount, ThreadAnalysis } from "@matters/core";
-import { ANALYZER_VERSION, buildAnalysisRequest } from "@matters/core";
+import type { AgentStatus, StoredAccount } from "@matters/core";
+import { acceptVerdicts, buildPromptRequest, PROMPT_VERSION } from "@matters/core";
 import { ManualClock, settle } from "@matters/testkit";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -32,18 +32,16 @@ const status: AgentStatus = {
     enabled: false,
     models: {
       understand: "haiku",
-      draftAhead: "haiku",
       write: "sonnet",
       answer: "sonnet",
       titles: "haiku",
     },
-    windowDays: 30,
     weekSharePercent: 10,
     usedByUsPercent: 0,
   },
   runtime: null,
   consents: [],
-  progress: { state: "off", done: 0, total: 0, reason: "disabled" },
+  progress: { state: "off", reason: "disabled" },
   ledger: [],
 };
 
@@ -67,9 +65,7 @@ function stub(overrides: Partial<AgentApi> = {}) {
     };
   const api: AgentApi = {
     status: note("status", status),
-    things: note("things", { things: [], total: 0 }),
-    prepared: note("prepared", null),
-    threadAgent: note("threadAgent", { available: true, reading: null, facts: [], prepared: null }),
+    threadAgent: note("threadAgent", { available: true, prepared: null }),
     journal: note("journal", []),
     rules: note("rules", []),
     ruleOffer: note("ruleOffer", { scope: "sender", subject: "alerts@x.com" }),
@@ -108,19 +104,16 @@ function stub(overrides: Partial<AgentApi> = {}) {
     renameTalk: note("renameTalk", undefined),
     deleteTalk: note("deleteTalk", undefined),
     deleteAllTalks: note("deleteAllTalks", 0),
-    readEstimate: note("readEstimate", { threads: 4, capped: false }),
     setEnabled: note("setEnabled", status),
     disable: note("disable", status),
     setModels: note("setModels", status),
     setWeekShare: note("setWeekShare", status),
-    setWindowDays: note("setWindowDays", status),
     setTalkLoop: note("setTalkLoop", status),
     inspect: note("inspect", status),
     testRuntime: note("testRuntime", status),
     pauseReading: note("pauseReading", status),
     resumeReading: note("resumeReading", status),
     prepare: note("prepare", { kind: "draft", body: "Hi", nudge: false }),
-    feedback: note("feedback", 0),
     undoFeedback: note("undoFeedback", undefined),
     revokeConsent: note("revokeConsent", status),
     draftFromPrepared: note("draftFromPrepared", { draftId: "d1", existing: false }),
@@ -140,15 +133,6 @@ function stub(overrides: Partial<AgentApi> = {}) {
 }
 
 describe("agent requests", () => {
-  it("passes a whole limit on to the list and refuses anything else", async () => {
-    const { ask, calls } = stub();
-    await ask({ type: "agentThings", limit: 50 });
-    expect(calls.at(-1)).toEqual(["things", 50]);
-    for (const limit of [0, -1, 1.5, "50"]) {
-      expect(await ask({ type: "agentThings", limit })).toMatchObject({ code: "invalidRequest" });
-    }
-  });
-
   it("routes each request to the service with checked fields", async () => {
     const { ask, calls } = stub();
     expect(await ask({ type: "agentStatus" })).toMatchObject({
@@ -156,16 +140,10 @@ describe("agent requests", () => {
       ok: true,
       status,
     });
-    expect(await ask({ type: "agentThings" })).toMatchObject({
-      type: "agentThings",
-      things: [],
-      total: 0,
-    });
-    expect(await ask({ type: "agentPrepared", threadId: "t1" })).toMatchObject({ prepared: null });
     expect(await ask({ type: "agentThread", threadId: "t1" })).toMatchObject({
       type: "agentThread",
       ok: true,
-      view: { available: true, reading: null, facts: [], prepared: null },
+      view: { available: true, prepared: null },
     });
     expect(await ask({ type: "agentJournal" })).toMatchObject({
       type: "agentJournal",
@@ -174,14 +152,10 @@ describe("agent requests", () => {
     });
     await ask({ type: "agentJournal", limit: 20 });
     expect(
-      await ask({ type: "agentReadEstimate", accountIds: ["a"], windowDays: 30 }),
-    ).toMatchObject({ type: "agentReadEstimate", threads: 4, capped: false });
-    expect(
       await ask({
         type: "agentSetEnabled",
         accountIds: ["a"],
         runtimeId: "claude-code",
-        windowDays: 30,
       }),
     ).toMatchObject({ type: "agentSetEnabled", ok: true });
     expect(await ask({ type: "agentDisable" })).toMatchObject({ type: "agentDisable" });
@@ -189,7 +163,6 @@ describe("agent requests", () => {
       type: "agentSetModels",
     });
     expect(await ask({ type: "agentSetWeekShare", percent: 15 })).toMatchObject({ ok: true });
-    expect(await ask({ type: "agentSetWindowDays", days: 14 })).toMatchObject({ ok: true });
     expect(await ask({ type: "agentSetTalkLoop", on: true })).toMatchObject({ ok: true });
     expect(await ask({ type: "agentInspect" })).toMatchObject({ type: "agentInspect" });
     expect(await ask({ type: "agentTestRuntime" })).toMatchObject({ type: "agentTestRuntime" });
@@ -205,10 +178,6 @@ describe("agent requests", () => {
         answer: "400 euros",
       }),
     ).toMatchObject({ type: "agentPrepare", prepared: { kind: "draft" } });
-    expect(await ask({ type: "agentFeedback", threadId: "t1", kind: "later" })).toMatchObject({
-      type: "agentFeedback",
-      ok: true,
-    });
     expect(await ask({ type: "agentUndoFeedback", threadId: "t1", kind: "later" })).toMatchObject({
       type: "agentUndoFeedback",
       ok: true,
@@ -230,24 +199,19 @@ describe("agent requests", () => {
     });
     expect(calls.map((c) => c[0])).toEqual([
       "status",
-      "things",
-      "prepared",
       "threadAgent",
       "journal",
       "journal",
-      "readEstimate",
       "setEnabled",
       "disable",
       "setModels",
       "setWeekShare",
-      "setWindowDays",
       "setTalkLoop",
       "inspect",
       "testRuntime",
       "pauseReading",
       "resumeReading",
       "prepare",
-      "feedback",
       "undoFeedback",
       "revokeConsent",
       "draftFromPrepared",
@@ -593,23 +557,15 @@ describe("agent requests", () => {
     expect(calls).toEqual([]);
   });
 
-  it("passes the closed kind through feedback and undo, and answers a closing from prepare", async () => {
+  it("passes the closed kind through undo, and answers a closing from prepare", async () => {
     const { ask, calls } = stub({
       prepare: async () => ({ kind: "closed", reason: "Automatic notification" }),
-    });
-    expect(await ask({ type: "agentFeedback", threadId: "t1", kind: "closed" })).toMatchObject({
-      type: "agentFeedback",
-      ok: true,
-      alsoCovers: 0,
     });
     expect(await ask({ type: "agentUndoFeedback", threadId: "t1", kind: "closed" })).toMatchObject({
       type: "agentUndoFeedback",
       ok: true,
     });
-    expect(calls).toEqual([
-      ["feedback", "t1", "closed", undefined],
-      ["undoFeedback", "t1", "closed"],
-    ]);
+    expect(calls).toEqual([["undoFeedback", "t1", "closed"]]);
     expect(
       await ask({ type: "agentPrepare", threadId: "t1", answer: "don't write" }),
     ).toMatchObject({
@@ -619,57 +575,27 @@ describe("agent requests", () => {
     });
   });
 
-  it("passes what a closing meant through, and refuses an outcome that is not one (ADR 0066, rule 7)", async () => {
-    const { ask, calls } = stub();
-    for (const outcome of ["done", "taken", "declined"] as const) {
-      expect(
-        await ask({ type: "agentFeedback", threadId: "t1", kind: "closed", outcome }),
-      ).toMatchObject({ type: "agentFeedback", ok: true });
-    }
-    expect(calls).toEqual([
-      ["feedback", "t1", "closed", "done"],
-      ["feedback", "t1", "closed", "taken"],
-      ["feedback", "t1", "closed", "declined"],
-    ]);
-    const before = calls.length;
-    for (const bad of [
-      { kind: "closed", outcome: "notRelevant" },
-      { kind: "closed", outcome: "gone" },
-      { kind: "later", outcome: "done" },
-      { kind: "notImportant", outcome: "declined" },
-    ]) {
-      expect(await ask({ type: "agentFeedback", threadId: "t1", ...bad })).toMatchObject({
-        ok: false,
-      });
-    }
-    expect(calls).toHaveLength(before);
-  });
-
   it("refuses requests that are not in shape before they reach the service", async () => {
     const { ask, calls } = stub();
     const bad: object[] = [
-      { type: "agentPrepared" },
-      { type: "agentPrepared", threadId: "" },
       { type: "agentThread" },
       { type: "agentThread", threadId: "" },
       { type: "agentJournal", limit: 0 },
       { type: "agentJournal", limit: 201 },
       { type: "agentJournal", limit: 1.5 },
       { type: "agentJournal", limit: "20" },
-      { type: "agentReadEstimate", accountIds: "a", windowDays: 30 },
-      { type: "agentReadEstimate", accountIds: [1], windowDays: 30 },
-      { type: "agentReadEstimate", accountIds: ["a"], windowDays: 1.5 },
-      { type: "agentSetEnabled", accountIds: ["a"], windowDays: 30 },
+      { type: "agentSetEnabled", accountIds: "a", runtimeId: "r" },
+      { type: "agentSetEnabled", accountIds: [1], runtimeId: "r" },
+      { type: "agentSetEnabled", accountIds: ["a"] },
       { type: "agentSetModels", models: { mystery: "x" } },
       { type: "agentSetModels", models: { write: 3 } },
       { type: "agentSetModels", models: "write" },
+      { type: "agentSetModels", models: { draftAhead: "haiku" } },
       { type: "agentSetWeekShare", percent: "10" },
       { type: "agentSetTalkLoop", on: "yes" },
       { type: "agentSetWeekShare", percent: Number.POSITIVE_INFINITY },
-      { type: "agentSetWindowDays", days: 2.5 },
       { type: "agentPrepare", threadId: "t", direction: 1 },
       { type: "agentPrepare", threadId: "t", answer: "x".repeat(2001) },
-      { type: "agentFeedback", threadId: "t", kind: "delete" },
       { type: "agentUndoFeedback", threadId: "t", kind: "delete" },
       { type: "agentRevokeConsent" },
       { type: "agentDraftFromPrepared", threadId: "t", body: "" },
@@ -686,6 +612,10 @@ describe("agent requests", () => {
       });
     }
     expect(calls).toEqual([]);
+    // The models are named in the refusal, with no model for drafts ahead (ADR 0117, rule 1).
+    expect(await ask({ type: "agentSetModels", models: { draftAhead: "haiku" } })).toMatchObject({
+      message: "models holds understand, write, answer and titles, as short strings",
+    });
   });
 
   it("has no request that sends mail", async () => {
@@ -720,34 +650,6 @@ describe("agent requests", () => {
     });
   });
 
-  it("finds the row of a series by the words of an older mail (ADR 0061)", async () => {
-    const lead = {
-      threadId: "new",
-      series: {
-        name: "Documents",
-        mails: [
-          { threadId: "new", headline: "Newest", dateMs: 2 },
-          { threadId: "old", headline: "Oldest", dateMs: 1 },
-        ],
-      },
-    };
-    const { api } = stub({
-      things: async () => ({ things: [lead, { threadId: "other" }], total: 2 }) as never,
-    });
-    const deps = {
-      agent: api,
-      accountStore: { list: async () => [] },
-      store: {
-        getThread: async (id: string) => ({
-          messages: id === "old" ? [{ key: 1 }] : [{ key: 2 }],
-        }),
-      },
-      index: { matchesAmong: async () => [1] },
-    } as unknown as BackendDeps;
-    const r = await handle(deps, { requestId: "r", type: "agentThings", query: "faktura" });
-    expect(r).toMatchObject({ things: [{ threadId: "new" }], total: 1 });
-  });
-
   it("fails cleanly when the backend has no agents", async () => {
     const r = await handle({} as BackendDeps, { type: "agentStatus", requestId: "r" });
     expect(r).toMatchObject({ type: "error", code: "internal" });
@@ -766,21 +668,20 @@ describe("RemoteAgent", () => {
     const remote = new RemoteAgent(host, {} as never, {} as never, () => log.push("told"));
     await remote.status();
     await remote.prepare("t1");
-    await remote.feedback("t1", "closed");
-    expect(log).toEqual(["agentStatus", "agentPrepare", "agentFeedback"]);
+    await remote.undoFeedback("t1", "closed");
+    expect(log).toEqual(["agentStatus", "agentPrepare", "agentUndoFeedback"]);
     log.length = 0;
-    await remote.setEnabled({ accountIds: ["a"], runtimeId: "r", windowDays: 7 });
+    await remote.setEnabled({ accountIds: ["a"], runtimeId: "r" });
     await remote.disable();
     await remote.revokeConsent("a");
     await remote.pauseReading();
     await remote.resumeReading();
-    await remote.setWindowDays(90);
     await remote.setModels({});
     await remote.setWeekShare(10);
     await remote.setTalkLoop(true);
     await remote.inspect();
     await remote.testRuntime();
-    expect(log.filter((l) => l === "told")).toHaveLength(11);
+    expect(log.filter((l) => l === "told")).toHaveLength(10);
     // Each one after its answer: a window that reads then sees the change.
     expect(log.every((l, i) => (l === "told") === (i % 2 === 1))).toBe(true);
     // A refusal changed nothing, and nobody is told.
@@ -812,10 +713,8 @@ describe("RemoteAgent", () => {
     const instructionReads: number[] = [];
     const reads = {
       insights: {
-        listAnalyses: async () => [],
         listFeedback: async () => [],
         getPrepared: async () => null,
-        getBundleRead: async () => null,
         listJournal: async (limit: number) => {
           asked.push(limit);
           return [];
@@ -834,10 +733,7 @@ describe("RemoteAgent", () => {
       settings: { get: async () => status.settings, listConsents: async () => [] },
       store: {
         getThread: async () => null,
-        listThreadsSince: async () => [],
         listWrittenTo: async () => new Map(),
-        listSentMail: async () => [],
-        listReceivedMail: async () => [],
       },
       accounts: { list: async () => [] },
     };
@@ -846,12 +742,7 @@ describe("RemoteAgent", () => {
       reads,
       readsHere(reads, () => 1),
     );
-    expect((await remote.things()).things).toEqual([]);
-    expect(await remote.prepared("t1")).toBeNull();
-    expect(await remote.readEstimate({ accountIds: ["a"], windowDays: 30 })).toEqual({
-      threads: 0,
-      capped: false,
-    });
+    expect(await remote.threadAgent("t1")).toEqual({ available: false, prepared: null });
     // The journal is a read too: answered here, with the limit clamped, and never sent to the worker.
     expect(await remote.journal()).toEqual([]);
     await remote.journal(5);
@@ -874,12 +765,9 @@ describe("RemoteAgent", () => {
     await remote.addRule({ threadId: "t1", scope: "sender" });
     await remote.addRule({ scope: "domain", subject: "x.com" });
     await remote.removeRule(3);
-    await remote.setEnabled({ accountIds: ["a"], runtimeId: "r", windowDays: 7 });
+    await remote.setEnabled({ accountIds: ["a"], runtimeId: "r" });
     await remote.prepare("t1", { direction: "Yes" });
-    await remote.feedback("t1", "notImportant");
     await remote.undoFeedback("t1", "notImportant");
-    await remote.feedback("t1", "closed");
-    await remote.feedback("t1", "closed", "declined");
     await remote.undoFeedback("t1", "closed");
     await remote.revokeConsent("a");
     await remote.draftFromPrepared("t1", "Hi");
@@ -908,12 +796,9 @@ describe("RemoteAgent", () => {
       { name: "agentAddRule", input: { threadId: "t1", scope: "sender" } },
       { name: "agentAddRule", input: { scope: "domain", subject: "x.com" } },
       { name: "agentRemoveRule", ruleId: 3 },
-      { name: "agentSetEnabled", accountIds: ["a"], runtimeId: "r", windowDays: 7 },
+      { name: "agentSetEnabled", accountIds: ["a"], runtimeId: "r" },
       { name: "agentPrepare", threadId: "t1", direction: "Yes" },
-      { name: "agentFeedback", threadId: "t1", kind: "notImportant" },
       { name: "agentUndoFeedback", threadId: "t1", kind: "notImportant" },
-      { name: "agentFeedback", threadId: "t1", kind: "closed" },
-      { name: "agentFeedback", threadId: "t1", kind: "closed", outcome: "declined" },
       { name: "agentUndoFeedback", threadId: "t1", kind: "closed" },
       { name: "agentRevokeConsent", accountId: "a" },
       { name: "agentDraftFromPrepared", threadId: "t1", body: "Hi" },
@@ -935,12 +820,11 @@ describe("RemoteAgent", () => {
   });
 });
 
-describe("a series in the list, with a real database (ADR 0061)", () => {
+describe("across all mail, with a real database (ADR 0064)", () => {
   const SENDER = "books@office.example";
-  const NAME = "Documents for August";
   const OWN = "person@example.com";
 
-  /** Reminders in threads of their own, each read as an open ask, and one thread from someone else. */
+  /** Reminders in threads of their own, and one thread from someone else. */
   async function setup() {
     const dir = mkdtempSync(join(tmpdir(), "matters-series-"));
     const storage = createSqliteStorage(join(dir, "mail.db"));
@@ -990,35 +874,14 @@ describe("a series in the list, with a real database (ADR 0061)", () => {
     await service.setEnabled({
       accountIds: [ACCOUNT_ID],
       runtimeId: "claude-code",
-      windowDays: 30,
     });
-    const read = (threadId: string, key: number, over: Partial<ThreadAnalysis> = {}) =>
-      ({
-        threadId,
-        lastMessageKey: key,
-        analyzerVersion: ANALYZER_VERSION,
-        state: "onYou",
-        headline: `About ${threadId}`,
-        facts: [{ kind: "ask", who: "you", evidence: { quote: "Please send", messageKey: key } }],
-        stakes: "none",
-        confidence: 0.9,
-        analyzedAtMs: clock.now(),
-        caseName: NAME,
-        ...over,
-      }) satisfies ThreadAnalysis;
     await storage.store.upsertMessages([
       mail(1, "r1", SENDER),
       mail(2, "r2", SENDER),
       mail(3, "r3", SENDER),
       mail(4, "x", "someone@example.org"),
     ]);
-    await storage.agent.putAnalysis([
-      read("r1", 1),
-      read("r2", 2),
-      read("r3", 3),
-      read("x", 4, { caseName: "Something else" }),
-    ]);
-    return { service, storage, mail, read };
+    return { service, storage };
   }
 
   it("answers across all mail over the real index and store, with the demo runtime (ADR 0064)", async () => {
@@ -1042,133 +905,17 @@ describe("a series in the list, with a real database (ADR 0061)", () => {
       kind: "found",
       query: "reports",
       threads: 4,
-      hits: [{ threadId: "x", note: "The newest thread that matched.", state: "onYou" }],
+      hits: [{ threadId: "x", note: "The newest thread that matched." }],
       quotes: [{ text: "Please send the reports today.", threadId: "x" }],
     });
     expect((await service.talkAllEntries()).slice(2)).toEqual(entries);
     // The summaries shown to the follow turn, then the threads read for the answer.
     expect((await talked()).map((l) => l.threads)).toEqual([4, 4]);
   });
-
-  it("lists a series as one thing, counted once, whose newest stands for all", async () => {
-    const { service } = await setup();
-    const page = await service.things();
-    expect(page.total).toBe(2);
-    const lead = page.things.find((t) => t.series !== undefined);
-    expect(lead?.threadId).toBe("r3");
-    expect(lead?.series?.mails.map((m) => m.threadId)).toEqual(["r3", "r2", "r1"]);
-    expect(page.things.some((t) => t.threadId === "r1" || t.threadId === "r2")).toBe(false);
-  });
-
-  it("closes them all by closing the newest, and one Undo brings them all back", async () => {
-    const { service } = await setup();
-    await service.feedback("r3", "closed");
-    expect((await service.things()).things.map((t) => t.threadId)).toEqual(["x"]);
-    await service.undoFeedback("r3", "closed");
-    const back = (await service.things()).things.find((t) => t.threadId === "r3");
-    expect(back?.series?.mails).toHaveLength(3);
-  });
-
-  it("says how many older threads a closing hid, and the journal keeps it (ADR 0065)", async () => {
-    const { service } = await setup();
-    expect(await service.feedback("r3", "closed")).toBe(2);
-    const [line] = await service.journal(1);
-    expect(line).toMatchObject({ threadId: "r3", action: "closed", alsoCovers: 2 });
-  });
-
-  it("counts only what this closing hid, not what an older one already did", async () => {
-    const { service } = await setup();
-    expect(await service.feedback("r2", "closed")).toBe(1);
-    expect(await service.feedback("r3", "closed")).toBe(0);
-    const lines = await service.journal(2);
-    expect(lines[0]).not.toHaveProperty("alsoCovers");
-    expect(lines[1]).toMatchObject({ threadId: "r2", alsoCovers: 1 });
-  });
-
-  it("counts nothing for a thread that is no series", async () => {
-    const { service } = await setup();
-    expect(await service.feedback("x", "notImportant")).toBe(0);
-    expect((await service.journal(1))[0]).not.toHaveProperty("alsoCovers");
-  });
-
-  it("brings back all a closing hid with the Undo of its journal line", async () => {
-    const { service } = await setup();
-    await service.feedback("r3", "closed");
-    const [line] = await service.journal(1);
-    if (line?.action !== "closed") throw new Error("no line");
-    await service.undoFeedback(line.threadId, line.action);
-    const back = (await service.things()).things.find((t) => t.threadId === "r3");
-    expect(back?.series?.mails.map((m) => m.threadId)).toEqual(["r3", "r2", "r1"]);
-    expect((await service.journal(1))[0]).toMatchObject({ alsoCovers: 2 });
-    expect((await service.journal(1))[0]?.undoneAtMs).toBeDefined();
-  });
-
-  it("does not hide a thread the person wrote in, nor count it", async () => {
-    const { service, storage, mail, read } = await setup();
-    // The person's message is older than the reminder it sits under, so the reminder is the newest
-    // and the thread is not one the person has just answered (ADR 0112).
-    const earlier = mail(7, "r1", OWN);
-    await storage.store.upsertMessages([{ ...earlier, dateMs: earlier.dateMs - 10 * 3_600_000 }]);
-    await storage.agent.putAnalysis([read("r1", 1)]);
-    expect(await service.feedback("r3", "closed")).toBe(1);
-    expect((await service.things()).things.map((t) => t.threadId).sort()).toEqual(["r1", "x"]);
-  });
-
-  it("keeps another invoice under one name listed when the newest is closed", async () => {
-    const { service, storage, read } = await setup();
-    await storage.agent.putAnalysis([
-      read("r1", 1, { anchors: ["F0084831514/006/26"] }),
-      read("r2", 2, { anchors: ["F0084831514/007/26"] }),
-      read("r3", 3, { anchors: ["F0084831514/007/26"] }),
-    ]);
-    const page = await service.things();
-    expect(page.things.map((t) => t.threadId).sort()).toEqual(["r1", "r3", "x"]);
-    expect(await service.feedback("r3", "closed")).toBe(1);
-    expect((await service.things()).things.map((t) => t.threadId).sort()).toEqual(["r1", "x"]);
-  });
-
-  it("sets them all aside with `Later`, and they return together", async () => {
-    const { service } = await setup();
-    await service.feedback("r3", "later");
-    expect((await service.things()).things.map((t) => t.threadId)).toEqual(["x"]);
-    await service.undoFeedback("r3", "later");
-    expect((await service.things()).total).toBe(2);
-  });
-
-  it("opens again with a reminder that comes after, counting only what came after", async () => {
-    const { service, storage, mail, read } = await setup();
-    await service.feedback("r3", "closed");
-    await storage.store.upsertMessages([mail(5, "r5", SENDER)]);
-    await storage.agent.putAnalysis([read("r5", 5)]);
-    const lead = (await service.things()).things.find((t) => t.threadId === "r5");
-    expect(lead?.series).toBeUndefined();
-    expect((await service.things()).total).toBe(2);
-  });
-
-  it("leaves out a thread the person answered until it is read again (ADR 0112)", async () => {
-    const { service, storage, mail, read } = await setup();
-    const before = await service.things();
-    expect(before.things.map((t) => t.threadId)).toContain("x");
-    await storage.store.upsertMessages([mail(8, "x", OWN)]);
-    const after = await service.things();
-    expect(after.things.map((t) => t.threadId)).not.toContain("x");
-    expect(after.total).toBe(before.total - 1);
-    // Read again, still open: it is back, and no longer marked.
-    await storage.agent.putAnalysis([read("x", 8, { caseName: "Something else" })]);
-    const back = (await service.things()).things.find((t) => t.threadId === "x");
-    expect(back?.updating).toBeUndefined();
-  });
-
-  it("ends with a reply, even when the reading after it finds nothing open", async () => {
-    const { service, storage, mail, read } = await setup();
-    await storage.store.upsertMessages([mail(6, "r3", OWN)]);
-    await storage.agent.putAnalysis([read("r3", 6, { state: "none", facts: [] })]);
-    expect((await service.things()).things.map((t) => t.threadId)).toEqual(["x"]);
-  });
 });
 
 describe("the demo assistant over the demo mailbox, with a real database", () => {
-  it("reads seeded mail, quotes real passages, and the router's reader sees the same list", async () => {
+  it("tests itself once turned on, drafts on request, and the router's reader sees the same", async () => {
     const dir = mkdtempSync(join(tmpdir(), "matters-agent-"));
     const storage = createSqliteStorage(join(dir, "mail.db"));
     cleanups.push(() => {
@@ -1209,32 +956,31 @@ describe("the demo assistant over the demo mailbox, with a real database", () =>
       visibleText,
       onChanged: () => {},
     });
-    const estimate = await service.readEstimate({ accountIds: [ACCOUNT_ID], windowDays: 30 });
-    expect(estimate.threads).toBeGreaterThan(5);
     await service.setEnabled({
       accountIds: [ACCOUNT_ID],
       runtimeId: "claude-code",
-      windowDays: 30,
     });
     service.kick();
     await clock.advance(KICK_DEBOUNCE_MS + 100);
     await service.idle();
     await settle();
 
+    // The made-up test ran by itself once the person agreed, and the pass ended (ADR 0117).
     const status = await service.status();
     expect(status.runtime?.status).toBe("ready");
-    expect(status.progress.state).toBe("idle");
-    expect(status.progress.total).toBe(estimate.threads);
-    expect(status.progress.done).toBe(estimate.threads);
-    const things = (await service.things()).things;
-    expect(things.length).toBeGreaterThan(0);
-    for (const t of things) {
-      expect(t.quote.quote.length).toBeGreaterThan(5);
-      expect(t.who).not.toBe("");
-    }
-    expect(things.some((t) => t.prepared !== undefined)).toBe(true);
+    expect(status.progress).toEqual({ state: "idle" });
 
-    // The router reads the same list from the reader connection.
+    // A draft on request, for a seeded thread with mail from someone else.
+    const own = new Set([account.address]);
+    const thread = docs.find((d) => !own.has(d.message.from.address))?.message.threadId;
+    if (thread === undefined) throw new Error("no thread");
+    expect(await service.prepare(thread, { answer: "Piątek pasuje." })).toMatchObject({
+      kind: "draft",
+    });
+    const view = await service.threadAgent(thread);
+    expect(view).toMatchObject({ available: true, prepared: { kind: "draft" } });
+
+    // The router reads the same from the reader connection.
     const reads = {
       insights: storage.read.agentInsights,
       settings: storage.read.agentSettings,
@@ -1246,41 +992,35 @@ describe("the demo assistant over the demo mailbox, with a real database", () =>
       reads,
       readsHere(reads, () => clock.now()),
     );
-    expect((await remote.things()).things).toEqual(things);
-    expect(await remote.readEstimate({ accountIds: [ACCOUNT_ID], windowDays: 30 })).toEqual(
-      estimate,
-    );
-
-    // Every stored quote is in the text of the message it names (the code held it to that).
-    const analyses = await storage.agent.listAnalyses(ANALYZER_VERSION);
-    expect(analyses.length).toBe(estimate.threads);
-    for (const a of analyses) {
-      for (const f of a.facts) {
-        const [body] = [...(await storage.bodies.getBodies([f.evidence.messageKey])).values()];
-        expect(body?.replace(/\s+/g, " ")).toContain(f.evidence.quote);
-      }
-    }
+    expect(await remote.threadAgent(thread)).toEqual(view);
   });
 
   it("never answers in a shape the code would not accept", async () => {
     const demo = new DemoAgentRuntime();
-    const request = buildAnalysisRequest(
-      {
-        subject: "Test",
-        messages: [
-          {
-            key: 1,
-            dateMs: 1,
-            from: { address: "a@example.com" },
-            fromOwn: false,
-            text: "nothing to see",
-          },
-        ],
-      },
+    const thread = {
+      subject: "Test",
+      messages: [
+        {
+          key: 1,
+          dateMs: 1,
+          from: { address: "a@example.com" },
+          fromOwn: false,
+          text: "nothing to see",
+        },
+      ],
+    };
+    const { request } = buildPromptRequest(
+      [{ thread, signals: { unread: true, starred: false, answered: false, messages: 1 } }],
+      "a promise to send a signed contract",
       Date.UTC(2026, 10, 5),
     );
     const run = await demo.run({ model: "haiku", ...request });
-    expect(run.value).toMatchObject({ state: "fyi", facts: [] });
+    const verdicts = acceptVerdicts(run.value, [{ threadId: "t", lastMessageKey: 1, thread }], {
+      promptKey: "k",
+      version: PROMPT_VERSION,
+      atMs: 1,
+    });
+    expect(verdicts).toHaveLength(1);
     expect(run.limits?.week?.usedPercent).toBeGreaterThan(0);
   });
 });

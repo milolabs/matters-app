@@ -2,20 +2,18 @@
 // notifies, through which of the three channels, what a banner may say, and when the computer
 // keeps quiet. The desktop app shows banners and sets the badge; nothing here knows how.
 
-import type { ThreadAnalysis } from "./agent.ts";
 import { isAutomatedSender } from "./automated.ts";
 import type { Message } from "./entities.ts";
+import { NEEDS_YOU_VIEW } from "./views.ts";
 
 /**
  * The kinds of mail, each with its own channels. By its headers a message of the Inbox is of one
  * kind only: mail from a list or a program is `lists`; mail in a thread you wrote in is `replies`;
- * the rest from a person is `people`. `matters` is mail the agent said matters (ADR 0106): it is
- * decided later, and adds to the kind the headers gave.
+ * the rest from a person is `people`. A saved view notifies on top of these (ADR 0071; ADR 0117,
+ * rule 6).
  */
-export const NOTICE_KINDS = ["replies", "people", "lists", "matters"] as const;
+export const NOTICE_KINDS = ["replies", "people", "lists"] as const;
 export type NoticeKind = (typeof NOTICE_KINDS)[number];
-/** The kinds the headers decide, at once. */
-export type HeaderKind = Exclude<NoticeKind, "matters">;
 
 /** Where a kind of mail shows: a system banner, a notice inside the app, the count on the icon. */
 export interface NoticeChannels {
@@ -27,18 +25,11 @@ export interface NoticeChannels {
 /** What a system banner may say; the lock screen and a shared screen can read it. */
 export type BannerContent = "full" | "subject" | "minimal";
 /**
- * What the icon counts: what is in Matters (the Matters tab's own number, ADR 0109), the number
- * of one saved view (`view`, ADR 0117, rule 5), unread mail you were told about, all unread in
- * the Inbox, or nothing.
+ * What the icon counts: the number of one saved view (`view`, ADR 0117, rule 5), unread mail you
+ * were told about, all unread in the Inbox, or nothing.
  */
-export type BadgeSource = "matters" | "view" | "notified" | "inbox" | "off";
-export const BADGE_SOURCES: readonly BadgeSource[] = [
-  "matters",
-  "view",
-  "notified",
-  "inbox",
-  "off",
-];
+export type BadgeSource = "view" | "notified" | "inbox" | "off";
+export const BADGE_SOURCES: readonly BadgeSource[] = ["view", "notified", "inbox", "off"];
 export type BadgeStyle = "count" | "dot";
 
 export interface NotificationPrefs {
@@ -84,13 +75,13 @@ const NONE: NoticeChannels = { banner: false, inApp: false, badge: false };
 
 export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   enabled: true,
-  kinds: { replies: ALL, people: ALL, lists: NONE, matters: ALL },
+  kinds: { replies: ALL, people: ALL, lists: NONE },
   views: {},
   mutedAccounts: [],
   banner: { content: "subject", sound: true, whenFront: false, together: 3 },
   inApp: { seconds: 6 },
-  // The same number as the Matters tab (ADR 0109): a count with a place in the app that shows it.
-  badge: { source: "matters", style: "count" },
+  // The starter view's tab number (ADR 0117, rule 5): a count with a place in the app that shows it.
+  badge: { source: "view", viewId: NEEDS_YOU_VIEW.id, style: "count" },
   quiet: { on: false, fromMin: 22 * 60, toMin: 7 * 60 },
   pausedUntilMs: null,
 };
@@ -161,8 +152,7 @@ export function readNotificationPrefs(raw: unknown): NotificationPrefs {
       replies: channels(kinds.replies, d.kinds.replies),
       people: channels(kinds.people, d.kinds.people),
       lists: channels(kinds.lists, d.kinds.lists),
-      // A file from before ADR 0106 has no such row: it takes the default, on.
-      matters: channels(kinds.matters, d.kinds.matters),
+      // A `matters` row of a file from before ADR 0117 is ignored (rule 6).
     },
     views,
     mutedAccounts: muted,
@@ -185,18 +175,20 @@ export function readNotificationPrefs(raw: unknown): NotificationPrefs {
 }
 
 /**
- * What the icon counts, defended like the rest. This is the one place a stored source is read:
- * when the built-in `Matters` tab goes (ADR 0117, rule 5), the default becomes
- * `{ source: "view", viewId: NEEDS_YOU_VIEW.id }` and a stored `matters` is read as that, here.
+ * What the icon counts, defended like the rest. This is the one place a stored source is read: a
+ * stored `matters`, from before the built-in tab went (ADR 0117, rule 5), reads as the starter
+ * view, as does `view` with no view.
  */
 function badgeOf(
   badge: Record<string, unknown>,
   d: NotificationPrefs["badge"],
 ): NotificationPrefs["badge"] {
-  const source = oneOf(badge.source, BADGE_SOURCES, d.source);
+  const stored = badge.source === "matters" ? "view" : badge.source;
+  const source = oneOf(stored, BADGE_SOURCES, d.source);
   const style = oneOf(badge.style, ["count", "dot"], d.style);
-  const viewId = text(badge.viewId, 200);
-  return source === "view" && viewId !== null ? { source, viewId, style } : { source, style };
+  if (source !== "view") return { source, style };
+  const viewId = badge.source === "matters" ? null : text(badge.viewId, 200);
+  return { source, viewId: viewId ?? NEEDS_YOU_VIEW.id, style };
 }
 
 /**
@@ -313,7 +305,7 @@ export interface NewMail {
 }
 
 /** The kind of a message in the Inbox by its headers; null outside it. */
-export function noticeKindOf(mail: NewMail): HeaderKind | null {
+export function noticeKindOf(mail: NewMail): NoticeKind | null {
   if (!mail.inbox) return null;
   const m = mail.message;
   if (m.automated === true || isAutomatedSender(m.from.address)) return "lists";
@@ -566,116 +558,6 @@ export function planCatchUp(
   return { banners: [], sound: false, whenFront: prefs.banner.whenFront, inApp, badged, told };
 }
 
-// --- What the agent says matters (ADR 0106, rule 3) ---
-
-/** What the agent made of a thread, as a notice may say it. */
-export interface MattersThing {
-  /** The thing's own line (the reading's headline). */
-  readonly title: string;
-  /** What is asked of the person, in the mail's own words, when the reading quotes it. */
-  readonly ask?: string;
-}
-
-/** A message whose thread the agent read after it came, and found that it matters. */
-export interface MattersMail {
-  readonly message: Message;
-  readonly fromMe: boolean;
-  /** The channels it already went through when it came. */
-  readonly told: NoticeChannels;
-  readonly thing: MattersThing;
-}
-
-/** The passage that asks something of the person, newest first: what a notice quotes. */
-export function askOf(analysis: Pick<ThreadAnalysis, "facts">): string | undefined {
-  const own = analysis.facts.filter((f) => f.who === "you");
-  const fact = [...own].sort((a, b) => b.evidence.messageKey - a.evidence.messageKey)[0];
-  const quote = fact?.evidence.quote.trim();
-  return quote === undefined || quote === "" ? undefined : quote;
-}
-
-function mattersText(mail: MattersMail, content: BannerContent | "inApp"): NoticeText {
-  const m = mail.message;
-  const base = {
-    key: m.key,
-    threadId: m.threadId,
-    accountId: m.accountId,
-    ...(content === "inApp" ? {} : { alone: true as const }),
-  };
-  const title = mail.thing.title.trim() === "" ? subjectOf(m) : mail.thing.title.trim();
-  if (content === "minimal") {
-    return { ...base, title: "Something matters", body: "Open Matters to see it." };
-  }
-  if (content === "subject") return { ...base, title: senderName(m), body: title };
-  return {
-    ...base,
-    title: senderName(m),
-    subtitle: title,
-    body: mail.thing.ask ?? m.snippet.trim(),
-  };
-}
-
-function mattersSummary(rest: readonly MattersMail[], content: BannerContent, more: boolean) {
-  const newest = (rest[0] as MattersMail).message;
-  const n = rest.length;
-  const noun = n === 1 ? "thing matters" : "things matter";
-  return {
-    key: newest.key,
-    threadId: newest.threadId,
-    accountId: newest.accountId,
-    title: more ? `${n} more ${noun}` : `${n} ${noun}`,
-    body:
-      content === "minimal"
-        ? "Open Matters to see them."
-        : `From ${fromWhom(rest.map((r) => r.message))}`,
-  };
-}
-
-/**
- * The notices for mail the agent found matters, after it came. Each goes through the channels of
- * `matters` it did not already go through: a message never notifies twice through one channel.
- * Read mail, your own and that of a muted account never notify; `quiet` drops banners and sound.
- */
-export function planMattersNotices(
-  prefs: NotificationPrefs,
-  mails: readonly MattersMail[],
-  quiet: boolean,
-  nowMs: number,
-): NoticePlan {
-  const newest = [...mails].sort((a, b) => b.message.key - a.message.key);
-  const banner: MattersMail[] = [];
-  const inApp: MattersMail[] = [];
-  const badged: number[] = [];
-  const told: Told[] = [];
-  for (const mail of newest) {
-    if (silenced(prefs, mail.message, mail.fromMe, nowMs)) continue;
-    const want = prefs.kinds.matters;
-    const c: NoticeChannels = {
-      banner: want.banner && !mail.told.banner,
-      inApp: want.inApp && !mail.told.inApp,
-      badge: want.badge && !mail.told.badge,
-    };
-    if (c.banner && !quiet) banner.push(mail);
-    if (c.inApp) inApp.push(mail);
-    if (c.badge) badged.push(mail.message.key);
-    told.push(toldOf(mail.message.key, c, quiet));
-  }
-  const { content, together, sound, whenFront } = prefs.banner;
-  const banners = grouped(
-    banner,
-    together,
-    (m) => mattersText(m, content),
-    (rest, more) => mattersSummary(rest, content, more),
-  );
-  return {
-    banners,
-    sound: !quiet && sound && banners.length > 0,
-    whenFront,
-    inApp: inApp.slice(0, MAX_IN_APP).map((m) => mattersText(m, "inApp")),
-    badged,
-    told,
-  };
-}
-
 // --- Views with a prompt (ADR 0117, rule 6) ---
 
 /** A message whose thread a view with a prompt was given a verdict for after it came, and fits. */
@@ -736,131 +618,6 @@ export function planPromptNotices(
     inApp: rest.length > 0 ? [...shown, summary(rest, "full", true)] : shown,
     badged,
     told,
-  };
-}
-
-/** A promise or an ask of the person that is due today: announced once. */
-export interface DueSoon {
-  /** The thread and the day: what is kept so that it is said once. */
-  readonly id: string;
-  readonly threadId: string;
-  /** The day it is due, as the midnight UTC of that date; it is due until that day ends. */
-  readonly dueMs: number;
-  /** When that day ends where the person is: after it the deadline is let go. */
-  readonly endMs: number;
-  readonly title: string;
-  readonly quote: string;
-}
-
-/** The id under which a deadline is kept as said. */
-export function dueId(threadId: string, dueMs: number): string {
-  return `${threadId}@${dueMs}`;
-}
-
-/**
- * What the person owes whose day is today where they are, one per thread and day, leaving out
- * those already said. A due day is a date, so it starts and ends at the person's local midnight
- * (`zone`), not at midnight UTC (ADR 0108). Only facts on the person's side (`who` is `you`)
- * count: what others owe is theirs to keep.
- */
-export function dueWithinADay(
-  analyses: readonly Pick<ThreadAnalysis, "threadId" | "headline" | "facts">[],
-  nowMs: number,
-  said: ReadonlySet<string>,
-  zone: ZoneOffset,
-): DueSoon[] {
-  const out = new Map<string, DueSoon>();
-  for (const a of analyses) {
-    for (const f of a.facts) {
-      if (f.who !== "you" || f.dueMs === undefined) continue;
-      const day = Math.floor(f.dueMs / DAY_MS) * DAY_MS;
-      const startMs = instantOf(day, zone);
-      const endMs = instantOf(day + DAY_MS, zone);
-      if (nowMs < startMs || nowMs >= endMs) continue;
-      const id = dueId(a.threadId, f.dueMs);
-      if (said.has(id) || out.has(id)) continue;
-      out.set(id, {
-        id,
-        threadId: a.threadId,
-        dueMs: f.dueMs,
-        endMs,
-        title: a.headline.trim(),
-        quote: f.evidence.quote.trim(),
-      });
-    }
-  }
-  return [...out.values()].sort((a, b) => a.dueMs - b.dueMs);
-}
-
-/** A deadline of a thing that shows, with the message a click opens. */
-export interface DueNotice {
-  readonly due: DueSoon;
-  readonly key: number;
-  readonly accountId: string;
-  /** Its notice inside the window was shown, and its banner held back by quiet or a pause. */
-  readonly heldBanner?: boolean;
-}
-
-/** What became of a deadline: `done` once no banner is owed, else it waits for quiet to end. */
-export interface DueSaid {
-  readonly id: string;
-  readonly endMs: number;
-  readonly done: boolean;
-}
-
-function dueText(d: DueNotice, content: BannerContent | "inApp"): NoticeText {
-  const base = { key: d.key, threadId: d.due.threadId, accountId: d.accountId };
-  if (content === "minimal") {
-    return { ...base, title: "Something is due", body: "Open Matters to see it." };
-  }
-  const title = d.due.title === "" ? "Something you owe" : d.due.title;
-  if (content === "subject") return { ...base, title: "Due within a day", body: title };
-  return { ...base, title: "Due within a day", subtitle: title, body: d.due.quote };
-}
-
-/**
- * The notices for deadlines due within a day, through the banner and the window of `matters`; the badge
- * counts mail, not deadlines. A muted account says nothing. A banner that quiet or a pause held
- * back is still owed (`said` is not `done`): it goes when banners may go again, and the notice
- * inside the window, already shown, does not come twice.
- */
-export function planDueNotices(
-  prefs: NotificationPrefs,
-  dues: readonly DueNotice[],
-  quiet: boolean,
-): NoticePlan & { readonly said: readonly DueSaid[] } {
-  const want = prefs.kinds.matters;
-  const kept = dues.filter((d) => prefs.enabled && !prefs.mutedAccounts.includes(d.accountId));
-  const keep = new Set(kept);
-  const bannerWanted = prefs.enabled && want.banner;
-  const { content, together, sound, whenFront } = prefs.banner;
-  const banners =
-    quiet || !bannerWanted
-      ? []
-      : grouped(
-          kept,
-          together,
-          (d) => dueText(d, content),
-          (rest, more) => ({
-            ...dueText(rest[0] as DueNotice, content),
-            title: `${rest.length}${more ? " more" : ""} things due within a day`,
-            body: content === "minimal" ? "Open Matters to see them." : rest[0]?.due.title || "",
-          }),
-        );
-  const inside = want.inApp ? kept.filter((d) => d.heldBanner !== true) : [];
-  const said = dues.map((d) => ({
-    id: d.due.id,
-    endMs: d.due.endMs,
-    done: !keep.has(d) || !bannerWanted || !quiet,
-  }));
-  return {
-    banners,
-    sound: !quiet && sound && banners.length > 0,
-    whenFront,
-    inApp: inside.slice(0, MAX_IN_APP).map((d) => dueText(d, "inApp")),
-    badged: [],
-    told: [],
-    said,
   };
 }
 
@@ -928,11 +685,9 @@ export interface ToldMail {
   /** When the watch first saw it. */
   readonly atMs: number;
   readonly channels: NoticeChannels;
-  /** The agent's reading after it came was looked at: `matters` will not ask again. */
-  readonly decided: boolean;
   /**
    * Views with a prompt that still wait for a verdict of its thread (ADR 0117, rule 6). Absent or
-   * empty: none waits. They wait as long as the mail is kept (48 hours), as `matters` does.
+   * empty: none waits. They wait as long as the mail is kept (48 hours).
    */
   readonly waiting?: readonly string[];
 }
@@ -944,21 +699,13 @@ export interface WatchState {
   readonly marks: readonly ArrivalMark[];
   /** Keys the badge follows (source `notified`) while they stay unread. */
   readonly badged: readonly number[];
-  /** Mail of the last 48 hours, so that it is told once and `matters` can still ring. */
+  /** Mail of the last 48 hours, so that it is told once and a view with a prompt can still ring. */
   readonly told: readonly ToldMail[];
-  /** Deadlines already said (`dueId`), with the end of their day, after which they are let go. */
-  readonly dues: Readonly<Record<string, number>>;
-  /**
-   * Deadlines said inside the window whose banner quiet or a pause held back (ADR 0108): the
-   * banner goes when banners may go again. Absent from a file older than that: none.
-   */
-  readonly duesHeld: Readonly<Record<string, number>>;
 }
 
 export const MAX_MARKS = 5000;
 export const MAX_BADGED = 1000;
 export const MAX_TOLD = 500;
-export const MAX_DUES = 500;
 
 function count(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -971,6 +718,7 @@ function text(value: unknown, max = 500): string | null {
 /**
  * The watch's file, defended field by field like the settings: a broken entry is dropped and the
  * rest stays. Null when there is nothing a watch could go on from (no file, or not an object).
+ * What older versions kept for the agent's own list (`decided`, `dues`, `duesHeld`) is ignored.
  */
 export function readWatchState(raw: unknown): WatchState | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
@@ -1005,23 +753,10 @@ export function readWatchState(raw: unknown): WatchState | null {
       threadId,
       atMs,
       channels: channels(t.channels, NONE),
-      decided: bool(t.decided, true),
       ...waitingOf(t.waiting),
     });
   }
-  const ends = (value: unknown) => {
-    const out: Record<string, number> = {};
-    for (const [id, end] of Object.entries(record(value)).slice(0, MAX_DUES)) {
-      const at = count(end);
-      if (text(id) !== null && at !== null) out[id] = at;
-    }
-    return out;
-  };
-  const dues = ends(v.dues);
-  const duesHeld = Object.fromEntries(
-    Object.entries(ends(v.duesHeld)).filter(([id]) => dues[id] === undefined),
-  );
-  return { lookedAtMs, marks, badged, told, dues, duesHeld };
+  return { lookedAtMs, marks, badged, told };
 }
 
 function waitingOf(value: unknown): { readonly waiting?: readonly string[] } {

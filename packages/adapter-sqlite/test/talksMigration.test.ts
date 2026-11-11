@@ -89,12 +89,15 @@ describe("migration 40: talks across all mail", () => {
     db.prepare("INSERT INTO agent_settings (id, json) VALUES (1, ?)").run(
       JSON.stringify({
         enabled: true,
+        windowDays: 30,
         models: { understand: "a", draftAhead: "b", write: "c", answer: "d" },
       }),
     );
-    expect((await new SqliteAgentSettings(db).get()).models).toEqual({
+    const settings = await new SqliteAgentSettings(db).get();
+    // What only the reading of ADR 0052 had is not read (ADR 0117).
+    expect("windowDays" in settings).toBe(false);
+    expect(settings.models).toEqual({
       understand: "a",
-      draftAhead: "b",
       write: "c",
       answer: "d",
       titles: DEFAULT_AGENT_MODELS.titles,

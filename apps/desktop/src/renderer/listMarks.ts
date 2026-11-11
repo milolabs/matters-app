@@ -1,6 +1,6 @@
 // Several rows of a list chosen at once (ADR 0056, rule 3). The arithmetic is pure, so it is tested
 // without a page; `createMarks` only holds it in signals. Ids are whatever names a row in its list:
-// a message key in the mail lists, a thread id in Matters.
+// a message key in the mail lists.
 import { createSignal } from "solid-js";
 
 export interface MarksState<T> {

@@ -1,6 +1,6 @@
 # 0067. What the owner's labels taught
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-06
 - Amends: [0066](0066-what-you-would-regret-not-seeing.md) (is it still alive, what shows)
 - Amended by: [0068](0068-who-writes-what-you-refuse-what-comes-from-an-office.md) (`CHECK_UNKNOWN_DAYS` is 30; an office is checked after 60 days and never leaves)

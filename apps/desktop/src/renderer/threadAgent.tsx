@@ -1,10 +1,10 @@
 import type { ThreadMessage } from "@matters/contracts";
-import { type OpenPart, openSummary, type PreparedWork } from "@matters/core";
-import { createMemo, For, Show } from "solid-js";
+import type { PreparedWork } from "@matters/core";
+import { createMemo, Show } from "solid-js";
 import type { AgentStore } from "./agent.ts";
 import { AgentRing, DraftFrame, QuestionFrame } from "./agentLayer.tsx";
 import { askTheAgent } from "./agentTalk.tsx";
-import { splitYours, writtenByLine } from "./mattersView.ts";
+import { splitYours, writtenByLine } from "./agentText.ts";
 import { replyPromptName } from "./replyPrompt.ts";
 import type { ThreadAgentStore } from "./threadAgent.ts";
 import { pill, toolButton } from "./ui.ts";
@@ -15,10 +15,7 @@ import { pill, toolButton } from "./ui.ts";
 
 const PANEL = "data-thread-agent-panel";
 
-/**
- * Scrolls to the agent's draft or question under the letters. In Matters the frame is the one of
- * the open thing. It starts nothing.
- */
+/** Scrolls to the agent's draft or question under the letters. It starts nothing. */
 export function goToAgentPanel(): void {
   const frame =
     document.querySelector<HTMLElement>(`[${PANEL}]`) ??
@@ -53,77 +50,35 @@ export function AgentHeaderButton(props: { onPress: () => void }) {
   );
 }
 
-/** What the strip and the panel hold, in words the person can read at a glance. */
-function stripText(
-  reading: { readonly headline: string } | null,
-  work: PreparedWork | null,
-): string {
-  if (reading !== null) return `Agent: ${reading.headline}`;
-  return work?.kind === "needs" ? "Agent: a question is waiting" : "Agent: a draft is ready";
+/** What the strip holds, in words the person can read at a glance. */
+function stripText(work: PreparedWork): string {
+  return work.kind === "needs" ? "Agent: a question is waiting" : "Agent: a draft is ready";
 }
 
-/** The headline ends as a sentence before "Still open:" follows it. */
-export function endSentence(text: string): string {
-  return /[.!?…]$/.test(text.trimEnd()) ? text : `${text.trimEnd()}.`;
-}
-
-function stripButton(work: PreparedWork | null): string {
-  if (work === null) return "Ask";
-  return work.kind === "needs" ? "See question" : "See draft";
-}
-
-/** The top line under the thread header: what the agent read, and the way to the panel. */
+/** The top line under the thread header: the work prepared on request, and the way to it. */
 export function AgentStrip(props: { ta: ThreadAgentStore }) {
   const { ta } = props;
-  // What is still open, from the reading's facts (ADR 0075). Read once per set of facts.
-  const open = createMemo(() =>
-    ta.reading() === null
-      ? []
-      : openSummary(ta.facts(), Date.now(), Intl.DateTimeFormat().resolvedOptions().timeZone),
-  );
   return (
-    <Show when={ta.available() && (ta.reading() !== null || ta.prepared() !== null)}>
-      <div
-        data-thread-agent-strip
-        class="mb-3 grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-x-3 rounded-[12px] border-[1.5px] border-dashed border-agent-edge bg-agent-soft px-4 py-3 text-[13px] leading-[1.5] text-agent"
-      >
-        <span class="flex items-center justify-center">
-          <AgentRing />
-        </span>
-        <span class="min-w-0 [overflow-wrap:anywhere]">
-          {open().length > 0
-            ? endSentence(stripText(ta.reading(), ta.prepared()))
-            : stripText(ta.reading(), ta.prepared())}
-          <Show when={open().length > 0}>
-            <span data-still-open>
-              {" "}
-              Still open: <StillOpen parts={open()} />
-            </span>
-          </Show>
-        </span>
-        <button
-          type="button"
-          class="shrink-0 cursor-default rounded-[8px] bg-button px-3 text-[12px] leading-[18px] text-ink"
-          onClick={() => (ta.prepared() === null ? askTheAgent() : goToAgentPanel())}
+    <Show when={ta.available() ? ta.prepared() : null}>
+      {(work) => (
+        <div
+          data-thread-agent-strip
+          class="mb-3 grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-x-3 rounded-[12px] border-[1.5px] border-dashed border-agent-edge bg-agent-soft px-4 py-3 text-[13px] leading-[1.5] text-agent"
         >
-          {stripButton(ta.prepared())}
-        </button>
-      </div>
-    </Show>
-  );
-}
-
-/** The parts joined by " and "; the late ones wear the late colour. */
-function StillOpen(props: { parts: readonly OpenPart[] }) {
-  return (
-    <For each={props.parts}>
-      {(part, i) => (
-        <>
-          {i() > 0 ? " and " : ""}
-          <span classList={{ "text-late": part.late }}>{part.text}</span>
-        </>
+          <span class="flex items-center justify-center">
+            <AgentRing />
+          </span>
+          <span class="min-w-0 [overflow-wrap:anywhere]">{stripText(work())}</span>
+          <button
+            type="button"
+            class="shrink-0 cursor-default rounded-[8px] bg-button px-3 text-[12px] leading-[18px] text-ink"
+            onClick={() => goToAgentPanel()}
+          >
+            {work().kind === "needs" ? "See question" : "See draft"}
+          </button>
+        </div>
       )}
-    </For>
+    </Show>
   );
 }
 
@@ -199,14 +154,7 @@ function Draft(props: {
   const by = () =>
     writtenByLine(
       agent.status()?.runtime ?? null,
-      agent.status()?.settings.models ?? {
-        understand: "",
-        draftAhead: "",
-        write: "",
-        answer: "",
-        titles: "",
-      },
-      agent.askedFor(props.threadId),
+      agent.status()?.settings.models ?? { understand: "", write: "", answer: "", titles: "" },
     );
   return (
     <DraftFrame
@@ -232,14 +180,7 @@ function Question(props: {
   const by = () =>
     writtenByLine(
       agent.status()?.runtime ?? null,
-      agent.status()?.settings.models ?? {
-        understand: "",
-        draftAhead: "",
-        write: "",
-        answer: "",
-        titles: "",
-      },
-      false,
+      agent.status()?.settings.models ?? { understand: "", write: "", answer: "", titles: "" },
     );
   return (
     <QuestionFrame

@@ -32,7 +32,7 @@ const thread: PromptThread = {
 
 async function ask(words: string, onThread: PromptThread = thread) {
   const demo = new DemoAgentRuntime(() => NOW, 0);
-  const request = buildTalkRequest(onThread, null, NOW, [], words);
+  const request = buildTalkRequest(onThread, NOW, [], words);
   const { value } = await demo.run({ model: "m", ...request });
   return parseTalkAnswer(value);
 }
@@ -106,12 +106,6 @@ describe("the demo agent across all mail", () => {
     expect(queriesOf(await plan("Who sent the invoice?"))).toEqual(["invoice"]);
     expect(queriesOf(await plan("faktura od Anny"))).toEqual(["faktura"]);
     expect((await plan("?!"))?.trails).toEqual([]);
-  });
-
-  it("adds the state for waiting or czeka", async () => {
-    expect((await plan("Who is waiting for the contract?"))?.state).toBe("onYou");
-    expect((await plan("kto czeka na odpowiedź"))?.state).toBe("onYou");
-    expect((await plan("Who sent the invoice?"))?.state).toBeUndefined();
   });
 
   it("follows by keeping the first thread it was shown, and answers", async () => {

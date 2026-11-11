@@ -55,8 +55,6 @@ export interface PoolContext {
   readonly consented: ReadonlySet<string>;
   readonly accounts: readonly { id: string; address: string; displayName: string }[];
   readonly rules: readonly AgentRule[];
-  /** From the plan: threads on the list of Matters in this state; the candidates are limited to them. */
-  readonly onlyThreads: ReadonlySet<string> | null;
   readonly olderThanDays: number | undefined;
   /** Threads read for the question before this one. */
   readonly carry: TalkCarry | undefined;
@@ -254,9 +252,7 @@ export function createTrailPool(ctx: PoolContext) {
      * candidates are new.
      */
     async refresh(): Promise<number> {
-      const fused = fuseRanks(lists).filter(
-        (t) => ctx.onlyThreads === null || ctx.onlyThreads.has(t.threadId),
-      );
+      const fused = fuseRanks(lists);
       let added = 0;
       let at = 0;
       while (at < fused.length && at < MAX_SUMMARISED) {

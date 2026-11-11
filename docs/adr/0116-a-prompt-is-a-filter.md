@@ -4,6 +4,7 @@
 - Date: 2026-11-11
 - Amends: [0025](0025-query-language-and-plans.md) (`limit:` and `sort:`; an order along the key in either direction)
 - Builds on: [0027](0027-saved-views.md), [0051](0051-agents-on-the-users-own-plans.md), [0064](0064-one-prompt-for-a-thread-or-all-mail.md)
+- Amended by: [0117](0117-matters-is-a-view-with-a-prompt.md) (rules 3 and 10: a view with a prompt reads new mail in the background and has a badge)
 
 ## Context
 
@@ -44,7 +45,7 @@ same mail.
    filters' result.
 3. **A prompt runs when the person asks.** `↵` in the query bar runs it, and so does opening a saved
    view whose text holds a prompt, for the threads it has not read yet. Both are `P0` (ADR 0051,
-   rule 7). Reading for a view in the background when new mail arrives is not in this decision.
+   rule 7). Reading for a view in the background when new mail arrives is ADR 0117, rule 3.
 4. **The prompt finds its own candidates.** Reading the newest threads one by one does not answer
    a prompt: what it asks for is usually old and rare, and the first trial read 200 recent threads
    to show notices that only mention an employer. So a run starts with a search. The agent gets
@@ -125,16 +126,16 @@ same mail.
    batches that finished. Each turn writes a ledger line with the runtime and the number of threads,
    and no prompt or mail text.
 10. **A saved view needs nothing new.** The prompt is part of the view's text. Editing it marks
-    the view changed as any edit does. A view with a prompt shows no unread badge in this step,
-    because a count of the mail filters alone would not be a count of what the view shows.
+    the view changed as any edit does. Its badge is ADR 0117, rule 4: a count of the mail filters
+    alone would not be a count of what the view shows.
 11. **Without AI.** While AI is off, or no account has consent, `prompt:` is reported as a
     diagnostic that says AI is off, and constrains nothing.
 12. **Verdicts are the agent's data.** They are removed with the rest of it. Verdicts of a prompt
     that no saved view holds are dropped after 30 days.
 
-Not in this decision: replacing `Matters`, reading for views in the background, actions on a row
-such as `Done` and `Later`, drafts ahead, a prompt longer than the query's 1024 characters, and a
-badge for views with a prompt.
+Not in this decision: actions on a row such as `Done` and `Later`, drafts ahead, and a prompt
+longer than the query's 1024 characters. Replacing `Matters`, reading for views in the background
+and a badge for views with a prompt are ADR 0117.
 
 ## Consequences
 

@@ -485,7 +485,6 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         insights: storage.agent,
         settings: storage.agentSettings,
         drafts: storage.drafts,
-        sends: { outbox: storage.outbox, drafts: storage.drafts },
         saveDraft: (content) => send.saveDraft({ content }),
         clock,
         visibleText: options.agent.visibleText,
@@ -640,7 +639,6 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         return needAgent().setEnabled({
           accountIds: command.accountIds,
           runtimeId: command.runtimeId,
-          windowDays: command.windowDays,
         });
       case "agentDisable":
         return needAgent().disable();
@@ -650,8 +648,6 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         return needAgent().setWeekShare(command.percent);
       case "agentSetTalkLoop":
         return needAgent().setTalkLoop(command.on);
-      case "agentSetWindowDays":
-        return needAgent().setWindowDays(command.days);
       case "agentInspect":
         return needAgent().inspect();
       case "agentPauseReading":
@@ -691,8 +687,6 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         return null;
       case "agentTalkDeleteAll":
         return needAgent().deleteAllTalks();
-      case "agentFeedback":
-        return needAgent().feedback(command.threadId, command.kind, command.outcome);
       case "agentUndoFeedback":
         await needAgent().undoFeedback(command.threadId, command.kind);
         return null;

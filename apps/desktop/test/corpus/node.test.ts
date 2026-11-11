@@ -9,15 +9,15 @@ import { join, resolve } from "node:path";
 import { PostalMimeParser, visibleText } from "@matters/adapter-mime";
 import { registrableDomain } from "@matters/adapter-publicsuffix";
 import {
-  ANALYSIS_INSTRUCTIONS,
-  ANALYZER_VERSION,
-  acceptAnalysis,
-  buildAnalysisRequest,
+  acceptVerdicts,
+  buildPromptRequest,
   decideImages,
   isRunnableFile,
   isTrustedAuthServ,
   nameFromType,
   type ParsedMessage,
+  PROMPT_INSTRUCTIONS,
+  PROMPT_VERSION,
   type PromptThread,
   replyRedirect,
   safeFileName,
@@ -160,13 +160,16 @@ const HIDDEN_CHARS =
 interface QuoteArg {
   readonly quote: string;
   readonly message: number;
-  readonly who?: "you" | "them";
 }
+
+/** The prompt the corpus judges its messages against; a constant, as the runtime test's is. */
+const CORPUS_PROMPT = "a promise or a payment the person has to act on";
 
 /**
  * What a model is asked, built the way the service builds it from one parsed message (the real
- * parser, the real text selection, the real `buildAnalysisRequest`), and what the code does with an
- * answer that quotes `arg`: the real `acceptAnalysis` (ADR 0047, category `agent`).
+ * parser, the real text selection, the real verdict turn of a prompt, `buildPromptRequest`), and
+ * what the code does with an answer that quotes `arg`: the real `acceptVerdicts` (ADR 0047,
+ * category `agent`; ADR 0116, rule 6).
  */
 function agentMeasure(parsed: ParsedMessage | undefined, arg: (name: string) => unknown) {
   const text = parsed
@@ -188,37 +191,38 @@ function agentMeasure(parsed: ParsedMessage | undefined, arg: (name: string) => 
       },
     ],
   };
-  const request = buildAnalysisRequest(thread, PROMPT_NOW);
+  const { request } = buildPromptRequest(
+    [{ thread, signals: { unread: true, starred: false, answered: false, messages: 1 } }],
+    CORPUS_PROMPT,
+    PROMPT_NOW,
+  );
+  // A fit above 0 keeps its quote only when the quote is found in the message it names.
   const quoteAccepted = (name: string): boolean => {
     const a = arg(name) as QuoteArg | undefined;
     if (a === undefined) return false;
     const answer = {
-      state: a.who === "you" ? "onYou" : "waiting",
-      headline: "A model that followed the message",
-      // The single message is the sender's, so by default the fact is the sender's own promise:
-      // only the words are on trial. `who` puts the words in the person's mouth.
-      facts: [{ kind: "promise", who: a.who ?? "them", message: a.message, quote: a.quote }],
-      stakes: "none",
-      confidence: 0.99,
-      intent: "none",
-      intentQuote: "",
-      forYou: "generic",
-      status: "open",
-      category: "other",
+      verdicts: [
+        {
+          thread: 1,
+          fit: 3,
+          why: "A model that followed the message",
+          message: a.message,
+          quote: a.quote,
+        },
+      ],
     };
-    const accepted = acceptAnalysis(answer, thread.messages, {
-      threadId: "corpus",
-      lastMessageKey: 1,
-      analyzerVersion: ANALYZER_VERSION,
-      analyzedAtMs: PROMPT_NOW,
+    const accepted = acceptVerdicts(answer, [{ threadId: "corpus", lastMessageKey: 1, thread }], {
+      promptKey: "corpus",
+      version: PROMPT_VERSION,
+      atMs: PROMPT_NOW,
     });
-    return accepted !== null && accepted.facts.length > 0;
+    return accepted?.some((v) => v.quote !== undefined) === true;
   };
   const marker = arg("mailOnlyInUntrusted") as string | undefined;
   const hidden = (arg("hiddenTextInPrompt") as string[] | undefined) ?? [];
   const shown = arg("visibleTextInPrompt") as string | undefined;
   return {
-    promptInstructionsFixed: request.instructions === ANALYSIS_INSTRUCTIONS,
+    promptInstructionsFixed: request.instructions === PROMPT_INSTRUCTIONS,
     mailOnlyInUntrusted:
       marker !== undefined &&
       request.untrusted.includes(marker) &&
@@ -233,7 +237,6 @@ function agentMeasure(parsed: ParsedMessage | undefined, arg: (name: string) => 
     quoteOfMissingMessageAccepted: quoteAccepted("quoteOfMissingMessageAccepted"),
     joinedPassagesAccepted: quoteAccepted("joinedPassagesAccepted"),
     hiddenQuoteAccepted: quoteAccepted("hiddenQuoteAccepted"),
-    forgedOwnPromiseAccepted: quoteAccepted("forgedOwnPromiseAccepted"),
     controlQuoteAccepted: quoteAccepted("controlQuoteAccepted"),
   };
 }

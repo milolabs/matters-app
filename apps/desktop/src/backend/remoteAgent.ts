@@ -6,11 +6,9 @@ import type {
   AgentModels,
   AgentRule,
   AgentStatus,
-  FeedbackOutcome,
   GapSuggestion,
   JournalEntry,
   PreparedGuidance,
-  PreparedWork,
   PrepareResult,
   PromptBadge,
   PromptCount,
@@ -25,10 +23,9 @@ import type {
   TalkSummary,
   ThreadAgentView,
 } from "@matters/core";
-import type { AgentApi, ReadEstimate } from "./agentApi.ts";
+import type { AgentApi } from "./agentApi.ts";
 import {
   type AgentReadDeps,
-  preparedFor,
   readInstructions,
   readJournal,
   readRuleOffer,
@@ -46,12 +43,11 @@ export interface HeavyReads {
 }
 
 /**
- * Agents as the router serves them (ADR 0019, 0051 rule 10). What only reads a little (what was
- * prepared, the journal, the rules and the offer of a rule) is answered here on the reader connection,
- * and what walks a lot of mail (the list of things, what the agent has for a thread, the count for the
- * consent screen) on the read thread (ADR 0070, rule 2): opening the list never waits for a model or a
- * write, and no list of mail waits for the list of things. Everything that runs a model, writes, or
- * holds state of the service goes to the sync worker.
+ * Agents as the router serves them (ADR 0019, 0051 rule 10). What only reads a little (the journal,
+ * the rules, the offer of a rule and the talks) is answered here on the reader connection, and what
+ * the agent has for a thread on the read thread (ADR 0070, rule 2): no view waits for a model or a
+ * write. Everything that runs a model, writes, or holds state of the service goes to the sync
+ * worker.
  */
 export class RemoteAgent implements AgentApi {
   private readonly host: SyncHost;
@@ -76,23 +72,8 @@ export class RemoteAgent implements AgentApi {
     return status;
   }
 
-  things(limit?: number) {
-    return this.heavy.ask(limit === undefined ? { name: "things" } : { name: "things", limit });
-  }
-
-  prepared(threadId: string): Promise<PreparedWork | null> {
-    return preparedFor(this.reads, threadId);
-  }
-
   threadAgent(threadId: string): Promise<ThreadAgentView> {
     return this.heavy.ask({ name: "threadAgent", threadId });
-  }
-
-  readEstimate(input: {
-    accountIds: readonly string[];
-    windowDays: number;
-  }): Promise<ReadEstimate> {
-    return this.heavy.ask({ name: "readEstimate", input });
   }
 
   journal(limit?: number): Promise<readonly JournalEntry[]> {
@@ -136,11 +117,7 @@ export class RemoteAgent implements AgentApi {
     return this.host.command({ name: "agentStatus" });
   }
 
-  setEnabled(input: {
-    accountIds: readonly string[];
-    runtimeId: string;
-    windowDays: number;
-  }): Promise<AgentStatus> {
+  setEnabled(input: { accountIds: readonly string[]; runtimeId: string }): Promise<AgentStatus> {
     return this.changed(this.host.command({ name: "agentSetEnabled", ...input }));
   }
 
@@ -162,10 +139,6 @@ export class RemoteAgent implements AgentApi {
 
   setTalkLoop(on: boolean): Promise<AgentStatus> {
     return this.changed(this.host.command({ name: "agentSetTalkLoop", on }));
-  }
-
-  setWindowDays(days: number): Promise<AgentStatus> {
-    return this.changed(this.host.command({ name: "agentSetWindowDays", days }));
   }
 
   inspect(): Promise<AgentStatus> {
@@ -260,19 +233,6 @@ export class RemoteAgent implements AgentApi {
 
   deleteAllTalks(): Promise<number> {
     return this.host.command({ name: "agentTalkDeleteAll" });
-  }
-
-  feedback(
-    threadId: string,
-    kind: "notImportant" | "later" | "closed",
-    outcome?: FeedbackOutcome,
-  ): Promise<number> {
-    return this.host.command({
-      name: "agentFeedback",
-      threadId,
-      kind,
-      ...(outcome === undefined ? {} : { outcome }),
-    });
   }
 
   async undoFeedback(threadId: string, kind: "notImportant" | "later" | "closed"): Promise<void> {

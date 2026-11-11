@@ -20,8 +20,6 @@ export interface TalkThreadRef {
   /** The other side's first name; empty when there is nobody else. */
   readonly name: string;
   readonly subject: string;
-  /** The agent's reading of the thread, when it has one: the pane's title. */
-  readonly headline?: string;
   /** The date of the thread's last message. */
   readonly lastMessageMs?: number;
 }
@@ -50,8 +48,7 @@ export interface AgentTalkOptions {
     threadId: string,
     made: Extract<TalkEntry, { role: "agent" }>,
     words: string,
-    headline: string,
-    alsoCovers: number,
+    subject: string,
   ) => void;
   /** Runs `run` after `ms`; returns the cancel. Tests inject one they control. */
   readonly schedule?: (run: () => void, ms: number) => () => void;
@@ -476,8 +473,7 @@ export function createAgentTalk(options: AgentTalkOptions) {
       turns.delete(key);
     });
     const made = result.entries.find((e) => e.role === "agent");
-    if (made?.role === "agent")
-      options.onMade?.(id, made, text, t.headline ?? t.subject, result.alsoCovers ?? 0);
+    if (made?.role === "agent") options.onMade?.(id, made, text, t.subject);
     // A draft or a question the agent made shows under the letters, even where an earlier one was
     // set aside; an answer or a closing changes nothing there.
     if (
@@ -634,7 +630,7 @@ export function createAgentTalk(options: AgentTalkOptions) {
     void backend.agentTalkStop(t.id).catch(() => {});
   }
 
-  /** `Undo` on a closing: the same path as in Matters, the feedback is forgotten. */
+  /** `Undo` on a closing: the same path as the tray's, the closing is forgotten. */
   async function undoClosed(): Promise<void> {
     const t = thread();
     const last = scope() === "thread" ? entries().at(-1) : undefined;

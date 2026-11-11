@@ -570,7 +570,6 @@ export class PromptService {
         displayName: a.displayName,
       })),
       rules: await this.deps.insights.listRules(),
-      onlyThreads: null,
       olderThanDays: undefined,
       carry: undefined,
       time: "any",

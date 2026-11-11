@@ -1,3 +1,4 @@
+import { NEEDS_YOU_VIEW } from "@matters/core";
 import DOMPurify from "dompurify";
 import { createComponent, createSignal } from "solid-js";
 import { render } from "solid-js/web";
@@ -11,7 +12,6 @@ import { HEAD_HEIGHT, layoutList, ROW_HEIGHT } from "./listLayout.ts";
 import { LIST_DEFAULT, LIST_MAX, LIST_MIN } from "./listWidth.ts";
 import { MAIL_FRAME_SANDBOX, MailFrame } from "./mailFrame.tsx";
 import { sanitizeMail } from "./mailHtml.ts";
-import { hasIntentBar } from "./mattersView.ts";
 import type { MailStore } from "./store.ts";
 import type { ViewsStore } from "./views.ts";
 
@@ -1028,16 +1028,11 @@ async function checkMailWalls(): Promise<string[]> {
   return problems;
 }
 
-const MATTERS_KEY_SAMPLES = 12;
 /** What the person tells the agent to close a thread; the demo runtime closes on "no reply". */
 const CLOSING_WORDS = "no reply, to automatyczne powiadomienie";
-const MATTERS_WAIT_MS = 20_000;
+const AGENT_WAIT_MS = 20_000;
+const TAB_SAMPLES = 6;
 
-/**
- * ADR 0052: AI turned on with the demo runtime (no model, no network). Matters appears as a tab,
- * shows rows in the real list's layout, opens a draft with the agent layer, takes `j` / `k` in a
- * frame, and typing in the query bar leaves it for All mail. Nothing here sends mail.
- */
 /**
  * A status arrives with new option arrays while the value stays the same. A list rebuilt from them
  * would put the select back on its first option, so settings would seem to change by themselves.
@@ -1045,9 +1040,9 @@ const MATTERS_WAIT_MS = 20_000;
 function choiceKeepsItsValue(): boolean {
   const list = () =>
     [
-      ["14", "Last 14 days"],
-      ["30", "Last 30 days"],
-      ["90", "Last 90 days"],
+      ["5", "Up to 5% of my week"],
+      ["10", "Up to 10% of my week"],
+      ["25", "Up to 25% of my week"],
     ] as const;
   const [options, setOptions] = createSignal<ReturnType<typeof list>>(list());
   const host = document.createElement("div");
@@ -1056,8 +1051,8 @@ function choiceKeepsItsValue(): boolean {
     () =>
       createComponent(Choice, {
         id: "smoke-choice",
-        label: "Look back",
-        value: "30",
+        label: "Background limit",
+        value: "10",
         get options() {
           return options();
         },
@@ -1071,16 +1066,14 @@ function choiceKeepsItsValue(): boolean {
   const after = select?.value;
   dispose();
   host.remove();
-  return first === "30" && after === "30";
+  return first === "10" && after === "10";
 }
 
 /**
  * The agent's column widened over the window (⇧⌘E): it leaves a 54 px strip of the list, reaches
  * the right edge, moves nothing under it, and goes back to its side on Escape and on a click in
- * the strip. Runs after Matters, with AI on.
+ * the strip. Runs with AI on.
  */
-let widePaneResult: Awaited<ReturnType<typeof measureWidePane>> | undefined;
-
 async function measureWidePane(store: MailStore, views: ViewsStore) {
   const out = {
     opened: false,
@@ -1140,88 +1133,46 @@ async function measureWidePane(store: MailStore, views: ViewsStore) {
   return out;
 }
 
-async function measureMatters(extras: {
+/**
+ * AI turned on with the demo runtime (no model, no network): the runtime passes the test with a
+ * made-up message, the starter view `Needs you` is added (ADR 0117, rule 2), the agent in an
+ * ordinary thread makes a draft on request (ADR 0063), the person's words close a thread from the
+ * talk with a line, a rule on offer and an Undo (ADR 0054), and Pause reading holds (rule 3).
+ * Nothing here sends mail.
+ */
+async function measureAgent(extras: {
   compose: ComposeStore;
   backend: Backend;
   agent: AgentStore;
   views: ViewsStore;
   store: MailStore;
 }) {
-  const { backend, agent, views, compose } = extras;
-  const tab = () => document.querySelector<HTMLElement>('[role="tab"][data-view="matters"]');
-  const all = () => document.querySelector<HTMLElement>('[role="tab"][data-view="all"]');
-  const rows = () => [...document.querySelectorAll<HTMLElement>("[data-thing]")];
+  const { backend, agent, views, compose, store } = extras;
+  const tabOf = (id: string) =>
+    document.querySelector<HTMLElement>(`[role="tab"][data-view="${CSS.escape(id)}"]`);
+  const starter = () => tabOf(NEEDS_YOU_VIEW.id);
   const out = {
     enabled: false,
-    tabPresent: false,
-    rows: 0,
-    rowHeightPx: 0,
-    headingShown: false,
-    ringOrDotOnEveryRow: false,
+    starterPresent: false,
+    starterFirst: false,
+    /** The app went to it by itself: only when nothing chose a tab before AI was turned on. */
+    starterOpenedByItself: false,
+    starterOpens: false,
+    tabFrameMs: [] as number[],
     draftOpened: false,
     sheetShown: false,
     sendShown: false,
     statusLineShown: false,
     statusLineHasNoInput: false,
     editOpenedComposer: false,
-    answerOpensPrompt: false,
     closedInOwnWords: false,
-    closedUndone: false,
-    /** ADR 0055: every thing shows, is counted, and can be walked to. */
-    thingsCounted: 0,
-    moreThanTheOldSeven: false,
-    tabCountsAll: false,
-    lastRowInView: false,
-    firstRowShowsHeading: false,
-    restStaysOnScreen: false,
-    listStaysWhenRowsChange: false,
     ruleOffered: false,
+    closedUndone: false,
     journalRecorded: false,
-    ruleHidOne: false,
-    ruleCameBack: false,
     remembered: false,
-    typingStaysInMatters: false,
-    sectionsShown: false,
-    wholeThreadShown: false,
-    mattersTabNotRenamable: false,
-    choiceKeepsItsValue: false,
-    tabFrameMs: [] as number[],
-    keyFrameMs: [] as number[],
-    /** ADR 0053: the reading screen while the demo runtime reads three threads at a time. */
-    readingFresh: false,
-    readingScreenShown: false,
-    readingScreenText: "",
-    readingTrail: [] as string[],
-    readingTitleOk: false,
-    readingTabBadge: "",
-    pauseShown: false,
-    pauseBackendReason: "",
     pauseHeld: false,
     continueWorked: false,
-    readingTotal: 0,
-    readingKeyFrameMs: [] as number[],
-    /** What the reading was doing when the keys below began: a warm start may have read it all. */
-    readingAtKeys: "",
-    readingFrameGapMs: [] as number[],
-    searchFrameMs: [] as number[],
-    searchWorkMs: [] as number[],
-    searchSaysSo: false,
-    tabGoneAfterOff: false,
-    /** ADR 0075: an analysed demo thread shows a promise line under its message. */
-    promiseLineShown: false,
-    promiseLineText: "",
-    stripShowsOpen: false,
-    /** ADR 0116: a query with a prompt, ↵, and rows in the prompt's order with the model's reason. */
-    prompt: {
-      lineShown: "",
-      ran: false,
-      rows: 0,
-      inOrder: false,
-      whyShown: false,
-      noHeadings: false,
-      backToFilters: false,
-      detail: "",
-    },
+    choiceKeepsItsValue: false,
     detail: "",
   };
 
@@ -1232,232 +1183,105 @@ async function measureMatters(extras: {
     out.detail = `the demo runtime is ${status.runtime?.status ?? "missing"}`;
     return out;
   }
-  // A mailbox that was read in an earlier run has its readings stored: it shows its things at
-  // once and has no first reading to watch. Only a first reading is held to the screen's checks.
-  out.readingFresh = !status.ledger.some((e) => e.purpose === "analysis");
   if (!status.settings.enabled) {
     const accounts = (await backend.listAccounts()).accounts.map((a) => a.id);
-    status = await backend.agentSetEnabled({
-      accountIds: accounts,
-      runtimeId: status.runtime.id,
-      windowDays: 30,
-    });
+    status = await backend.agentSetEnabled({ accountIds: accounts, runtimeId: status.runtime.id });
     // Turned on as the first-run screen does it: the window's store takes the answer at once
-    // (`onAgentStatus` in app.tsx). Everything after that, the reading starting included, reaches
-    // the window the way it reaches any window: by the backend's pushes (ADR 0115).
+    // (`onAgentStatus` in app.tsx). The rest reaches the window by the backend's pushes.
     agent.setStatus(status);
   }
   out.enabled = status.settings.enabled;
-  const reader = () => document.querySelector<HTMLElement>("[data-reading]");
-  const press = (action: string) =>
-    document.querySelector<HTMLButtonElement>(`[data-reading-action="${action}"]`);
   await agent.refresh();
-  out.tabPresent = await until(() => tab() !== null, 3000);
-  if (!out.tabPresent) return out;
 
-  // ADR 0053: until a thing is open the reader says what the reading is doing, with its numbers.
-  // The demo runtime takes a moment per turn, so the screen is there to be seen.
-  tab()?.click();
-  out.readingScreenShown =
-    out.readingFresh &&
-    (await until(() => {
-      // What the reader showed, in order: kept in the report to tell what happened when it fails.
-      const kind =
-        reader()?.dataset.reading ??
-        (document.querySelector("[data-thing-reader]") ? "thing" : "nothing");
-      if (out.readingTrail.at(-1) !== kind) out.readingTrail.push(kind);
-      return kind === "reading" && /Read \d+ of \d+ thread/.test(reader()?.textContent ?? "");
-    }, 6000));
-  if (out.readingScreenShown) {
-    const el = reader();
-    out.readingScreenText = el?.textContent ?? "";
-    out.readingTitleOk = /Reading your last \d+ days/.test(
-      el?.querySelector("h2")?.textContent ?? "",
-    );
-    out.readingTabBadge = tab()?.querySelector("small")?.textContent ?? "";
-    // Pause stops new turns at once, the turns that run finish, and it is held in the backend.
-    press("pause")?.click();
-    out.pauseShown = await until(
+  // ADR 0117, rule 2: `Needs you` is a saved view in front of the others, and opening it runs
+  // its prompt like any view with one.
+  out.starterPresent = await until(() => starter() !== null, 5000);
+  out.starterFirst = views.saved()[0]?.id === NEEDS_YOU_VIEW.id;
+  out.starterOpenedByItself = views.active().id === NEEDS_YOU_VIEW.id;
+  if (out.starterPresent) {
+    starter()?.click();
+    out.starterOpens = await until(
       () =>
-        reader()?.dataset.reading === "pausedByPerson" ||
-        (document.querySelector('[role="listbox"]')?.textContent ?? "").includes(
-          "Reading is paused",
-        ),
-      3000,
+        views.active().id === NEEDS_YOU_VIEW.id &&
+        document.querySelector("[data-prompt-line]") !== null,
+      5000,
     );
-    await new Promise((r) => setTimeout(r, 900));
-    const first = (await backend.agentStatus()).progress;
-    out.pauseBackendReason = `${first.state}/${first.reason ?? ""}`;
-    await new Promise((r) => setTimeout(r, 900));
-    const second = (await backend.agentStatus()).progress;
-    out.pauseHeld =
-      first.state === "paused" && second.state === "paused" && second.done === first.done;
-    out.readingTotal = second.total;
-    // Continue goes on from there, without anything read twice.
-    await until(() => press("resume") !== null, 3000);
-    press("resume")?.click();
-    out.continueWorked = await until(
-      () => press("pause") !== null || press("resume") === null,
-      3000,
-    );
-  }
-
-  // Three turns at a time are running now: keys and frames must not notice (ADR 0012).
-  {
-    let gapLast = await frame();
-    for (let i = 0; i < 40; i++) {
-      const progress = (await backend.agentStatus()).progress;
-      if (i === 0) out.readingAtKeys = progress.state;
-      if (progress.state !== "reading") break;
+    // Switching between the tabs is one frame.
+    for (let i = 0; i < TAB_SAMPLES; i++) {
       const start = performance.now();
-      document.body.dispatchEvent(
-        new KeyboardEvent("keydown", { key: i % 2 === 0 ? "j" : "k", bubbles: true }),
-      );
-      const at = await frame();
-      out.readingKeyFrameMs.push(Math.round((at - start) * 100) / 100);
-      out.readingFrameGapMs.push(Math.round((at - gapLast) * 100) / 100);
-      gapLast = at;
+      (i % 2 === 0 ? tabOf("all") : starter())?.click();
+      out.tabFrameMs.push(Math.round(((await frame()) - start) * 100) / 100);
     }
   }
+  views.select("all");
+  for (let i = 0; i < 4; i++) await frame();
 
-  // Reading is done in the background in steps; the first rows arrive as they are found.
-  tab()?.click();
-  await frame();
-  const found = await until(() => rows().length > 0, MATTERS_WAIT_MS);
-  if (!found) {
-    out.detail = "no thing appeared in Matters";
-    return out;
-  }
-  out.rows = rows().length;
-  const first = rows()[0];
-  out.rowHeightPx = Math.round(first?.getBoundingClientRect().height ?? 0);
-  // `Now` once the list has sections (ADR 0058, rule 2), which it may or may not have by this point.
-  out.headingShown = /Things that matter|Now/.test(
-    document.querySelector('[role="listbox"]')?.textContent ?? "",
-  );
-  out.ringOrDotOnEveryRow = rows().every(
-    (r) => r.querySelector("svg") !== null || r.querySelector(".bg-late") !== null,
-  );
-
-  // The demo runtime asks about every thing first, as the agent does when a fact is missing. Ask
-  // for a draft the way a person would: pick a way forward and write it. That is `agentPrepare`.
-  // A thing to decide, do or know answers in its own card and has no proposal of the agent (ADR
-  // 0095), and a thing found a moment ago has nothing prepared yet ("Prepare now"): while the demo
-  // still reads, the top rows may be either. The draft is asked for on a thing the agent prepared,
-  // the way the person would find it. Rows are reused for other things as the list changes, so the
-  // thing is held by its thread, not by its row.
-  const rowOf = (id: string) => rows().find((r) => r.dataset.thing === id);
+  // ADR 0063: the agent in an ordinary thread makes nothing ahead; asked, it may ask first, and a
+  // way forward then writes the draft, which shows with Send and Edit myself.
+  /** Opens the newest row of a thread other than `not`; its thread id. */
+  const openRow = async (not?: string): Promise<string | undefined> => {
+    const at = store.messages().findIndex((m) => m.threadId !== not);
+    const id = store.messages()[at]?.threadId;
+    if (id === undefined) return undefined;
+    store.select(at);
+    await until(() => store.thread()?.thread.id === id, 3000);
+    return id;
+  };
+  const draftThread = await openRow();
   const writeButton = () =>
     [...document.querySelectorAll<HTMLButtonElement>("[data-proposal] button")].find(
       (b) => b.textContent?.trim() === "Write the draft",
     );
-  const proposed = () =>
-    agent
-      .things()
-      .filter((t) => t.prepared != null && !hasIntentBar(t) && rowOf(t.threadId) !== undefined)
-      .map((t) => t.threadId);
-  await until(() => proposed().length > 0, MATTERS_WAIT_MS);
-  let draftThread: string | undefined;
-  for (const id of proposed().slice(0, 12)) {
-    rowOf(id)?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    const opened = await until(
-      () => agent.selected()?.threadId === id && document.querySelector("[data-proposal]") !== null,
-      1500,
+  if (draftThread !== undefined) {
+    await backend.agentPrepare(draftThread).catch(() => null);
+    out.draftOpened = await until(
+      () => document.querySelector("[data-proposal]") !== null,
+      AGENT_WAIT_MS,
     );
-    if (opened) {
-      draftThread = id;
-      break;
+    if (out.draftOpened && document.querySelector("[data-draft]") === null) {
+      document.querySelector<HTMLElement>('[data-direction="1"]')?.click();
+      await frame();
+      writeButton()?.click();
+      await until(() => document.querySelector("[data-draft]") !== null, 8000);
+    }
+    out.sheetShown =
+      (document.querySelector("[data-draft]")?.textContent ?? "").trim().length > 0 &&
+      document.querySelector("[data-sheet]") !== null;
+    out.sendShown = document.querySelector("[data-send-agent]") !== null;
+    // `Edit myself` opens the existing composer on the same draft; Discard removes it again.
+    const edit = [...document.querySelectorAll<HTMLButtonElement>("[data-proposal] button")].find(
+      (b) => b.textContent?.trim() === "Edit myself",
+    );
+    if (edit) {
+      edit.click();
+      out.editOpenedComposer = await until(() => compose.isOpen(), 4000);
+      if (out.editOpenedComposer) {
+        await new Promise((r) => setTimeout(r, 300));
+        [...document.querySelectorAll<HTMLButtonElement>("[data-composer] button")]
+          .find((b) => b.textContent?.trim() === "Discard")
+          ?.click();
+        await until(() => !compose.isOpen(), 3000);
+      }
     }
   }
-  out.draftOpened = draftThread !== undefined;
-  if (document.querySelector("[data-draft]") === null) {
-    document.querySelector<HTMLElement>('[data-direction="1"]')?.click();
-    await frame();
-    writeButton()?.click();
-    await until(() => document.querySelector("[data-draft]") !== null, 8000);
-  }
-  out.sheetShown =
-    (document.querySelector("[data-draft]")?.textContent ?? "").trim().length > 0 &&
-    document.querySelector("[data-sheet]") !== null;
-  out.sendShown = document.querySelector("[data-send-agent]") !== null;
+
   // The plans line is the foot row of the prompt in the agent's column, which `askTheAgent` shows
   // first when it is hidden (a window under 1060 px starts without it).
   askTheAgent();
   await frame();
-  const line = document.querySelector("[data-plans]");
-  out.statusLineShown = line !== null;
+  const plans = document.querySelector("[data-plans]");
+  out.statusLineShown = plans !== null;
   out.statusLineHasNoInput =
-    line !== null && line.querySelector("input, textarea, select, [contenteditable]") === null;
+    plans !== null && plans.querySelector("input, textarea, select, [contenteditable]") === null;
 
-  // `j` / `k` move the selection; the reader follows in the same frame.
-  for (let i = 0; i < MATTERS_KEY_SAMPLES; i++) {
-    const start = performance.now();
-    document.body.dispatchEvent(
-      new KeyboardEvent("keydown", { key: i % 2 === 0 ? "j" : "k", bubbles: true }),
-    );
-    out.keyFrameMs.push(Math.round(((await frame()) - start) * 100) / 100);
-  }
-
-  // Switching between the tabs is one frame.
-  for (let i = 0; i < 5; i++) {
-    const start = performance.now();
-    (i % 2 === 0 ? all() : tab())?.click();
-    out.tabFrameMs.push(Math.round(((await frame()) - start) * 100) / 100);
-  }
-  if (views.active().id !== "matters") tab()?.click();
-  await frame();
-
-  // `Edit myself` opens the existing composer on the same draft; Discard removes the draft again.
-  if (draftThread !== undefined)
-    rowOf(draftThread)?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-  await until(() => document.querySelector("[data-draft]") !== null, 3000);
-  const edit = [...document.querySelectorAll<HTMLButtonElement>("[data-proposal] button")].find(
-    (b) => b.textContent?.trim() === "Edit myself",
-  );
-  if (edit) {
-    edit.click();
-    out.editOpenedComposer = await until(() => compose.isOpen(), 4000);
-    if (out.editOpenedComposer) {
-      await new Promise((r) => setTimeout(r, 300));
-      [...document.querySelectorAll<HTMLButtonElement>("[data-composer] button")]
-        .find((b) => b.textContent?.trim() === "Discard")
-        ?.click();
-      await until(() => !compose.isOpen(), 3000);
-    }
-  }
-
-  // Telling the agent that no reply is needed closes the thing: no draft, a line that says why, and
-  // an Undo that brings it back (ADR 0054).
-  tab()?.click();
-  await frame();
-  const closing = rows()[1];
-  const closingId = closing?.getAttribute("data-thing") ?? "";
-  const closingShown = () =>
-    document.querySelector(`[data-thing="${CSS.escape(closingId)}"]`) !== null;
-  closing?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-  const prepareNow = () =>
-    [...document.querySelectorAll<HTMLButtonElement>("button")].find(
-      (b) => b.textContent?.trim() === "Prepare now",
-    );
-  const questionShown = () => document.querySelector("[data-proposal] [data-missing]") !== null;
-  await until(() => questionShown() || prepareNow() !== undefined, 4000);
-  prepareNow()?.click();
-  await until(questionShown, 8000);
-  // The question has no field of its own: `Answer` takes the person to the one prompt in the
-  // agent's column, which is shown first if it was hidden. What is typed there goes to the agent,
-  // with the open question, and never out as mail.
-  const answerButton = () =>
-    [...document.querySelectorAll<HTMLButtonElement>("[data-proposal] button")].find(
-      (b) => b.textContent?.trim() === "Answer",
-    );
-  answerButton()?.click();
+  // Telling the agent that no reply is needed closes the thread: no draft, a line that says why,
+  // a rule for the sender on offer, and an Undo (ADR 0054).
+  const closingId = await openRow(draftThread);
+  askTheAgent();
   const prompt = () => document.querySelector<HTMLTextAreaElement>("textarea[data-agent-prompt]");
-  out.answerOpensPrompt = await until(
-    () => prompt() !== null && document.activeElement === prompt(),
-    3000,
-  );
+  await until(() => prompt() !== null, 3000);
   const words = prompt();
-  if (words) {
+  if (closingId !== undefined && words) {
     words.value = CLOSING_WORDS;
     words.dispatchEvent(new Event("input", { bubbles: true }));
     await frame();
@@ -1465,9 +1289,10 @@ async function measureMatters(extras: {
       new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
     );
     const closedLine = () => document.querySelector("[data-agent-line] [data-line]");
-    await until(() => (closedLine()?.textContent ?? "").startsWith("Closed:"), 8000);
-    out.closedInOwnWords =
-      (closedLine()?.textContent ?? "").startsWith("Closed:") && !closingShown();
+    out.closedInOwnWords = await until(
+      () => (closedLine()?.textContent ?? "").startsWith("Closed:"),
+      8000,
+    );
     // The one-click rule for the sender stands beside Undo, and a long address does not push it out.
     await until(() => document.querySelector("[data-rule-offer]") !== null, 3000);
     const undoBox = document
@@ -1479,36 +1304,26 @@ async function measureMatters(extras: {
       undoBox.width > 0 &&
       undoBox.right <= window.innerWidth;
     document.querySelector<HTMLButtonElement>("[data-agent-line] [data-undo]")?.click();
-    out.closedUndone = await until(closingShown, 4000);
     // The journal kept it: the agent closed it, on the typed words, and Undo marked the line.
-    const entry = (await backend.agentJournal(20).catch(() => [])).find(
-      (e) => e.action === "closed" && e.threadId === closingId,
-    );
-    out.journalRecorded =
-      entry?.action === "closed" &&
-      entry.actor === "agent" &&
-      entry.words === CLOSING_WORDS &&
-      (entry.reason ?? "") !== "" &&
-      entry.undoneAtMs !== undefined;
-  }
-
-  // A rule for the sender hides the thing at once, and removing it brings the thing back (ADR 0054).
-  // Demo threads may share a sender, so only this row is asserted. The rule is removed either way:
-  // the steps after this one need the rows.
-  if (closingId !== "" && closingShown()) {
-    const rule = await backend
-      .agentAddRule({ threadId: closingId, scope: "sender" })
-      .catch(() => null);
-    if (rule !== null) {
-      out.ruleHidOne = await until(() => !closingShown(), 5000);
-      await backend.agentRemoveRule(rule.id).catch(() => {});
-      out.ruleCameBack = await until(closingShown, 5000);
+    const entry = async () =>
+      (await backend.agentJournal(20).catch(() => [])).find(
+        (e) => e.action === "closed" && e.threadId === closingId,
+      );
+    for (let i = 0; i < 20 && !out.closedUndone; i++) {
+      out.closedUndone = (await entry())?.undoneAtMs !== undefined;
+      if (!out.closedUndone) await new Promise((r) => setTimeout(r, 150));
     }
-  }
+    const kept = await entry();
+    out.journalRecorded =
+      kept?.action === "closed" &&
+      kept.actor === "agent" &&
+      kept.words === CLOSING_WORDS &&
+      (kept.reason ?? "") !== "";
+  } else out.detail = "no thread to close, or no prompt";
 
-  // The agent keeps what the typed words say should hold, and the person can take it back (ADR 0054).
-  // The instruction is removed either way: it would go to the turns that follow.
-  if (closingId !== "") {
+  // The agent keeps what the typed words say should hold, and the person can take it back (ADR
+  // 0054). The instruction is removed either way: it would go to the turns that follow.
+  if (closingId !== undefined) {
     const kept = await backend.agentRemember(closingId, "zawsze pisz krótko").catch(() => null);
     const one = kept?.items.length === 1 ? kept.items[0] : undefined;
     if (one?.kind === "instruction") {
@@ -1523,178 +1338,18 @@ async function measureMatters(extras: {
     }
   }
 
-  // Every thing shows, not the best seven: the tab counts them all, and `j` walks to the last one
-  // through a list that only draws what is on screen (ADR 0055).
-  tab()?.click();
-  await frame();
-  out.moreThanTheOldSeven = await until(() => agent.count() > 7, MATTERS_WAIT_MS);
-  // Reading holds still for this: while it runs the tab shows its progress, and the list grows.
-  await agent.pauseReading();
-  let settled = -1;
-  await until(() => {
-    const same = settled === agent.count();
-    settled = agent.count();
-    return same;
-  }, 4000);
-  await new Promise((r) => setTimeout(r, 800));
-  const listbox = document.querySelector<HTMLElement>('[role="listbox"]');
-  const inView = (row: Element | null | undefined) => {
-    if (!row || !listbox) return false;
-    const box = listbox.getBoundingClientRect();
-    const rect = row.getBoundingClientRect();
-    return rect.top >= box.top - 1 && rect.bottom <= box.bottom + 1;
-  };
-  const selectedRow = () =>
-    document.querySelector(`[data-thing="${CSS.escape(agent.selected()?.threadId ?? "")}"]`);
-  // The walk is over every thing there is, so the rest is open for it (ADR 0058, rule 2). The demo
-  // mail has both parts, so sections that did not reach the page show here.
-  out.sectionsShown = agent.sections() && agent.nowRows() > 0 && agent.restCount() > 0;
-  agent.setRestOpen(true);
-  for (let i = 0; i < 1000; i++) {
-    if (agent.things().length > 0 && agent.selectedIndex() >= agent.count() - 1) break;
-    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true }));
-    await frame();
-  }
-  await frame();
-  await frame();
-  out.thingsCounted = agent.count();
-  // The mail itself is there under what the agent made of it (ADR 0060).
-  out.wholeThreadShown = await until(
-    () => document.querySelector("[data-whole-thread]") !== null,
-    3000,
-  );
-  out.tabCountsAll = (tab()?.textContent ?? "").includes(String(agent.count()));
-  out.lastRowInView = agent.selectedIndex() === agent.count() - 1 && inView(selectedRow());
-  const top = agent.things()[0];
-  if (top) agent.select(top.threadId);
-  await frame();
-  await frame();
-  out.firstRowShowsHeading = listbox?.scrollTop === 0 && inView(selectedRow());
+  // Pause reading holds across reads of the status; Continue takes it away (ADR 0117, rule 3).
+  const paused = await agent.pauseReading();
+  const again = await backend.agentStatus();
+  out.pauseHeld =
+    paused.settings.readingPaused === true &&
+    again.settings.readingPaused === true &&
+    again.progress.state === "paused" &&
+    again.progress.reason === "pausedByPerson";
+  const resumed = await agent.resumeReading();
+  out.continueWorked = resumed.settings.readingPaused !== true;
 
-  // Browsing away from the open thing: a change in the list does not scroll back to it.
-  if (top && listbox) {
-    listbox.scrollTop = 600;
-    await frame();
-    const away = agent.things().at(-1);
-    if (away) await agent.feedback(away, "later");
-    await frame();
-    await frame();
-    out.listStaysWhenRowsChange = listbox.scrollTop > 500;
-    await agent.undoFeedback();
-    await frame();
-  }
-
-  // A thing for now comes while the person is in the rows of the rest, with the rest closed: nothing
-  // closes and nothing moves. Dealing with what is for now puts them there, and Undo brings it. A
-  // short list, because the demo's rest fits on screen and there is nothing to scroll otherwise.
-  listbox?.scrollTo(0, 0);
-  agent.setRestOpen(false);
-  if (listbox) listbox.style.height = "200px";
-  await frame();
-  await agent.feedbackMany([...agent.things()], "later");
-  await frame();
-  await frame();
-  const rowsOfTheRest = agent.things();
-  const looking = rowsOfTheRest[Math.floor(rowsOfTheRest.length / 2)];
-  if (looking && listbox) {
-    agent.select(looking.threadId);
-    await frame();
-    await frame();
-    const row = () => document.querySelector(`[data-thing="${CSS.escape(looking.threadId)}"]`);
-    const seenAt = row()?.getBoundingClientRect().top;
-    const scrolled = listbox.scrollTop > 0;
-    await agent.undoFeedback();
-    await frame();
-    await frame();
-    const seenAfter = row()?.getBoundingClientRect().top;
-    out.restStaysOnScreen =
-      scrolled &&
-      agent.restOpen() &&
-      agent.selected()?.threadId === looking.threadId &&
-      seenAt !== undefined &&
-      seenAfter !== undefined &&
-      Math.abs(seenAt - seenAfter) < 1;
-  }
-  if (listbox) listbox.style.height = "";
-  await frame();
-  await agent.resumeReading();
-
-  // Typing in the query bar leaves Matters for All mail with that text; nothing renames a built-in tab.
-  tab()?.click();
-  await frame();
-  out.mattersTabNotRenamable = tab()?.getAttribute("aria-haspopup") === null;
   out.choiceKeepsItsValue = choiceKeepsItsValue();
-  const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Search mail"]');
-  if (input) {
-    input.value = "faktura";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    await frame();
-    // The bar searches the view it is over (ADR 0056, rule 1).
-    out.typingStaysInMatters =
-      tab()?.getAttribute("aria-selected") === "true" && views.active().id === "matters";
-    input.value = "";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    await frame();
-    // The reading goes on in the background; a keystroke still costs a frame.
-    for (const text of ["faktura", "spotkanie", "from:wiśniewska", "bilet", "zażółć"]) {
-      let settledAt = 0;
-      const settled = new Promise<void>((resolve) => {
-        const off = extras.store.onSettled((q) => {
-          if (q !== text) return;
-          settledAt = performance.now();
-          off();
-          resolve();
-        });
-      });
-      const start = performance.now();
-      input.value = text;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      if (document.querySelector(".qsearching")?.textContent?.trim() === "Searching…") {
-        out.searchSaysSo = true;
-      }
-      await settled;
-      out.searchFrameMs.push(Math.round(((await frame()) - start) * 100) / 100);
-      // What the person waits for here is the list of Matters, not the mail list behind it.
-      await until(() => !agent.searching(), 3000);
-      out.searchWorkMs.push(
-        Math.round((Math.max(settledAt, performance.now()) - start) * 100) / 100,
-      );
-      input.value = "";
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      await frame();
-    }
-  }
-
-  // ADR 0075: the demo's facts are quoted from the mail, so some thread shows its promise line
-  // under the message it came from, and the strip above names what is open.
-  all()?.click();
-  await frame();
-  const shownThings = await backend.agentThings(50).catch(() => null);
-  for (const thing of shownThings?.things ?? []) {
-    const at = extras.store.messages().findIndex((m) => m.threadId === thing.threadId);
-    if (at < 0) continue;
-    extras.store.select(at);
-    const line = () =>
-      document.querySelector<HTMLElement>("section[aria-label=Thread] [data-promise-line]");
-    if (await until(() => line() !== null, 2500)) {
-      out.promiseLineShown = true;
-      out.promiseLineText = line()?.textContent ?? "";
-      out.stripShowsOpen =
-        document.querySelector("[data-thread-agent-strip] [data-still-open]") !== null;
-      break;
-    }
-  }
-
-  // ADR 0116: a prompt in the bar is counted before it runs, ↵ reads it, and the list shows the
-  // threads it kept in its order, each with the model's sentence.
-  out.prompt = await measurePrompt(extras.store, backend);
-
-  // While AI is still on: the column widened over the window (⇧⌘E).
-  widePaneResult = await measureWidePane(extras.store, views);
-
-  // Turning AI off takes the tab away and leaves the app as it was before.
-  await agent.change(backend.agentDisable());
-  out.tabGoneAfterOff = await until(() => tab() === null && views.active().id === "all", 3000);
   return out;
 }
 
@@ -1878,8 +1533,19 @@ export async function runSmoke(
     }
     report.listDivider = await measureListDivider();
     // Last: it turns AI on, and the scenarios above are the app as it is without it.
-    if (extras) report.matters = await measureMatters({ ...extras, store });
-    if (extras) report.widePane = widePaneResult;
+    if (extras) {
+      report.agent = await measureAgent({ ...extras, store });
+      // ADR 0116: a prompt in the bar is counted before it runs, ↵ reads it, and the list shows
+      // the threads it kept in its order, each with the model's sentence.
+      extras.views.select("all");
+      await frame();
+      report.prompt = await measurePrompt(store, extras.backend);
+      // While AI is still on: the column widened over the window (⇧⌘E).
+      report.widePane = await measureWidePane(store, extras.views);
+      // Turning AI off leaves the starter view: it is the person's (ADR 0117, rule 2).
+      await extras.agent.change(extras.backend.agentDisable());
+      report.starterKeptAfterOff = extras.views.saved().some((v) => v.id === NEEDS_YOU_VIEW.id);
+    }
   } catch (error) {
     report.error = error instanceof Error ? error.message : String(error);
   }

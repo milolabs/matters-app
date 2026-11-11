@@ -1,6 +1,6 @@
 # 0075. Promises under the message
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-08
 
 ## Context

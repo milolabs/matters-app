@@ -1,8 +1,7 @@
 import type { ParsedQuery } from "@matters/core";
 import { createEffect, createSignal, For, onMount, Show } from "solid-js";
-import type { MattersTab } from "./mattersView.ts";
 import { menuPoint, PopMenu } from "./popMenu.tsx";
-import { holdsPrompt, isBuiltInView, MATTERS_ID, type ViewsStore } from "./views.ts";
+import { holdsPrompt, isBuiltInView, type ViewsStore } from "./views.ts";
 
 const mac = navigator.userAgent.includes("Macintosh");
 const SAVE_KEY = mac ? "⌘S" : "Ctrl+S";
@@ -16,8 +15,6 @@ interface MenuAt {
 /** Tabs in the toolbar (ADR 0027, 0029): All mail first, then the saved views, then `+`. */
 export function ViewTabs(props: {
   views: ViewsStore;
-  /** What the Matters tab shows: how far the reading is, or the count of things (ADR 0053). */
-  mattersTab?: () => MattersTab;
   /** A tab was chosen with the pointer: the list takes the keyboard. */
   onPicked: () => void;
   /** `+`: a fresh start in the query bar. */
@@ -87,12 +84,8 @@ export function ViewTabs(props: {
             {(view, i) => {
               const selected = () => views.active().id === view.id;
               // Every tab counts its unread mail, selected or not (ADR 0093).
-              const matters = view.id === MATTERS_ID;
-              const badge = () => (matters ? props.mattersTab?.().badge : views.badge(view.id));
-              const spoken = () => {
-                if (matters) return props.mattersTab?.().spoken ?? "";
-                return badge() ? `, ${badge()} unread` : "";
-              };
+              const badge = () => views.badge(view.id);
+              const spoken = () => (badge() ? `, ${badge()} unread` : "");
               const dirty = () => selected() && views.isSaved() && views.changed();
               // A view whose text holds a prompt is the agent's reading (ADR 0116; ADR 0052, rule 10).
               const asks = () => !isBuiltInView(view.id) && holdsPrompt(view.query);
@@ -106,7 +99,7 @@ export function ViewTabs(props: {
                   aria-label={`${view.name}${asks() ? ", with a prompt" : ""}${spoken()}${dirty() ? ", changed, not saved" : ""}`}
                   // One tab is in the tab order; the arrow keys move between the others.
                   tabIndex={selected() ? 0 : -1}
-                  title={`${matters ? "Things that matter" : view.query === "" ? "Everything" : view.query}${i() < 9 ? `  ·  key ${i() + 1}` : ""}`}
+                  title={`${view.query === "" ? "Everything" : view.query}${i() < 9 ? `  ·  key ${i() + 1}` : ""}`}
                   class="vt"
                   onClick={() => {
                     views.select(view.id);

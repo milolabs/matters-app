@@ -1,21 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import type { DueSoon, Message, NewMail, NewMailDeps, NotificationPrefs } from "../src/index.ts";
+import type { Message, NewMail, NewMailDeps, NotificationPrefs } from "../src/index.ts";
 import {
   arrivalsBetween,
-  askOf,
   badgeText,
   CATCH_UP_DAYS,
   channelsOf,
   clockText,
   DEFAULT_NOTIFICATION_PREFS,
-  dueId,
-  dueWithinADay,
   fromWhom,
   isOldMail,
   isPaused,
   isQuiet,
   localMinuteOf,
   MAILBOX_BIT,
+  NEEDS_YOU_VIEW,
   NewMailWatch,
   NOTICE_KINDS,
   noticeKindOf,
@@ -23,8 +21,6 @@ import {
   pausedText,
   pauseUntil,
   planCatchUp,
-  planDueNotices,
-  planMattersNotices,
   planNotices,
   planPromptNotices,
   quietEndsAt,
@@ -90,17 +86,34 @@ describe("notification settings (ADR 0071, rule 6)", () => {
     expect(read.pausedUntilMs).toBeNull();
   });
 
-  it("counts what is in Matters on the badge by default, and keeps a source that was chosen (ADR 0109)", () => {
-    expect(DEFAULT_NOTIFICATION_PREFS.badge).toEqual({ source: "matters", style: "count" });
-    expect(readNotificationPrefs({}).badge.source).toBe("matters");
-    expect(readNotificationPrefs({ badge: { source: "unread" } }).badge.source).toBe("matters");
+  it("counts the starter view on the badge by default, and keeps a source that was chosen (ADR 0117, rule 5)", () => {
+    const starter = { source: "view", viewId: NEEDS_YOU_VIEW.id, style: "count" };
+    expect(NEEDS_YOU_VIEW.id).toBe("starter-needs-you");
+    expect(DEFAULT_NOTIFICATION_PREFS.badge).toEqual(starter);
+    expect(readNotificationPrefs({}).badge).toEqual(starter);
+    expect(readNotificationPrefs({ badge: { source: "unread" } }).badge).toEqual(starter);
     expect(readNotificationPrefs({ badge: { source: 3, style: "dot" } }).badge).toEqual({
-      source: "matters",
+      ...starter,
       style: "dot",
     });
-    for (const source of ["matters", "view", "notified", "inbox", "off"] as const) {
-      expect(readNotificationPrefs({ badge: { source } }).badge.source).toBe(source);
+    for (const source of ["notified", "inbox", "off"] as const) {
+      expect(readNotificationPrefs({ badge: { source } }).badge).toEqual({
+        source,
+        style: "count",
+      });
     }
+  });
+
+  it("reads a stored `matters` badge as the starter view (ADR 0117, rule 5)", () => {
+    expect(readNotificationPrefs({ badge: { source: "matters" } }).badge).toEqual({
+      source: "view",
+      viewId: "starter-needs-you",
+      style: "count",
+    });
+    // Its style is kept, and a view id stored beside it does not count.
+    expect(
+      readNotificationPrefs({ badge: { source: "matters", viewId: "v1", style: "dot" } }).badge,
+    ).toEqual({ source: "view", viewId: "starter-needs-you", style: "dot" });
   });
 
   it("keeps the view a badge of `view` counts, and only for that source (ADR 0117, rule 5)", () => {
@@ -109,21 +122,37 @@ describe("notification settings (ADR 0071, rule 6)", () => {
       viewId: "v1",
       style: "count",
     });
-    // No view, or a broken one: still `view`, which counts the Inbox until one is chosen.
+    // No view, or a broken one: the starter view.
     expect(readNotificationPrefs({ badge: { source: "view" } }).badge).toEqual({
       source: "view",
+      viewId: "starter-needs-you",
       style: "count",
     });
     expect(readNotificationPrefs({ badge: { source: "view", viewId: 7 } }).badge).toEqual({
       source: "view",
+      viewId: "starter-needs-you",
       style: "count",
     });
     expect(readNotificationPrefs({ badge: { source: "inbox", viewId: "v1" } }).badge).toEqual({
       source: "inbox",
       style: "count",
     });
-    // This stage keeps `matters` as it is.
-    expect(readNotificationPrefs({ badge: { source: "matters" } }).badge.source).toBe("matters");
+  });
+
+  it("has three kinds, and ignores a stored `matters` kind (ADR 0117, rule 6)", () => {
+    const none = { banner: false, inApp: false, badge: false };
+    const all = { banner: true, inApp: true, badge: true };
+    expect(NOTICE_KINDS).toEqual(["replies", "people", "lists"]);
+    expect(Object.keys(DEFAULT_NOTIFICATION_PREFS.kinds).sort()).toEqual([
+      "lists",
+      "people",
+      "replies",
+    ]);
+    const old = readNotificationPrefs({
+      kinds: { replies: none, people: all, lists: none, matters: all },
+    });
+    expect(old.kinds).toEqual({ replies: none, people: all, lists: none });
+    expect(old.kinds).not.toHaveProperty("matters");
   });
 
   it("is quiet while paused and inside quiet hours, also across midnight", () => {
@@ -414,8 +443,6 @@ describe("NewMailWatch (ADR 0106, rule 1)", () => {
     const found = await r.watch.look();
     expect(found.find((f) => f.message.key === mine.key)?.fromMe).toBe(true);
     expect(found.find((f) => f.message.key === reply.key)?.youWrote).toBe(true);
-    // Your own mail is never asked about later.
-    expect(r.watch.undecided().map((t) => t.key)).toEqual([reply.key]);
   });
 
   it("counts followed mail until it is read", async () => {
@@ -467,10 +494,10 @@ describe("NewMailWatch (ADR 0106, rule 1)", () => {
     await r.watch.start();
     r.add(msg());
     await r.watch.look();
-    expect(r.watch.undecided()).toHaveLength(1);
+    expect(r.watch.snapshot().told).toHaveLength(1);
     r.later(49 * 60 * 60_000);
     await r.watch.look();
-    expect(r.watch.undecided()).toEqual([]);
+    expect(r.watch.snapshot().told).toEqual([]);
   });
 });
 
@@ -505,11 +532,10 @@ describe("arrival marks and the kept state (ADR 0106)", () => {
       marks: [mark("INBOX", 3), { accountId: "a1", folderId: "X", uidValidity: 1, uid: 2 }],
       badged: [1, 1, -2, "x", 4],
       told: [
-        { key: 1, threadId: "t", atMs: 2, channels: { banner: true }, decided: false },
+        { key: 1, threadId: "t", atMs: 2, channels: { banner: true } },
         { key: 1, threadId: "t", atMs: 2 },
         { key: "2", threadId: "t", atMs: 2 },
       ],
-      dues: { "t@0": 86_400_000, bad: "x" },
     });
     expect(read).toEqual({
       lookedAtMs: 5,
@@ -521,19 +547,33 @@ describe("arrival marks and the kept state (ADR 0106)", () => {
           threadId: "t",
           atMs: 2,
           channels: { banner: true, inApp: false, badge: false },
-          decided: false,
         },
       ],
-      dues: { "t@0": 86_400_000 },
-      duesHeld: {},
     });
-    // A held deadline is kept apart; one also said for good is said.
-    const held = readWatchState({
-      lookedAtMs: 1,
-      dues: { a: 5 },
-      duesHeld: { a: 5, b: 6, c: "x" },
+  });
+
+  it("still reads a file from before ADR 0117, and drops its deadlines and decisions", () => {
+    const read = readWatchState({
+      lookedAtMs: 5,
+      marks: [mark("INBOX", 3)],
+      badged: [4],
+      told: [{ key: 1, threadId: "t", atMs: 2, channels: { banner: true }, decided: false }],
+      dues: { "t@0": 86_400_000, bad: "x" },
+      duesHeld: { a: 5, b: 6 },
     });
-    expect(held?.duesHeld).toEqual({ b: 6 });
+    expect(read).toEqual({
+      lookedAtMs: 5,
+      marks: [mark("INBOX", 3)],
+      badged: [4],
+      told: [
+        {
+          key: 1,
+          threadId: "t",
+          atMs: 2,
+          channels: { banner: true, inApp: false, badge: false },
+        },
+      ],
+    });
   });
 });
 
@@ -575,136 +615,6 @@ describe("what came while the app was closed (ADR 0106, rule 2)", () => {
       },
     });
     expect(planCatchUp(noBadge, [mail(msg({ dateMs: now }))], now).badged).toEqual([]);
-  });
-});
-
-describe("what the agent says matters (ADR 0106, rule 3)", () => {
-  const thing = { title: "Sign the lease by Friday", ask: "Could you sign it by Friday?" };
-  const none = { banner: false, inApp: false, badge: false };
-  const all = { banner: true, inApp: true, badge: true };
-  const anna = () => msg({ from: { name: "Anna", address: "anna@x.example" }, subject: "Lease" });
-
-  it("is a fourth kind, on by default, also for an old settings file", () => {
-    expect(NOTICE_KINDS).toContain("matters");
-    expect(DEFAULT_NOTIFICATION_PREFS.kinds.matters).toEqual(all);
-    const old = readNotificationPrefs({ kinds: { replies: none, people: none, lists: none } });
-    expect(old.kinds.matters).toEqual(all);
-    expect(old.kinds.people).toEqual(none);
-  });
-
-  it("rings for mail that went through no channel, and never twice through one", () => {
-    const quietList = planMattersNotices(
-      prefs(),
-      [{ message: anna(), fromMe: false, told: none, thing }],
-      false,
-      0,
-    );
-    expect(quietList.banners).toEqual([
-      expect.objectContaining({ title: "Anna", body: "Sign the lease by Friday" }),
-    ]);
-    expect(quietList.sound).toBe(true);
-    expect(quietList.inApp).toEqual([
-      expect.objectContaining({ subtitle: thing.title, body: thing.ask }),
-    ]);
-    const already = planMattersNotices(
-      prefs(),
-      [{ message: anna(), fromMe: false, told: all, thing }],
-      false,
-      0,
-    );
-    expect(already.banners).toEqual([]);
-    expect(already.inApp).toEqual([]);
-    expect(already.badged).toEqual([]);
-    expect(already.sound).toBe(false);
-  });
-
-  it("keeps read, own and muted mail silent, and quiet keeps the banner back", () => {
-    const read = anna();
-    const seen = { ...read, flags: { ...read.flags, seen: true } };
-    const silent = (p: NotificationPrefs, message: Message, fromMe = false) =>
-      planMattersNotices(p, [{ message, fromMe, told: none, thing }], false, 0);
-    expect(silent(prefs(), seen).told).toEqual([]);
-    expect(silent(prefs(), anna(), true).inApp).toEqual([]);
-    expect(silent(prefs({ mutedAccounts: ["a1"] }), anna()).inApp).toEqual([]);
-    const night = planMattersNotices(
-      prefs(),
-      [{ message: anna(), fromMe: false, told: none, thing }],
-      true,
-      0,
-    );
-    expect(night.banners).toEqual([]);
-    expect(night.inApp).toHaveLength(1);
-    expect(night.told[0]?.channels.banner).toBe(false);
-  });
-
-  it("says what matters as much as the banner setting allows", () => {
-    const at = (content: "full" | "subject" | "minimal") =>
-      planMattersNotices(
-        prefs({ banner: { ...DEFAULT_NOTIFICATION_PREFS.banner, content } }),
-        [{ message: anna(), fromMe: false, told: none, thing }],
-        false,
-        0,
-      ).banners[0];
-    expect(at("full")).toMatchObject({ title: "Anna", subtitle: thing.title, body: thing.ask });
-    expect(at("minimal")).toMatchObject({ title: "Something matters" });
-    expect(JSON.stringify(at("minimal"))).not.toMatch(/Anna|lease/i);
-  });
-
-  it("takes the person's own ask as what a notice quotes", () => {
-    const fact = (who: "you" | "them", quote: string, messageKey: number) => ({
-      kind: "ask" as const,
-      who,
-      evidence: { quote, messageKey },
-    });
-    expect(
-      askOf({ facts: [fact("them", "x", 9), fact("you", " old ", 1), fact("you", "new", 2)] }),
-    ).toBe("new");
-    expect(askOf({ facts: [fact("them", "x", 9)] })).toBeUndefined();
-  });
-
-  it("announces a deadline of the person once, within the day before it ends", () => {
-    const day = 86_400_000;
-    const due = 10 * day;
-    const a = {
-      threadId: "t1",
-      headline: "Pay the invoice",
-      facts: [
-        {
-          kind: "promise" as const,
-          who: "you" as const,
-          dueMs: due,
-          evidence: { quote: "I will pay", messageKey: 1 },
-        },
-        {
-          kind: "ask" as const,
-          who: "them" as const,
-          dueMs: due,
-          evidence: { quote: "they", messageKey: 1 },
-        },
-      ],
-    };
-    const utc = () => 0;
-    expect(dueWithinADay([a], due - 1, new Set(), utc)).toEqual([]);
-    const soon = dueWithinADay([a], due + 1, new Set(), utc);
-    expect(soon).toEqual([
-      {
-        id: dueId("t1", due),
-        threadId: "t1",
-        dueMs: due,
-        endMs: due + day,
-        title: "Pay the invoice",
-        quote: "I will pay",
-      },
-    ]);
-    expect(dueWithinADay([a], due + day, new Set(), utc)).toEqual([]);
-    expect(dueWithinADay([a], due + 1, new Set([dueId("t1", due)]), utc)).toEqual([]);
-
-    const notice = { due: soon[0] as DueSoon, key: 1, accountId: "a1" };
-    const plan = planDueNotices(prefs(), [notice], false);
-    expect(plan.banners[0]).toMatchObject({ title: "Due within a day", body: "Pay the invoice" });
-    expect(plan.inApp[0]).toMatchObject({ subtitle: "Pay the invoice", body: "I will pay" });
-    expect(planDueNotices(prefs({ mutedAccounts: ["a1"] }), [notice], false).inApp).toEqual([]);
-    expect(planDueNotices(prefs(), [notice], true).banners).toEqual([]);
   });
 });
 
@@ -767,15 +677,15 @@ describe("local time, pause and old mail (ADR 0108)", () => {
     const plan = planNotices(prefs(), [mail(moved), mail(late)], false, now);
     expect(plan.banners.map((b) => b.key)).toEqual([late.key]);
     expect(plan.badged).toEqual([late.key]);
-    const thing = { title: "Pay", ask: "Pay it" };
-    const matters = planMattersNotices(
-      prefs(),
-      [{ message: moved, fromMe: false, told: none, thing }],
+    const all = { banner: true, inApp: true, badge: true };
+    const prompted = planPromptNotices(
+      prefs({ views: { v1: all } }),
+      [{ message: moved, told: none, views: ["v1"] }],
       false,
       now,
     );
-    expect(matters.banners).toEqual([]);
-    expect(matters.inApp).toEqual([]);
+    expect(prompted.banners).toEqual([]);
+    expect(prompted.inApp).toEqual([]);
   });
 
   it("marks single banners, which can act and be taken back, and not summaries", () => {
@@ -786,71 +696,7 @@ describe("local time, pause and old mail (ADR 0108)", () => {
   });
 });
 
-describe("deadlines on the person's own day (ADR 0108)", () => {
-  const day = 86_400_000;
-  const hour = 3_600_000;
-  const cet = () => 60;
-  const due = 20 * day;
-  const reading = {
-    threadId: "t1",
-    headline: "Pay the invoice",
-    facts: [
-      {
-        kind: "promise" as const,
-        who: "you" as const,
-        dueMs: due,
-        evidence: { quote: "I will pay", messageKey: 1 },
-      },
-    ],
-  };
-  const quiet = prefs({ quiet: { on: true, fromMin: 22 * 60, toMin: 7 * 60 } });
-
-  it("opens at the person's midnight and ends at the next one, not at midnight UTC", () => {
-    // 00:30 in Poland is 23:30 UTC the day before: the due day has begun there.
-    expect(dueWithinADay([reading], due - 30 * 60_000, new Set(), cet)).toHaveLength(1);
-    expect(dueWithinADay([reading], due - hour - 1, new Set(), cet)).toEqual([]);
-    const [d] = dueWithinADay([reading], due + 12 * hour, new Set(), cet);
-    expect(d?.endMs).toBe(due + day - hour);
-    // 23:30 local of the due day is still in, 00:30 of the next is not.
-    expect(dueWithinADay([reading], due + 22 * hour + 30 * 60_000, new Set(), cet)).toHaveLength(1);
-    expect(dueWithinADay([reading], due + 23 * hour + 30 * 60_000, new Set(), cet)).toEqual([]);
-  });
-
-  it("holds the banner back in quiet hours, says it inside once, and owes the banner", () => {
-    const [d] = dueWithinADay([reading], due + hour, new Set(), cet);
-    const notice = { due: d as DueSoon, key: 1, accountId: "a1" };
-    const night = planDueNotices(quiet, [notice], true);
-    expect(night.banners).toEqual([]);
-    expect(night.inApp).toHaveLength(1);
-    expect(night.said).toEqual([{ id: d?.id, endMs: d?.endMs, done: false }]);
-
-    // Quiet over: the banner goes, the notice inside does not come again.
-    const morning = planDueNotices(quiet, [{ ...notice, heldBanner: true }], false);
-    expect(morning.banners).toEqual([
-      expect.objectContaining({ title: "Due within a day", body: "Pay the invoice" }),
-    ]);
-    expect(morning.banners[0]?.alone).toBeUndefined();
-    expect(morning.inApp).toEqual([]);
-    expect(morning.said[0]?.done).toBe(true);
-  });
-
-  it("owes nothing when no banner is wanted, or the account is muted", () => {
-    const [d] = dueWithinADay([reading], due + hour, new Set(), cet);
-    const notice = { due: d as DueSoon, key: 1, accountId: "a1" };
-    const noBanner = prefs({
-      kinds: {
-        ...DEFAULT_NOTIFICATION_PREFS.kinds,
-        matters: { banner: false, inApp: true, badge: true },
-      },
-    });
-    expect(planDueNotices(noBanner, [notice], true).said[0]?.done).toBe(true);
-    expect(planDueNotices(prefs({ mutedAccounts: ["a1"] }), [notice], true).said[0]?.done).toBe(
-      true,
-    );
-  });
-});
-
-describe("NewMailWatch keeps deadlines and checks banners (ADR 0108)", () => {
+describe("NewMailWatch checks banners (ADR 0108)", () => {
   function watchOf(store: Map<number, Message>) {
     const deps = {
       index: {} as NewMailDeps["index"],
@@ -867,37 +713,6 @@ describe("NewMailWatch keeps deadlines and checks banners (ADR 0108)", () => {
     } satisfies NewMailDeps;
     return { watch: new NewMailWatch(deps), deps };
   }
-
-  it("keeps a held deadline apart until its banner went, across a restart", async () => {
-    const { watch } = watchOf(new Map());
-    await watch.start();
-    watch.sayDues([{ id: "a", endMs: 5000, done: false }]);
-    expect([...watch.heldDues()]).toEqual(["a"]);
-    expect([...watch.saidDues()]).toEqual([]);
-    const kept = readWatchState(JSON.parse(JSON.stringify(watch.snapshot())));
-    const again = watchOf(new Map()).watch;
-    await again.start(kept);
-    expect([...again.heldDues()]).toEqual(["a"]);
-    again.sayDues([{ id: "a", endMs: 5000, done: true }]);
-    expect([...again.heldDues()]).toEqual([]);
-    expect([...again.saidDues()]).toEqual(["a"]);
-  });
-
-  it("lets the deadline that ends first give way when the list is full", async () => {
-    const { watch } = watchOf(new Map());
-    await watch.start();
-    const many = Array.from({ length: 500 }, (_, i) => ({
-      id: `d${i}`,
-      endMs: 10_000 + i,
-      done: true,
-    }));
-    watch.sayDues(many);
-    watch.sayDues([{ id: "new", endMs: 99_999, done: true }]);
-    const said = watch.saidDues();
-    expect(said.size).toBe(500);
-    expect(said.has("new")).toBe(true);
-    expect(said.has("d0")).toBe(false);
-  });
 
   it("checks the banners still out in the badge's own read", async () => {
     const a = msg();
@@ -963,11 +778,10 @@ describe("views with a prompt (ADR 0117, rule 6)", () => {
       marks: [],
       badged: [],
       told: [
-        { key: 1, threadId: "t", atMs: 1, channels: none, decided: true, waiting: ["v1", 3, "v1"] },
-        { key: 2, threadId: "t", atMs: 1, channels: none, decided: true, waiting: [] },
-        { key: 3, threadId: "t", atMs: 1, channels: none, decided: true, waiting: "v1" },
+        { key: 1, threadId: "t", atMs: 1, channels: none, waiting: ["v1", 3, "v1"] },
+        { key: 2, threadId: "t", atMs: 1, channels: none, waiting: [] },
+        { key: 3, threadId: "t", atMs: 1, channels: none, waiting: "v1" },
       ],
-      dues: {},
     });
     expect(state?.told.map((t) => t.waiting)).toEqual([["v1"], undefined, undefined]);
   });

@@ -6,10 +6,10 @@ import { makeDocument } from "@matters/testkit";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createSqliteStorage,
-  LATEST_ANALYSES_SQL,
   LATEST_SCHEMA_VERSION,
   MIGRATIONS,
   openDatabase,
+  SqliteAgentInsightStore,
   SqliteMessageStore,
   schemaVersion,
   THREAD_MEMBERS_SQL,
@@ -289,30 +289,6 @@ describe("the candidates query (ADR 0012)", () => {
     expect(text).toContain("messages_thread");
     expect(text).toMatch(/SEARCH m USING INDEX messages_thread/);
     expect(text).not.toMatch(/SCAN m(?! USING)/);
-  });
-});
-
-describe("the analyses queries (ADR 0052)", () => {
-  it("list the latest of each thread from the index, and read one by its primary key", () => {
-    const db = openDatabase(":memory:");
-    try {
-      const plan = (sql: string, ...params: (string | number)[]) =>
-        (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as { detail: string }[])
-          .map((r) => r.detail)
-          .join("\n");
-      const latest = plan(LATEST_ANALYSES_SQL, 1);
-      expect(latest).toContain("agent_analyses_latest");
-      expect(latest).not.toMatch(/SCAN a(?! USING)/);
-      const one = plan(
-        "SELECT * FROM agent_analyses WHERE thread_id = ? AND last_message_key = ? AND analyzer_version = ?",
-        "t",
-        1,
-        1,
-      );
-      expect(one).toMatch(/SEARCH agent_analyses USING PRIMARY KEY/);
-    } finally {
-      db.close();
-    }
   });
 });
 
@@ -737,10 +713,7 @@ describe("upgrade from schema 33 (ADR 0066)", () => {
     const storage = createSqliteStorage(path);
     return (async () => {
       try {
-        const [reading] = await storage.agent.listAnalyses(4);
         // A value this build does not know reads as absent.
-        expect(reading?.intent).toBeUndefined();
-        expect(reading?.status).toBeUndefined();
         const feedback = await storage.agent.listFeedback();
         expect(feedback.map((f) => f.outcome)).toEqual([undefined, undefined]);
       } finally {
@@ -857,6 +830,30 @@ describe("upgrade from schema 35 (ADR 0068, rule 3)", () => {
       // One active rule per scope and subject; a removed one can be added again.
       expect(() => next.run("category", "offer")).toThrow();
       expect(() => next.run("domain", "shop.example")).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("rows of the reading of an earlier version (ADR 0117, rule 8)", () => {
+  it("are kept by the schema, and removed with the mail they belong to", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      db.prepare(
+        `INSERT INTO agent_analyses (thread_id, last_message_key, analyzer_version, state, headline,
+                                     facts_json, stakes, confidence, analyzed_at_ms)
+         VALUES ('t1', 5, 4, 'onYou', 'h', '[]', 'none', 0.9, 1), ('t2', 5, 4, 'fyi', 'h', '[]', 'none', 0.9, 1)`,
+      ).run();
+      db.prepare(
+        `INSERT INTO agent_prepared (thread_id, last_message_key, work_json, prepared_at_ms)
+         VALUES ('t1', 5, '{"kind":"draft","body":"b","nudge":false}', 1)`,
+      ).run();
+      await new SqliteAgentInsightStore(db).removeForThreads(["t1"]);
+      expect(db.prepare("SELECT thread_id FROM agent_analyses").all()).toEqual([
+        { thread_id: "t2" },
+      ]);
+      expect(db.prepare("SELECT count(*) AS n FROM agent_prepared").get()).toEqual({ n: 0 });
     } finally {
       db.close();
     }

@@ -12,6 +12,16 @@ import { MAX_HYPOTHESIS_CHARS, MAX_TALK_ALL_THREADS } from "../domain/agentSchem
 import { MAX_LOOP_FILES_READ } from "../domain/fileText.ts";
 import { MAX_VIEW_NAME } from "../domain/views.ts";
 import {
+  type AgentRequestBody,
+  clean,
+  HISTORY_CLOSE,
+  HISTORY_OPEN,
+  MAX_GUIDANCE_CHARS,
+  talkHistoryLines,
+  WORDS_CLOSE,
+  WORDS_OPEN,
+} from "./agentRequests.ts";
+import {
   COUNT_CAP,
   COUNT_TOP_SENDERS,
   MAX_OVERVIEW_MONTHS,
@@ -27,16 +37,6 @@ import {
   TALK_OFFER_SCHEMA,
 } from "./talkOffers.ts";
 import { TALK_QUERY_LANGUAGE } from "./talkTrail.ts";
-import {
-  type AgentRequestBody,
-  clean,
-  HISTORY_CLOSE,
-  HISTORY_OPEN,
-  MAX_GUIDANCE_CHARS,
-  talkHistoryLines,
-  WORDS_CLOSE,
-  WORDS_OPEN,
-} from "./thingsThatMatter.ts";
 
 // --- Limits. Starting values, to be tuned on real use (ADR 0083). ---
 

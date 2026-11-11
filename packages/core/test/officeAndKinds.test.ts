@@ -1,18 +1,14 @@
-// ADR 0068: mail from a public office, rules about a kind of mail, and the name of a person.
+// ADR 0068: mail from a public office, and rules about a kind of mail. ADR 0066, rule 6: service
+// mail from programs.
 import { describe, expect, it } from "vitest";
-import type { AgentRule, CandidateThread, ThreadAnalysis } from "../src/index.ts";
+import type { AgentRule, CandidateThread } from "../src/index.ts";
 import {
-  acceptAnalysis,
   categoryRuleCovers,
   isOfficialAddress,
   normalizeRuleSubject,
-  orderForReading,
-  personKey,
-  rankThings,
   rulesCoverThread,
-  selectCandidates,
-  sharesTopic,
   THREAD_CATEGORIES,
+  talkEligibility,
 } from "../src/index.ts";
 
 const DAY = 86_400_000;
@@ -65,7 +61,7 @@ describe("isOfficialAddress (ADR 0068, rule 4)", () => {
   });
 });
 
-describe("selectCandidates and orderForReading with offices (ADR 0068, rule 4)", () => {
+describe("talkEligibility with offices (ADR 0068, rule 4)", () => {
   const candidate = (over: Partial<CandidateThread>): CandidateThread => ({
     threadId: "t",
     accountId: "a1",
@@ -75,55 +71,64 @@ describe("selectCandidates and orderForReading with offices (ADR 0068, rule 4)",
     messages: [{ from: "noreply@shop.example" }],
     ...over,
   });
-  const options = { nowMs: NOW, windowDays: 30, ownAddresses: ["me@example.com"] };
+  const options = { ownAddresses: ["me@example.com"] };
 
   it("keeps a no-reply notice from an office whatever its subject, and drops a bulletin", () => {
-    const picked = selectCandidates(
-      [
+    const check = (t: CandidateThread) => talkEligibility(t, options);
+    expect(
+      check(
         candidate({
-          threadId: "notice",
           subject: "Zawiadomienie",
           messages: [{ from: "noreply@mf.gov.pl", automated: true }],
         }),
+      ),
+    ).toBe("ok");
+    expect(
+      check(
         candidate({
-          threadId: "bulletin",
           subject: "Informacje dla podatników",
           messages: [{ from: "newsletter@mf.gov.pl", automated: true }],
         }),
-        candidate({
-          threadId: "shop",
-          subject: "Sale",
-          messages: [{ from: "noreply@shop.example" }],
-        }),
-      ],
-      options,
-    );
-    expect(picked.map((t) => t.threadId)).toEqual(["notice"]);
+      ),
+    ).toBe("automated");
+    expect(
+      check(candidate({ subject: "Sale", messages: [{ from: "noreply@shop.example" }] })),
+    ).toBe("automated");
   });
+});
 
-  it("reads threads from an office before all the rest", () => {
-    const ordered = orderForReading(
-      [
+describe("talkEligibility keeps service mail from programs (ADR 0066, rule 6)", () => {
+  const candidate = (over: Partial<CandidateThread>): CandidateThread => ({
+    threadId: "t",
+    accountId: "a1",
+    lastMessageKey: 1,
+    lastDateMs: NOW - DAY,
+    lastFromOwn: false,
+    messages: [{ from: "noreply@shop.example" }],
+    ...over,
+  });
+  const check = (t: CandidateThread) => talkEligibility(t, { ownAddresses: ["me@example.com"] });
+
+  it("keeps a no-reply payment notice and drops a no-reply newsletter", () => {
+    expect(check(candidate({ subject: "Faktura FV/17/2026 do opłacenia" }))).toBe("ok");
+    expect(check(candidate({ subject: "Nowości w naszym sklepie" }))).toBe("automated");
+    expect(check(candidate({}))).toBe("automated");
+    expect(
+      check(
         candidate({
-          threadId: "newest",
-          lastDateMs: NOW - 1,
-          messages: [{ from: "anna@northwind.example", automated: false }],
+          subject: "Your payment is overdue",
+          messages: [{ from: "billing@shop.example", automated: true }],
         }),
+      ),
+    ).toBe("ok");
+    expect(
+      check(
         candidate({
-          threadId: "office",
-          lastDateMs: NOW - 20 * DAY,
-          messages: [{ from: "kontakt@krakow.gov.pl" }],
+          subject: "Ten things we liked",
+          messages: [{ from: "messaging-digest-noreply@shop.example" }],
         }),
-        candidate({
-          threadId: "mine",
-          lastDateMs: NOW - 2,
-          lastFromOwn: true,
-          messages: [{ from: "me@example.com" }],
-        }),
-      ],
-      ["me@example.com"],
-    );
-    expect(ordered.map((t) => t.threadId)).toEqual(["office", "newest", "mine"]);
+      ),
+    ).toBe("automated");
   });
 });
 
@@ -163,140 +168,5 @@ describe("rules about a kind of mail (ADR 0068, rule 3)", () => {
     expect(
       rulesCoverThread([rule("newsletter")], [{ from: "news@shop.example" }], ["me@example.com"]),
     ).toBe(false);
-  });
-});
-
-describe("personKey (ADR 0068, rule 2)", () => {
-  it("folds a name of two words or more", () => {
-    expect(personKey("Anna Kowalska")).toBe("anna kowalska");
-    expect(personKey("  ANNA  Kowalska-Nowak ")).toBe("anna kowalska nowak");
-    expect(personKey("Zażółć Gęślą")).toBe("zazolc gesla");
-  });
-
-  it("is nothing for one word, for none, and for a role", () => {
-    expect(personKey("Anna")).toBeNull();
-    expect(personKey(undefined)).toBeNull();
-    expect(personKey("")).toBeNull();
-    for (const name of [
-      "Biuro Obsługi",
-      "Customer Service",
-      "Support Team",
-      "Sales Office",
-      "Dział Pomoc",
-      "Anna Kontakt",
-      "Info Northwind",
-      "Sekretariat Dyrektora",
-      "Administracja Osiedla",
-    ]) {
-      expect(personKey(name), name).toBeNull();
-    }
-  });
-});
-
-describe("sharesTopic with the thread's subject (ADR 0068, bug)", () => {
-  it("matches on the subject when the reading gave no name and no anchors", () => {
-    expect(
-      sharesTopic(
-        undefined,
-        undefined,
-        ["Re: interpretacja indywidualna ip box"],
-        "Oferta IP Box 2026",
-      ),
-    ).toBe(true);
-    expect(sharesTopic(undefined, [], ["Re: interpretacja indywidualna ip box"])).toBe(false);
-    expect(sharesTopic("", [], ["Przeprowadzka biura"], "Re: Przeprowadzka")).toBe(true);
-  });
-});
-
-describe("real notices from an office's address (ADR 0068, rule 4)", () => {
-  const notice = (over: Partial<ThreadAnalysis> = {}): ThreadAnalysis => ({
-    threadId: "t1",
-    lastMessageKey: 100,
-    analyzerVersion: 4,
-    state: "fyi",
-    headline: "A document waits",
-    facts: [],
-    stakes: "none",
-    confidence: 0.9,
-    analyzedAtMs: NOW,
-    status: "open",
-    intent: "know",
-    category: "notification",
-    intentEvidence: { quote: "q", messageKey: 100 },
-    ...over,
-  });
-  const top = (a: ThreadAnalysis, senderIsOfficial: boolean) =>
-    rankThings(
-      [
-        {
-          analysis: a,
-          accountId: "a1",
-          who: "Office",
-          senderAddress: "noreply@office.gov.pl",
-          signals: {
-            dateOf: new Map([[100, NOW - DAY]]),
-            ...(senderIsOfficial ? { senderIsOfficial: true } : {}),
-          },
-        },
-      ],
-      [],
-      NOW,
-    )[0];
-
-  it("shows a plain notice from an office, in the rest", () => {
-    expect(top(notice(), true)?.official).toBe(true);
-    expect(top(notice(), true)?.now).toBeUndefined();
-  });
-
-  it("puts something to do from an office first, whatever the model called it", () => {
-    expect(top(notice({ intent: "act" }), true)?.now).toBe(true);
-    const owed = notice({
-      state: "onYou",
-      intent: "act",
-      category: "official",
-      facts: [{ kind: "ask", who: "you", evidence: { quote: "q", messageKey: 100 } }],
-    });
-    expect(top(owed, true)?.now).toBe(true);
-  });
-
-  it("leaves out an office's bulletin and offer, and the same notice from anyone else", () => {
-    expect(top(notice({ category: "newsletter" }), true)).toBeUndefined();
-    expect(top(notice({ category: "offer" }), true)).toBeUndefined();
-    expect(top(notice(), false)).toBeUndefined();
-  });
-});
-
-describe("what a name and a window may claim (ADR 0068)", () => {
-  it("does not take a company's name for a person", () => {
-    expect(personKey("Amazon Web Services")).toBeNull();
-    expect(personKey("Anna Nowak")).toBe("anna nowak");
-  });
-
-  it("keeps a window only on an offer", () => {
-    const answer = (intent: string) => ({
-      state: "fyi",
-      headline: "h",
-      facts: [],
-      stakes: "none",
-      confidence: 0.9,
-      consequence: "none",
-      case: "",
-      anchors: [],
-      intent,
-      intentQuote: "tekst",
-      forYou: "generic",
-      status: "open",
-      category: "other",
-      windowEnd: "2026-11-30",
-    });
-    const read = (intent: string) =>
-      acceptAnalysis(answer(intent), [{ key: 1, text: "tekst", fromOwn: false }], {
-        threadId: "t",
-        lastMessageKey: 1,
-        analyzerVersion: 4,
-        analyzedAtMs: NOW,
-      });
-    expect(read("decide")?.windowEndMs).toBeDefined();
-    expect(read("act")?.windowEndMs).toBeUndefined();
   });
 });

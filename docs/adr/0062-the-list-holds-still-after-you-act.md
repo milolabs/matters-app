@@ -1,6 +1,6 @@
 # 0062. The list holds still after you act
 
-- Status: Accepted
+- Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-06
 
 ## Context

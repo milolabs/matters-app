@@ -82,7 +82,7 @@ interface MadeMove {
   readonly landedOn: number | undefined;
 }
 
-/** What moving a thread needs to know of it: a row of the list, or a thing of Matters. */
+/** What moving a thread needs to know of it: a row of the list. */
 export interface MoveSubject {
   readonly threadId: string;
   readonly accountId: string;

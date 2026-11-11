@@ -22,65 +22,6 @@ import {
   PROMPT_OPEN,
   REWRITE_HOW_TEXT,
 } from "@matters/core";
-import { TEST_PROMPT_QUOTE } from "./agentService.ts";
-
-interface Rule {
-  /** A passage of the seeded mail, copied exactly. */
-  readonly find: string;
-  readonly kind: "promise" | "ask";
-  readonly who: "you" | "them";
-  /** Which side wrote the message the passage is in. */
-  readonly author: "you" | "them";
-  readonly headline: string;
-  readonly stakes?: "money" | "contract";
-}
-
-const RULES: readonly Rule[] = [
-  {
-    find: "Termin płatności upływa w piątek, prosimy o terminowe uregulowanie należności.",
-    kind: "ask",
-    who: "you",
-    author: "them",
-    headline: "Zapłać należność przed piątkiem",
-    stakes: "money",
-  },
-  {
-    find: "Czy możemy przesunąć spotkanie na jutro, na godzinę dziesiątą?",
-    kind: "ask",
-    who: "you",
-    author: "them",
-    headline: "Odpowiedz w sprawie przesunięcia spotkania",
-  },
-  {
-    find: "proszę o potwierdzenie otrzymania",
-    kind: "ask",
-    who: "you",
-    author: "them",
-    headline: "Potwierdź otrzymanie dokumentów",
-  },
-  {
-    find: "Łączę się z Państwem jeszcze dziś po południu",
-    kind: "promise",
-    who: "them",
-    author: "them",
-    headline: "Czekasz na kontakt w sprawie szczegółów",
-  },
-  {
-    find: "Chętnie spotkam się na kawę",
-    kind: "promise",
-    who: "you",
-    author: "you",
-    headline: "Umów się na kawę",
-  },
-  {
-    find: TEST_PROMPT_QUOTE,
-    kind: "promise",
-    who: "them",
-    author: "them",
-    headline: "Waiting for the signed contract",
-    stakes: "contract",
-  },
-];
 
 interface Block {
   readonly number: number;
@@ -319,11 +260,7 @@ export class DemoAgentRuntime implements AgentRuntimePort {
               ? this.talkedAll(request)
               : "quotes" in props
                 ? this.talked(request)
-                : "edges" in props
-                  ? this.blocks(request)
-                  : "state" in props
-                    ? this.analysis(request)
-                    : this.prepared(request);
+                : this.prepared(request);
   }
 
   // --- A prompt is a filter (ADR 0116): the same answer for the same mail, every time ---
@@ -493,62 +430,6 @@ export class DemoAgentRuntime implements AgentRuntimePort {
     return { title: `${name.charAt(0).toUpperCase()}${name.slice(1)}` || "Your mail" };
   }
 
-  /** A payment holds up everything else on the cards: enough to see a map in a demo. */
-  private blocks(request: AgentRunRequest) {
-    const cards = request.untrusted.split(/^\[Card \d+\]$/m).slice(1);
-    const at = cards.findIndex((c) => c.includes("Termin płatności"));
-    const quote = /"([^"]*Termin płatności[^"]*)"/.exec(cards[at] ?? "")?.[1];
-    if (at < 0 || quote === undefined) return { edges: [] };
-    const edges = cards.flatMap((_, i) =>
-      i === at ? [] : [{ blocker: at + 1, blocked: i + 1, quote }],
-    );
-    return { edges };
-  }
-
-  private analysis(request: AgentRunRequest) {
-    const facts: { kind: string; who: string; message: number; quote: string }[] = [];
-    let headline = "Nothing is open";
-    let stakes: "none" | "money" | "contract" = "none";
-    let cost = "";
-    for (const block of blocks(request.untrusted)) {
-      for (const rule of RULES) {
-        if (rule.author !== (block.own ? "you" : "them") || !block.text.includes(rule.find))
-          continue;
-        if (facts.some((f) => f.quote === rule.find)) continue;
-        if (facts.length === 0) headline = rule.headline;
-        if (rule.stakes !== undefined) {
-          stakes = rule.stakes;
-          cost = rule.find;
-        }
-        facts.push({ kind: rule.kind, who: rule.who, message: block.number, quote: rule.find });
-        break;
-      }
-    }
-    const state = facts.some((f) => f.who === "you")
-      ? "onYou"
-      : facts.some((f) => f.who === "them")
-        ? "waiting"
-        : "fyi";
-    const numbers = [...request.untrusted.matchAll(/\b\d{2,4}\/\d{4}\b/g)].map((m) => m[0]);
-    return {
-      state,
-      headline,
-      facts: facts.slice(0, 3),
-      stakes,
-      confidence: 0.9,
-      consequence: cost === "" ? "minor" : "real",
-      ...(cost === "" ? {} : { consequenceQuote: cost }),
-      case: numbers[0] === undefined ? "" : `Faktura ${numbers[0]}`,
-      anchors: [...new Set(numbers)].slice(0, 6),
-      // What the thread asks of the person (ADR 0066): the demo asks nothing beyond the facts.
-      intent: state === "onYou" ? "reply" : state === "waiting" ? "wait" : "none",
-      intentQuote: facts[0]?.quote ?? "",
-      forYou: "generic",
-      status: "open",
-      category: "other",
-    };
-  }
-
   /** The turn that keeps what the person typed: its request holds their words and nothing else. */
   private remembered(request: AgentRunRequest) {
     const words = request.untrusted;
@@ -594,7 +475,6 @@ export class DemoAgentRuntime implements AgentRuntimePort {
               },
             ],
       traps: [],
-      ...(/waiting|czeka/i.test(words) ? { state: "onYou" } : {}),
     };
   }
 
@@ -699,7 +579,7 @@ export class DemoAgentRuntime implements AgentRuntimePort {
     return {
       kind: "draft",
       body: "Dzień dobry,\n\ndziękuję za wiadomość. Odpowiem dokładnie do końca tygodnia.\n\nPozdrawiam",
-      nudge: text.includes("State: waiting"),
+      nudge: false,
     };
   }
 }

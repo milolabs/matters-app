@@ -7,7 +7,7 @@ const ready = {
   hasMessages: true,
   threadOpen: true,
   aiOn: true,
-  thingsLoaded: true,
+  viewsLoaded: true,
 };
 
 describe("firstScreenReady (ADR 0070, rule 3)", () => {
@@ -21,9 +21,9 @@ describe("firstScreenReady (ADR 0070, rule 3)", () => {
     expect(firstScreenReady({ ...ready, threadOpen: false })).toBe(false);
   });
 
-  it("waits for the list of things only with AI on", () => {
-    expect(firstScreenReady({ ...ready, thingsLoaded: false })).toBe(false);
-    expect(firstScreenReady({ ...ready, aiOn: false, thingsLoaded: false })).toBe(true);
+  it("waits for the saved views only with AI on", () => {
+    expect(firstScreenReady({ ...ready, viewsLoaded: false })).toBe(false);
+    expect(firstScreenReady({ ...ready, aiOn: false, viewsLoaded: false })).toBe(true);
   });
 
   it("has no thread to wait for in an empty mailbox", () => {
