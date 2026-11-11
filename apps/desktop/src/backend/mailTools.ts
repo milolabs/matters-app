@@ -116,9 +116,10 @@ export interface MailToolsContext extends PoolContext {
   readFile?(messageKey: number, partId: string): Promise<FileTextAnswer>;
   /**
    * Whether a file with no text goes whole to the answer turn (ADR 0090, rule 2): the runtime
-   * takes files. The loop never gets the bytes; it is told the file goes, and the budget is kept.
+   * takes files, or, as a list, the kinds the answer's model takes (ADR 0119, rule 10). The loop
+   * never gets the bytes; it is told the file goes, and the budget is kept.
    */
-  readonly wholeFiles?: boolean;
+  readonly wholeFiles?: boolean | readonly WholeMediaType[];
   /** The tools this turn is offered; absent: all of them. The search of a prompt has two (ADR 0116). */
   readonly tools?: readonly MailToolName[];
 }
@@ -547,7 +548,11 @@ export async function openMailTools(ctx: MailToolsContext): Promise<MailTools> {
       const noText =
         result.state === "no_text" ||
         (result.state === "unsupported" && mediaType !== null && mediaType !== "application/pdf");
-      if (ctx.wholeFiles === true && noText && mediaType !== null) {
+      const takes =
+        mediaType !== null &&
+        (ctx.wholeFiles === true ||
+          (Array.isArray(ctx.wholeFiles) && ctx.wholeFiles.includes(mediaType)));
+      if (takes && noText && mediaType !== null) {
         const fit = wholeFit(chosen, mediaType, result.pages, wholeUsed);
         wholeAnswers.set(id, fit);
         if ("pages" in fit) {

@@ -45,6 +45,8 @@ const status = (over: Partial<AgentStatus> = {}): AgentStatus => ({
     },
   },
   runtime: { id: "claude-code", name: "Claude Code", status: "ready", models: ["haiku", "sonnet"] },
+  runtimes: [],
+  unlisted: [],
   consents: [],
   progress: { state: "idle" },
   ledger: [],

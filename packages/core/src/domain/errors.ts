@@ -106,6 +106,8 @@ export function isFileWorkError(error: unknown): error is FileWorkError {
  * - `refused`: the model declined to answer.
  * - `badAnswer`: it answered, but not in the shape asked for.
  * - `effortRefused`: the model does not take the effort the turn asked for (ADR 0118, rule 5).
+ * - `tooLong`: the turn does not fit in what the model takes, so it was not sent, or its answer was
+ *   cut (ADR 0119, rule 8). The message is ours and names the model.
  * - `failed`: anything else, including a timeout, a missing program and a cancelled run.
  */
 export type AgentRunErrorCode =
@@ -115,6 +117,7 @@ export type AgentRunErrorCode =
   | "refused"
   | "badAnswer"
   | "effortRefused"
+  | "tooLong"
   | "failed";
 
 export class AgentRunError extends Error {
@@ -133,6 +136,7 @@ const RUN_ERROR_CODES: ReadonlySet<string> = new Set([
   "refused",
   "badAnswer",
   "effortRefused",
+  "tooLong",
   "failed",
 ]);
 

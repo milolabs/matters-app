@@ -170,6 +170,7 @@ export type WorkerCommand =
   | { readonly name: "agentTalkDelete"; readonly talkId: number }
   | { readonly name: "agentTalkDeleteAll" }
   | { readonly name: "agentRevokeConsent"; readonly accountId: string }
+  | { readonly name: "agentChooseRuntime"; readonly runtimeId: string }
   | {
       readonly name: "agentUndoFeedback";
       readonly threadId: string;
@@ -277,6 +278,7 @@ export interface CommandResults {
   readonly agentAddRule: AgentRule;
   readonly agentRemoveRule: null;
   readonly agentRevokeConsent: AgentStatus;
+  readonly agentChooseRuntime: AgentStatus;
   readonly agentDraftFromPrepared: { readonly draftId: string; readonly existing: boolean };
   readonly agentMatchAct: ActMatches;
   readonly agentPromptCount: PromptCount;

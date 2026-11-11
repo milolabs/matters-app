@@ -78,7 +78,7 @@ async function build(spoil: Spoil = "none", automated = false) {
   const { keys } = await storage.store.upsertMessages([message]);
   await storage.bodies.putBodies(keys.map((key) => ({ key, threadId: "t1", text: ASKED })));
   const service = new AgentService({
-    runtime,
+    runtimes: [runtime],
     store: storage.store,
     index: storage.index,
     bodies: storage.bodies,

@@ -140,6 +140,10 @@ export class RemoteAgent implements AgentApi {
     );
   }
 
+  chooseRuntime(runtimeId: string): Promise<AgentStatus> {
+    return this.changed(this.host.command({ name: "agentChooseRuntime", runtimeId }));
+  }
+
   setWeekShare(percent: number): Promise<AgentStatus> {
     return this.changed(this.host.command({ name: "agentSetWeekShare", percent }));
   }

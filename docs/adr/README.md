@@ -126,3 +126,4 @@ Format: copy [`template.md`](template.md).
 | [0116](0116-a-prompt-is-a-filter.md) | A prompt is a filter (builds on 0025, 0027, 0051, 0064) | Accepted |
 | [0117](0117-matters-is-a-view-with-a-prompt.md) | Matters is a view with a prompt (supersedes 0052, 0075; amends 0063, 0071, 0078, 0079, 0116) | Accepted |
 | [0118](0118-effort-is-set-per-kind-of-work.md) | Effort is set per kind of work (amends 0051) | Accepted |
+| [0119](0119-a-runtime-on-this-machine.md) | A runtime on this machine (amends 0051, 0118) | Accepted |

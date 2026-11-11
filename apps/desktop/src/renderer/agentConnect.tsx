@@ -3,6 +3,7 @@ import type {
   AgentEffortSetting,
   AgentEfforts,
   AgentModels,
+  AgentRuntimeEntry,
   AgentRuntimeInfo,
   AgentStatus,
 } from "@matters/core";
@@ -10,8 +11,10 @@ import { createSignal, For, Index, type JSX, Show } from "solid-js";
 import {
   effortOptions,
   effortShown,
+  hasNoPlan,
   modelName,
   SIGN_IN_COMMAND,
+  statusWords,
   vendorName,
   windowLine,
 } from "./agentText.ts";
@@ -36,13 +39,20 @@ export const WORK: readonly { key: keyof AgentModels; label: string; hint: strin
 
 export const WEEK_SHARES: readonly number[] = [5, 10, 25];
 
-const STATUS_WORDS: Record<AgentRuntimeInfo["status"], string> = {
-  ready: "Ready",
-  found: "Signed in · not checked yet",
-  signedOut: "Not signed in",
-  missing: "Not found on this Mac",
-  failed: "The check did not pass",
-};
+/** A sentence of ours with `commands` in backticks, the commands set as code. Text only. */
+function WithCode(props: { text: string }) {
+  return (
+    <Index each={props.text.split("`")}>
+      {(part, i) =>
+        i % 2 === 1 ? (
+          <code class="rounded-[5px] bg-fill px-1.5 font-mono text-[12px] text-ink">{part()}</code>
+        ) : (
+          part()
+        )
+      }
+    </Index>
+  );
+}
 
 /**
  * A command to run in Terminal, selectable, with a Copy button. The app only offers the text: it
@@ -83,7 +93,7 @@ export function RuntimeCard(props: {
   const now = Date.now();
   const limits = () => r().limits;
   return (
-    <div data-runtime={r().id} class="flex flex-col gap-2">
+    <div data-runtime={r().id} data-runtime-state={r().status} class="flex flex-col gap-2">
       <div class="flex items-center gap-2.5">
         <span
           aria-hidden="true"
@@ -92,7 +102,11 @@ export function RuntimeCard(props: {
             "bg-good": r().status === "ready",
             "bg-secondary": r().status === "found",
             "bg-late":
-              r().status === "signedOut" || r().status === "missing" || r().status === "failed",
+              r().status === "signedOut" ||
+              r().status === "missing" ||
+              r().status === "failed" ||
+              r().status === "notRunning" ||
+              r().status === "noModel",
           }}
         />
         <div class="min-w-0 flex-1">
@@ -103,7 +117,7 @@ export function RuntimeCard(props: {
             </Show>
           </p>
           <p class="text-[12px] text-secondary" data-runtime-status>
-            {STATUS_WORDS[r().status]}
+            {statusWords(r())}
           </p>
         </div>
         <Show when={r().status === "found" || r().status === "failed"}>
@@ -117,8 +131,8 @@ export function RuntimeCard(props: {
           </button>
         </Show>
       </div>
-      <Show when={r().status === "ready" || r().status === "found"}>
-        <div class="flex flex-col gap-0.5 pl-[17px] text-[12px] text-secondary">
+      <Show when={(r().status === "ready" || r().status === "found") && !hasNoPlan(r())}>
+        <div class="flex flex-col gap-0.5 pl-[17px] text-[12px] text-secondary" data-windows>
           <For
             each={[
               windowLine("Session", limits()?.session, now),
@@ -165,6 +179,18 @@ export function RuntimeCard(props: {
           </div>
         </div>
       </Show>
+      <Show when={r().status === "notRunning" || r().status === "noModel"}>
+        <div class="flex flex-col gap-2 pl-[17px] text-[12.5px] leading-[1.5] text-mid">
+          <p data-runtime-problem>
+            <WithCode text={r().problem ?? `${r().name} cannot be used now. Look again later.`} />
+          </p>
+          <div>
+            <button type="button" class={pill} onClick={() => props.onLookAgain()}>
+              Look again
+            </button>
+          </div>
+        </div>
+      </Show>
       <Show when={r().status === "failed" || props.checkFailed}>
         <p role="alert" class="pl-[17px] text-[12.5px] leading-[1.5] text-late">
           {props.checkFailed ?? r().problem ?? "The check did not pass."}
@@ -174,11 +200,95 @@ export function RuntimeCard(props: {
   );
 }
 
+/**
+ * The choice of runtime (ADR 0119, rule 2): every runtime the app knows, each with its dot, name
+ * and state, the chosen one marked and shown whole. Choosing sends nothing and agrees to nothing.
+ */
+export function RuntimeChoice(props: {
+  status: AgentStatus;
+  checking: boolean;
+  checkFailed?: string;
+  choosing: boolean;
+  onChoose: (runtimeId: string) => void;
+  onCheck: () => void;
+  onLookAgain: () => void;
+}) {
+  const chosen = () => props.status.settings.runtimeId;
+  return (
+    <div role="radiogroup" aria-label="Assistant" class="flex flex-col gap-2">
+      <For each={props.status.runtimes}>
+        {(entry: AgentRuntimeEntry) => (
+          <div
+            data-runtime-option={entry.id}
+            data-chosen={chosen() === entry.id ? "" : undefined}
+            class="flex items-start gap-2.5 rounded-[10px] border p-3"
+            classList={{
+              "border-edge": chosen() === entry.id,
+              "border-hairline": chosen() !== entry.id,
+            }}
+          >
+            <input
+              type="radio"
+              name="agent-runtime"
+              class="mt-[3px]"
+              aria-label={entry.name}
+              checked={chosen() === entry.id}
+              disabled={props.choosing}
+              onChange={() => props.onChoose(entry.id)}
+            />
+            <div class="min-w-0 flex-1">
+              <Show
+                when={chosen() === entry.id && entry.info !== null ? entry.info : null}
+                fallback={
+                  <button
+                    type="button"
+                    class="flex w-full cursor-default items-center gap-2.5 text-left"
+                    disabled={props.choosing}
+                    onClick={() => props.onChoose(entry.id)}
+                  >
+                    <span
+                      aria-hidden="true"
+                      class="size-[7px] shrink-0 rounded-full"
+                      classList={{
+                        "bg-good": entry.info?.status === "ready",
+                        "bg-secondary": entry.info === null || entry.info.status === "found",
+                        "bg-late":
+                          entry.info !== null &&
+                          entry.info.status !== "ready" &&
+                          entry.info.status !== "found",
+                      }}
+                    />
+                    <span class="min-w-0 flex-1">
+                      <span class="block truncate font-semibold">{entry.name}</span>
+                      <span class="block text-[12px] text-secondary" data-runtime-status>
+                        {statusWords(entry.info)}
+                      </span>
+                    </span>
+                  </button>
+                }
+              >
+                {(info) => (
+                  <RuntimeCard
+                    runtime={info()}
+                    checking={props.checking}
+                    {...(props.checkFailed === undefined ? {} : { checkFailed: props.checkFailed })}
+                    onCheck={props.onCheck}
+                    onLookAgain={props.onLookAgain}
+                  />
+                )}
+              </Show>
+            </div>
+          </div>
+        )}
+      </For>
+    </div>
+  );
+}
+
 /** What is not connected yet, said plainly and not clickable. */
 export function NotYet() {
   const items = [
     { name: "Codex", detail: "OpenAI's program, on your ChatGPT plan." },
-    { name: "Ollama", detail: "A model that runs on this Mac and sends nothing out." },
     { name: "Others", detail: "API keys, your own endpoint, other agents." },
   ];
   return (
@@ -302,7 +412,11 @@ export function WhatDoesWhat(props: {
   const runtime = () => props.status.runtime;
   const names = () => runtime()?.models ?? [];
   const by = () => runtime()?.name ?? "";
-  const efforts = () => effortOptions(runtime());
+  /** The levels of the model chosen for a kind of work (ADR 0119, rule 9). */
+  const efforts = (key: keyof AgentModels) =>
+    effortOptions(runtime(), props.status.settings.models[key]);
+  const anyEffort = () => WORK.some((w) => efforts(w.key).length > 0);
+  const unlisted = () => props.status.unlisted;
   return (
     <div class="flex flex-col gap-3">
       <p class="text-[12px] font-semibold text-secondary">
@@ -323,12 +437,19 @@ export function WhatDoesWhat(props: {
             ]}
             onChange={(value) => props.onChange({ [work.key]: value })}
             aside={
-              efforts().length === 0 ? undefined : (
+              !anyEffort() ? undefined : efforts(work.key).length === 0 ? (
+                // The model has no levels: no control, and the row keeps its columns.
+                <span aria-hidden="true" />
+              ) : (
                 <EffortChoice
                   id={`${props.idPrefix}-${work.key}-effort`}
                   label={work.label}
-                  value={effortShown(props.status.settings.efforts[work.key], runtime())}
-                  options={efforts()}
+                  value={effortShown(
+                    props.status.settings.efforts[work.key],
+                    runtime(),
+                    props.status.settings.models[work.key],
+                  )}
+                  options={efforts(work.key)}
                   disabled={work.key === "titles" && props.status.settings.models.titles === "off"}
                   onChange={(value) => props.onChange({}, { [work.key]: value })}
                 />
@@ -337,9 +458,19 @@ export function WhatDoesWhat(props: {
           />
         )}
       </For>
-      <Show when={efforts().length > 0}>
+      <For each={WORK.filter((w) => unlisted().includes(w.key))}>
+        {(work) => (
+          <p role="alert" class="text-[12px] text-late" data-model-gone={work.key}>
+            {props.status.settings.models[work.key]} is not available on {by()} now. Choose another
+            model for {work.label.toLowerCase()}.
+          </p>
+        )}
+      </For>
+      <Show when={anyEffort()}>
         <p class="text-[12px] text-secondary">
-          Higher effort uses more of your plan. Default leaves it to {by()}.
+          {hasNoPlan(runtime())
+            ? `Higher effort takes longer. Default leaves it to the model.`
+            : `Higher effort uses more of your plan. Default leaves it to ${by()}.`}
         </p>
       </Show>
     </div>
@@ -352,15 +483,18 @@ export function Limits(props: {
   idPrefix: string;
   onWeekShare: (percent: number) => void;
 }) {
+  // A runtime with no plan has no week to share (ADR 0119, rule 7).
   return (
-    <Choice
-      id={`${props.idPrefix}-share`}
-      label="Background limit"
-      hint="On plans that show limits. It stops there, never on paid credits."
-      value={String(props.status.settings.weekSharePercent)}
-      options={WEEK_SHARES.map((n) => [String(n), `Up to ${n}% of my week`] as const)}
-      onChange={(v) => props.onWeekShare(Number(v))}
-    />
+    <Show when={!hasNoPlan(props.status.runtime)}>
+      <Choice
+        id={`${props.idPrefix}-share`}
+        label="Background limit"
+        hint="On plans that show limits. It stops there, never on paid credits."
+        value={String(props.status.settings.weekSharePercent)}
+        options={WEEK_SHARES.map((n) => [String(n), `Up to ${n}% of my week`] as const)}
+        onChange={(v) => props.onWeekShare(Number(v))}
+      />
+    </Show>
   );
 }
 
@@ -458,11 +592,22 @@ export function ConsentQuestion(props: {
           </button>
         </div>
       </Show>
-      <p class="text-[12.5px] leading-[1.5] text-secondary">
-        Mail goes to {vendorName(runtime())} only when you ask about it, and for views with a
-        prompt, such as Needs you, which read new mail as it comes. Your {vendorName(runtime())}{" "}
-        privacy settings apply to what is sent.
-      </p>
+      <Show
+        when={runtime()?.onThisMachine === true}
+        fallback={
+          <p class="text-[12.5px] leading-[1.5] text-secondary">
+            Mail goes to {vendorName(runtime())} only when you ask about it, and for views with a
+            prompt, such as Needs you, which read new mail as it comes. Your {vendorName(runtime())}{" "}
+            privacy settings apply to what is sent.
+          </p>
+        }
+      >
+        <p class="text-[12.5px] leading-[1.5] text-secondary" data-stays-here>
+          {vendorName(runtime())} reads mail only when you ask about it, and for views with a
+          prompt, such as Needs you, which read new mail as it comes. It runs on this Mac: your mail
+          stays on this Mac.
+        </p>
+      </Show>
       <Show when={problem() !== ""}>
         <p role="alert" class="text-[13px] text-late">
           {problem()}

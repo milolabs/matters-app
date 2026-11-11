@@ -576,6 +576,10 @@ function parseAgentRequest(
       }
       return { type, requestId, models, efforts };
     }
+    case "agentChooseRuntime":
+      return shortString(raw.runtimeId, 100)
+        ? { type, requestId, runtimeId: raw.runtimeId }
+        : "runtimeId must be a string";
     case "agentSetWeekShare":
       return typeof raw.percent === "number" && Number.isFinite(raw.percent)
         ? { type, requestId, percent: raw.percent }
@@ -1685,6 +1689,13 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
             accountIds: request.accountIds,
             runtimeId: request.runtimeId,
           }),
+        };
+      case "agentChooseRuntime":
+        return {
+          type: "agentChooseRuntime",
+          requestId,
+          ok: true,
+          status: await needAgent(deps).chooseRuntime(request.runtimeId),
         };
       case "agentSetModels":
         return {

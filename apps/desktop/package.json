@@ -14,6 +14,7 @@
     "@matters/adapter-filetext": "workspace:*",
     "@matters/adapter-imap": "workspace:*",
     "@matters/adapter-mime": "workspace:*",
+    "@matters/adapter-ollama": "workspace:*",
     "@matters/adapter-publicsuffix": "workspace:*",
     "@matters/adapter-secrets": "workspace:*",
     "@matters/adapter-smtp": "workspace:*",

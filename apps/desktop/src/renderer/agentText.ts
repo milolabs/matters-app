@@ -13,7 +13,7 @@ import type {
   ThreadCategory,
 } from "@matters/core";
 
-import { AGENT_EFFORTS } from "@matters/core";
+import { AGENT_EFFORTS, levelsFor, modelUsesTools } from "@matters/core";
 
 const DAY_MS = 86_400_000;
 
@@ -58,12 +58,18 @@ export const EFFORT_WORDS: Readonly<Record<AgentEffortSetting, string>> = {
 
 /**
  * The effort a kind of work can be set to on this runtime: `Default`, then the levels it lists,
- * lowest first. None when it lists none, and the control is not shown (ADR 0118, rule 4).
+ * lowest first. None when it lists none, and the control is not shown (ADR 0118, rule 4). With
+ * `model`, the levels of that model, where they differ by model (ADR 0119, rule 9).
  */
 export function effortOptions(
-  runtime: Pick<AgentRuntimeInfo, "efforts"> | null,
+  runtime: Pick<AgentRuntimeInfo, "efforts" | "modelEfforts"> | null,
+  model?: string,
 ): readonly (readonly [AgentEffortSetting, string])[] {
-  const levels = AGENT_EFFORTS.filter((level) => runtime?.efforts?.includes(level) === true);
+  const listed =
+    runtime?.modelEfforts !== undefined && model !== undefined
+      ? levelsFor(runtime, model)
+      : runtime?.efforts;
+  const levels = AGENT_EFFORTS.filter((level) => listed?.includes(level) === true);
   if (levels.length === 0) return [];
   return (["default", ...levels] as const).map((value) => [value, EFFORT_WORDS[value]] as const);
 }
@@ -77,9 +83,10 @@ export function ledgerEffort(entry: { readonly effort?: AgentEffortSetting }): s
 /** What the control shows: a stored level the runtime does not list goes as `Default` (rule 4). */
 export function effortShown(
   setting: AgentEffortSetting,
-  runtime: Pick<AgentRuntimeInfo, "efforts"> | null,
+  runtime: Pick<AgentRuntimeInfo, "efforts" | "modelEfforts"> | null,
+  model?: string,
 ): AgentEffortSetting {
-  return effortOptions(runtime).some(([value]) => value === setting) ? setting : "default";
+  return effortOptions(runtime, model).some(([value]) => value === setting) ? setting : "default";
 }
 
 export function modelName(model: string): string {
@@ -105,9 +112,10 @@ export function questionButtonText(busy: boolean, directionChosen: boolean): str
 
 /**
  * The button of the status line: `Claude Code 61% left`, `limits not known yet`, or why work is
- * paused. The session is the window that decides what can run now.
+ * paused. The session is the window that decides what can run now. A runtime with no plan has no
+ * button but while reading is paused (ADR 0119, rule 7): null.
  */
-export function planButton(status: AgentStatus, now: number): PlanButton {
+export function planButton(status: AgentStatus, now: number): PlanButton | null {
   const name = status.runtime?.name ?? "Agent";
   const p = status.progress;
   if (p.state === "paused") {
@@ -115,6 +123,7 @@ export function planButton(status: AgentStatus, now: number): PlanButton {
     const why = p.reason === "limit" || p.reason === "sessionLimit" || p.reason === "weekLimit";
     return { text: `Paused${until}${why ? " · plan limit" : pausedWhy(p.reason)}`, late: true };
   }
+  if (hasNoPlan(status.runtime)) return null;
   const left = percentLeft(status.settings.limits?.session, now);
   if (left === undefined) return { text: `${name} · limits not known yet`, late: false };
   return { text: `${name} ${left}% left`, late: left < LOW_LEFT_PERCENT };
@@ -150,6 +159,40 @@ export function windowLine(label: string, window: PlanWindow | undefined, now: n
   return { label, left: `${left}% left`, resets: `resets ${resetText(window.resetsAtMs, now)}` };
 }
 
+/** The state of a runtime, as its card says it. */
+const STATUS_WORDS: Record<AgentRuntimeInfo["status"], string> = {
+  ready: "Ready",
+  found: "Signed in · not checked yet",
+  signedOut: "Not signed in",
+  missing: "Not found on this Mac",
+  failed: "The check did not pass",
+  notRunning: "Not running",
+  noModel: "No model installed",
+};
+
+/** The state of a runtime in a few words; one on this Mac has no sign-in to speak of. */
+export function statusWords(runtime: AgentRuntimeInfo | null): string {
+  if (runtime === null) return "Not looked at yet";
+  if (runtime.status === "found" && runtime.onThisMachine === true) {
+    return "Installed · not checked yet";
+  }
+  return STATUS_WORDS[runtime.status];
+}
+
+/**
+ * Whether Settings offers the search in a loop (ADR 0083): only when the model for writing, which
+ * the loop runs on, can use our tools. On another it would do nothing, so it is not shown (ADR
+ * 0119, rule 10).
+ */
+export function loopOffered(runtime: AgentRuntimeInfo | null | undefined, model: string): boolean {
+  return modelUsesTools(runtime, model);
+}
+
+/** The runtime has no plan (ADR 0119, rule 7): windows, shares and limits do not show. */
+export function hasNoPlan(runtime: Pick<AgentRuntimeInfo, "noPlan"> | null | undefined): boolean {
+  return runtime?.noPlan === true;
+}
+
 /** The program's shorter name in a sentence that says where mail goes: `Claude`. */
 export function vendorName(runtime: AgentRuntimeInfo | null): string {
   if (runtime?.id === "claude-code") return "Claude";
@@ -163,9 +206,29 @@ export function ourShare(status: AgentStatus): string {
   return `Matters this week: ${about} of ${vendorName(status.runtime)}`;
 }
 
+/**
+ * The runtimes that run on this machine, by the name a talk entry keeps (ADR 0119): their answers
+ * were made here, on no plan.
+ */
+const ON_THIS_MACHINE = new Set(["Ollama"]);
+
+/** Who answered in a talk: `Claude Code, Sonnet, your plan`, or `Ollama, Qwen3:8b, on this Mac`. */
+export function answeredByLine(runtimeName: string, model: string): string {
+  const where = ON_THIS_MACHINE.has(runtimeName) ? "on this Mac" : "your plan";
+  return `${runtimeName}, ${modelName(model)}, ${where}`;
+}
+
+/** What left the machine for an answer about one thread. */
+export function sentLine(runtimeName: string): string {
+  return ON_THIS_MACHINE.has(runtimeName)
+    ? `Read this thread with ${runtimeName}, on this Mac. Nothing left this Mac.`
+    : `Sent this thread to ${runtimeName}. Nothing else left this Mac.`;
+}
+
 /** The model that wrote a draft: every draft is written on request, by the writing model. */
 export function writtenByLine(runtime: AgentRuntimeInfo | null, models: AgentModels): string {
-  return `${runtime?.name ?? "Agent"}, ${modelName(models.write)}, your plan`;
+  const where = runtime?.onThisMachine === true ? "on this Mac" : "your plan";
+  return `${runtime?.name ?? "Agent"}, ${modelName(models.write)}, ${where}`;
 }
 
 // --- The words the person gave (ADR 0052, rule 10) ---

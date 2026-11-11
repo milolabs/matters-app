@@ -13,7 +13,6 @@ import type {
   JournalMemo,
   LedgerEntry,
   NewTalkEntry,
-  PlanLimits,
   PreparedRecord,
   PreparedWork,
   PromptFit,
@@ -36,7 +35,8 @@ import {
   DEFAULT_AGENT_SETTINGS,
   FEEDBACK_OUTCOMES,
   isAgentEffort,
-  readEfforts,
+  patchAgentSettings,
+  readAgentSettings,
 } from "@matters/core";
 import { type Database, exclusive, write } from "./database.ts";
 
@@ -1064,29 +1064,11 @@ type Patch = Parameters<AgentSettingsPort["update"]>[0];
 /** The stored JSON, defended against a value this build does not know (a newer one wrote it). */
 function readSettings(json: string | undefined): AgentSettings {
   if (json === undefined) return DEFAULT_AGENT_SETTINGS;
-  let raw: unknown;
   try {
-    raw = JSON.parse(json);
+    return readAgentSettings(JSON.parse(json));
   } catch {
     return DEFAULT_AGENT_SETTINGS;
   }
-  if (typeof raw !== "object" || raw === null) return DEFAULT_AGENT_SETTINGS;
-  // `windowDays` and `models.draftAhead` of settings stored before ADR 0117 are not read.
-  const { windowDays: _window, ...stored } = raw as Partial<AgentSettings> & {
-    windowDays?: unknown;
-  };
-  // A kind of work added later (ADR 0086: `titles`) keeps its default under models stored before.
-  const models =
-    typeof stored.models === "object" && stored.models !== null
-      ? {
-          understand: stored.models.understand ?? DEFAULT_AGENT_SETTINGS.models.understand,
-          write: stored.models.write ?? DEFAULT_AGENT_SETTINGS.models.write,
-          answer: stored.models.answer ?? DEFAULT_AGENT_SETTINGS.models.answer,
-          titles: stored.models.titles ?? DEFAULT_AGENT_SETTINGS.models.titles,
-        }
-      : DEFAULT_AGENT_SETTINGS.models;
-  // Efforts stored before ADR 0118, or unknown, read as the starting values (rule 8).
-  return { ...DEFAULT_AGENT_SETTINGS, ...stored, models, efforts: readEfforts(stored.efforts) };
 }
 
 export class SqliteAgentSettings implements AgentSettingsPort {
@@ -1118,10 +1100,10 @@ export class SqliteAgentSettings implements AgentSettingsPort {
     );
     this.selectRecord = db.prepare("SELECT * FROM agent_runtime_records WHERE runtime_id = ?");
     this.upsertRecord = db.prepare(`
-      INSERT INTO agent_runtime_records (runtime_id, status, plan, problem, tested_at_ms)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO agent_runtime_records (runtime_id, status, plan, problem, tested_at_ms, model)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT (runtime_id) DO UPDATE SET status = excluded.status, plan = excluded.plan,
-        problem = excluded.problem, tested_at_ms = excluded.tested_at_ms`);
+        problem = excluded.problem, tested_at_ms = excluded.tested_at_ms, model = excluded.model`);
   }
 
   private current(): AgentSettings {
@@ -1136,17 +1118,8 @@ export class SqliteAgentSettings implements AgentSettingsPort {
   async update(patch: Patch): Promise<AgentSettings> {
     let next = DEFAULT_AGENT_SETTINGS;
     await write(this.db, () => {
-      const { limits, usedWeekResetsAtMs, ...rest } = patch;
-      const merged: Record<string, unknown> = { ...this.current() };
-      for (const [key, value] of Object.entries(rest)) {
-        if (value !== undefined) merged[key] = value;
-      }
-      if (limits === null) delete merged.limits;
-      else if (limits !== undefined) merged.limits = limits satisfies PlanLimits;
-      if (usedWeekResetsAtMs === null) delete merged.usedWeekResetsAtMs;
-      else if (usedWeekResetsAtMs !== undefined) merged.usedWeekResetsAtMs = usedWeekResetsAtMs;
-      this.upsertSettings.run(JSON.stringify(merged));
-      next = merged as unknown as AgentSettings;
+      next = patchAgentSettings(this.current(), patch);
+      this.upsertSettings.run(JSON.stringify(next));
     });
     return next;
   }
@@ -1184,6 +1157,7 @@ export class SqliteAgentSettings implements AgentSettingsPort {
           plan: string | null;
           problem: string | null;
           tested_at_ms: number;
+          model: string | null;
         }
       | undefined;
     if (r === undefined) return null;
@@ -1191,6 +1165,7 @@ export class SqliteAgentSettings implements AgentSettingsPort {
       runtimeId: r.runtime_id,
       status: r.status,
       ...(r.plan === null ? {} : { plan: r.plan }),
+      ...(r.model === null || r.model === undefined ? {} : { model: r.model }),
       ...(r.problem === null ? {} : { problem: r.problem }),
       testedAtMs: r.tested_at_ms,
     };
@@ -1204,6 +1179,7 @@ export class SqliteAgentSettings implements AgentSettingsPort {
         record.plan ?? null,
         record.problem ?? null,
         record.testedAtMs,
+        record.model ?? null,
       ),
     );
   }

@@ -1,3 +1,5 @@
+import type { WholeMediaType } from "./fileText.ts";
+
 /**
  * Agents run on the person's own plans (ADR 0051) and read mail for the person's prompts (ADR 0116,
  * 0117), asks and drafts. This file holds the vocabulary and the one pure rule that decides whether work may
@@ -12,8 +14,17 @@ export type AgentRuntimeId = string;
  * - `found`: signed in; has not yet passed the test with a made-up message (ADR 0051, rule 5).
  * - `ready`: passed the test; may receive mail the person agreed to send.
  * - `failed`: the check itself broke; `problem` says how.
+ * - `notRunning`: a server on this machine that does not answer (ADR 0119, rule 6).
+ * - `noModel`: it answers, but no model that runs here is installed (ADR 0119, rule 6).
  */
-export type AgentRuntimeStatus = "missing" | "signedOut" | "found" | "ready" | "failed";
+export type AgentRuntimeStatus =
+  | "missing"
+  | "signedOut"
+  | "found"
+  | "ready"
+  | "failed"
+  | "notRunning"
+  | "noModel";
 
 /** One window of a plan's limits. */
 export interface PlanWindow {
@@ -47,9 +58,68 @@ export interface AgentRuntimeInfo {
    * no effort is ever sent to it.
    */
   readonly efforts?: readonly AgentEffort[];
+  /**
+   * The levels of each model, when they differ by model (ADR 0119, rule 9). When present, it is
+   * what a model takes, `efforts` is not read, and a model it does not name takes none.
+   */
+  readonly modelEfforts?: Readonly<Record<string, readonly AgentEffort[]>>;
+  /**
+   * The model every kind of work starts on, for a runtime with no fixed model names (ADR 0119,
+   * rule 4). Absent: the runtime's names are fixed and the starting choice is the app's own.
+   */
+  readonly defaultModel?: string;
+  /**
+   * The runtime has no plan (ADR 0119, rule 7): no windows, shares or limits apply or show, and
+   * the gates of the plan always pass. Absent: it runs on a plan.
+   */
+  readonly noPlan?: boolean;
+  /**
+   * How many characters of untrusted text (mail and the person's words) one turn on each model may
+   * carry (ADR 0119, rule 8). Requests sized from mail are made to fit it; a model it does not name,
+   * or a runtime without it, keeps the app's own sizes.
+   */
+  readonly modelInputChars?: Readonly<Record<string, number>>;
+  /**
+   * It can run a turn with our read-only tools (ADR 0083). Set by the app from the port, not by
+   * the runtime. Absent: it cannot, and the search runs in turns without tools.
+   */
+  readonly tools?: boolean;
+  /**
+   * The models that can use our tools (ADR 0119, rule 10). Absent: every model of a runtime with
+   * `tools` can. The search in a loop runs only on such a model; another plans its searches in
+   * turns without tools.
+   */
+  readonly toolModels?: readonly string[];
+  /**
+   * What each model takes whole of a file with no text (ADR 0090; ADR 0119, rule 10). Absent: a
+   * runtime that takes files takes every kind on every model. A model it does not name takes none.
+   */
+  readonly modelFiles?: Readonly<Record<string, readonly WholeMediaType[]>>;
+  /** Mail sent to it stays on this machine (ADR 0119, rule 5): the consent question says so. */
+  readonly onThisMachine?: boolean;
+  /**
+   * How many turns of a reading may run side by side. Absent: the app's own number. A runtime
+   * with no plan always runs one at a time (ADR 0119, rule 7).
+   */
+  readonly turnsAtOnce?: number;
   readonly limits?: PlanLimits;
-  /** A sentence for the person, when `status` is `signedOut` or `failed`. */
+  /** A sentence for the person, when the runtime cannot be used now (`status` not `found`/`ready`). */
   readonly problem?: string;
+}
+
+/**
+ * The levels a model takes on this runtime (ADR 0118, rule 4; ADR 0119, rule 9): its own when the
+ * runtime lists levels per model, else the runtime's. Undefined or empty: none.
+ */
+export function levelsFor(
+  runtime: Pick<AgentRuntimeInfo, "efforts" | "modelEfforts"> | null | undefined,
+  model: string,
+): readonly AgentEffort[] | undefined {
+  if (runtime === null || runtime === undefined) return undefined;
+  if (runtime.modelEfforts !== undefined) {
+    return Object.hasOwn(runtime.modelEfforts, model) ? runtime.modelEfforts[model] : [];
+  }
+  return runtime.efforts;
 }
 
 /** `P0` what the person asked for; `P1` understanding new mail; `P2` drafts; `P3` reading back. */
@@ -123,6 +193,54 @@ export function mayRun(
     return refused("weekLimit", limits.week?.resetsAtMs);
   }
   return background ? withinShare(budget, limits.week, nowMs) : { ok: true };
+}
+
+/** Every kind of file that can go whole (ADR 0090). */
+export const WHOLE_MEDIA_TYPES: readonly WholeMediaType[] = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+];
+
+/** Whether a turn on `model` may use our tools (ADR 0083; ADR 0119, rule 10). */
+export function modelUsesTools(
+  runtime: Pick<AgentRuntimeInfo, "tools" | "toolModels"> | null | undefined,
+  model: string,
+): boolean {
+  if (runtime?.tools !== true) return false;
+  return runtime.toolModels === undefined || runtime.toolModels.includes(model);
+}
+
+/**
+ * The kinds of file with no text that go whole to a turn on `model` (ADR 0090; ADR 0119, rule
+ * 10): what the runtime lists for the model, else everything when the runtime takes files, else none.
+ */
+export function wholeTypesFor(
+  runtime: Pick<AgentRuntimeInfo, "modelFiles"> | null | undefined,
+  takesFiles: boolean,
+  model: string,
+): readonly WholeMediaType[] {
+  if (!takesFiles) return [];
+  const map = runtime?.modelFiles;
+  if (map === undefined) return WHOLE_MEDIA_TYPES;
+  return Object.hasOwn(map, model) ? (map[model] ?? []) : [];
+}
+
+/**
+ * The gate of the plan for the runtime that runs the turn (ADR 0119, rule 7): a runtime with no
+ * plan has no windows to keep to, so it always passes; any other is `mayRun`, unchanged.
+ */
+export function mayRunOn(
+  runtime: Pick<AgentRuntimeInfo, "noPlan"> | null | undefined,
+  priority: AgentPriority,
+  limits: PlanLimits | undefined,
+  budget: AgentBudget,
+  nowMs: number,
+): MayRun {
+  if (runtime?.noPlan === true) return { ok: true };
+  return mayRun(priority, limits, budget, nowMs);
 }
 
 function refused(reason: MayRunReason, untilMs: number | undefined): MayRun {
@@ -770,14 +888,27 @@ export function readEfforts(raw: unknown): AgentEfforts {
   };
 }
 
+/** What the person chose on one runtime: a model and an effort for each kind of work (ADR 0119, rule 4). */
+export interface AgentChoices {
+  readonly models: AgentModels;
+  readonly efforts: AgentEfforts;
+}
+
 export interface AgentSettings {
   /** AI is off until the person turns it on. */
   readonly enabled: boolean;
-  /** The runtime they chose; absent while none is. */
+  /** The runtime they chose; absent while none is. Only this runtime ever runs a turn (ADR 0119, rule 3). */
   readonly runtimeId?: AgentRuntimeId;
+  /** The models of the chosen runtime: `choices` of `runtimeId` (ADR 0119, rule 4). */
   readonly models: AgentModels;
-  /** The effort of each kind of work (ADR 0118); stored settings without it read as the start. */
+  /** The efforts of the chosen runtime (ADR 0118); stored settings without it read as the start. */
   readonly efforts: AgentEfforts;
+  /**
+   * The choices kept for each runtime, so changing the runtime and changing back loses nothing
+   * (ADR 0119, rule 4). A runtime with no entry has not started yet: the service gives it its
+   * starting choices when it lists models.
+   */
+  readonly choices?: Readonly<Record<AgentRuntimeId, AgentChoices>>;
   /** Share of the plan's week that background work may use, in percent (ADR 0051, rule 7). */
   readonly weekSharePercent: number;
   /** The plan's windows as last seen. */
@@ -812,6 +943,170 @@ export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   usedByUsPercent: 0,
 };
 
+/**
+ * The runtime that settings stored before ADR 0119 were choices for: the only one there was. Its
+ * flat `models` and `efforts` read as its choices; the choices of no runtime chosen are kept here.
+ */
+export const LEGACY_RUNTIME_ID = "claude-code";
+
+/** The key of the choices of the runtime the settings name. */
+function choiceKey(runtimeId: AgentRuntimeId | undefined): AgentRuntimeId {
+  return runtimeId ?? LEGACY_RUNTIME_ID;
+}
+
+const MAX_MODEL_NAME = 128;
+
+/** Models read back from stored settings: a kind missing or not a short string keeps its start. */
+function readModels(raw: unknown): AgentModels {
+  const stored = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  const pick = (kind: AgentWorkKind): string => {
+    const value = stored[kind];
+    return typeof value === "string" && value.length > 0 && value.length <= MAX_MODEL_NAME
+      ? value
+      : DEFAULT_AGENT_MODELS[kind];
+  };
+  return {
+    understand: pick("understand"),
+    write: pick("write"),
+    answer: pick("answer"),
+    titles: pick("titles"),
+  };
+}
+
+function readChoices(raw: unknown): Record<AgentRuntimeId, AgentChoices> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const out: Record<AgentRuntimeId, AgentChoices> = {};
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (id.length === 0 || id.length > 64 || typeof value !== "object" || value === null) continue;
+    const v = value as Record<string, unknown>;
+    out[id] = { models: readModels(v.models), efforts: readEfforts(v.efforts) };
+  }
+  return out;
+}
+
+/**
+ * Settings as stored, read defensively (a newer build may have written them). Both shapes read:
+ * settings from before ADR 0119 hold one flat `models` and `efforts`, which read as the choices of
+ * the runtime they name, or of Claude Code when they name none (rule 4). `models` and `efforts`
+ * are then the choices of the chosen runtime, or the starting values when it has none yet.
+ */
+export function readAgentSettings(raw: unknown): AgentSettings {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return DEFAULT_AGENT_SETTINGS;
+  // `windowDays` and `models.draftAhead` of settings stored before ADR 0117 are not read.
+  const {
+    windowDays: _window,
+    choices: rawChoices,
+    ...stored
+  } = raw as Partial<AgentSettings> & { windowDays?: unknown; choices?: unknown };
+  const runtimeId =
+    typeof stored.runtimeId === "string" && stored.runtimeId.length > 0
+      ? stored.runtimeId
+      : undefined;
+  const choices = readChoices(rawChoices) ?? {
+    [choiceKey(runtimeId)]: {
+      models: readModels(stored.models),
+      efforts: readEfforts(stored.efforts),
+    },
+  };
+  const { runtimeId: _id, ...rest } = stored;
+  const mine = choices[choiceKey(runtimeId)];
+  return {
+    ...DEFAULT_AGENT_SETTINGS,
+    ...rest,
+    ...(runtimeId === undefined ? {} : { runtimeId }),
+    models: mine?.models ?? DEFAULT_AGENT_MODELS,
+    efforts: mine?.efforts ?? DEFAULT_AGENT_EFFORTS,
+    choices,
+  };
+}
+
+/** What `AgentSettingsPort.update` takes. */
+export type AgentSettingsPatch = Partial<
+  Omit<AgentSettings, "limits" | "usedWeekResetsAtMs" | "choices">
+> & {
+  readonly limits?: PlanLimits | null;
+  readonly usedWeekResetsAtMs?: number | null;
+};
+
+/**
+ * The settings after a patch, for every store alike. `models` and `efforts` are the choices of the
+ * runtime the settings name after the patch: given with a new `runtimeId`, they are that runtime's
+ * starting choices. A new `runtimeId` alone reads that runtime's own choices back (ADR 0119,
+ * rule 4); nothing of another runtime is changed.
+ */
+export function patchAgentSettings(
+  current: AgentSettings,
+  patch: AgentSettingsPatch,
+): AgentSettings {
+  const { limits, usedWeekResetsAtMs, models, efforts, ...rest } = patch;
+  const next: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(rest)) {
+    if (value !== undefined) next[key] = value;
+  }
+  if (limits === null) delete next.limits;
+  else if (limits !== undefined) next.limits = limits;
+  if (usedWeekResetsAtMs === null) delete next.usedWeekResetsAtMs;
+  else if (usedWeekResetsAtMs !== undefined) next.usedWeekResetsAtMs = usedWeekResetsAtMs;
+  if (next.runtimeId === undefined) delete next.runtimeId;
+  const key = choiceKey(next.runtimeId as AgentRuntimeId | undefined);
+  const choices: Record<AgentRuntimeId, AgentChoices> = { ...(current.choices ?? {}) };
+  if (current.choices === undefined) {
+    // Settings made in memory before choices existed: what they hold is the old runtime's.
+    choices[choiceKey(current.runtimeId)] = { models: current.models, efforts: current.efforts };
+  }
+  if (models !== undefined || efforts !== undefined) {
+    const had = choices[key];
+    choices[key] = {
+      models: models ?? had?.models ?? DEFAULT_AGENT_MODELS,
+      efforts: efforts ?? had?.efforts ?? DEFAULT_AGENT_EFFORTS,
+    };
+  }
+  next.choices = choices;
+  next.models = choices[key]?.models ?? DEFAULT_AGENT_MODELS;
+  next.efforts = choices[key]?.efforts ?? DEFAULT_AGENT_EFFORTS;
+  return next as unknown as AgentSettings;
+}
+
+/**
+ * The choices a runtime starts with, from what it lists (ADR 0119, rule 4): the app's own starting
+ * models when the runtime lists all of them (Claude Code), else every kind of work, titles too, on
+ * the model it names as its default, else on the first it lists. Efforts start as ever (ADR 0118,
+ * rule 3); a level the model does not take is sent as none. Null when it lists no model.
+ */
+export function startingChoices(
+  runtime: Pick<AgentRuntimeInfo, "models" | "defaultModel">,
+): AgentChoices | null {
+  const names = runtime.models;
+  if (names.length === 0) return null;
+  if (AGENT_WORK_KINDS.every((k) => names.includes(DEFAULT_AGENT_MODELS[k]))) {
+    return { models: DEFAULT_AGENT_MODELS, efforts: DEFAULT_AGENT_EFFORTS };
+  }
+  const one =
+    runtime.defaultModel !== undefined && names.includes(runtime.defaultModel)
+      ? runtime.defaultModel
+      : (names[0] as string);
+  return {
+    models: { understand: one, write: one, answer: one, titles: one },
+    efforts: DEFAULT_AGENT_EFFORTS,
+  };
+}
+
+/**
+ * The kinds of work whose chosen model the runtime does not list now (ADR 0119, rule 4): each waits
+ * until the person picks another; nothing is put in its place. Titles turned off is not a model.
+ */
+export function unlistedKinds(
+  settings: Pick<AgentSettings, "models">,
+  runtime: Pick<AgentRuntimeInfo, "models"> | null | undefined,
+): readonly AgentWorkKind[] {
+  if (runtime === null || runtime === undefined) return [];
+  return AGENT_WORK_KINDS.filter((k) => {
+    const model = settings.models[k];
+    if (k === "titles" && model === TITLES_OFF) return false;
+    return !runtime.models.includes(model);
+  });
+}
+
 /** The person agreed that this account's mail goes to this runtime. */
 export interface AgentConsent {
   readonly accountId: string;
@@ -828,6 +1123,12 @@ export interface AgentRuntimeRecord {
   readonly runtimeId: AgentRuntimeId;
   readonly status: "ready" | "failed";
   readonly plan?: string;
+  /**
+   * The model the test ran on: the one for understanding mail (ADR 0119). The record holds for that
+   * model only. Absent on records from before it was kept, which hold for the model chosen now:
+   * they were made with what was chosen then.
+   */
+  readonly model?: string;
   readonly problem?: string;
   readonly testedAtMs: number;
 }
@@ -858,10 +1159,27 @@ export interface ReadingProgress {
   readonly problem?: string;
 }
 
+/** One runtime the app knows, and what was last seen of it (null: not looked at yet). */
+export interface AgentRuntimeEntry {
+  readonly id: AgentRuntimeId;
+  readonly name: string;
+  readonly info: AgentRuntimeInfo | null;
+}
+
 export interface AgentStatus {
   readonly settings: AgentSettings;
-  /** Null while the service has not been able to look at the runtime. */
+  /**
+   * The chosen runtime as last seen. Null while none is chosen, or the service has not been able
+   * to look at it.
+   */
   readonly runtime: AgentRuntimeInfo | null;
+  /** Every runtime the app knows, in the order it offers them (ADR 0119, rule 2). */
+  readonly runtimes: readonly AgentRuntimeEntry[];
+  /**
+   * The kinds of work whose model the chosen runtime does not list now (ADR 0119, rule 4); they do
+   * not run until the person picks another. Empty when every model is there.
+   */
+  readonly unlisted: readonly AgentWorkKind[];
   readonly consents: readonly AgentConsent[];
   readonly progress: ReadingProgress;
   /** Newest first. */

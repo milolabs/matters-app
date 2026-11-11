@@ -5597,6 +5597,31 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
       });
     });
 
+    it("keeps models and efforts per runtime, and changing back loses nothing (ADR 0119, rule 4)", async () => {
+      const local = { understand: "m1", write: "m1", answer: "m1", titles: "m1" };
+      const low = { understand: "low", write: "low", answer: "low", titles: "low" } as const;
+      await settings().update({ runtimeId: "claude-code", models: { ...local, write: "opus" } });
+      await settings().update({ runtimeId: "ollama" });
+      // A runtime with no choices yet reads the starting values until it is given some.
+      expect((await settings().get()).models.understand).toBe("haiku");
+      await settings().update({ models: local, efforts: low });
+      expect(await settings().get()).toMatchObject({
+        runtimeId: "ollama",
+        models: local,
+        efforts: low,
+      });
+      await settings().update({ runtimeId: "claude-code" });
+      const back = await settings().get();
+      expect(back.models).toEqual({ ...local, write: "opus" });
+      expect(back.efforts.write).toBe("default");
+      await settings().update({ runtimeId: "ollama" });
+      expect(await settings().get()).toMatchObject({ models: local, efforts: low });
+      expect(Object.keys((await settings().get()).choices ?? {}).sort()).toEqual([
+        "claude-code",
+        "ollama",
+      ]);
+    });
+
     it("names talks with haiku by default (ADR 0086, rule 8)", async () => {
       expect((await settings().get()).models.titles).toBe("haiku");
     });
@@ -5649,6 +5674,23 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
       expect((await settings().listConsents()).map((c) => `${c.accountId}:${c.runtimeId}`)).toEqual(
         ["b:r1"],
       );
+    });
+
+    it("keeps the model a runtime was tested on, and none for a record without it (ADR 0119)", async () => {
+      await settings().putRuntimeRecord({
+        runtimeId: "ollama",
+        status: "ready",
+        model: "qwen3:8b",
+        testedAtMs: 7,
+      });
+      expect(await settings().getRuntimeRecord("ollama")).toEqual({
+        runtimeId: "ollama",
+        status: "ready",
+        model: "qwen3:8b",
+        testedAtMs: 7,
+      });
+      await settings().putRuntimeRecord({ runtimeId: "ollama", status: "failed", testedAtMs: 8 });
+      expect((await settings().getRuntimeRecord("ollama"))?.model).toBeUndefined();
     });
 
     it("keeps what the test of a runtime found, per runtime", async () => {

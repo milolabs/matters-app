@@ -320,6 +320,8 @@ export interface Backend {
   ): Promise<AgentStatus>;
   agentSetWeekShare(percent: number): Promise<AgentStatus>;
   agentSetTalkLoop(on: boolean): Promise<AgentStatus>;
+  /** Chooses the runtime (ADR 0119, rule 2); sends nothing and agrees to nothing. */
+  agentChooseRuntime(runtimeId: string): Promise<AgentStatus>;
   /** Looks at the runtime again. Spends nothing. */
   agentInspect(): Promise<AgentStatus>;
   /** The test with a made-up message. Never mail. */
@@ -656,6 +658,8 @@ export function createBackend(port: MessagePort): Backend {
       (await request<AgentStatusResponse>({ type: "agentSetWeekShare", percent })).status,
     agentSetTalkLoop: async (on) =>
       (await request<AgentStatusResponse>({ type: "agentSetTalkLoop", on })).status,
+    agentChooseRuntime: async (runtimeId) =>
+      (await request<AgentStatusResponse>({ type: "agentChooseRuntime", runtimeId })).status,
     agentInspect: async () => (await request<AgentStatusResponse>({ type: "agentInspect" })).status,
     agentPauseReading: async () =>
       (await request<AgentStatusResponse>({ type: "agentPauseReading" })).status,

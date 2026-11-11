@@ -13,6 +13,7 @@ const bundleWorkspace = {
     "@matters/adapter-filetext",
     "@matters/adapter-imap",
     "@matters/adapter-mime",
+    "@matters/adapter-ollama",
     "@matters/adapter-publicsuffix",
     "@matters/adapter-secrets",
     "@matters/adapter-smtp",

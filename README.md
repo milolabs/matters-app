@@ -24,9 +24,11 @@ is developed and tested on macOS.
   time you turn AI on, a view named `Needs you` is added, and you can change or
   delete it like any other. You can also ask the agent about a thread or all
   your mail, and have it draft a reply for you to check and send. It runs on
-  the Claude plan you already pay for, through Claude Code on your computer;
+  the Claude plan you already pay for, through Claude Code on your computer,
+  or on a model on your computer with Ollama, where mail never leaves it;
   Matters has no server of its own
-  ([ADR 0051](docs/adr/0051-agents-on-the-users-own-plans.md)). You choose,
+  ([ADR 0051](docs/adr/0051-agents-on-the-users-own-plans.md),
+  [ADR 0119](docs/adr/0119-a-runtime-on-this-machine.md)). You choose,
   per account, whether the agent may read it, and the app works without AI.
 - **Careful with hostile mail.** Remote content, tracking and active HTML are
   handled by rules that are tested against a corpus of made-up hostile
@@ -38,8 +40,11 @@ is developed and tested on macOS.
 - **Sign-in is by password only.** Gmail, iCloud, Yahoo and Fastmail work with
   an app password. Microsoft 365 and Outlook.com need browser sign-in (OAuth),
   which is not built yet, so they do not work.
-- **The agent connects to Claude only.** ChatGPT plans, local models and API
-  keys are planned.
+- **The agent connects to Claude Code and to Ollama only.** ChatGPT plans and
+  API keys are planned. With Ollama, what the agent can do with attachments
+  depends on the model: one that takes tools searches in a loop and reads the
+  text of attached files, one that sees images gets images whole, and a scan
+  in a PDF is not sent whole.
 - **No installer, no updates, no Windows or Linux build.**
 
 ## Build and run

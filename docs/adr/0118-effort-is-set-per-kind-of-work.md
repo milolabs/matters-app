@@ -5,6 +5,7 @@
 - Amends: [0051](0051-agents-on-the-users-own-plans.md) (rule 6: what the person sets for each
   kind of work)
 - Builds on: [0116](0116-a-prompt-is-a-filter.md), [0117](0117-matters-is-a-view-with-a-prompt.md)
+- Amended by: [0119](0119-a-runtime-on-this-machine.md) (rule 4: the levels can differ by model)
 
 ## Context
 

@@ -20,7 +20,7 @@ import {
   threadsOf,
   trailStepLabel,
 } from "./agentTalk.ts";
-import { modelName, planButton } from "./agentText.ts";
+import { answeredByLine, planButton, sentLine } from "./agentText.ts";
 import type { Backend } from "./client.ts";
 import { letterDate, listDate } from "./format.ts";
 import {
@@ -1021,9 +1021,7 @@ function FoundEntry(props: {
       <section aria-label="An answer from the agent" class={answerEdge}>
         <div class="flex items-center gap-2 pb-1.5 text-[12px] text-agent">
           <AgentRing />
-          <span class="min-w-0 truncate">
-            {e().runtimeName}, {modelName(e().model)}, your plan
-          </span>
+          <span class="min-w-0 truncate">{answeredByLine(e().runtimeName, e().model)}</span>
         </div>
         <div class="selectable flex flex-col gap-2 text-[13px] leading-[1.5] [overflow-wrap:anywhere]">
           <p class="whitespace-pre-wrap">{e().text}</p>
@@ -1108,9 +1106,7 @@ function AgentEntry(props: {
     <section aria-label="An answer from the agent" class={answerEdge}>
       <div class="flex items-center gap-2 pb-1.5 text-[12px] text-agent">
         <AgentRing />
-        <span class="min-w-0 truncate">
-          {e().runtimeName}, {modelName(e().model)}, your plan
-        </span>
+        <span class="min-w-0 truncate">{answeredByLine(e().runtimeName, e().model)}</span>
       </div>
       <div class="selectable text-[13px] leading-[1.5] [overflow-wrap:anywhere]">
         <Show when={e().kind === "answer"}>
@@ -1163,9 +1159,7 @@ function AgentEntry(props: {
         </Show>
       </div>
       <Show when={e().kind === "answer"}>
-        <p class="pt-1.5 text-[11.5px] text-agent">
-          Sent this thread to {e().runtimeName}. Nothing else left this Mac.
-        </p>
+        <p class="pt-1.5 text-[11.5px] text-agent">{sentLine(e().runtimeName)}</p>
       </Show>
     </section>
   );

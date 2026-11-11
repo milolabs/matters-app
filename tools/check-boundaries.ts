@@ -45,6 +45,14 @@ const rules: readonly Rule[] = [
     allowNode: true,
     checkManifest: true,
   },
+  // A model on this machine through the Ollama server on the loopback address (ADR 0119). Node's
+  // own fetch only; it brings no package of its own.
+  {
+    pkg: "packages/adapter-ollama",
+    allowed: ["@matters/core"],
+    allowNode: true,
+    checkManifest: true,
+  },
   // Markdown to HTML runs in the router and the worker alike; pure, no Node APIs.
   {
     pkg: "packages/adapter-compose",
@@ -123,6 +131,7 @@ const rules: readonly Rule[] = [
       "@matters/adapter-filetext",
       "@matters/adapter-imap",
       "@matters/adapter-mime",
+      "@matters/adapter-ollama",
       "@matters/adapter-publicsuffix",
       "@matters/adapter-secrets",
       "@matters/adapter-smtp",

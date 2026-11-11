@@ -6,7 +6,6 @@ import { readFile as readFileBytes, stat } from "node:fs/promises";
 import { RemoteCredentialPort } from "@matters/adapter-secrets";
 import type { SqliteStorage } from "@matters/adapter-sqlite";
 import type {
-  AgentRuntimePort,
   ClockPort,
   ComposeRendererPort,
   DownloadConnection,
@@ -38,7 +37,7 @@ import {
   sweepReceived,
 } from "@matters/core";
 import { AccountService } from "./accounts.ts";
-import { AgentService } from "./agentService.ts";
+import { type AgentRuntime, AgentService } from "./agentService.ts";
 import { AttachmentService } from "./attachmentService.ts";
 import type { DemoMail } from "./demoMail.ts";
 import { FlagRunner } from "./flagRunner.ts";
@@ -112,11 +111,11 @@ export interface SyncRuntimeOptions {
   /** Public Suffix List lookup for image rules (ADR 0037). */
   readonly registrableDomain: RegistrableDomainFn;
   /**
-   * Agents (ADR 0051): the runtime that answers and the conversion of HTML to what the reader
-   * sees. Without it every agent command fails and nothing reads mail.
+   * Agents (ADR 0051): the runtimes the person chooses from (ADR 0119, rule 2) and the conversion
+   * of HTML to what the reader sees. Without it every agent command fails and nothing reads mail.
    */
   readonly agent?: {
-    readonly runtime: Pick<AgentRuntimePort, "id" | "name" | "inspect" | "run">;
+    readonly runtimes: readonly AgentRuntime[];
     readonly visibleText: (html: string) => string;
     readonly kickDebounceMs?: number;
     readonly stepThreads?: number;
@@ -478,7 +477,7 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
 
   const agent = options.agent
     ? new AgentService({
-        runtime: options.agent.runtime,
+        runtimes: options.agent.runtimes,
         store: storage.store,
         bodies: storage.bodies,
         accounts: storage.accounts,
@@ -640,6 +639,8 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
           accountIds: command.accountIds,
           runtimeId: command.runtimeId,
         });
+      case "agentChooseRuntime":
+        return needAgent().chooseRuntime(command.runtimeId);
       case "agentDisable":
         return needAgent().disable();
       case "agentSetModels":

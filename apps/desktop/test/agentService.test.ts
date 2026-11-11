@@ -169,6 +169,8 @@ async function build(
   await clock.advance(NOW);
   const insights = new InMemoryAgentInsightStore();
   const settings = new InMemoryAgentSettings();
+  // The person chose this runtime (ADR 0119, rule 2); AI stays off until they agree.
+  await settings.update({ runtimeId: "fake" });
   const runtime = new Responder();
   if (options.takesFiles === true) runtime.takesFiles = true;
   await storage.accounts.add(account("acc1", "me@example.com"));
@@ -179,7 +181,7 @@ async function build(
   const trail: { kind: string; query: string; threads: number; note?: string }[] = [];
   const drafts: Draft[] = [];
   const deps: AgentServiceDeps = {
-    runtime,
+    runtimes: [runtime],
     store: storage.store,
     index: storage.index,
     bodies: storage.bodies,
@@ -472,7 +474,7 @@ describe("AgentService: the runtime is tested before it gets any mail", () => {
     await h.service.testRuntime();
     expect(h.runtime.calls.length).toBe(1);
     const again = new AgentService({
-      runtime: h.runtime,
+      runtimes: [h.runtime],
       store: h.storage.store,
       index: h.storage.index,
       bodies: h.storage.bodies,
@@ -3859,15 +3861,16 @@ describe("AgentService: a talk across all mail (ADR 0064, rules 7 to 12; ADR 008
       expect(h.runtime.calls.filter(isTitle)).toHaveLength(0);
     });
 
-    it("names with the model for understanding when the runtime does not offer the one for titles", async () => {
+    it("names nothing when the runtime no longer offers the model for titles: no other in its place (ADR 0119, rule 4)", async () => {
       const h = await ready();
       await h.settings.update({
         models: { ...(await h.settings.get()).models, understand: "small", titles: "gone" },
       });
       naming(h, { title: "Offer for Anna" });
-      const { talkId } = await h.service.talkAll(WORDS);
-      await titled(h, talkId ?? 0);
-      expect(h.runtime.calls.filter(isTitle)[0]?.model).toBe("small");
+      await h.service.talkAll(WORDS);
+      for (let i = 0; i < 10; i++) await settle();
+      expect(h.runtime.calls.filter(isTitle)).toHaveLength(0);
+      expect((await h.service.status()).unlisted).toEqual(["titles"]);
     });
 
     it("never replaces a name the person gave", async () => {

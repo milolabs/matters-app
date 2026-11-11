@@ -75,7 +75,7 @@ async function boot(options: { agent: boolean }) {
       sha256: (t) => createHash("sha256").update(t, "utf8").digest("hex"),
     },
     ...(options.agent
-      ? { agent: { runtime: new DemoAgentRuntime(), visibleText, kickDebounceMs: 5 } }
+      ? { agent: { runtimes: [new DemoAgentRuntime()], visibleText, kickDebounceMs: 5 } }
       : {}),
   });
   cleanups.push(() => runtime.stop());

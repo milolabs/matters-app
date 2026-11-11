@@ -23,6 +23,7 @@
         "@matters/adapter-filetext": "workspace:*",
         "@matters/adapter-imap": "workspace:*",
         "@matters/adapter-mime": "workspace:*",
+        "@matters/adapter-ollama": "workspace:*",
         "@matters/adapter-publicsuffix": "workspace:*",
         "@matters/adapter-secrets": "workspace:*",
         "@matters/adapter-smtp": "workspace:*",
@@ -128,6 +129,13 @@
       },
       "devDependencies": {
         "@matters/adapter-publicsuffix": "workspace:*",
+      },
+    },
+    "packages/adapter-ollama": {
+      "name": "@matters/adapter-ollama",
+      "version": "0.0.0",
+      "dependencies": {
+        "@matters/core": "workspace:*",
       },
     },
     "packages/adapter-publicsuffix": {
@@ -319,6 +327,8 @@
     "@matters/adapter-imap": ["@matters/adapter-imap@workspace:packages/adapter-imap"],
 
     "@matters/adapter-mime": ["@matters/adapter-mime@workspace:packages/adapter-mime"],
+
+    "@matters/adapter-ollama": ["@matters/adapter-ollama@workspace:packages/adapter-ollama"],
 
     "@matters/adapter-publicsuffix": ["@matters/adapter-publicsuffix@workspace:packages/adapter-publicsuffix"],
 

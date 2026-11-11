@@ -6,17 +6,22 @@ import type {
 } from "@matters/core";
 import { describe, expect, it } from "vitest";
 import {
+  answeredByLine,
   EFFORT_WORDS,
   effortOptions,
   effortShown,
+  hasNoPlan,
   journalLine,
   journalLines,
   ledgerEffort,
+  loopOffered,
   ourShare,
   planButton,
   questionButtonText,
   ruleText,
+  sentLine,
   splitYours,
+  statusWords,
   writtenByLine,
 } from "../src/renderer/agentText.ts";
 
@@ -38,6 +43,8 @@ const status = (over: Partial<AgentStatus> = {}): AgentStatus => ({
     },
   },
   runtime: { id: "claude-code", name: "Claude Code", status: "ready", models: ["haiku", "sonnet"] },
+  runtimes: [],
+  unlisted: [],
   consents: [],
   progress: { state: "idle" },
   ledger: [],
@@ -102,7 +109,7 @@ describe("the status line", () => {
   it("says when limits are not known, and when work is paused", () => {
     const s = status();
     const unknown = { ...s, settings: { ...s.settings, limits: undefined } };
-    expect(planButton(unknown, NOW).text).toBe("Claude Code · limits not known yet");
+    expect(planButton(unknown, NOW)?.text).toBe("Claude Code · limits not known yet");
     const paused = status({
       progress: {
         state: "paused",
@@ -110,7 +117,7 @@ describe("the status line", () => {
         untilMs: new Date(2026, 10, 5, 14, 0).getTime(),
       },
     });
-    expect(planButton(paused, new Date(2026, 10, 5, 10, 0).getTime()).text).toBe(
+    expect(planButton(paused, new Date(2026, 10, 5, 10, 0).getTime())?.text).toBe(
       "Paused until 14:00 · plan limit",
     );
   });
@@ -344,5 +351,72 @@ describe("the effort beside each model (ADR 0118)", () => {
     expect(ledgerEffort({ effort: "low" })).toBe("low effort");
     expect(ledgerEffort({})).toBe("");
     expect(EFFORT_WORDS.default).toBe("Default");
+  });
+});
+
+describe("a runtime on this machine (ADR 0119)", () => {
+  const ollama = {
+    id: "ollama",
+    name: "Ollama",
+    status: "found" as const,
+    models: ["qwen3:8b", "reasoner:20b"],
+    modelEfforts: { "qwen3:8b": [], "reasoner:20b": ["low", "high"] as const },
+    noPlan: true,
+    onThisMachine: true,
+  };
+
+  it("says each state in a few words, and none of a sign-in for one on this Mac", () => {
+    expect(statusWords(null)).toBe("Not looked at yet");
+    expect(statusWords({ ...ollama, status: "notRunning" })).toBe("Not running");
+    expect(statusWords({ ...ollama, status: "noModel" })).toBe("No model installed");
+    expect(statusWords(ollama)).toBe("Installed · not checked yet");
+    expect(statusWords({ ...ollama, status: "ready" })).toBe("Ready");
+    expect(
+      statusWords({ id: "claude-code", name: "Claude Code", status: "found", models: [] }),
+    ).toBe("Signed in · not checked yet");
+  });
+
+  it("offers the levels of the model chosen for the work, and none for a model with none (rule 9)", () => {
+    expect(effortOptions(ollama, "reasoner:20b")).toEqual([
+      ["default", "Default"],
+      ["low", "Low"],
+      ["high", "High"],
+    ]);
+    expect(effortOptions(ollama, "qwen3:8b")).toEqual([]);
+    expect(effortOptions(ollama)).toEqual([]);
+    expect(effortShown("max", ollama, "reasoner:20b")).toBe("default");
+    expect(effortShown("high", ollama, "reasoner:20b")).toBe("high");
+  });
+
+  it("shows no plan: no plan button but a pause, and words that say where it ran (rule 7)", () => {
+    const local = status({ runtime: ollama });
+    expect(hasNoPlan(local.runtime)).toBe(true);
+    expect(hasNoPlan(status().runtime)).toBe(false);
+    expect(planButton(local, NOW)).toBeNull();
+    expect(
+      planButton({ ...local, progress: { state: "paused", reason: "pausedByPerson" } }, NOW),
+    ).toMatchObject({ late: true });
+    expect(writtenByLine(ollama, { ...models, write: "qwen3:8b" })).toBe(
+      "Ollama, Qwen3:8b, on this Mac",
+    );
+    expect(writtenByLine(status().runtime, models)).toBe("Claude Code, Sonnet, your plan");
+    expect(answeredByLine("Ollama", "qwen3:8b")).toBe("Ollama, Qwen3:8b, on this Mac");
+    expect(answeredByLine("Claude Code", "sonnet")).toBe("Claude Code, Sonnet, your plan");
+    expect(sentLine("Ollama")).toBe(
+      "Read this thread with Ollama, on this Mac. Nothing left this Mac.",
+    );
+  });
+});
+
+describe("the search in a loop is offered only where it runs (ADR 0083; ADR 0119, rule 10)", () => {
+  it("shows the setting for a runtime with tools, and not for one without", () => {
+    const base = { id: "x", name: "X", status: "ready" as const, models: [] };
+    expect(loopOffered({ ...base, tools: true }, "m")).toBe(true);
+    expect(loopOffered(base, "m")).toBe(false);
+    expect(loopOffered(null, "m")).toBe(false);
+    // Per model: the setting follows the model chosen for writing (ADR 0119, rule 10).
+    const some = { ...base, tools: true, toolModels: ["qwen3:8b"] };
+    expect(loopOffered(some, "qwen3:8b")).toBe(true);
+    expect(loopOffered(some, "gemma:2b")).toBe(false);
   });
 });

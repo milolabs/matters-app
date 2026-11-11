@@ -16,10 +16,12 @@ import type {
   AgentPriority,
   AgentRequestBody,
   AgentRunResult,
+  AgentRuntimeInfo,
   AgentRuntimePort,
   AgentSettings,
   AgentSettingsPort,
   AgentWorkKind,
+  MayRun,
   MessageStorePort,
   ParsedQuery,
   PlanLimits,
@@ -44,10 +46,10 @@ import {
   buildPromptRequest,
   buildPromptSearchRequest,
   buildTalkPlanRequest,
+  inputCharsFor,
   isAgentRunError,
-  MAX_PARALLEL_TURNS,
   MAX_PROMPT_BATCH_THREADS,
-  mayRun,
+  modelUsesTools,
   orderPromptRows,
   PROMPT_ASK_ABOVE,
   PROMPT_KEEP_DAYS,
@@ -63,6 +65,7 @@ import {
   TALK_LOOP_TIME_CAP_MS,
   TALK_LOOP_TIME_MS,
   TALK_TIME_CAP_MS,
+  turnsAtOnce,
   withEffort,
 } from "@matters/core";
 import { AgentUnavailableError, InvalidAgentSettingError } from "./agentApi.ts";
@@ -93,7 +96,17 @@ export interface LoadedThread {
 }
 
 export interface PromptServiceDeps {
-  readonly runtime: Pick<AgentRuntimePort, "id" | "run" | "runWithTools">;
+  /** The chosen runtime, asked each time: only it runs a turn (ADR 0119, rule 3). */
+  runtime(): Pick<AgentRuntimePort, "id" | "run" | "runWithTools">;
+  /** What was last seen of it: how many turns run at once (ADR 0119, rule 7). */
+  info(): Pick<
+    AgentRuntimeInfo,
+    "noPlan" | "turnsAtOnce" | "modelInputChars" | "tools" | "toolModels"
+  > | null;
+  /** The model of a kind of work, refused with a sentence when the runtime no longer lists it. */
+  modelOf(kind: AgentWorkKind, s: AgentSettings): string;
+  /** The gate of the plan at a priority; open on a runtime with no plan (ADR 0119, rule 7). */
+  planGate(priority: AgentPriority, s: AgentSettings): MayRun;
   /** The candidate pipeline of ADR 0081 and 0082, and the tools of the loop (ADR 0083). */
   readonly store: MailToolsContext["store"] & Pick<MessageStorePort, "changesSince">;
   /** The ranked search of the agent, and the person's own matching for the mail filters. */
@@ -451,8 +464,9 @@ export class PromptService {
 
   /** Accounts with consent for this runtime while AI is on for it; empty means off (rule 11). */
   private async consented(s: AgentSettings): Promise<ReadonlySet<string>> {
-    if (!s.enabled || s.runtimeId !== this.deps.runtime.id) return new Set();
-    return consentedAccounts(this.deps, this.deps.runtime.id);
+    const runtime = this.deps.runtime();
+    if (!s.enabled || s.runtimeId !== runtime.id) return new Set();
+    return consentedAccounts(this.deps, runtime.id);
   }
 
   private async list(query: string, withRows: boolean): Promise<PromptList> {
@@ -620,8 +634,17 @@ export class PromptService {
     stop: AbortSignal,
     mine: Running,
   ): Promise<Searched> {
-    const { runtime, settings } = this.deps;
-    const loop = s.talkLoop === true ? runtime.runWithTools : undefined;
+    const { settings } = this.deps;
+    const runtime = this.deps.runtime();
+    // The loop only on a model for writing that can use tools (ADR 0119, rule 10).
+    const loop =
+      s.talkLoop === true &&
+      modelUsesTools(
+        { ...this.deps.info(), tools: runtime.runWithTools !== undefined },
+        s.models.write,
+      )
+        ? runtime.runWithTools
+        : undefined;
     const cap = loop === undefined ? TALK_TIME_CAP_MS : TALK_LOOP_TIME_CAP_MS;
     const startedAt = performance.now();
     const signal = AbortSignal.any([stop, AbortSignal.timeout(cap)]);
@@ -658,7 +681,7 @@ export class PromptService {
             run = await loop.call(
               runtime,
               {
-                model: s.models.write,
+                model: this.deps.modelOf("write", s),
                 ...buildPromptSearchRequest(asked.text, this.deps.now()),
                 ...withEffort(effort),
               },
@@ -690,7 +713,7 @@ export class PromptService {
       const understand = async (request: AgentRequestBody): Promise<unknown> => {
         const before = (await settings.get()).limits;
         const run = await runtime.run(
-          { model: s.models.understand, ...request, ...withEffort(effort) },
+          { model: this.deps.modelOf("understand", s), ...request, ...withEffort(effort) },
           { signal },
         );
         await this.deps.noteRun(run.limits, before);
@@ -749,7 +772,8 @@ export class PromptService {
     options: BatchOptions = {},
   ): Promise<{ rejected: number; answered: readonly string[]; problem?: string }> {
     const { enough, priority = "P0", stopWhen } = options;
-    const { runtime, insights, settings } = this.deps;
+    const { insights, settings } = this.deps;
+    const runtime = this.deps.runtime();
     const queue = [...todo];
     /** Threads loaded for a batch that did not fit in it wait at the front for the next. */
     const waiting: { c: Candidate; loaded: LoadedThread }[] = [];
@@ -762,6 +786,13 @@ export class PromptService {
     const halt = new AbortController();
     const turnSignal = AbortSignal.any([signal, halt.signal]);
     const effort = this.deps.effortOf("understand", s);
+    // A model the runtime no longer lists reads nothing, and says so (ADR 0119, rule 4).
+    let model: string;
+    try {
+      model = this.deps.modelOf("understand", s);
+    } catch (error) {
+      return { rejected: 0, answered: [], problem: this.deps.askFailure(error, FAILED).message };
+    }
 
     const nextBatch = async (): Promise<{ c: Candidate; loaded: LoadedThread }[]> => {
       const batch = waiting.splice(0);
@@ -789,12 +820,7 @@ export class PromptService {
         // Each turn is gated at its priority on the windows the last turn saw (ADR 0051, rule 7):
         // `P0` for what the person asked, `P1` or `P3` in the background (ADR 0117, rule 3).
         const now = await settings.get();
-        const gate = mayRun(
-          priority,
-          now.limits,
-          { weekSharePercent: now.weekSharePercent, usedByUsPercent: now.usedByUsPercent },
-          this.deps.now(),
-        );
+        const gate = this.deps.planGate(priority, now);
         if (!gate.ok) {
           problem ??= USED_UP;
           halt.abort();
@@ -804,14 +830,20 @@ export class PromptService {
           thread: b.loaded.thread,
           signals: b.c.signals,
         }));
-        const { request, sent } = buildPromptRequest(candidates, asked.text, this.deps.now());
+        // Batches as large as the model takes, never larger (ADR 0119, rule 8).
+        const { request, sent } = buildPromptRequest(
+          candidates,
+          asked.text,
+          this.deps.now(),
+          inputCharsFor(this.deps.info(), model),
+        );
         const went = sent.map((i) => batch[i] as (typeof batch)[number]);
         const wentSet = new Set(sent);
         waiting.unshift(...batch.filter((_, i) => !wentSet.has(i)));
         try {
           const before = now.limits;
           const result = await runtime.run(
-            { model: s.models.understand, ...request, ...withEffort(effort) },
+            { model, ...request, ...withEffort(effort) },
             { signal: turnSignal },
           );
           await this.deps.noteRun(result.limits, before);
@@ -844,7 +876,8 @@ export class PromptService {
             isAgentRunError(error) &&
             (error.code === "notSignedIn" ||
               error.code === "notPlan" ||
-              error.code === "effortRefused")
+              error.code === "effortRefused" ||
+              error.code === "tooLong")
           ) {
             problem ??= this.deps.askFailure(error, FAILED).message;
           } else problem ??= FAILED;
@@ -870,7 +903,8 @@ export class PromptService {
       }
     };
 
-    await Promise.all(Array.from({ length: MAX_PARALLEL_TURNS }, () => worker()));
+    // One at a time on a runtime with no plan; else as many as the runtime takes (ADR 0119, rule 7).
+    await Promise.all(Array.from({ length: turnsAtOnce(this.deps.info()) }, () => worker()));
     return { rejected, answered, ...(problem === undefined ? {} : { problem }) };
   }
 

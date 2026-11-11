@@ -50,13 +50,18 @@ client. This page is the map; the reasons behind each choice live in
    │ adapter-secrets     CredentialPort      (safeStorage)    │
    │ adapter-autoconfig  ServerDiscoveryPort (ISPDB, DNS SRV) │
    │ adapter-claude-code AgentRuntimePort    (the user's CLI) │
+   │ adapter-ollama      AgentRuntimePort    (Ollama on       │
+   │                     127.0.0.1, Node's fetch)             │
    │ later: adapter-gmail-api, adapter-msgraph, adapter-jmap, │
    │        more runtimes behind AgentRuntimePort             │
    └──────────────────────────────────────────────────────────┘
 ```
 
 The **composition root** (`apps/desktop/src/backend/main.ts`) is the only place
-that chooses adapters and wires them into use cases.
+that chooses adapters and wires them into use cases. The sync worker builds every
+agent runtime the app knows; the agent service runs only the one the person chose
+in Settings, and never another in its place
+([ADR 0119](adr/0119-a-runtime-on-this-machine.md)).
 
 ## Repository layout
 
@@ -69,7 +74,7 @@ apps/
                       agent.ts (store), threadAgent.tsx (the agent in a thread), promptLine.tsx
                       (a view with a prompt), plansLine.tsx (status of the plans), agentLayer.tsx
                       (the agent colour, dashed frame and ring), agentSection.tsx and
-                      agentSetup.tsx (Settings and first run); ADR 0051, 0116, 0117
+                      agentSetup.tsx (Settings and first run); ADR 0051, 0116, 0117, 0119
 packages/
   core/               domain + use cases + ports
   contracts/          IPC schema shared by renderer and backend

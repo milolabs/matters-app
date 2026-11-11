@@ -41,6 +41,8 @@ const status: AgentStatus = {
     usedByUsPercent: 0,
   },
   runtime: null,
+  runtimes: [],
+  unlisted: [],
   consents: [],
   progress: { state: "off", reason: "disabled" },
   ledger: [],
@@ -106,6 +108,7 @@ function stub(overrides: Partial<AgentApi> = {}) {
     deleteTalk: note("deleteTalk", undefined),
     deleteAllTalks: note("deleteAllTalks", 0),
     setEnabled: note("setEnabled", status),
+    chooseRuntime: note("chooseRuntime", status),
     disable: note("disable", status),
     setModels: note("setModels", status),
     setWeekShare: note("setWeekShare", status),
@@ -176,6 +179,12 @@ describe("agent requests", () => {
       {},
       { understand: "max", write: "default", answer: "xhigh", titles: "low" },
     ]);
+    expect(await ask({ type: "agentChooseRuntime", runtimeId: "ollama" })).toMatchObject({
+      type: "agentChooseRuntime",
+      ok: true,
+      status,
+    });
+    expect(calls.filter((c) => c[0] === "chooseRuntime")).toEqual([["chooseRuntime", "ollama"]]);
     expect(await ask({ type: "agentSetWeekShare", percent: 15 })).toMatchObject({ ok: true });
     expect(await ask({ type: "agentSetTalkLoop", on: true })).toMatchObject({ ok: true });
     expect(await ask({ type: "agentInspect" })).toMatchObject({ type: "agentInspect" });
@@ -220,6 +229,7 @@ describe("agent requests", () => {
       "disable",
       "setModels",
       "setModels",
+      "chooseRuntime",
       "setWeekShare",
       "setTalkLoop",
       "inspect",
@@ -602,6 +612,10 @@ describe("agent requests", () => {
       { type: "agentSetEnabled", accountIds: "a", runtimeId: "r" },
       { type: "agentSetEnabled", accountIds: [1], runtimeId: "r" },
       { type: "agentSetEnabled", accountIds: ["a"] },
+      { type: "agentChooseRuntime" },
+      { type: "agentChooseRuntime", runtimeId: "" },
+      { type: "agentChooseRuntime", runtimeId: 3 },
+      { type: "agentChooseRuntime", runtimeId: "x".repeat(101) },
       { type: "agentSetModels", models: { mystery: "x" } },
       { type: "agentSetModels", models: { write: 3 } },
       { type: "agentSetModels", models: "write" },
@@ -700,7 +714,8 @@ describe("RemoteAgent", () => {
     await remote.setTalkLoop(true);
     await remote.inspect();
     await remote.testRuntime();
-    expect(log.filter((l) => l === "told")).toHaveLength(10);
+    await remote.chooseRuntime("ollama");
+    expect(log.filter((l) => l === "told")).toHaveLength(11);
     // Each one after its answer: a window that reads then sees the change.
     expect(log.every((l, i) => (l === "told") === (i % 2 === 1))).toBe(true);
     // A refusal changed nothing, and nobody is told.
@@ -875,7 +890,7 @@ describe("across all mail, with a real database (ADR 0064)", () => {
       subject: `Subject ${threadId}`,
     });
     const service = new AgentService({
-      runtime: new DemoAgentRuntime(() => clock.now()),
+      runtimes: [new DemoAgentRuntime(() => clock.now())],
       store: storage.store,
       index: storage.index,
       bodies: storage.bodies,
@@ -960,7 +975,7 @@ describe("the demo assistant over the demo mailbox, with a real database", () =>
     await clock.advance(SEED_NOW_MS + 3_600_000);
     const demo = new DemoAgentRuntime(() => clock.now());
     const service = new AgentService({
-      runtime: demo,
+      runtimes: [demo],
       store: storage.store,
       index: storage.index,
       bodies: storage.bodies,

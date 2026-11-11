@@ -135,6 +135,11 @@ export function sourceLabel(m: PromptMessage): string {
 export const MAX_CHECK_MESSAGE_CHARS = 6000;
 /** Room for the thread in a turn that answers or fills gaps. */
 export const MAX_HELP_THREAD_CHARS = 60_000;
+
+/** The room of the thread in a help turn: the app's own, or less on a model that takes less. */
+function helpRoom(room: number | undefined): number {
+  return room === undefined ? MAX_HELP_THREAD_CHARS : Math.min(MAX_HELP_THREAD_CHARS, room);
+}
 export const MAX_HELP_DRAFT_CHARS = 20_000;
 export const MAX_ASKS = 10;
 export const MAX_ABOUT_CHARS = 120;
@@ -232,6 +237,8 @@ export function buildAnswerQuestionsRequest(
   standing?: Standing,
   /** What the check found unanswered; the answer covers these first (ADR 0098 addendum). */
   missing: readonly string[] = [],
+  /** What the model takes for the thread (ADR 0119, rule 8); the thread is clipped to it. */
+  room?: number,
 ): AgentRequestBody {
   const listed = missing.slice(0, MAX_ASKS).map((m) => m.slice(0, MAX_ABOUT_CHARS));
   return {
@@ -247,7 +254,7 @@ export function buildAnswerQuestionsRequest(
       "",
       draftBlock(own),
       "",
-      renderThread(thread, nowMs, MAX_HELP_THREAD_CHARS),
+      renderThread(thread, nowMs, helpRoom(room), room !== undefined),
     ].join("\n"),
     schema: ANSWER_QUESTIONS_SCHEMA,
   };
@@ -328,6 +335,8 @@ export function buildFillGapsRequest(
   own: string,
   tokens: readonly string[],
   nowMs: number,
+  /** What the model takes for the thread (ADR 0119, rule 8); the thread is clipped to it. */
+  room?: number,
 ): AgentRequestBody {
   return {
     instructions: FILL_GAPS_INSTRUCTIONS,
@@ -338,7 +347,7 @@ export function buildFillGapsRequest(
       "",
       draftBlock(own),
       "",
-      renderThread(thread, nowMs, MAX_HELP_THREAD_CHARS),
+      renderThread(thread, nowMs, helpRoom(room), room !== undefined),
     ].join("\n"),
     schema: FILL_GAPS_SCHEMA,
   };

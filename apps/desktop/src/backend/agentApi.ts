@@ -93,6 +93,11 @@ export interface AgentApi {
   remember(threadId: string, words: string): Promise<RememberResult>;
   /** Records the person's consent for these accounts and this runtime, and turns AI on. */
   setEnabled(input: { accountIds: readonly string[]; runtimeId: string }): Promise<AgentStatus>;
+  /**
+   * Chooses the runtime (ADR 0119, rule 2): stops what runs on the one before, sends nothing, and
+   * agrees to nothing. Refuses a runtime the app does not know.
+   */
+  chooseRuntime(runtimeId: string): Promise<AgentStatus>;
   /** Turns AI off and takes every consent back. */
   disable(): Promise<AgentStatus>;
   /** Takes back the consent for one account; AI stays on for the others. */

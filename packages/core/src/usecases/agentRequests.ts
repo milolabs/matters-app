@@ -260,7 +260,12 @@ export function describeHistory(written: WrittenTo | undefined, who: "company" |
  * one line that says how many were left out; the newest message always goes in (clipped when it
  * alone is too long). Message numbers stay those of the thread, so a quote still names its message.
  */
-export function renderThread(thread: PromptThread, nowMs: number, room?: number): string {
+export function renderThread(
+  thread: PromptThread,
+  nowMs: number,
+  room?: number,
+  strict = false,
+): string {
   const subject = clean(thread.subject).replace(/\n/g, " ").slice(0, 300);
   const parts = [`Today: ${isoDay(nowMs)}`, `Subject: ${subject}`, depthLine(thread)];
   if (thread.history !== undefined && thread.history !== "") {
@@ -321,8 +326,50 @@ export function renderThread(thread: PromptThread, nowMs: number, room?: number)
   const left = first;
   const note =
     left > 0 ? [`\n[${left} earlier ${left === 1 ? "message" : "messages"} left out]`] : [];
-  return [head, ...note, ...mailBlocks, ...files].join("\n");
+  const out = [head, ...note, ...mailBlocks, ...files].join("\n");
+  // Strict: the room is what the model takes (ADR 0119, rule 8). The newest message, kept even when
+  // it alone is over the room, is clipped to fit, the way a long message is always clipped.
+  if (!strict || room === undefined || out.length <= room || mailBlocks.length === 0) return out;
+  const last = mailBlocks.length - 1;
+  const block = mailBlocks[last] as string;
+  const textAt = block.indexOf("\n\n") + 2;
+  const text = block.slice(textAt);
+  const keep = Math.max(0, text.length - (out.length - room) - CLIP_NOTE_ROOM);
+  const clipped = [...mailBlocks];
+  clipped[last] = block.slice(0, textAt) + clipTo(text, keep);
+  return [head, ...note, ...clipped, ...files].join("\n");
 }
+
+/** What the line that says a text was clipped takes. */
+const CLIP_NOTE_ROOM = 60;
+
+/**
+ * How much untrusted text one turn on this model may carry (ADR 0119, rule 8), when the runtime
+ * says so per model; undefined: it says nothing, and today's constants hold.
+ */
+export function inputCharsFor(
+  runtime: { readonly modelInputChars?: Readonly<Record<string, number>> } | null | undefined,
+  model: string,
+): number | undefined {
+  const map = runtime?.modelInputChars;
+  if (map === undefined || !Object.hasOwn(map, model)) return undefined;
+  const n = map[model];
+  return typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.floor(n)) : undefined;
+}
+
+/**
+ * The room for the one thread of a turn whose other parts (the earlier talk, the person's words, a
+ * question) take at most `besides`, within what the model takes; undefined when it says nothing.
+ */
+export function threadRoom(inputChars: number | undefined, besides: number): number | undefined {
+  return inputChars === undefined ? undefined : Math.max(0, inputChars - besides);
+}
+
+/**
+ * What the parts of a one-thread turn other than the thread take, at most: the earlier talk
+ * (`MAX_TALK_HISTORY_CHARS`), the person's words, an open question and the headings.
+ */
+export const ONE_THREAD_EXTRA_CHARS = 14_000;
 
 /**
  * The person's standing instructions as a block under the fixed instructions (ADR 0054, rule 10).
@@ -429,10 +476,12 @@ export function buildPreparedRequest(
   nowMs: number,
   guidance?: PreparedGuidance,
   standing?: Standing,
+  room?: number,
 ): AgentRequestBody {
   const given = guidance === undefined ? null : guidanceBlock(guidance);
   const parts = given === null ? [] : [given.block];
-  parts.push(renderThread(thread, nowMs));
+  // `room`: what the model takes for the thread (ADR 0119, rule 8); the thread is clipped to it.
+  parts.push(renderThread(thread, nowMs, room, room !== undefined));
   return {
     instructions: withStanding(PREPARED_INSTRUCTIONS, "write", standing),
     untrusted: parts.join("\n\n"),
@@ -546,6 +595,7 @@ export function buildTalkRequest(
   words: string,
   standing?: Standing,
   question?: OpenQuestion | null,
+  room?: number,
 ): AgentRequestBody {
   const parts: string[] = [];
   const earlier = talkHistoryLines(history);
@@ -562,7 +612,10 @@ export function buildTalkRequest(
     );
   }
   const typed = clean(words).trim().slice(0, MAX_GUIDANCE_CHARS);
-  parts.push([WORDS_OPEN, typed, WORDS_CLOSE].join("\n"), renderThread(thread, nowMs));
+  parts.push(
+    [WORDS_OPEN, typed, WORDS_CLOSE].join("\n"),
+    renderThread(thread, nowMs, room, room !== undefined),
+  );
   return {
     instructions: withStanding(TALK_INSTRUCTIONS, "write", standing),
     untrusted: parts.join("\n\n"),
@@ -614,6 +667,11 @@ export const MAX_TALK_ALL_CHARS = 120_000;
 /** The least room one thread gets in the answer turn, however many threads there are. */
 export const MIN_TALK_SHARE = 6_000;
 /**
+ * What the parts of the answer turn other than the threads take at most: the earlier talk, the
+ * person's words, what was searched, offers and facts. Held back from what the model takes.
+ */
+export const TALK_ALL_EXTRA_CHARS = 16_000;
+/**
  * Starting value: how many threads a search looks at before the filters and the cut to
  * `MAX_TALK_THREADS`, newest first.
  */
@@ -660,19 +718,31 @@ export function buildTalkAllRequest(
   words: string,
   standing?: Standing,
   searched: readonly string[] = [],
-  extra: { readonly offers?: readonly TalkOffer[]; readonly facts?: readonly TalkFact[] } = {},
+  extra: {
+    readonly offers?: readonly TalkOffer[];
+    readonly facts?: readonly TalkFact[];
+    /** What the model takes (ADR 0119, rule 8): the threads get that, less the other parts. */
+    readonly inputChars?: number;
+  } = {},
 ): { readonly request: AgentRequestBody; readonly sent: readonly number[] } {
   const offers = extra.offers ?? [];
   const facts = extra.facts ?? [];
   const parts: string[] = [];
   const sent: number[] = [];
-  const share = Math.max(MIN_TALK_SHARE, Math.floor(MAX_TALK_ALL_CHARS / threads.length));
+  const budgeted = extra.inputChars !== undefined;
+  const cap = budgeted
+    ? Math.min(MAX_TALK_ALL_CHARS, Math.max(0, (extra.inputChars ?? 0) - TALK_ALL_EXTRA_CHARS))
+    : MAX_TALK_ALL_CHARS;
+  const share = Math.max(
+    Math.min(MIN_TALK_SHARE, cap),
+    Math.floor(cap / Math.max(1, threads.length)),
+  );
   let total = 0;
   for (const [i, thread] of threads.entries()) {
     const mark = `[Thread ${parts.length + 1}]\n`;
-    const part = mark + renderThread(thread, nowMs, share - mark.length);
+    const part = mark + renderThread(thread, nowMs, share - mark.length, budgeted);
     const joined = total + part.length + (parts.length > 0 ? 2 : 0);
-    if (joined > MAX_TALK_ALL_CHARS) continue;
+    if (joined > cap) continue;
     total = joined;
     parts.push(part);
     sent.push(i);
@@ -836,3 +906,16 @@ export function normalizeForQuote(text: string): string {
 
 /** How many turns of a reading run side by side on the person's plan. */
 export const MAX_PARALLEL_TURNS = 3;
+
+/**
+ * How many turns of a reading run side by side on this runtime: one on a runtime with no plan,
+ * which is what bounds its work (ADR 0119, rule 7); else what it says, at most `MAX_PARALLEL_TURNS`.
+ */
+export function turnsAtOnce(
+  runtime: { readonly noPlan?: boolean; readonly turnsAtOnce?: number } | null | undefined,
+): number {
+  if (runtime?.noPlan === true) return 1;
+  const asked = runtime?.turnsAtOnce;
+  if (asked === undefined || !Number.isFinite(asked)) return MAX_PARALLEL_TURNS;
+  return Math.max(1, Math.min(MAX_PARALLEL_TURNS, Math.floor(asked)));
+}

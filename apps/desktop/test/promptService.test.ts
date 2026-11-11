@@ -178,7 +178,7 @@ async function build(
   const progress: PromptProgress[] = [];
   const viewsChanged: number[] = [];
   const service = new AgentService({
-    runtime: runtime as Responder,
+    runtimes: [runtime as Responder],
     store: storage.store,
     index: storage.index,
     bodies: storage.bodies,
@@ -638,6 +638,25 @@ describe("a prompt is a filter (ADR 0116)", () => {
     await h2.service.promptRun(PROMPT);
     expect(loops).toHaveLength(0);
     expect(withLoop.of("plan")).toHaveLength(1);
+  });
+
+  it("runs the loop only on a model for writing that can use tools (ADR 0119, rule 10)", async () => {
+    const runtime = new Responder();
+    runtime.info = { ...runtime.info, toolModels: ["large"] };
+    const loops = withTools(runtime, async () => ({ threads: [], hypothesis: "" }));
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"]);
+    await h.ready();
+    await h.settings.update({ talkLoop: true });
+    // The model for writing starts on "small", which takes no tools: the plan turn, as without.
+    expect((await h.settings.get()).models.write).toBe("small");
+    await h.service.promptRun(PROMPT);
+    expect(loops).toHaveLength(0);
+    expect(runtime.of("plan")).toHaveLength(1);
+    await h.service.setModels({ write: "large" });
+    await h.service.promptRun(PROMPT, true);
+    expect(loops).toHaveLength(1);
+    expect(loops[0]?.request.model).toBe("large");
   });
 
   it("Search again runs the search anew and replaces what was kept (rule 4)", async () => {
@@ -1303,6 +1322,107 @@ describe("a view with a prompt reads in the background (ADR 0117)", () => {
     expect(judged(runtime)).toEqual(["Subject a", "Subject c"]);
     await h.pass();
     expect(runtime.of("verdicts")).toHaveLength(2);
+  });
+});
+
+describe("a runtime with no plan reads in the background (ADR 0119, rule 7)", () => {
+  it("passes the plan's gates, P3 included, runs one turn at a time, and records no limits", async () => {
+    const runtime = new Responder();
+    runtime.info = { ...runtime.info, plan: undefined, noPlan: true, onThisMachine: true };
+    let running = 0;
+    let most = 0;
+    const answer = runtime.answer;
+    runtime.answer = async (request, signal) => {
+      running++;
+      most = Math.max(most, running);
+      await new Promise((r) => setTimeout(r, 5));
+      running--;
+      const out = await answer(request, signal);
+      // Whatever a runtime says of windows, one with no plan keeps none.
+      return { ...out, limits: { usingOverage: true, seenAtMs: NOW } };
+    };
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addView("asks", PROMPT);
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    // Twenty-five new threads, read days later, so older than the last days: on a plan, `P3`
+    // waits for known windows (ADR 0051, rule 7); here nothing does.
+    for (let i = 0; i < 25; i++) {
+      await h.addMail(`o${String(i).padStart(2, "0")}`, ["Please decide by Friday"], {
+        dayOffset: 1,
+        from: `p${i}@example${i}.org`,
+      });
+    }
+    const before = runtime.of("verdicts").length;
+    await h.clock.advance(5 * DAY);
+    await h.pass();
+    expect(runtime.of("verdicts").length - before).toBe(3);
+    expect(most).toBe(1);
+    expect((await h.settings.get()).limits).toBeUndefined();
+    // The ledger still says what went and at what effort.
+    const lines = (await h.insights.listLedger(50)).filter((l) => l.purpose === "prompt");
+    expect(lines.reduce((n, l) => n + l.threads, 0)).toBeGreaterThanOrEqual(26);
+  });
+
+  it("on a model that takes little, sends smaller batches and more of them; every thread is read (rule 8)", async () => {
+    const big = new Responder();
+    const small = new Responder();
+    small.info = { ...small.info, modelInputChars: { small: 9000, large: 9000 } };
+    const counts: number[] = [];
+    for (const runtime of [big, small]) {
+      const h = await build(runtime);
+      for (let i = 0; i < 12; i++) {
+        await h.addMail(
+          `d${String(i).padStart(2, "0")}`,
+          [`Please decide by Friday\n${"Some background on the matter. ".repeat(160)}`],
+          { from: `p${i}@example${i}.org` },
+        );
+      }
+      await h.ready();
+      const result = await h.service.promptRun(PROMPT);
+      expect(result).not.toHaveProperty("problem");
+      const turns = runtime.of("verdicts");
+      for (const turn of turns) {
+        if (runtime === small) expect(turn.untrusted.length).toBeLessThanOrEqual(9000);
+      }
+      counts.push(turns.length);
+      const subjects = turns.flatMap((c) => subjectsOf(c));
+      expect(new Set(subjects).size).toBe(12);
+      expect(await h.service.promptCount(PROMPT)).toMatchObject({ found: 12, read: 12 });
+    }
+    expect(counts[0]).toBeLessThan(counts[1] ?? 0);
+  });
+
+  it("on a plan, the same older mail waits for known windows", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addView("asks", PROMPT);
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    await h.settings.update({ limits: null });
+    for (let i = 0; i < 3; i++) {
+      await h.addMail(`o${i}`, ["Please decide by Friday"], {
+        dayOffset: 1,
+        from: `p${i}@e${i}.org`,
+      });
+    }
+    const before = runtime.of("verdicts").length;
+    await h.clock.advance(5 * DAY);
+    await h.pass();
+    expect(runtime.of("verdicts").length - before).toBe(0);
+    // Once the windows are known and have room, the same mail is read.
+    await h.settings.update({
+      limits: {
+        session: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
+        week: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
+        usingOverage: false,
+        seenAtMs: NOW + 5 * DAY,
+      },
+    });
+    await h.pass();
+    expect(runtime.of("verdicts").length - before).toBe(1);
   });
 });
 

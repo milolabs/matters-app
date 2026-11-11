@@ -1178,6 +1178,11 @@ async function measureAgent(extras: {
 
   // The demo runtime is `found` until it passed the test with a made-up message (ADR 0051).
   let status = await backend.agentInspect();
+  // The person picks who works on the mail (ADR 0119, rule 2); the demo run lists only one.
+  const demo = status.runtimes[0];
+  if (status.runtime === null && demo !== undefined) {
+    status = await backend.agentChooseRuntime(demo.id);
+  }
   if (status.runtime?.status !== "ready") status = await backend.agentTestRuntime();
   if (status.runtime?.status !== "ready") {
     out.detail = `the demo runtime is ${status.runtime?.status ?? "missing"}`;

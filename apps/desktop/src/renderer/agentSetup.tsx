@@ -1,7 +1,7 @@
 import type { AccountInfo } from "@matters/contracts";
 import type { AgentStatus } from "@matters/core";
 import { createSignal, onMount, Show } from "solid-js";
-import { ConsentQuestion, NotYet, RuntimeCard, WhatDoesWhat } from "./agentConnect.tsx";
+import { ConsentQuestion, NotYet, RuntimeChoice, WhatDoesWhat } from "./agentConnect.tsx";
 import type { Backend } from "./client.ts";
 import { pill, pillPrimary } from "./ui.ts";
 
@@ -71,6 +71,21 @@ export function RuntimeStep(props: {
     }
   }
 
+  const [choosing, setChoosing] = createSignal(false);
+  /** The person picks who works on the mail (ADR 0119, rule 2). Nothing is sent. */
+  async function choose(runtimeId: string) {
+    if (choosing() || status()?.settings.runtimeId === runtimeId) return;
+    setChoosing(true);
+    setFailure("");
+    try {
+      take(await props.backend.agentChooseRuntime(runtimeId));
+    } catch (e) {
+      setFailure(e instanceof Error ? e.message : "That did not work.");
+    } finally {
+      setChoosing(false);
+    }
+  }
+
   async function setModels(
     models: Parameters<Backend["agentSetModels"]>[0],
     efforts?: Parameters<Backend["agentSetModels"]>[1],
@@ -92,29 +107,28 @@ export function RuntimeStep(props: {
       <div class="flex flex-col gap-2.5">
         <h1 class={props.headline}>Who should work on your mail?</h1>
         <p class={body}>
-          Use what you already pay for. This is what I found on this Mac. Nothing has been sent
-          anywhere yet.
+          Use what you already pay for, or a model that runs on this Mac. Pick one. Nothing has been
+          sent anywhere yet.
         </p>
       </div>
       <Show
-        when={status()?.runtime}
+        when={status()}
         fallback={
           <p role="status" class="text-[13px] text-secondary">
             {looking() ? "Looking…" : "No assistant found on this Mac."}
           </p>
         }
       >
-        {(runtime) => (
-          <div class="flex flex-col gap-1.5 rounded-[10px] border border-hairline p-3.5">
-            <p class="text-[12px] font-semibold text-secondary">Found on this Mac</p>
-            <RuntimeCard
-              runtime={runtime()}
-              checking={checking()}
-              {...(failure() !== "" ? { checkFailed: failure() } : {})}
-              onCheck={() => void check()}
-              onLookAgain={() => void look()}
-            />
-          </div>
+        {(s) => (
+          <RuntimeChoice
+            status={s()}
+            checking={checking()}
+            {...(failure() !== "" ? { checkFailed: failure() } : {})}
+            choosing={choosing()}
+            onChoose={(id) => void choose(id)}
+            onCheck={() => void check()}
+            onLookAgain={() => void look()}
+          />
         )}
       </Show>
       <Show when={usable() && status()}>
@@ -131,7 +145,7 @@ export function RuntimeStep(props: {
           type="button"
           class={pillPrimary}
           data-continue-agent
-          disabled={!usable() || checking()}
+          disabled={!usable() || checking() || choosing()}
           onClick={() => void next()}
         >
           {checking() ? "Checking…" : "Continue"}

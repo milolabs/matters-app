@@ -13,6 +13,7 @@ import type {
   AgentInsightStorePort,
   AgentInstruction,
   AgentModels,
+  AgentPriority,
   AgentRequestBody,
   AgentRule,
   AgentRunResult,
@@ -28,6 +29,7 @@ import type {
   DraftStorePort,
   FileTextAnswer,
   GapSuggestion,
+  MayRun,
   MessageBodyPort,
   MessageStorePort,
   PlanLimits,
@@ -62,6 +64,7 @@ import type {
 } from "@matters/core";
 import {
   AGENT_WORK_KINDS,
+  AgentRunError,
   acceptAnswers,
   acceptCheck,
   acceptFills,
@@ -90,12 +93,14 @@ import {
   draftGaps,
   effortFor,
   type HelpRefusal,
+  inputCharsFor,
   isAgentEffortSetting,
   isAgentRunError,
   isAutomatedSender,
   isEmptyQuery,
   joinDraft,
   lastFromThem,
+  levelsFor,
   MAX_CARRY_QUERIES,
   MAX_CARRY_THREADS,
   MAX_DRAFT_CHARS,
@@ -107,8 +112,10 @@ import {
   MAX_TALK_QUERY_CHARS,
   MAX_TALK_THREADS,
   matchQuery,
-  mayRun,
+  mayRunOn,
+  modelUsesTools,
   normalizeRuleSubject,
+  ONE_THREAD_EXTRA_CHARS,
   PROMPT_VERSION,
   type PreparedAnswer,
   parsePreparedAnswer,
@@ -123,12 +130,16 @@ import {
   REWRITE_HOWS,
   resolveEffort,
   splitDraft,
+  startingChoices,
   TALK_LOOP_TIME_CAP_MS,
   TALK_LOOP_TIME_MS,
   TALK_TIME_CAP_MS,
   TALK_TITLE_QUESTIONS,
   TITLES_OFF,
+  threadRoom,
+  unlistedKinds,
   wholeFilesProblem,
+  wholeTypesFor,
   withEffort,
   withFiles,
 } from "@matters/core";
@@ -192,11 +203,18 @@ export { textForPrompt };
 
 const lower = (s: string) => s.trim().toLowerCase();
 
+/** What the service asks of a runtime. */
+export type AgentRuntime = Pick<
+  AgentRuntimePort,
+  "id" | "name" | "inspect" | "run" | "runWithTools" | "takesFiles"
+>;
+
 export interface AgentServiceDeps {
-  readonly runtime: Pick<
-    AgentRuntimePort,
-    "id" | "name" | "inspect" | "run" | "runWithTools" | "takesFiles"
-  >;
+  /**
+   * Every runtime the app knows, in the order it offers them (ADR 0119, rule 2). Only the one the
+   * settings name (`runtimeId`) ever runs a turn; with none named, none does (rule 3).
+   */
+  readonly runtimes: readonly AgentRuntime[];
   readonly store: Pick<
     MessageStorePort,
     | "listThreadsSince"
@@ -315,9 +333,55 @@ const loopUse = (
 /** A line the model wrote between its steps is shown at most this long (ADR 0083). */
 const MAX_LOOP_NOTE_CHARS = 200;
 
+/** What is seen of no runtime. */
+const NO_INFO: AgentRuntimeInfo = { id: "", name: "No assistant", status: "missing", models: [] };
+
+/** What stands for "no runtime chosen": it lists nothing and runs nothing (ADR 0119, rule 3). */
+const NO_RUNTIME: AgentRuntime = {
+  id: "",
+  name: "No assistant",
+  inspect: async () => NO_INFO,
+  run: async () => {
+    throw new AgentRunError("failed", "No assistant is chosen.");
+  },
+};
+
+/** The kinds of work in the person's words, for a sentence about a model that is gone. */
+const KIND_WORDS: Readonly<Record<AgentWorkKind, string>> = {
+  understand: "understanding mail",
+  write: "writing",
+  answer: "questions about your mail",
+  titles: "talk titles",
+};
+
+/** A model the runtime no longer lists (ADR 0119, rule 4): said so, and nothing is put in its place. */
+export function modelGone(runtimeName: string, model: string, kind: AgentWorkKind): string {
+  return `${model} is not available on ${runtimeName} now. Choose another model for ${KIND_WORDS[kind]} in Settings.`;
+}
+
+/** `{ inputChars }` to spread into a request's options, or nothing when the runtime says nothing. */
+function withInput(inputChars: number | undefined): { readonly inputChars?: number } {
+  return inputChars === undefined ? {} : { inputChars };
+}
+
+/** A runtime the person can do something with now: it is there, and nothing waits on them. */
+function usable(info: AgentRuntimeInfo | null): boolean {
+  const status = info?.status;
+  return (
+    status !== undefined &&
+    status !== "signedOut" &&
+    status !== "missing" &&
+    status !== "notRunning" &&
+    status !== "noModel"
+  );
+}
+
 export class AgentService implements AgentApi {
   private readonly deps: AgentServiceDeps;
-  private info: AgentRuntimeInfo | null = null;
+  /** What was last seen of each runtime, by id (ADR 0119, rule 2). */
+  private readonly infos = new Map<string, AgentRuntimeInfo>();
+  /** The runtime the settings name, as last read; every read of the settings keeps it. */
+  private chosenId: string | undefined;
   private progress: ReadingProgress = { state: "off", reason: "disabled" };
   private pass: Promise<void> | null = null;
   private again = false;
@@ -343,10 +407,29 @@ export class AgentService implements AgentApi {
   /** A prompt is a filter (ADR 0116): its turns, behind the same gates as every turn here. */
   private readonly prompts: PromptService;
 
-  constructor(deps: AgentServiceDeps) {
+  constructor(given: AgentServiceDeps) {
+    // Every read and change of the settings says which runtime is chosen now.
+    const keep = (s: AgentSettings) => {
+      this.chosenId = s.runtimeId;
+      return s;
+    };
+    const base = given.settings;
+    const settings: AgentSettingsPort = {
+      get: async () => keep(await base.get()),
+      update: async (patch) => keep(await base.update(patch)),
+      grantConsent: (accountId, runtimeId, atMs) => base.grantConsent(accountId, runtimeId, atMs),
+      revokeConsent: (accountId, runtimeId) => base.revokeConsent(accountId, runtimeId),
+      listConsents: () => base.listConsents(),
+      getRuntimeRecord: (runtimeId) => base.getRuntimeRecord(runtimeId),
+      putRuntimeRecord: (record) => base.putRuntimeRecord(record),
+    };
+    const deps = { ...given, settings };
     this.deps = deps;
     this.prompts = new PromptService({
-      runtime: deps.runtime,
+      runtime: () => this.runtime,
+      info: () => this.info,
+      modelOf: (kind, s) => this.modelOf(kind, s),
+      planGate: (priority, s) => this.planGate(priority, s),
       store: deps.store,
       index: deps.index,
       bodies: deps.bodies,
@@ -373,9 +456,69 @@ export class AgentService implements AgentApi {
     return this.deps.clock.now();
   }
 
-  /** The effort a turn on the model of `kind` sends, or none (ADR 0118, rules 1 and 4). */
+  /**
+   * The chosen runtime (ADR 0119, rule 2), or one that runs nothing while none is chosen or the
+   * one named is not known to this build. Never another: there is no fallback (rule 3).
+   */
+  private get runtime(): AgentRuntime {
+    const id = this.chosenId;
+    if (id === undefined) return NO_RUNTIME;
+    return this.deps.runtimes.find((r) => r.id === id) ?? NO_RUNTIME;
+  }
+
+  /** What was last seen of the chosen runtime. */
+  private get info(): AgentRuntimeInfo | null {
+    const id = this.runtime.id;
+    return id === "" ? null : (this.infos.get(id) ?? null);
+  }
+
+  private set info(info: AgentRuntimeInfo | null) {
+    const id = this.runtime.id;
+    if (id === "") return;
+    if (info === null) this.infos.delete(id);
+    else this.infos.set(id, info);
+  }
+
+  /**
+   * The effort a turn on the model of `kind` sends, or none (ADR 0118, rules 1 and 4): from the
+   * levels of that model (ADR 0119, rule 9).
+   */
   private effortOf(kind: AgentWorkKind, s: AgentSettings): AgentEffort | undefined {
-    return effortFor(kind, s, this.info?.efforts);
+    return effortFor(kind, s, levelsFor(this.info, s.models[kind]));
+  }
+
+  /**
+   * The model chosen for `kind` on the chosen runtime, when the runtime lists it now. One it no
+   * longer lists is refused with a sentence: nothing is put in its place (ADR 0119, rule 4).
+   */
+  private modelOf(kind: AgentWorkKind, s: AgentSettings): string {
+    const model = s.models[kind];
+    if (unlistedKinds(s, this.info).includes(kind)) {
+      throw new AgentUnavailableError(modelGone(this.runtime.name, model, kind));
+    }
+    return model;
+  }
+
+  /**
+   * The room of the one thread of a turn on `model`, within what the model takes (ADR 0119, rule
+   * 8); undefined when the runtime says nothing, and the app's own sizes hold.
+   */
+  private roomFor(model: string): number | undefined {
+    return threadRoom(inputCharsFor(this.info, model), ONE_THREAD_EXTRA_CHARS);
+  }
+
+  /**
+   * The gate of the plan at this priority (ADR 0051, rule 7); always open on a runtime with no
+   * plan (ADR 0119, rule 7).
+   */
+  private planGate(priority: AgentPriority, s: AgentSettings): MayRun {
+    return mayRunOn(
+      this.info,
+      priority,
+      s.limits,
+      { weekSharePercent: s.weekSharePercent, usedByUsPercent: s.usedByUsPercent },
+      this.now,
+    );
   }
 
   // --- Starting and stopping ---
@@ -408,13 +551,25 @@ export class AgentService implements AgentApi {
 
   // --- Looking at the runtime ---
 
-  /** What the program says now, with what the last test found and the last limits seen. */
-  private async inspectRuntime(): Promise<AgentRuntimeInfo> {
-    const { runtime, settings } = this.deps;
+  /**
+   * What one runtime says now, with what its last test found and, on a plan, the last limits seen.
+   * Looking sends no mail and spends nothing.
+   */
+  private async inspectOne(runtime: AgentRuntime): Promise<AgentRuntimeInfo> {
+    const { settings } = this.deps;
     let info = await runtime.inspect();
+    // Whether the search in a loop can run here is the port's to say (ADR 0083; ADR 0119, rule 10).
+    if (runtime.runWithTools !== undefined) info = { ...info, tools: true };
     const record = await settings.getRuntimeRecord(runtime.id);
-    if (info.status === "found" && record !== null && record.plan === info.plan) {
-      // The same plan passed the test before: the program is not asked to prove it again.
+    // The test is for a model: the one for understanding mail, as this runtime's choices hold it
+    // (ADR 0119). A record from before it kept one holds for what is chosen now.
+    const s = await settings.get();
+    const understand =
+      s.choices?.[runtime.id]?.models.understand ??
+      (s.runtimeId === runtime.id ? s.models.understand : undefined);
+    const sameModel = record?.model === undefined || record.model === understand;
+    if (info.status === "found" && record !== null && record.plan === info.plan && sameModel) {
+      // The same plan and model passed the test before: the program is not asked to prove it again.
       info =
         record.status === "ready"
           ? { ...info, status: "ready" }
@@ -424,19 +579,51 @@ export class AgentService implements AgentApi {
               problem: record.problem ?? "The last check of the assistant failed.",
             };
     }
-    const limits = (await settings.get()).limits;
-    this.info = limits !== undefined && info.limits === undefined ? { ...info, limits } : info;
+    // The stored windows are of a plan; a runtime with no plan has none (ADR 0119, rule 7).
+    const limits = info.noPlan === true ? undefined : (await settings.get()).limits;
+    const seen = limits !== undefined && info.limits === undefined ? { ...info, limits } : info;
+    this.infos.set(runtime.id, seen);
+    return seen;
+  }
+
+  /**
+   * The chosen runtime as it is now. One that lists models for the first time gets its starting
+   * choices (ADR 0119, rule 4); with none chosen, nothing is looked at.
+   */
+  private async inspectRuntime(): Promise<AgentRuntimeInfo> {
+    const s = await this.deps.settings.get();
+    const runtime = this.runtime;
+    if (runtime === NO_RUNTIME) {
+      this.blocked = null;
+      return NO_INFO;
+    }
+    const info = await this.inspectOne(runtime);
+    if (s.runtimeId === runtime.id && s.choices?.[runtime.id] === undefined) {
+      const start = startingChoices(info);
+      if (start !== null) await this.deps.settings.update(start);
+    }
     if (info.status === "signedOut") this.blocked = this.blocked ?? "signedOut";
     else this.blocked = null;
-    return this.info;
+    return info;
   }
 
   async inspect(): Promise<AgentStatus> {
     const wasWaiting = this.waitingOnRuntime();
     await this.inspectRuntime();
+    // The others are looked at too, so the choice shows each with its state (ADR 0119, rule 2).
+    const current = this.runtime;
+    await Promise.all(
+      this.deps.runtimes
+        .filter((r) => r !== current)
+        .map((r) =>
+          this.inspectOne(r).catch(() => {
+            // A runtime that cannot be looked at keeps what was seen before.
+          }),
+        ),
+    );
     // The person signed in outside the app and asked us to look again: the reading goes on by
     // itself. Looking never starts a login.
-    if (wasWaiting && this.info?.status !== "signedOut" && this.info?.status !== "missing") {
+    if (wasWaiting && usable(this.info)) {
       this.blocked = null;
       this.startNow();
     } else if (wasWaiting) {
@@ -474,10 +661,7 @@ export class AgentService implements AgentApi {
   async testRuntime(): Promise<AgentStatus> {
     const wasOff = this.progress.state === "off" || this.waitingOnRuntime();
     if (wasOff) this.setProgress({ state: "checking" });
-    this.testing ??= this.runTest().finally(() => {
-      this.testing = null;
-    });
-    await this.testing;
+    await this.sharedTest();
     if (wasOff) {
       if (this.info?.status === "ready") this.startNow();
       else this.setProgress(this.offProgress());
@@ -486,12 +670,28 @@ export class AgentService implements AgentApi {
     return this.status();
   }
 
+  /** The test, once at a time: a press of Check during a pass waits for the pass's test. */
+  private sharedTest(): Promise<AgentRuntimeInfo> {
+    this.testing ??= this.runTest().finally(() => {
+      this.testing = null;
+    });
+    return this.testing;
+  }
+
   private async runTest(): Promise<AgentRuntimeInfo> {
-    const { runtime, settings, clock } = this.deps;
+    const { settings, clock } = this.deps;
     const info = await this.inspectRuntime();
+    const runtime = this.runtime;
     if (info.status !== "found" && info.status !== "ready" && info.status !== "failed") return info;
     this.blocked = null;
     const settingsNow = await settings.get();
+    // The test runs on the model for understanding mail; one the runtime no longer lists waits
+    // for the person to pick another (ADR 0119, rule 4).
+    if (unlistedKinds(settingsNow, info).includes("understand")) {
+      const problem = modelGone(runtime.name, settingsNow.models.understand, "understand");
+      this.info = { ...info, status: "failed", problem };
+      return this.info;
+    }
     const { request } = buildPromptRequest(
       [
         {
@@ -508,7 +708,7 @@ export class AgentService implements AgentApi {
     try {
       // Not a kind of work: the test stays at `low`, when the runtime takes it (ADR 0118, rule 6).
       const run = await runtime.run(
-        { model, ...request, ...withEffort(resolveEffort("low", info.efforts)) },
+        { model, ...request, ...withEffort(resolveEffort("low", levelsFor(info, model))) },
         { signal: this.abort.signal },
       );
       await this.noteRun(run.limits);
@@ -533,16 +733,20 @@ export class AgentService implements AgentApi {
         };
         return this.info;
       }
-      problem = "The check of the assistant did not finish.";
+      problem =
+        isAgentRunError(error) && error.code === "badAnswer"
+          ? "The assistant answered, but not in the form the app needs."
+          : "The check of the assistant did not finish.";
     }
     await settings.putRuntimeRecord({
       runtimeId: runtime.id,
       status: status === "ready" ? "ready" : "failed",
       ...(info.plan === undefined ? {} : { plan: info.plan }),
+      model,
       ...(problem === undefined ? {} : { problem }),
       testedAtMs: clock.now(),
     });
-    const limits = (await settings.get()).limits;
+    const limits = info.noPlan === true ? undefined : (await settings.get()).limits;
     const { problem: _old, ...rest } = info;
     this.info = {
       ...rest,
@@ -560,7 +764,8 @@ export class AgentService implements AgentApi {
    * (ADR 0051, rule 7): a different reset time, or a reset that has passed.
    */
   private async noteRun(limits: PlanLimits | undefined, before?: PlanLimits): Promise<void> {
-    if (limits === undefined) return;
+    // A runtime with no plan has no windows: nothing is recorded (ADR 0119, rule 7).
+    if (limits === undefined || this.info?.noPlan === true) return;
     const { settings } = this.deps;
     const current = await settings.get();
     let used = current.usedByUsPercent;
@@ -769,8 +974,8 @@ export class AgentService implements AgentApi {
    * and stop with the person's pause.
    */
   private async passOnce(): Promise<void> {
-    const { runtime } = this.deps;
     const first = await this.currentSettings();
+    const runtime = this.runtime;
     if (!first.enabled || first.runtimeId !== runtime.id) {
       this.setProgress({ state: "off", reason: "disabled" });
       return;
@@ -791,9 +996,19 @@ export class AgentService implements AgentApi {
     if (this.info === null || this.info.status === "found") this.setProgress({ state: "checking" });
     if (this.info === null) await this.inspectRuntime();
     // The person agreed, so the test with a made-up message may run by itself (ADR 0051, rule 5).
-    if (this.info?.status === "found") await this.runTest();
+    if (this.info?.status === "found") await this.sharedTest();
     if (this.info?.status !== "ready") {
       this.setProgress(this.offProgress());
+      return;
+    }
+    // Reading runs on the model for understanding mail: gone, it waits for the person (rule 4).
+    const now = await this.currentSettings();
+    if (unlistedKinds(now, this.info).includes("understand")) {
+      this.setProgress({
+        state: "off",
+        reason: "runtime",
+        problem: modelGone(runtime.name, now.models.understand, "understand"),
+      });
       return;
     }
     try {
@@ -823,7 +1038,8 @@ export class AgentService implements AgentApi {
     guidance: PreparedGuidance | undefined,
     effort: AgentEffort | undefined,
   ): Promise<PrepareResult> {
-    const { runtime, insights, settings } = this.deps;
+    const { insights, settings } = this.deps;
+    const runtime = this.runtime;
     const consented = await consentedAccounts(this.deps, runtime.id);
     const loaded = await this.loadThread(threadId, consented);
     if (loaded === null)
@@ -831,10 +1047,13 @@ export class AgentService implements AgentApi {
     const accountId = loaded.accountId;
     // What is prepared belongs to the thread as it stands now.
     const lastMessageKey = loaded.lastMessageKey;
-    const request = buildPreparedRequest(loaded.thread, this.now, guidance, {
-      list: await insights.listInstructions(),
-      threadId,
-    });
+    const request = buildPreparedRequest(
+      loaded.thread,
+      this.now,
+      guidance,
+      { list: await insights.listInstructions(), threadId },
+      this.roomFor(model),
+    );
     const before = (await settings.get()).limits;
     try {
       const run = await runtime.run(
@@ -964,10 +1183,18 @@ export class AgentService implements AgentApi {
     // With AI off the program is not asked who is signed in just because a window wants to know
     // whether AI is on (ADR 0051, refinement 4): the person asks with `inspect`.
     if (this.info === null && settings.enabled) await this.inspectRuntime();
+    // Looking may have given the runtime its starting choices: the settings are read again then.
+    const after = this.info === null ? settings : await this.deps.settings.get();
     return {
-      settings,
+      settings: after,
       runtime: this.info,
-      consents: consents.filter((c: AgentConsent) => c.runtimeId === this.deps.runtime.id),
+      runtimes: this.deps.runtimes.map((r) => ({
+        id: r.id,
+        name: r.name,
+        info: this.infos.get(r.id) ?? null,
+      })),
+      unlisted: unlistedKinds(after, this.info),
+      consents: consents.filter((c: AgentConsent) => c.runtimeId === this.runtime.id),
       progress: this.progress,
       ledger,
     };
@@ -985,7 +1212,7 @@ export class AgentService implements AgentApi {
     try {
       const s = await this.deps.settings.get();
       if (!s.enabled || s.needsYouAdded === true) return;
-      if ((await consentedAccounts(this.deps, this.deps.runtime.id)).size === 0) return;
+      if ((await consentedAccounts(this.deps, this.runtime.id)).size === 0) return;
       const added = await addNeedsYouView({ views, now: () => this.now });
       if (added === "full") return;
       await this.deps.settings.update({ needsYouAdded: true });
@@ -1038,8 +1265,9 @@ export class AgentService implements AgentApi {
     accountIds: readonly string[];
     runtimeId: string;
   }): Promise<AgentStatus> {
-    const { runtime, settings, insights } = this.deps;
-    if (input.runtimeId !== runtime.id) {
+    const { settings, insights } = this.deps;
+    const runtime = this.deps.runtimes.find((r) => r.id === input.runtimeId);
+    if (runtime === undefined) {
       throw new InvalidAgentSettingError("That assistant is not available.");
     }
     const known = new Set((await this.deps.accounts.list()).map((a) => a.id));
@@ -1047,6 +1275,8 @@ export class AgentService implements AgentApi {
     if (accountIds.length === 0 || accountIds.some((id) => !known.has(id))) {
       throw new InvalidAgentSettingError("Choose at least one of your accounts.");
     }
+    // Agreeing for a runtime is choosing it: what runs on another stops first (ADR 0119, rule 2).
+    if ((await settings.get()).runtimeId !== runtime.id) await this.switchTo(runtime.id);
     const atMs = this.now;
     // Each account's line says what the person agreed to; no thread goes with a consent.
     const lines = [];
@@ -1069,6 +1299,38 @@ export class AgentService implements AgentApi {
     this.deps.onChanged();
     this.startNow();
     return this.status();
+  }
+
+  /**
+   * The person chooses the runtime (ADR 0119, rule 2). What runs on the one before stops first and
+   * keeps nothing half done; its choices of models and efforts stay with it (rule 4). Consent is not
+   * carried over: with none for this runtime the agent waits for the consent question. Nothing is
+   * sent: the new runtime is only looked at.
+   */
+  async chooseRuntime(runtimeId: string): Promise<AgentStatus> {
+    if (!this.deps.runtimes.some((r) => r.id === runtimeId)) {
+      throw new InvalidAgentSettingError("That assistant is not available.");
+    }
+    if ((await this.deps.settings.get()).runtimeId !== runtimeId) await this.switchTo(runtimeId);
+    await this.inspectRuntime();
+    if ((await this.deps.settings.get()).enabled) this.startNow();
+    this.deps.onChanged();
+    return this.status();
+  }
+
+  /** Stops every turn and the pass, then names the runtime in the settings. */
+  private async switchTo(runtimeId: string): Promise<void> {
+    this.cancelKick?.();
+    this.cancelKick = null;
+    this.abort.abort();
+    for (const c of this.talking.values()) c.abort();
+    this.talkingAll?.abort();
+    await this.pass?.catch(() => {});
+    await this.testing?.catch(() => {});
+    this.abort = new AbortController();
+    await this.deps.settings.update({ runtimeId });
+    this.blocked = null;
+    this.progress = { state: "off", reason: "disabled" };
   }
 
   async disable(): Promise<AgentStatus> {
@@ -1161,7 +1423,22 @@ export class AgentService implements AgentApi {
       if (!ok) throw new InvalidAgentSettingError("That model is not available.");
       next[key] = value;
     }
+    const understandBefore = current.models.understand;
     await this.deps.settings.update({ models: next, efforts: nextEfforts });
+    // The test is for a model (ADR 0119): a new model for understanding mail is not checked yet.
+    // With AI on and an account agreed to, it is tested by itself, with the made-up message only.
+    if (next.understand !== understandBefore && this.info !== null) {
+      const info = await this.inspectRuntime();
+      const s = await this.deps.settings.get();
+      if (
+        info.status === "found" &&
+        s.enabled &&
+        s.runtimeId === this.runtime.id &&
+        (await consentedAccounts(this.deps, this.runtime.id)).size > 0
+      ) {
+        void this.testRuntime().catch(() => {});
+      }
+    }
     this.deps.onChanged();
     this.kick();
     return this.status();
@@ -1191,8 +1468,8 @@ export class AgentService implements AgentApi {
    * the one turn works from the thread alone.
    */
   private async gateForAsk(threadId: string) {
-    const { runtime } = this.deps;
     const s = await this.currentSettings();
+    const runtime = this.runtime;
     if (!s.enabled || s.runtimeId !== runtime.id) throw new AgentUnavailableError(NOT_READY);
     const view = await this.deps.store.getThread(threadId, { visibleOnly: true });
     if (view === null) throw new ThingNotFoundError();
@@ -1208,13 +1485,7 @@ export class AgentService implements AgentApi {
   private async gateRuntime(s: AgentSettings): Promise<void> {
     if (this.info === null) await this.inspectRuntime();
     if (this.info?.status !== "ready") throw new AgentUnavailableError(NOT_READY);
-    const gate = mayRun(
-      "P0",
-      s.limits,
-      { weekSharePercent: s.weekSharePercent, usedByUsPercent: s.usedByUsPercent },
-      this.now,
-    );
-    if (!gate.ok) throw new AgentUnavailableError(USED_UP);
+    if (!this.planGate("P0", s).ok) throw new AgentUnavailableError(USED_UP);
   }
 
   /** What the person is told when a turn they asked for fails; the error is not shown as it is. */
@@ -1232,6 +1503,10 @@ export class AgentService implements AgentApi {
     if (isAgentRunError(error) && error.code === "effortRefused") {
       return new AgentUnavailableError(error.message);
     }
+    // Too long for the model: a sentence of the adapter's naming the model (ADR 0119, rule 8).
+    if (isAgentRunError(error) && error.code === "tooLong") {
+      return new AgentUnavailableError(error.message);
+    }
     return new AgentUnavailableError(fallback);
   }
 
@@ -1240,7 +1515,7 @@ export class AgentService implements AgentApi {
     try {
       return await this.prepareFor(
         threadId,
-        s.models.write,
+        this.modelOf("write", s),
         guidance !== undefined && (guidance.direction ?? guidance.answer) !== undefined
           ? guidance
           : undefined,
@@ -1267,7 +1542,7 @@ export class AgentService implements AgentApi {
 
   /** The thread as the model sees it, after the gates. */
   private async helpThread(threadId: string): Promise<PromptThread> {
-    const consented = await consentedAccounts(this.deps, this.deps.runtime.id);
+    const consented = await consentedAccounts(this.deps, this.runtime.id);
     const loaded = await this.loadThread(threadId, consented);
     if (loaded === null) {
       throw new ThingNotFoundError("That thread is not available to the assistant");
@@ -1285,7 +1560,8 @@ export class AgentService implements AgentApi {
     run: { model: string; request: AgentRequestBody; effort: AgentEffort | undefined },
     failed: string,
   ): Promise<unknown> {
-    const { runtime, insights, settings } = this.deps;
+    const { insights, settings } = this.deps;
+    const runtime = this.runtime;
     const before = (await settings.get()).limits;
     try {
       const result = await runtime.run(
@@ -1325,7 +1601,7 @@ export class AgentService implements AgentApi {
       accountId,
       0,
       {
-        model: s.models.write,
+        model: this.modelOf("write", s),
         request: buildRewriteRequest(parts.own, how, standing),
         effort: this.effortOf("write", s),
       },
@@ -1352,8 +1628,16 @@ export class AgentService implements AgentApi {
       accountId,
       1,
       {
-        model: s.models.write,
-        request: buildAnswerQuestionsRequest(thread, last, parts.own, this.now, standing, missing),
+        model: this.modelOf("write", s),
+        request: buildAnswerQuestionsRequest(
+          thread,
+          last,
+          parts.own,
+          this.now,
+          standing,
+          missing,
+          this.roomFor(this.modelOf("write", s)),
+        ),
         effort: this.effortOf("write", s),
       },
       "The assistant could not answer the questions. Try again.",
@@ -1375,7 +1659,7 @@ export class AgentService implements AgentApi {
       accountId,
       1,
       {
-        model: s.models.understand,
+        model: this.modelOf("understand", s),
         request: buildCheckReplyRequest(last, parts.own),
         effort: this.effortOf("understand", s),
       },
@@ -1397,8 +1681,14 @@ export class AgentService implements AgentApi {
       accountId,
       1,
       {
-        model: s.models.understand,
-        request: buildFillGapsRequest(thread, parts.own, tokens, this.now),
+        model: this.modelOf("understand", s),
+        request: buildFillGapsRequest(
+          thread,
+          parts.own,
+          tokens,
+          this.now,
+          this.roomFor(this.modelOf("understand", s)),
+        ),
         effort: this.effortOf("understand", s),
       },
       "The assistant could not look for the missing values. Try again.",
@@ -1432,7 +1722,7 @@ export class AgentService implements AgentApi {
       return await this.talkNow(
         threadId,
         typed,
-        s.models.write,
+        this.modelOf("write", s),
         this.effortOf("write", s),
         mine.signal,
       );
@@ -1454,7 +1744,8 @@ export class AgentService implements AgentApi {
     effort: AgentEffort | undefined,
     stop: AbortSignal,
   ): Promise<TalkResult> {
-    const { runtime, insights, settings } = this.deps;
+    const { insights, settings } = this.deps;
+    const runtime = this.runtime;
     const consented = await consentedAccounts(this.deps, runtime.id);
     const loaded = await this.loadThread(threadId, consented);
     if (loaded === null)
@@ -1469,6 +1760,7 @@ export class AgentService implements AgentApi {
       words,
       { list: await insights.listInstructions(), threadId },
       open?.kind === "needs" ? open : null,
+      this.roomFor(model),
     );
     // Stopped before anything left: no mail went, so no line in the ledger.
     if (stop.aborted) throw new AgentUnavailableError("Stopped.");
@@ -1623,10 +1915,10 @@ export class AgentService implements AgentApi {
     this.talkingAll = mine;
     try {
       const s = await this.currentSettings();
-      if (!s.enabled || s.runtimeId !== this.deps.runtime.id) {
+      if (!s.enabled || s.runtimeId !== this.runtime.id) {
         throw new AgentUnavailableError(NOT_READY);
       }
-      if ((await consentedAccounts(this.deps, this.deps.runtime.id)).size === 0) {
+      if ((await consentedAccounts(this.deps, this.runtime.id)).size === 0) {
         throw new AgentUnavailableError(NO_CONSENT);
       }
       await this.gateRuntime(s);
@@ -1659,15 +1951,11 @@ export class AgentService implements AgentApi {
     if (tries >= MAX_TITLE_TRIES) return;
     try {
       const s = await this.currentSettings();
-      if (!s.enabled || s.runtimeId !== this.deps.runtime.id) return;
+      if (!s.enabled || s.runtimeId !== this.runtime.id) return;
       if (s.models.titles === TITLES_OFF) return;
-      const gate = mayRun(
-        "P3",
-        s.limits,
-        { weekSharePercent: s.weekSharePercent, usedByUsPercent: s.usedByUsPercent },
-        this.now,
-      );
-      if (!gate.ok) {
+      // A model for titles the runtime no longer lists names nothing (ADR 0119, rule 4).
+      if (unlistedKinds(s, this.info).includes("titles")) return;
+      if (!this.planGate("P3", s).ok) {
         this.titleTries.set(talk.id, tries + 1);
         return;
       }
@@ -1678,14 +1966,8 @@ export class AgentService implements AgentApi {
         .slice(0, TALK_TITLE_QUESTIONS);
       if (questions.length === 0) return;
       this.titleTries.set(talk.id, tries + 1);
-      // A model this runtime does not offer (a choice made for another runtime) reads with the
-      // cheap model for understanding mail instead.
-      const offered = this.info?.models ?? [];
-      const model =
-        offered.length === 0 || offered.includes(s.models.titles)
-          ? s.models.titles
-          : s.models.understand;
-      const run = await this.deps.runtime.run(
+      const model = s.models.titles;
+      const run = await this.runtime.run(
         { model, ...buildTalkTitleRequest(questions), ...withEffort(this.effortOf("titles", s)) },
         { signal: this.abort.signal },
       );
@@ -1712,10 +1994,19 @@ export class AgentService implements AgentApi {
     stop: AbortSignal,
     talkId: number,
   ): Promise<TalkResult> {
-    const { runtime, insights, settings } = this.deps;
+    const { insights, settings } = this.deps;
+    const runtime = this.runtime;
     const startedAt = performance.now();
-    // The loop of ADR 0083 when the person turned it on and the runtime can run tools.
-    const loop = s.talkLoop === true ? runtime.runWithTools : undefined;
+    // The loop of ADR 0083 when the person turned it on and the model for writing can use tools
+    // (ADR 0119, rule 10); else the turns without tools.
+    const loop =
+      s.talkLoop === true &&
+      modelUsesTools(
+        { ...this.info, tools: runtime.runWithTools !== undefined },
+        this.modelOf("write", s),
+      )
+        ? runtime.runWithTools
+        : undefined;
     const cap = loop === undefined ? TALK_TIME_CAP_MS : TALK_LOOP_TIME_CAP_MS;
     const over = () => performance.now() - startedAt > cap;
     const signal = AbortSignal.any([this.abort.signal, stop, AbortSignal.timeout(cap)]);
@@ -1732,7 +2023,7 @@ export class AgentService implements AgentApi {
     const nothing = async (
       query: string,
       carryOver?: TalkCarry,
-      model: string = s.models.understand,
+      model: string = this.modelOf("understand", s),
       used?: TalkLoopUse,
     ): Promise<TalkResult> => {
       const atMs = this.now;
@@ -1767,7 +2058,7 @@ export class AgentService implements AgentApi {
     const understand = async (request: AgentRequestBody): Promise<unknown> => {
       const before = (await settings.get()).limits;
       const run = await runtime.run(
-        { model: s.models.understand, ...request, ...withEffort(efforts.understand) },
+        { model: this.modelOf("understand", s), ...request, ...withEffort(efforts.understand) },
         { signal },
       );
       await this.noteRun(run.limits, before);
@@ -1839,8 +2130,15 @@ export class AgentService implements AgentApi {
         // A question about a whole history counts old mail as much as new; the model has after: and before:.
         time: "any",
         ...(this.deps.readFile === undefined ? {} : { readFile: this.deps.readFile }),
-        ...(runtime.takesFiles === true && this.deps.wholeFile !== undefined
-          ? { wholeFiles: true }
+        // What goes whole is what the answer's model takes (ADR 0090; ADR 0119, rule 10).
+        ...(this.deps.wholeFile !== undefined
+          ? {
+              wholeFiles: wholeTypesFor(
+                this.info,
+                runtime.takesFiles === true,
+                this.modelOf("answer", s),
+              ),
+            }
           : {}),
         listViews: () => this.deps.views?.list() ?? Promise.resolve([]),
         step: (step) => {
@@ -1863,7 +2161,7 @@ export class AgentService implements AgentApi {
           run = await withTools.call(
             runtime,
             {
-              model: s.models.write,
+              model: this.modelOf("write", s),
               ...buildTalkLoopRequest(history, words, this.now),
               ...withEffort(efforts.write),
             },
@@ -1962,7 +2260,7 @@ export class AgentService implements AgentApi {
           text: OFFERS_ONLY,
           quotes: [],
           runtimeName: runtime.name,
-          model: s.models.write,
+          model: this.modelOf("write", s),
           threads: 0,
           query: trail.firstQuery,
           hits: [],
@@ -2004,7 +2302,7 @@ export class AgentService implements AgentApi {
         ? nothing(
             trail.firstQuery,
             undefined,
-            loop === undefined ? undefined : s.models.write,
+            loop === undefined ? undefined : this.modelOf("write", s),
             trail.loop,
           )
         : nothing(trail.firstQuery, undefined, undefined, trail.loop);
@@ -2014,6 +2312,7 @@ export class AgentService implements AgentApi {
       buildTalkAllRequest(threads, this.now, history, words, standing, trail.queries, {
         offers,
         facts,
+        ...withInput(inputCharsFor(this.info, this.modelOf("answer", s))),
       });
     let built = build(loaded.map((l) => l.thread));
     // Files with no text go whole, only for the threads that went (ADR 0090, rules 2 and 4).
@@ -2041,7 +2340,7 @@ export class AgentService implements AgentApi {
       const answerBefore = (await settings.get()).limits;
       const run = await runtime.run(
         {
-          model: s.models.answer,
+          model: this.modelOf("answer", s),
           ...built.request,
           ...withEffort(efforts.answer),
           ...(whole.files.length === 0 ? {} : { files: whole.files }),
@@ -2093,7 +2392,7 @@ export class AgentService implements AgentApi {
           text: answer.text,
           quotes,
           runtimeName: runtime.name,
-          model: s.models.answer,
+          model: this.modelOf("answer", s),
           threads: sent.length,
           query: trail.firstQuery,
           hits,
@@ -2157,7 +2456,9 @@ export class AgentService implements AgentApi {
     const none: ActMatches = { messages: [], capped: false };
     const text = typeof query === "string" ? query.trim() : "";
     if (text === "" || text.length > MAX_TALK_QUERY_CHARS) return none;
-    const consented = await consentedAccounts(this.deps, this.deps.runtime.id);
+    // The settings say which runtime is chosen, and so whose consent counts.
+    await this.deps.settings.get();
+    const consented = await consentedAccounts(this.deps, this.runtime.id);
     if (consented.size === 0) return none;
     const accounts = await this.deps.accounts.list();
     const parsed = parseQuery(text, {
@@ -2181,7 +2482,7 @@ export class AgentService implements AgentApi {
     await this.deps.insights.appendLedger(
       [...perAccount].map(([accountId, threads]) => ({
         atMs: this.now,
-        runtimeId: this.deps.runtime.id,
+        runtimeId: this.runtime.id,
         accountId,
         purpose: "talk" as const,
         threads,
@@ -2266,26 +2567,22 @@ export class AgentService implements AgentApi {
     const none: RememberResult = { items: [] };
     const typed = typeof words === "string" ? words.trim().slice(0, MAX_GUIDANCE_CHARS) : "";
     if (typed === "") return none;
-    const { runtime, insights } = this.deps;
+    const { insights } = this.deps;
     const s = await this.currentSettings();
+    const runtime = this.runtime;
     if (!s.enabled || s.runtimeId !== runtime.id) return none;
     if (this.info === null) await this.inspectRuntime();
     if (this.info?.status !== "ready") return none;
+    if (unlistedKinds(s, this.info).includes("understand")) return none;
     const view = await this.deps.store.getThread(threadId, { visibleOnly: true });
     if (view === null) return none;
     const accountId = view.thread.accountId;
     if (!(await consentedAccounts(this.deps, runtime.id)).has(accountId)) return none;
-    const gate = mayRun(
-      "P1",
-      s.limits,
-      { weekSharePercent: s.weekSharePercent, usedByUsPercent: s.usedByUsPercent },
-      this.now,
-    );
-    if (!gate.ok) return none;
+    if (!this.planGate("P1", s).ok) return none;
 
     let answer: ReturnType<typeof parseRememberAnswer> = null;
     // Not a kind of work: it stays at `low`, when the runtime takes it (ADR 0118, rule 6).
-    const effort = resolveEffort("low", this.info?.efforts);
+    const effort = resolveEffort("low", levelsFor(this.info, s.models.understand));
     try {
       const run = await runtime.run(
         { model: s.models.understand, ...buildRememberRequest(typed), ...withEffort(effort) },

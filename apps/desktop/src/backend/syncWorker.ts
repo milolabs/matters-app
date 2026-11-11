@@ -12,6 +12,7 @@ import { MarkdownComposeRenderer } from "@matters/adapter-compose";
 import { createReceivedFiles } from "@matters/adapter-files";
 import { ImapConnector } from "@matters/adapter-imap";
 import { PostalMimeParser, visibleText } from "@matters/adapter-mime";
+import { OllamaRuntime } from "@matters/adapter-ollama";
 import { registrableDomain } from "@matters/adapter-publicsuffix";
 import { NodemailerComposer, NodemailerSubmit } from "@matters/adapter-smtp";
 import { createSqliteStorage } from "@matters/adapter-sqlite";
@@ -91,10 +92,13 @@ await startSyncRuntime({
   // The demo's downloads have no server to ask; a real database never has this.
   ...(config.seed ? { demo: new DemoMail() } : {}),
   agent: {
-    // The person's own `claude`, found on a PATH that also holds the usual install places. A
-    // seeded demo run answers from canned facts instead, so it needs no model (and never starts
-    // the program); the seed is guarded in main.ts, as for the demo mail.
-    runtime: config.seed ? new DemoAgentRuntime() : new ClaudeCodeRuntime({ env: agentEnv() }),
+    // The runtimes the person chooses from (ADR 0119, rule 2): their own `claude`, found on a
+    // PATH that also holds the usual install places, and Ollama on this machine. Only the chosen
+    // one ever runs a turn. A seeded demo run answers from canned facts instead, so it needs no
+    // model (and never starts a program or asks a server); the seed is guarded in main.ts.
+    runtimes: config.seed
+      ? [new DemoAgentRuntime()]
+      : [new ClaudeCodeRuntime({ env: agentEnv() }), new OllamaRuntime()],
     visibleText,
   },
   seed: config.seed,

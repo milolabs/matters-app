@@ -10,6 +10,7 @@ import type {
   AgentRuntimeInfo,
   AgentRuntimeRecord,
   AgentSettings,
+  AgentSettingsPatch,
   JournalEntry,
   JournalMemo,
   LedgerEntry,
@@ -1578,13 +1579,11 @@ export interface AgentInsightStorePort {
 export interface AgentSettingsPort {
   /** The stored settings; the defaults (AI off) when nothing was stored. */
   get(): Promise<AgentSettings>;
-  /** Changes these fields only; `limits` and `usedWeekResetsAtMs` can be cleared with `null`. */
-  update(
-    patch: Partial<Omit<AgentSettings, "limits" | "usedWeekResetsAtMs">> & {
-      readonly limits?: PlanLimits | null;
-      readonly usedWeekResetsAtMs?: number | null;
-    },
-  ): Promise<AgentSettings>;
+  /**
+   * Changes these fields only; `limits` and `usedWeekResetsAtMs` can be cleared with `null`.
+   * `models` and `efforts` are kept per runtime, as `patchAgentSettings` says (ADR 0119, rule 4).
+   */
+  update(patch: AgentSettingsPatch): Promise<AgentSettings>;
   /** Idempotent: granting again keeps the first time. */
   grantConsent(accountId: string, runtimeId: AgentRuntimeId, atMs: number): Promise<void>;
   /** Without `runtimeId`, every runtime of that account. Unknown pairs are skipped. */

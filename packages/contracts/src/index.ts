@@ -670,6 +670,16 @@ export interface AgentSetEnabledRequest {
   readonly runtimeId: string;
 }
 
+/**
+ * Chooses the runtime that runs the agent (ADR 0119, rule 2). It stops what runs on the one
+ * before, sends nothing and agrees to nothing: consent stays per account and runtime.
+ */
+export interface AgentChooseRuntimeRequest {
+  readonly type: "agentChooseRuntime";
+  readonly requestId: RequestId;
+  readonly runtimeId: string;
+}
+
 /** Turns AI off and takes every consent back. */
 export interface AgentDisableRequest {
   readonly type: "agentDisable";
@@ -962,6 +972,7 @@ export type BackendRequest =
   | AgentAddRuleRequest
   | AgentRemoveRuleRequest
   | AgentSetEnabledRequest
+  | AgentChooseRuntimeRequest
   | AgentDisableRequest
   | AgentSetModelsRequest
   | AgentSetWeekShareRequest
@@ -1638,6 +1649,7 @@ export interface AgentStatusResponse {
   readonly type:
     | "agentStatus"
     | "agentSetEnabled"
+    | "agentChooseRuntime"
     | "agentDisable"
     | "agentRevokeConsent"
     | "agentSetModels"

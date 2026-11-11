@@ -1378,6 +1378,20 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 55,
+    // ADR 0119: the test of a runtime is for a model. NULL: a record from before, which holds for
+    // the model chosen now. A column, as in 53.
+    sql: "",
+    run: (db) => {
+      const columns = db.prepare("PRAGMA table_info(agent_runtime_records)").all() as {
+        name: string;
+      }[];
+      if (!columns.some((c) => c.name === "model")) {
+        db.exec("ALTER TABLE agent_runtime_records ADD COLUMN model TEXT");
+      }
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

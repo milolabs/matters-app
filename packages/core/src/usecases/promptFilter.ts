@@ -157,6 +157,18 @@ export interface PromptCandidate {
   readonly signals: PromptSignals;
 }
 
+/** What the prompt's own part of a batch takes: the person's words and their headings. */
+const PROMPT_PART_CHARS = MAX_PROMPT_CHARS + 200;
+
+/**
+ * The most characters of threads in one batch: `MAX_PROMPT_BATCH_CHARS`, or less on a model that
+ * takes less (ADR 0119, rule 8). Smaller batches then hold fewer threads, and there are more.
+ */
+export function promptBatchChars(inputChars?: number): number {
+  if (inputChars === undefined) return MAX_PROMPT_BATCH_CHARS;
+  return Math.min(MAX_PROMPT_BATCH_CHARS, Math.max(0, inputChars - PROMPT_PART_CHARS));
+}
+
 /**
  * The turn of one batch (rule 9). Threads go in the order given, each rendered as for every other
  * request under a `[Thread n]` line within its share of `MAX_PROMPT_BATCH_CHARS` (at least
@@ -169,20 +181,21 @@ export function buildPromptRequest(
   threads: readonly PromptCandidate[],
   prompt: string,
   nowMs: number,
+  inputChars?: number,
 ): { readonly request: AgentRequestBody; readonly sent: readonly number[] } {
   const take = threads.slice(0, MAX_PROMPT_BATCH_THREADS);
-  const share = Math.max(
-    MIN_TALK_SHARE,
-    Math.floor(MAX_PROMPT_BATCH_CHARS / Math.max(1, take.length)),
-  );
+  const cap = promptBatchChars(inputChars);
+  const share = Math.max(Math.min(MIN_TALK_SHARE, cap), Math.floor(cap / Math.max(1, take.length)));
+  const budgeted = inputChars !== undefined;
   const parts: string[] = [];
   const sent: number[] = [];
   let total = 0;
   for (const [i, c] of take.entries()) {
     const mark = `[Thread ${parts.length + 1}]\n${signalsLine(c.signals)}\n`;
-    const part = mark + renderThread(c.thread, nowMs, share - mark.length);
+    // On a model that says what it takes, a thread is clipped to its share, never refused.
+    const part = mark + renderThread(c.thread, nowMs, share - mark.length, budgeted);
     const joined = total + part.length + (parts.length > 0 ? 2 : 0);
-    if (parts.length > 0 && joined > MAX_PROMPT_BATCH_CHARS) break;
+    if (parts.length > 0 && joined > cap) break;
     total = joined;
     parts.push(part);
     sent.push(i);

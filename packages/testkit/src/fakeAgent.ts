@@ -1,5 +1,6 @@
 import type {
   AgentConsent,
+  AgentEffort,
   AgentInsightStorePort,
   AgentInstruction,
   AgentInstructionInput,
@@ -16,7 +17,6 @@ import type {
   JournalMemo,
   LedgerEntry,
   NewTalkEntry,
-  PlanLimits,
   PreparedRecord,
   PromptSearch,
   PromptVerdict,
@@ -25,7 +25,7 @@ import type {
   TalkTitleBy,
   ThingFeedback,
 } from "@matters/core";
-import { AGENT_EFFORTS, cutTitle, DEFAULT_AGENT_SETTINGS } from "@matters/core";
+import { AGENT_EFFORTS, cutTitle, DEFAULT_AGENT_SETTINGS, patchAgentSettings } from "@matters/core";
 
 type Step =
   | AgentRunResult
@@ -65,6 +65,39 @@ export class FakeAgentRuntime implements AgentRuntimePort {
     return this;
   }
 
+  /**
+   * A runtime like one on this machine (ADR 0119): no plan, mail stays here, one turn at a time,
+   * and levels of effort per model (`modelEfforts`; a model it does not name takes none).
+   */
+  static onThisMachine(
+    options: {
+      id?: string;
+      name?: string;
+      models?: readonly string[];
+      modelEfforts?: Readonly<Record<string, readonly AgentEffort[]>>;
+      info?: Partial<AgentRuntimeInfo>;
+    } = {},
+  ): FakeAgentRuntime {
+    const models = options.models ?? ["local-small", "local-large"];
+    return new FakeAgentRuntime({
+      id: options.id ?? "local",
+      name: options.name ?? "Local runtime",
+      info: {
+        models: [...models],
+        noPlan: true,
+        onThisMachine: true,
+        turnsAtOnce: 1,
+        modelEfforts: options.modelEfforts ?? {},
+        ...(models[0] === undefined ? {} : { defaultModel: models[0] }),
+        ...options.info,
+      },
+    });
+  }
+
+  /** Turns running now, and the most that ever ran at once: what a test of parallelism reads. */
+  running = 0;
+  mostAtOnce = 0;
+
   async inspect(): Promise<AgentRuntimeInfo> {
     return this.info;
   }
@@ -75,7 +108,14 @@ export class FakeAgentRuntime implements AgentRuntimePort {
     const step = this.steps.shift();
     if (step === undefined) throw new Error("FakeAgentRuntime: no step scripted");
     if (step instanceof Error) throw step;
-    return typeof step === "function" ? step(request) : step;
+    if (typeof step !== "function") return step;
+    this.running++;
+    this.mostAtOnce = Math.max(this.mostAtOnce, this.running);
+    try {
+      return await step(request);
+    } finally {
+      this.running--;
+    }
   }
 }
 
@@ -476,21 +516,8 @@ export class InMemoryAgentSettings implements AgentSettingsPort {
   }
 
   async update(patch: SettingsPatch): Promise<AgentSettings> {
-    const { limits, usedWeekResetsAtMs, ...rest } = patch;
-    const next: { -readonly [K in keyof AgentSettings]: AgentSettings[K] } = { ...this.settings };
-    for (const [key, value] of Object.entries(rest)) {
-      if (value !== undefined) (next as Record<string, unknown>)[key] = value;
-    }
-    if (limits === null) next.limits = undefined;
-    else if (limits !== undefined) next.limits = limits as PlanLimits;
-    if (usedWeekResetsAtMs === null) next.usedWeekResetsAtMs = undefined;
-    else if (usedWeekResetsAtMs !== undefined) next.usedWeekResetsAtMs = usedWeekResetsAtMs;
-    // An absent field is absent, not undefined, as a stored value reads back.
-    if (next.limits === undefined) delete next.limits;
-    if (next.usedWeekResetsAtMs === undefined) delete next.usedWeekResetsAtMs;
-    if (next.runtimeId === undefined) delete next.runtimeId;
-    this.settings = next;
-    return next;
+    this.settings = patchAgentSettings(this.settings, patch);
+    return this.settings;
   }
 
   async grantConsent(accountId: string, runtimeId: string, atMs: number): Promise<void> {

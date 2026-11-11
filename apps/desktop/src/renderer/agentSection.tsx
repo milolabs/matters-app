@@ -8,10 +8,17 @@ import {
   ConsentQuestion,
   Limits,
   NotYet,
-  RuntimeCard,
+  RuntimeChoice,
   WhatDoesWhat,
 } from "./agentConnect.tsx";
-import { instructionScopeWords, ledgerEffort, ourShare, ruleText } from "./agentText.ts";
+import {
+  hasNoPlan,
+  instructionScopeWords,
+  ledgerEffort,
+  loopOffered,
+  ourShare,
+  ruleText,
+} from "./agentText.ts";
 import type { Backend } from "./client.ts";
 import { letterDate } from "./format.ts";
 import { createStatusOrder } from "./statusOrder.ts";
@@ -136,6 +143,23 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
     }
   }
 
+  const [choosing, setChoosing] = createSignal(false);
+  /** The person picks a runtime (ADR 0119, rule 2): nothing is sent, nothing is agreed to. */
+  async function choose(runtimeId: string) {
+    if (choosing() || status()?.settings.runtimeId === runtimeId) return;
+    setChoosing(true);
+    setFailure("");
+    setConsenting(null);
+    setTurningOn(false);
+    try {
+      await order.settle(props.backend.agentChooseRuntime(runtimeId), setStatus);
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : "That did not work.");
+    } finally {
+      setChoosing(false);
+    }
+  }
+
   async function check() {
     setChecking(true);
     setFailure("");
@@ -174,20 +198,22 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto">
         <div class={row}>
-          <h3 class={heading}>Found on this Mac</h3>
+          <h3 class={heading}>Who works on your mail</h3>
           <Show
-            when={status()?.runtime}
+            when={status()}
             fallback={
               <p role="status" class="text-[13px] text-secondary">
                 {looking() ? "Looking…" : failure() || "No assistant found on this Mac."}
               </p>
             }
           >
-            {(runtime) => (
-              <RuntimeCard
-                runtime={runtime()}
+            {(s) => (
+              <RuntimeChoice
+                status={s()}
                 checking={checking()}
                 {...(failure() !== "" ? { checkFailed: failure() } : {})}
+                choosing={choosing()}
+                onChoose={(id) => void choose(id)}
                 onCheck={() => void check()}
                 onLookAgain={() => void look()}
               />
@@ -206,7 +232,13 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
         <Show when={status()}>
           {(s) => (
             <>
-              <Show when={s().runtime && s().runtime?.status !== "missing"}>
+              <Show
+                when={
+                  s().runtime &&
+                  s().runtime?.status !== "missing" &&
+                  (s().runtime?.models.length ?? 0) > 0
+                }
+              >
                 <div class={row}>
                   <WhatDoesWhat
                     status={s()}
@@ -223,7 +255,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                   idPrefix="settings"
                   onWeekShare={(percent) => void change(props.backend.agentSetWeekShare(percent))}
                 />
-                <Show when={enabled()}>
+                <Show when={enabled() && !hasNoPlan(s().runtime)}>
                   <p class="mt-3 text-[12px] text-secondary">{ourShare(s())}</p>
                 </Show>
                 <Show when={enabled()}>
@@ -252,7 +284,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                     </span>
                   </label>
                 </Show>
-                <Show when={enabled()}>
+                <Show when={enabled() && loopOffered(s().runtime, s().settings.models.write)}>
                   <label
                     class="mt-3 flex cursor-default items-start gap-2.5 text-[13px]"
                     data-talk-loop
