@@ -49,12 +49,16 @@ for automation on the main branch is exactly what such a rule is there to preven
 
 - Every change now waits for CI and for the reviewer: some minutes each. A typo costs as much as
   a feature.
-- If the reviewer is unavailable, or its approving is turned off, nothing can be merged. The owner can edit the ruleset; that is
-  the way out, and it is visible in the repository's history of rules.
+- If the reviewer is unavailable, or its approving is turned off, nothing can be merged. The
+  owner can edit the ruleset; that is the way out, and it is visible in the repository's history
+  of rules.
 - A reviewer that approves is not proof that a change is right. The tests, the corpus and the
   person who wrote the change still carry that.
 - A release's source is `git checkout v<version>`: the commit on `main` it was made from, plus
   the two version lines. `git log main` does not show the version commits.
+- The build record of a release names the commit on `main` the run started from, not the tagged
+  commit. The tagged commit is its child and differs by the two version lines only; anyone can
+  see that with `git diff <that commit> v<version>`.
 - There is nothing to pull after a release, and no race with a change that lands on `main` while
   the checks run.
 - Dependabot's pull requests go the same way: read by the reviewer, merged by a person.

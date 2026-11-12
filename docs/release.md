@@ -142,8 +142,9 @@ release build has no dev switches and opens your real data folder.
 - The disk image opens without a warning: it is signed with the project's Developer ID and
   notarized by Apple. (An alpha is neither; see [Alpha](#alpha).)
 - `SHA256SUMS.txt` holds the checksums of the image and of the SBOM.
-- `gh attestation verify <file> --repo milolabs/matters-app` shows the workflow and the commit the
-  file was built from.
+- `gh attestation verify <file> --repo milolabs/matters-app` shows the workflow and the commit on
+  `main` the run started from. What was built is the tagged commit: that commit, with only the
+  version changed in `apps/desktop/package.json` and `bun.lock`.
 - The `.intoto.jsonl` file is that same record as a file: add `--bundle <file>.intoto.jsonl` to
   check it without asking GitHub.
 - The `.spdx.json` file lists every package inside the app.

@@ -233,7 +233,8 @@ jobs:
           notarized by Apple, so macOS will refuse to open it until you allow it. Apple Silicon only.
           There are no updates: a newer alpha is a new download.
 
-          Check the download first. This shows the workflow and the commit it was built from:
+          Check the download first. This shows the workflow and the commit on main the run started
+          from; the tag is that commit with only the version changed:
 
               gh attestation verify Matters-$VERSION-arm64.dmg --repo $GITHUB_REPOSITORY
 
