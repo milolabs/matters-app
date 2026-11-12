@@ -36,6 +36,7 @@
     <div class="page" id="page">
       <!-- The rope the ball runs on. Drawn by run.js from where the pieces below sit. -->
       <svg class="track" aria-hidden="true">
+        <path id="track-wire" />
         <path id="track-base" />
         <path id="track-lit" />
       </svg>
@@ -87,7 +88,7 @@
         </section>
 
         <!-- 01 Ask -->
-        <section class="st" id="ask">
+        <section class="st flip" id="ask">
           <div class="st-copy">
             <p class="kicker"><b>01</b> Ask</p>
             <h2>Type what you want.</h2>
@@ -124,7 +125,7 @@
         </section>
 
         <!-- 02 Keep -->
-        <section class="st flip" id="keep">
+        <section class="st" id="keep">
           <div class="st-copy">
             <p class="kicker"><b>02</b> Keep</p>
             <h2>Save it as a tab.</h2>
@@ -268,10 +269,27 @@
           </figure>
         </section>
 
-        <!-- 06 Open -->
-        <section class="st flip" id="open">
+        <!-- 06 Next -->
+        <section class="st wide" id="next">
           <div class="st-copy">
-            <p class="kicker"><b>06</b> Open source</p>
+            <p class="kicker"><b>06</b> Next</p>
+            <h2>Yet to come.</h2>
+          </div>
+          <ul class="soons">
+            <li class="soon-tile"><strong>Downloads</strong><span>signed builds, updates</span></li>
+            <li class="soon-tile"><strong>Browser sign-in</strong><span>Gmail, Microsoft 365</span></li>
+            <li class="soon-tile"><strong>API keys</strong><span>any provider</span></li>
+            <li class="soon-tile"><strong>Linux · Windows</strong><span>builds and testers</span></li>
+            <li class="soon-tile yours">
+              <a href="https://github.com/milolabs/matters-app/issues"><strong>Yours</strong><span>open an issue ↗</span></a>
+            </li>
+          </ul>
+        </section>
+
+        <!-- 07 Open -->
+        <section class="st" id="open">
+          <div class="st-copy">
+            <p class="kicker"><b>07</b> Open source</p>
             <h2>Open. All of it.</h2>
             <p>Every decision is written down. Read it, run it, change it.</p>
             <ul class="facts">
@@ -290,23 +308,6 @@
 <span class="t-l"><b>$</b> bun run dev:desktop:demo</span>
 <span class="t-l t-ok">✓ a made-up mailbox of 8,000 messages, no account needed</span></code></pre>
           </figure>
-        </section>
-
-        <!-- 07 Next -->
-        <section class="st wide" id="next">
-          <div class="st-copy">
-            <p class="kicker"><b>07</b> Next</p>
-            <h2>Yet to come.</h2>
-          </div>
-          <ul class="soons">
-            <li class="soon-tile"><strong>Downloads</strong><span>signed builds, updates</span></li>
-            <li class="soon-tile"><strong>Browser sign-in</strong><span>Gmail, Microsoft 365</span></li>
-            <li class="soon-tile"><strong>API keys</strong><span>any provider</span></li>
-            <li class="soon-tile"><strong>Linux · Windows</strong><span>builds and testers</span></li>
-            <li class="soon-tile yours">
-              <a href="https://github.com/milolabs/matters-app/issues"><strong>Yours</strong><span>open an issue ↗</span></a>
-            </li>
-          </ul>
         </section>
 
         <section class="get" id="get">
@@ -347,6 +348,7 @@
     </svg>
 
     <script src="site.js" type="module"></script>
+    <script src="scene.js" type="module"></script>
     <script src="run.js" type="module"></script>
   </body>
 </html>

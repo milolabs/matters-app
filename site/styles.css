@@ -123,11 +123,8 @@ a {
 
 .page {
   position: relative;
-  /* A faint field of dots, lit a little where the page begins. */
-  background:
-    radial-gradient(1100px 620px at 78% -80px, rgb(154 136 245 / 0.09), transparent 70%),
-    radial-gradient(circle at 1px 1px, rgb(245 241 234 / 0.045) 1px, transparent 1.5px) 0 0 / 28px
-    28px;
+  /* Lit a little where the page begins. */
+  background: radial-gradient(1100px 620px at 78% -80px, rgb(154 136 245 / 0.09), transparent 70%);
 }
 
 /* ---- The run: the rope and the ball ---- */
@@ -148,6 +145,13 @@ a {
   stroke-width: 1.5;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+/* The cables on the floor of the other world. */
+.track #track-wire {
+  stroke: rgb(245 241 234 / 0.16);
+  stroke-width: 1.5;
+  stroke-dasharray: 0.1 8;
 }
 
 .track #track-lit {
@@ -194,11 +198,126 @@ a {
   }
 }
 
-main,
+/* Back to front: the rooms, the rope, the page, the ball. */
 .nav,
-.foot {
+.foot,
+.hero > *,
+.st > :not(.sc),
+.get > :not(.sc) {
   position: relative;
+  z-index: 2;
+}
+
+.track {
   z-index: 1;
+}
+
+.st,
+.get {
+  position: relative;
+}
+
+/* ---- The rooms behind the page (scene.js) ---- */
+
+.sc {
+  --k: 1;
+  position: absolute;
+  top: 0;
+  /* The point where the ball lands is `--at` across the section. */
+  left: calc(var(--at) - var(--ax) * var(--k) * 1px);
+  z-index: 0;
+  width: calc(var(--w) * var(--k) * 1px);
+  transform: translateY(-56%);
+  overflow: visible;
+  pointer-events: none;
+  color: rgb(245 241 234 / 0.17);
+}
+
+.sc .floor {
+  fill: none;
+  stroke-dasharray: 0.1 7;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke: rgb(245 241 234 / 0.2);
+}
+
+/* The line under a room: what was the matter, and what became of it. */
+.sc text {
+  font: 11px var(--mono);
+  letter-spacing: 0.04em;
+  fill: rgb(245 241 234 / 0.4);
+  transition: opacity 0.5s;
+}
+
+.sc .now {
+  fill: rgb(154 136 245 / 0.85);
+}
+
+.sc .was,
+.run .sc:not(.on) .now {
+  opacity: 0;
+}
+
+.run .sc:not(.on) .was {
+  opacity: 1;
+}
+
+.sc polygon {
+  fill: var(--page);
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  transition:
+    stroke 0.5s,
+    fill 0.5s;
+  transition-delay: calc(var(--i, 0) * 110ms);
+}
+
+.sc .top {
+  fill: #19181b;
+}
+
+.sc g {
+  transition:
+    transform 0.8s var(--ease),
+    opacity 0.45s;
+  transition-delay: calc(var(--i, 0) * 110ms);
+}
+
+.sc .dash polygon {
+  stroke-dasharray: 4 5;
+}
+
+.sc .lit polygon {
+  stroke: rgb(154 136 245 / 0.7);
+  fill: #211e30;
+}
+
+.sc .away {
+  opacity: 0;
+}
+
+/* Before the ball has been: nothing is lit, nothing has moved, the pile is still there. */
+.run .sc:not(.on) .lit polygon {
+  stroke: currentColor;
+  fill: var(--page);
+}
+
+.run .sc:not(.on) .lit .top {
+  fill: #19181b;
+}
+
+.run .sc:not(.on) .mv {
+  transform: translate(var(--mx), var(--my));
+}
+
+.run .sc:not(.on) .hid {
+  opacity: 0;
+}
+
+.run .sc:not(.on) .away {
+  opacity: 1;
 }
 
 /* ---- Nav ---- */
@@ -521,7 +640,7 @@ h2 {
 .st {
   max-width: var(--max);
   margin: 0 auto;
-  padding: clamp(80px, 15vh, 170px) var(--pad);
+  padding: clamp(120px, 17vh, 190px) var(--pad);
   display: grid;
   grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
   align-items: center;
@@ -1166,7 +1285,7 @@ pre {
 /* ---- Get ---- */
 
 .get {
-  padding: clamp(60px, 12vh, 140px) var(--pad) clamp(110px, 20vh, 200px);
+  padding: clamp(130px, 18vh, 200px) var(--pad) clamp(110px, 20vh, 200px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1437,6 +1556,14 @@ pre {
 
   .st.flip > .st-copy {
     order: 0;
+  }
+
+  .sc {
+    --k: 0.6;
+  }
+
+  .sc text {
+    font-size: 15px;
   }
 
   .budgets {
