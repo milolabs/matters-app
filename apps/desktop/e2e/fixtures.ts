@@ -66,13 +66,20 @@ interface Fixtures {
   start: (options?: StartOptions) => Promise<Running>;
 }
 
-async function record(running: ElectronApplication, window: Page, n: number, info: TestInfo) {
+async function record(
+  running: ElectronApplication,
+  window: Page | undefined,
+  n: number,
+  info: TestInfo,
+) {
   const name = `start-${n}`;
   const shot = info.outputPath(`${name}.png`);
-  await window
-    .screenshot({ path: shot })
-    .then(() => info.attach(`${name} screenshot`, { path: shot, contentType: "image/png" }))
-    .catch(() => {});
+  if (window) {
+    await window
+      .screenshot({ path: shot })
+      .then(() => info.attach(`${name} screenshot`, { path: shot, contentType: "image/png" }))
+      .catch(() => {});
+  }
   const trace = info.outputPath(`${name}-trace.zip`);
   await running
     .context()
@@ -90,7 +97,7 @@ export const test = base.extend<Fixtures>({
   },
 
   start: async ({ dataDir }, use, info) => {
-    const open: Running[] = [];
+    const closers: (() => Promise<void>)[] = [];
     let starts = 0;
     await use(async (options = {}) => {
       const n = ++starts;
@@ -110,29 +117,28 @@ export const test = base.extend<Fixtures>({
       const log: string[] = [];
       app.process().stdout?.on("data", (d: Buffer) => log.push(d.toString()));
       app.process().stderr?.on("data", (d: Buffer) => log.push(d.toString()));
-      await app.context().tracing.start({ screenshots: true, snapshots: true });
-      const window = await app.firstWindow();
+      // Registered before anything else can fail: a start that never shows a window is still
+      // closed at the end of the test, and still leaves its output, trace and video.
+      let window: Page | undefined;
       let closed = false;
-      const running: Running = {
-        app,
-        window,
-        async close() {
-          if (closed) return;
-          closed = true;
-          await record(app, window, n, info);
-          const video = window.video();
-          await app.close().catch(() => {});
-          const path = await video?.path().catch(() => undefined);
-          if (path) await info.attach(`start-${n} video`, { path, contentType: "video/webm" });
-          await info.attach(`start-${n} app output`, {
-            body: log.join(""),
-            contentType: "text/plain",
-          });
-        },
+      const close = async () => {
+        if (closed) return;
+        closed = true;
+        await record(app, window, n, info);
+        const video = window?.video();
+        await app.close().catch(() => {});
+        const path = await video?.path().catch(() => undefined);
+        if (path) await info.attach(`start-${n} video`, { path, contentType: "video/webm" });
+        await info.attach(`start-${n} app output`, {
+          body: log.join(""),
+          contentType: "text/plain",
+        });
       };
-      open.push(running);
-      return running;
+      closers.push(close);
+      await app.context().tracing.start({ screenshots: true, snapshots: true });
+      window = await app.firstWindow();
+      return { app, window, close };
     });
-    for (const running of open) await running.close();
+    for (const close of closers) await close();
   },
 });

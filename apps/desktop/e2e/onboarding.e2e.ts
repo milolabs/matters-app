@@ -42,4 +42,11 @@ test("a first start adds an account, syncs it, and keeps it for the next start",
   }
   await expect(second.window.getByRole("form", { name: "Add account" })).toHaveCount(0);
   await expect(account(second.window)).toHaveAccessibleName(SYNCED, { timeout: 60_000 });
+
+  // And the restarted app still fetches: a message that reaches the server now reaches the list.
+  await mailbox.admin.append("INBOX", mail({ id: "onboarding-late", subject: "Po restarcie" }));
+  await expect(again.getByRole("option", { name: /Po restarcie/ })).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect(again.getByRole("option")).toHaveCount(SUBJECTS.length + 1);
 });
