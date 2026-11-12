@@ -103,7 +103,7 @@ bun run dev:desktop:demo   # the app on a made-up mailbox
 bun run dev:desktop        # the app on your own accounts
 ```
 
-The checks every change must pass, the same ones CI runs:
+The checks to run before you push:
 
 ```sh
 bun run typecheck          # types
@@ -113,6 +113,9 @@ bun run check:boundaries   # the rules of the architecture
 bun run check:licenses     # licenses of dependencies
 bun run smoke:desktop      # builds the app and starts it
 ```
+
+CI runs the first five and then packages the app; it does not start it.
+[CONTRIBUTING.md](CONTRIBUTING.md#the-checks) has the details.
 
 ## How it is built
 

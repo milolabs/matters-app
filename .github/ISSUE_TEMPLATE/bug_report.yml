@@ -71,7 +71,6 @@ body:
     id: logs
     attributes:
       label: Logs or screenshots
-      description: Anything the app or the terminal printed. Remove private data first.
-      render: text
+      description: Anything the app or the terminal printed, in a code block. Remove private data first.
     validations:
       required: false

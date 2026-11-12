@@ -28,14 +28,30 @@ bun run dev:desktop:demo   # the app on a made-up mailbox
 
 ## The checks
 
-CI runs these on every pull request. Run them before you push:
+Run these before you push. CI runs the same five on every pull request:
 
 ```sh
 bun run typecheck          # types
 bun run lint               # Biome
-bun run test               # unit tests and the hostile-mail corpus
 bun run check:boundaries   # the rules of the architecture
 bun run check:licenses     # licenses of dependencies
+bun run test               # unit tests and the hostile-mail corpus
+```
+
+Two things differ in CI ([`ci.yml`](.github/workflows/ci.yml)): a test gets two more tries, and
+the tests that hold a search to a budget in milliseconds (`*Perf.test.ts`) are left out, because a
+shared runner is slower than a developer's machine.
+
+CI then packages the app as a release would, signed ad hoc, to prove that the bundle and the disk
+image can still be made:
+
+```sh
+MATTERS_SIGN_IDENTITY=- bun run release:macos
+```
+
+CI does not start the app. Do that yourself when a change touches the app:
+
+```sh
 bun run smoke:desktop      # builds the app and starts it
 ```
 
