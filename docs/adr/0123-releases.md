@@ -9,6 +9,8 @@
 - Amended by: [0124](0124-the-release-workflow-sets-the-version.md) (the workflow is started by
   hand, sets the version, and makes the commit and the tag itself); [0125](0125-what-an-outsider-can-check.md)
   (a release also carries its build record as a file)
+- Amended by: [0129](0129-the-site-offers-pre-releases.md) (a published alpha is offered on the
+  site, and named as one)
 
 ## Context
 
