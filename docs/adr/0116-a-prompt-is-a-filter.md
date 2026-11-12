@@ -43,6 +43,10 @@ ADR 0117 then removed that tab in favour of a view with a prompt.
    this machine and on every keystroke. The prompt only ever narrows and orders what those filters
    found. Typing never starts a model: while a prompt is being typed, the list shows the mail
    filters' result.
+2a. **Once a search is kept, the list is the prompt's.** For text whose search is kept, the
+   list shows what fits of what has been read so far, also while threads are left to read,
+   and the line says how many those are. Only text that was never run shows the mail filters'
+   result. (At first the kept rows showed only when everything found was read.)
 3. **A prompt runs when the person asks.** `↵` in the query bar runs it, and so does opening a saved
    view whose text holds a prompt, for the threads it has not read yet. Both are `P0` (ADR 0051,
    rule 7). Reading for a view in the background when new mail arrives is ADR 0117, rule 3.

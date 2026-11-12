@@ -330,6 +330,19 @@ function Mail(props: Stores) {
       else if (sorted.has()) void sorted.run();
     }),
   );
+  // The prompt of the view in the bar could not run and now can (AI came on, or an account was
+  // shared): the view is opened as when its tab is chosen, so its list is the prompt's again.
+  createEffect(
+    on(promptIdle, (idle, was) => {
+      if (was !== true || idle) return;
+      untrack(() => {
+        if (!views.isSaved() || views.changed()) return;
+        const text = store.query();
+        prompt.setQuery(text, model.parsed().prompt !== undefined);
+        if (prompt.has()) void prompt.open();
+      });
+    }),
+  );
   /** The model's sentence per thread, shown on the row in the agent's colour (rule 6). */
   const whys = createMemo(
     () => new Map((prompt.rows() ?? []).map((r) => [r.threadId, r.why] as const)),

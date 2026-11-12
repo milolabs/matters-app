@@ -110,10 +110,10 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
       if (mine !== gen) return;
       learn(c.promptKey);
       setCount(c);
-      // Everything found is read already (or nothing was found): the list is the prompt's.
-      if (c.ai === "on" && c.searched && toReadOf(c) === 0 && rows() === null) {
-        void readVerdicts();
-      }
+      // A search is kept for this text: the list is the prompt's, what fits of what is read so
+      // far, also while more is left to read. The mail filters' result beside a line that counts
+      // the prompt's threads would pass for what the prompt kept.
+      if (c.ai === "on" && c.searched && rows() === null) void readVerdicts();
     } catch {
       // The line stays quiet; ↵ still runs.
     }

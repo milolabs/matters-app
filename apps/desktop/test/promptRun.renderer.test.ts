@@ -400,14 +400,15 @@ describe("the prompt's run (rules 2, 3 and 9)", () => {
     expect(r.calls).toEqual([]);
     t.fire();
     await tick();
-    expect(r.calls).toEqual(["count prompt:what"]);
+    // A search is kept for this text, so the list is the prompt's: its kept rows are read too.
+    expect(r.calls).toEqual(["count prompt:what", "verdicts prompt:what"]);
     expect(p.count()?.found).toBe(10);
-    expect(p.rows()).toBeNull();
+    expect(p.rows()).not.toBeNull();
     // A query without a prompt asks nothing at all.
     p.setQuery("from:office", false);
     t.fire();
     await tick();
-    expect(r.calls).toEqual(["count prompt:what"]);
+    expect(r.calls).toEqual(["count prompt:what", "verdicts prompt:what"]);
     expect(p.count()).toBeNull();
   });
 
