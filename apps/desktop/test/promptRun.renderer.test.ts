@@ -645,6 +645,36 @@ describe("the prompt's run (rules 2, 3 and 9)", () => {
     expect(p.rows()?.map((x) => x.threadId)).toEqual(["t4", "t8"]);
   });
 
+  it("shows nothing of the mail filters under an opened view, before and without kept rows", async () => {
+    const r = rig();
+    r.setVerdicts(list([row(4, 3)], { read: 10 }));
+    const p = createPromptRun(r.backend, { schedule: timers().schedule });
+    p.setQuery(QUERY, true);
+    const opened = p.open();
+    // Before the kept rows are here: an empty list of the prompt's, not the filters' result.
+    expect(p.rows()).toEqual([]);
+    expect(p.opening()).toBe(true);
+    await opened;
+    expect(p.opening()).toBe(false);
+    expect(p.rows()?.length).toBe(1);
+
+    // A view never searched stays empty while its first search runs.
+    r.setVerdicts(list([], { searched: false, found: 0 }));
+    p.setQuery(`${QUERY} is:unread`, true);
+    const run = r.holdRun();
+    const again = p.open();
+    await tick();
+    expect(p.rows()).toEqual([]);
+    expect(p.progress()?.phase).toBe("searching");
+    run.end(result([row(8, 2)]));
+    await again;
+    expect(p.rows()?.map((x) => x.threadId)).toEqual(["t8"]);
+
+    // Typed text is not a view: the mail filters' result shows until it is run (rule 2).
+    p.setQuery(`${QUERY} is:starred`, true);
+    expect(p.rows()).toBeNull();
+  });
+
   it("opens a view that is all read without a run, and does nothing while AI is off", async () => {
     const r = rig();
     r.setVerdicts(list([row(4, 3)], { read: 10 }));

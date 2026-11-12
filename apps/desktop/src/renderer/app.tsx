@@ -310,6 +310,12 @@ function Mail(props: Stores) {
   // one with a ranked order is sorted, as `↵` would.
   onCleanup(
     views.onOpened(() => {
+      // A view opened from inside an effect (the starter view at launch) gets here before the
+      // effects above have seen its text. Without this the prompt would not be known yet, the
+      // view would not be opened as one, and the mail filters' result would show under its name.
+      const text = store.query();
+      prompt.setQuery(text, model.parsed().prompt !== undefined);
+      sorted.setQuery(text, rankedSortOf(model.parsed()));
       if (prompt.has()) void prompt.open();
       else if (sorted.has()) void sorted.run();
     }),
@@ -1126,7 +1132,7 @@ function Mail(props: Stores) {
               orderedEmpty={() =>
                 sorted.rows() !== null
                   ? "Nothing found."
-                  : prompt.progress() === null
+                  : prompt.progress() === null && !prompt.opening()
                     ? NOTHING_FITS
                     : ""
               }

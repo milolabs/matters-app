@@ -44,6 +44,11 @@ notifications. Those are what a view has to gain before the tab can go.
    added: renamed, edited or deleted, it is the person's, and it is not added again. It is an
    ordinary saved view (ADR 0027) with nothing built in. While the person has not chosen a tab
    or typed, the app opens on it, as it did on `Matters`.
+2a. **An opened view shows only what fits its prompt.** From the moment a view with a prompt
+   is opened, at launch too, its list is the prompt's rows: empty while they are fetched or
+   while its first search runs, never the mail filters' result. A tab named for a prompt that
+   lists mail the prompt did not keep says something untrue. Text typed in the bar is not a
+   view yet and still shows the filters' result until it is run (ADR 0116, rule 2).
 3. **A view with a prompt reads new mail in the background.** When a sync batch is applied, each
    saved view that holds a prompt, and that the person has run at least once, finds its new
    candidates on this machine with no model: the threads its mail filters match when the view

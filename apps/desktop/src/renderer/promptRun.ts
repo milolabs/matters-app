@@ -73,6 +73,8 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
   const [progress, setProgress] = createSignal<PromptProgressShown | null>(null);
   const [stopping, setStopping] = createSignal(false);
   const [outcome, setOutcome] = createSignal<PromptOutcome | null>(null);
+  // A saved view was opened and what it keeps is not here yet: the list is empty, and says nothing.
+  const [opening, setOpening] = createSignal(false);
 
   // Bumped by every new text: an answer for an older one is dropped.
   let gen = 0;
@@ -83,6 +85,9 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
   // One read of the verdicts at a time; one asked for meanwhile goes when it answers.
   let reading = false;
   let readAgain = false;
+  // The text is a saved view's, opened (rule 3): the tab is named for the prompt, so the list is
+  // only ever what fits it. The mail filters' result alone would show mail the prompt never kept.
+  let asView = false;
 
   /** The prompt's key, learned from any answer for this text: progress of other prompts is not ours. */
   function learn(key: string) {
@@ -92,8 +97,9 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
   function apply(l: PromptList) {
     learn(l.promptKey);
     batch(() => {
-      // Before the first search there is no list of the prompt's: the mail filters' result shows.
-      setRows(l.searched ? l.rows : null);
+      // Before the first search there is no list of the prompt's: the mail filters' result shows,
+      // unless the text is a view's, which shows nothing until something fits.
+      setRows(l.searched ? l.rows : asView ? [] : null);
       setCount(countOf(l));
     });
   }
@@ -152,9 +158,11 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
     cancelProgressRead = null;
     // One run at a time, of the text it was asked for (rule 9): other text stops it.
     if (run !== null) stopInFlight();
+    asView = false;
     batch(() => {
       setText(next);
       setHas(hasPrompt);
+      setOpening(false);
       setCount(null);
       setRows(null);
       setProgress(null);
@@ -215,7 +223,7 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
         }
         learn(r.promptKey);
         batch(() => {
-          setRows(r.searched ? r.rows : null);
+          setRows(r.searched ? r.rows : asView ? [] : null);
           setCount(countOf(r));
           setProgress(null);
           setStopping(false);
@@ -260,14 +268,29 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
     // The verdicts carry the count.
     cancelCount?.();
     cancelCount = null;
+    // At once, before anything is asked: the mail filters' result never shows under the view's name.
+    asView = true;
+    batch(() => {
+      if (rows() === null) setRows([]);
+      setOpening(true);
+    });
     try {
       const l = await backend.agentPromptVerdicts(text());
       if (mine !== gen) return;
       if (l.ai === "off") {
-        setCount(countOf(l));
+        // AI is off: the prompt constrains nothing (rule 11), and the diagnostic says so.
+        asView = false;
+        batch(() => {
+          setRows(null);
+          setOpening(false);
+          setCount(countOf(l));
+        });
         return;
       }
-      apply(l);
+      batch(() => {
+        apply(l);
+        setOpening(false);
+      });
       // More than `PROMPT_ASK_ABOVE` to read: the line asks, and nothing runs (rule 4). Under a
       // limit nothing is asked: the run stops once that many fit (rule 4a).
       const c = countOf(l);
@@ -276,7 +299,9 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
         await start();
       }
     } catch {
-      if (mine === gen) void askCount(mine);
+      if (mine !== gen) return;
+      setOpening(false);
+      void askCount(mine);
     }
   }
 
@@ -344,6 +369,8 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
     stopping,
     /** What the last run ended with, when that needs saying. */
     outcome,
+    /** A view was opened and its kept rows are on their way: an empty list is not yet an answer. */
+    opening,
     setQuery,
     /** `↵`: once the count is known the person has seen it, so it reads everything (rule 4). */
     run: () => {
