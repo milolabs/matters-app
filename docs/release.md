@@ -9,15 +9,15 @@ How a version of Matters gets from `main` to a download. The decision and its re
 | Stage | What | State |
 | --- | --- | --- |
 | 0 | A release build, `bun run release:macos`, the `Release` workflow, a rehearsal that needs no secret | done, not yet run on GitHub |
-| Alpha | `v0.1.0-alpha.1` and on, for invited testers: signed ad hoc, not notarized, with an SBOM and an attestation | ready; needs nothing from Apple |
+| Alpha | `v0.1.0-alpha.1` and on, early builds to try and report on: signed ad hoc, not notarized, with an SBOM and an attestation | ready; needs nothing from Apple |
 | 1 | The first pre-release, `v0.1.0-beta.1`: signed, notarized, with an SBOM and an attestation | waits on the one-time setup below |
 | 2 | Updates: the app says when a newer release exists, later installs it | not started; needs its own ADR |
 | 3 | Before 1.0: asar with integrity fuses, an Intel or universal build, Windows and Linux, an independent audit | not started |
 
 ## Alpha
 
-An alpha is for a few people you invited, before the project has a Developer ID. It is the release
-build signed ad hoc: macOS refuses to open it until the tester allows it. It needs none of the
+An alpha is an early build, from before the project has a Developer ID, for people who want to
+try Matters and report what they find. It is the release build signed ad hoc: macOS refuses to open it until the tester allows it. It needs none of the
 one-time setup below.
 
 **Making one**
@@ -26,9 +26,10 @@ one-time setup below.
 2. The run does the checks, sets the next version (`0.1.0-alpha.1`, then `-alpha.2`, …) in a
    commit that only the tag points at, builds the app and starts it. Nothing is written to `main`.
 3. It leaves a **draft** pre-release with the disk image, the SBOM, the checksums and notes that
-   say how to open it. Add what changed and what is known not to work, then publish, and send
-   the link to the testers. A published pre-release is public: anyone can find it, and the notes
-   say it is for invited testers.
+   say how to open it. Add what changed and what is known not to work, then publish. A published
+   pre-release is public: anyone can find it, and while there is no stable release the site
+   offers it as its download (ADR 0129). An alpha that must not be there is not published.
+
 **What a tester does**
 
 1. Checks the download: `gh attestation verify Matters-<version>-arm64.dmg --repo milolabs/matters-app`.

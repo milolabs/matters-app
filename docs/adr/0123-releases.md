@@ -70,7 +70,8 @@ app. A packaged app has no dev switches, so here it would open the owner's real 
     pre-release whose notes say what it is and how to open it. It is for a few invited testers: to
     learn whether the app works on a Mac and a mailbox that are not the owner's. It uses no secret
     and not the `release` environment. Any other tag takes the signed path, so a beta or a release
-    can never come out ad hoc.
+    can never come out ad hoc. (Amended by ADR 0129: a published alpha is offered on the site
+    to everyone, while there is no stable release. The notes no longer say "invited".)
 11. **In stages.**
     - *Stage 0, done here:* the release build, the script, the workflows, the rehearsal.
     - *Alpha, needs nothing from Apple:* `v0.1.0-alpha.1` and on, for invited testers.

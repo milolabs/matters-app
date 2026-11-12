@@ -29,13 +29,17 @@ there what the site could have said first.
    and the version line says the stage and sends the reader to the notes before they open it.
 5. **The site does not repeat the notes.** What a build is and how to open it is written once, in
    the release (ADR 0123, rule 10), and the site links there.
+6. **The notes of an alpha speak to everyone.** They no longer say "for invited testers"; they
+   still say that the build is not notarized and how to open it. `docs/release.md` says the same.
+7. **A list of releases that cannot be read stops the run.** The site keeps what it had; "no
+   download" is published only when GitHub answers that there is none.
 
 ## Consequences
 
 - An alpha that is published is offered to everyone who visits, not only to people the owner
   invited. It is still not notarized, and macOS still refuses it until the reader allows it. The
-  owner decides this each time by publishing the draft or leaving it a draft; an alpha meant for
-  a few testers stays a draft, or is sent as a link.
+  owner decides this each time by publishing the draft or not. A draft cannot be downloaded by
+  people outside the repository, so there is no alpha for a few testers only any more.
 - Once there is a stable release, alphas and betas of the next version are on GitHub only, as
   under ADR 0127.
 - Among pre-releases the newest wins, whatever its stage: an alpha published after a beta takes

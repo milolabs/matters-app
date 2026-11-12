@@ -6,7 +6,7 @@
 #
 # - No version given: the next one is counted from the newest v* tag
 #   (0.1.0-alpha.1 → 0.1.0-alpha.2, 0.1.0 → 0.1.1). A version given is taken as it is.
-# - A version with `-alpha.` makes an alpha, for a few invited testers before the project has a
+# - A version with `-alpha.` makes an alpha, an early build from before the project has a
 #   Developer ID: signed ad hoc, not notarized, on a draft pre-release whose notes say so and say
 #   how to open it. It uses no secret.
 # - Any other version makes a real one: signed with the Developer ID, notarized by Apple, with a
@@ -229,7 +229,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > "$RUNNER_TEMP/notes.md" <<EOF
-          **An alpha, for invited testers.** This build is not signed with a Developer ID and not
+          **An alpha: an early build, to try and to report on.** This build is not signed with a Developer ID and not
           notarized by Apple, so macOS will refuse to open it until you allow it. Apple Silicon only.
           There are no updates: a newer alpha is a new download.
 

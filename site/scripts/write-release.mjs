@@ -24,14 +24,14 @@ const about = await fetch(`https://api.github.com/repos/${repo}`, { headers });
 if (about.ok) out.stars = (await about.json()).stargazers_count;
 
 // Every page of the list: a stable release may sit behind a hundred pre-releases. A repository
-// that is not there yet answers 404, and has no release.
+// with no release answers with an empty list. Any failure stops the run, 404 too: it means the
+// repository was not reached, and "no download" must not be published in place of a download.
 const releases = [];
 for (let page = 1; ; page++) {
   const res = await fetch(
     `https://api.github.com/repos/${repo}/releases?per_page=100&page=${page}`,
     { headers },
   );
-  if (res.status === 404 && page === 1) break;
   if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
   const batch = await res.json();
   releases.push(...batch);
