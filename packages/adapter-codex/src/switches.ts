@@ -176,6 +176,24 @@ export function closedCatalogEntry(
   return { ...entry, ...CATALOG_SET };
 }
 
+/**
+ * The flags and settings of `codex app-server` for the read of the plan's windows (ADR 0120, rule
+ * 9), in order, as argv: every feature and setting of a turn that the server takes. It has no flag
+ * to ignore the person's config.toml or rules, no `--ephemeral` and no `--skip-git-repo-check`; what
+ * the person's config sets beyond the keys here still applies, and `--strict-config` holds it too,
+ * so a key there that this version of Codex does not know fails the read. No thread is started, so
+ * the rules, which only judge commands, are never consulted.
+ */
+export function closedServerArgs(): string[] {
+  return [
+    "--listen",
+    "stdio://",
+    "--strict-config",
+    ...FEATURES_OFF.flatMap((f) => ["--disable", f.feature]),
+    ...CONFIG_OFF.flatMap((c) => ["-c", `${c.key}=${c.value}`]),
+  ];
+}
+
 /** The flags and settings of a closed turn, in order, as argv. */
 export function closedArgs(): string[] {
   return [

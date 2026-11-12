@@ -42,6 +42,17 @@ const rootOf = (argv: readonly string[]) => {
   return dirname(dirname(arg.slice('model_catalog_json="'.length, -1)));
 };
 const turnDirs = () => readdirSync(h.tmpRoot).filter((n) => n.startsWith("matters-codex-"));
+/**
+ * The directories of turns once the read of the windows that follows a turn has let its server go:
+ * the answer does not wait for that server to end, so its directory goes a moment later.
+ */
+const dirsLeft = async (keep: readonly string[] = []) => {
+  for (let i = 0; i < 100; i++) {
+    if (turnDirs().every((n) => keep.includes(n))) break;
+    await sleep(20);
+  }
+  return turnDirs();
+};
 /** The variables the wrapper of the fake program sets itself. */
 const WRAPPER_ENV = new Set(["FAKE_CODEX_DIR", "ELECTRON_RUN_AS_NODE", "PWD", "SHLVL", "_"]);
 const ownEnv = (env: { [k: string]: string }) =>
@@ -232,7 +243,7 @@ describe("a turn is closed (ADR 0120, rule 3)", () => {
     expect(r.cwdEntries).toEqual([]);
     expect(r.rootMode).toBe(0o700);
     expect(Object.keys(r.given).sort()).toEqual(["instructions.md", "models.json", "schema.json"]);
-    expect(turnDirs()).toEqual([]);
+    expect(await dirsLeft()).toEqual([]);
   });
 
   it("passes the child only what Codex needs to find its sign-in", async () => {
@@ -266,7 +277,7 @@ describe("a turn is closed (ADR 0120, rule 3)", () => {
     const error = await failure(h.runtime().run(request()));
     expect(error.code).toBe("failed");
     expect(error.message).toBe("Codex ended without an answer (exit 3).");
-    expect(turnDirs()).toEqual([]);
+    expect(await dirsLeft()).toEqual([]);
   });
 
   it("fails the turn and stops Codex at once when it uses a tool of its own", async () => {
@@ -314,8 +325,8 @@ describe("the answer (ADR 0120, rule 5)", () => {
     expect(out.value).toEqual({ kind: "acknowledgement" });
     expect(out.inputTokens).toBe(894);
     expect(out.outputTokens).toBe(54);
-    // Codex reports no windows to `exec`.
-    expect(out.limits).toBeUndefined();
+    // `exec` reports no windows: these come from the read after the turn (rule 9).
+    expect(out.limits?.week?.usedPercent).toBe(41);
   });
 
   it("gives Codex the schema in the strict form: all required, optional ones nullable", async () => {
@@ -474,7 +485,7 @@ describe("the plan and the models (ADR 0120, rules 1, 2 and 8)", () => {
       id: "codex",
       name: "Codex",
       status: "found",
-      plan: "ChatGPT",
+      plan: "plus",
       models: ["gpt-6.1-sol", "gpt-6-luna"],
       modelEfforts: {
         // Codex's own `ultra` is not one of ours.
@@ -492,9 +503,9 @@ describe("the plan and the models (ADR 0120, rules 1, 2 and 8)", () => {
         write: "gpt-6.1-sol",
         answer: "gpt-6.1-sol",
       },
-      noWindows: true,
-      turnsAtOnce: 1,
+      pausesOnLimit: true,
     });
+    expect(info.turnsAtOnce).toBeUndefined();
     expect(info.toolModels).toBeUndefined();
     expect(h.turns).toHaveLength(0);
   });
@@ -562,7 +573,7 @@ describe("the plan and the models (ADR 0120, rules 1, 2 and 8)", () => {
     const fresh = join(h.tmpRoot, "matters-codex-running");
     await mkdir(fresh);
     await h.runtime().inspect();
-    expect(turnDirs()).toEqual(["matters-codex-running"]);
+    expect(await dirsLeft(["matters-codex-running"])).toEqual(["matters-codex-running"]);
   });
 });
 
@@ -573,7 +584,7 @@ describe("stopping (ADR 0120, rule 3)", () => {
     expect(error.message).toBe("Codex took too long.");
     await sleep(1800);
     expect(h.survived("grandchild-survived")).toBe(false);
-    expect(turnDirs()).toEqual([]);
+    expect(await dirsLeft()).toEqual([]);
   });
 
   it("stops when aborted, and kills the child", async () => {
@@ -586,7 +597,7 @@ describe("stopping (ADR 0120, rule 3)", () => {
     expect(error.message).toBe("Cancelled.");
     await sleep(1500);
     expect(h.survived()).toBe(false);
-    expect(turnDirs()).toEqual([]);
+    expect(await dirsLeft()).toEqual([]);
   });
 
   it("does not start when already aborted", async () => {
@@ -719,7 +730,7 @@ describe("images go whole, a PDF does not (ADR 0120, rule 7)", () => {
     ]);
     expect(given["image-1.png"]).toBe(Buffer.from(png.bytes).toString("latin1"));
     expect(argv.at(-1)).toBe("-");
-    expect(turnDirs()).toEqual([]);
+    expect(await dirsLeft()).toEqual([]);
   });
 
   it("refuses a PDF, images to a model that does not see them, and files in a turn with tools", async () => {

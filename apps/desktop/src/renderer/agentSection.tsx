@@ -12,7 +12,7 @@ import {
   WhatDoesWhat,
 } from "./agentConnect.tsx";
 import {
-  hasNoWindows,
+  hasNoPlan,
   instructionScopeWords,
   ledgerEffort,
   loopOffered,
@@ -256,7 +256,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                   idPrefix="settings"
                   onWeekShare={(percent) => void change(props.backend.agentSetWeekShare(percent))}
                 />
-                <Show when={enabled() && !hasNoWindows(s().runtime)}>
+                <Show when={enabled() && !hasNoPlan(s().runtime)}>
                   <p class="mt-3 text-[12px] text-secondary">{ourShare(s())}</p>
                 </Show>
                 <Show when={enabled()}>

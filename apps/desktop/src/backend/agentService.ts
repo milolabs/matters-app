@@ -590,8 +590,15 @@ export class AgentService implements AgentApi {
               problem: record.problem ?? "The last check of the assistant failed.",
             };
     }
-    // The stored windows are of a plan; a runtime with no plan has none (ADR 0119, rule 7).
-    const limits = info.noPlan === true ? undefined : (await settings.get()).limits;
+    // The stored windows are of the chosen runtime's plan; a runtime with no plan has none (ADR
+    // 0119, rule 7), and another runtime shows only what it reports itself.
+    const chosen = s.runtimeId === runtime.id;
+    if (chosen && info.noPlan !== true && info.limits !== undefined) {
+      // Windows read when looking (ADR 0120, rule 9) are kept as a turn's are; none of a change
+      // since the last seen is counted as ours, since no turn of ours ran.
+      await this.noteRun(info.limits);
+    }
+    const limits = !chosen || info.noPlan === true ? undefined : (await settings.get()).limits;
     const seen = limits !== undefined && info.limits === undefined ? { ...info, limits } : info;
     this.infos.set(runtime.id, seen);
     return seen;
@@ -1022,14 +1029,15 @@ export class AgentService implements AgentApi {
       });
       return;
     }
-    // With no windows to watch, the first refusal for the limit stops the background (rule 9).
-    const noWindows = this.info?.noWindows === true;
+    // Windows read apart from turns can be stale: the first refusal for the limit pauses the
+    // background (ADR 0120, rule 9).
+    const pausesOnLimit = this.info?.pausesOnLimit === true;
     this.limitHeld = null;
     try {
       await this.prompts.readInBackground({
         recentDays: RECENT_DAYS,
         stopWhen: () => this.readingPaused || this.stopped,
-        ...(noWindows
+        ...(pausesOnLimit
           ? {
               onLimit: (untilMs: number | undefined) => {
                 this.limitHeld = untilMs === undefined ? {} : { untilMs };
@@ -1365,7 +1373,8 @@ export class AgentService implements AgentApi {
     await this.pass?.catch(() => {});
     await this.testing?.catch(() => {});
     this.abort = new AbortController();
-    await this.deps.settings.update({ runtimeId });
+    // The windows seen were of the other runtime's plan: they gate nothing here (ADR 0120, rule 9).
+    await this.deps.settings.update({ runtimeId, limits: null });
     this.blocked = null;
     this.progress = { state: "off", reason: "disabled" };
   }

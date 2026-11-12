@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { AgentRuntimeInfo } from "../src/index.ts";
 import {
   AgentRunError,
   buildPreparedRequest,
@@ -282,7 +283,7 @@ describe("attachments where the model can (rule 10)", () => {
   });
 });
 
-describe("a runtime on a plan that reports no windows (ADR 0120, rule 9)", () => {
+describe("a runtime whose windows are read apart from turns (ADR 0120, rule 9)", () => {
   const budget = { weekSharePercent: 10, usedByUsPercent: 50 };
   const full = {
     session: { usedPercent: 100, resetsAtMs: NOW + 1000 },
@@ -291,12 +292,20 @@ describe("a runtime on a plan that reports no windows (ADR 0120, rule 9)", () =>
     seenAtMs: NOW,
   };
 
-  it("passes the gates of the windows at every priority, and runs one turn at a time", () => {
+  it("is held to the gates of the windows as any runtime with a plan, and runs turns side by side", () => {
+    const codex: AgentRuntimeInfo = {
+      id: "codex",
+      name: "Codex",
+      status: "ready",
+      models: [],
+      pausesOnLimit: true,
+    };
     for (const p of ["P0", "P1", "P2", "P3"] as const) {
-      expect(mayRunOn({ noWindows: true }, p, full, budget, NOW)).toEqual({ ok: true });
-      expect(mayRunOn({ noWindows: true }, p, undefined, budget, NOW)).toEqual({ ok: true });
+      expect(mayRunOn(codex, p, full, budget, NOW)).toEqual(mayRun(p, full, budget, NOW));
+      expect(mayRunOn(codex, p, undefined, budget, NOW)).toEqual(mayRun(p, undefined, budget, NOW));
     }
-    expect(turnsAtOnce({ noWindows: true, turnsAtOnce: 4 })).toBe(1);
+    expect(mayRunOn(codex, "P0", full, budget, NOW).ok).toBe(false);
+    expect(turnsAtOnce(codex)).toBe(MAX_PARALLEL_TURNS);
   });
 
   it("carries the time a limit lifts on the error, when the runtime said it", () => {

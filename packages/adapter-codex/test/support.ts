@@ -24,7 +24,56 @@ export interface Scenario {
   readonly lateLines?: readonly string[];
   /** Start a grandchild that writes `grandchild-survived` after this long unless killed. */
   readonly grandchildMs?: number;
+  /** What `app-server` does; absent: it answers the read with `RATE_LIMITS`. */
+  readonly appServer?: AppServerScenario;
 }
+
+/** The fake server for client apps: it answers the handshake and the read of the limits. */
+export interface AppServerScenario {
+  /** The result of `account/rateLimits/read`. */
+  readonly result?: unknown;
+  /** The read is answered with an error. */
+  readonly error?: boolean;
+  /** `initialize` is answered with an error. */
+  readonly initError?: boolean;
+  /** Answers nothing and stays alive until killed. */
+  readonly silent?: boolean;
+  /** Asks the client to approve a command before answering `initialize`. */
+  readonly ask?: boolean;
+  /** Writes notifications of its own, as the real one does. */
+  readonly notify?: boolean;
+  /** Exits at once with this code, answering nothing. */
+  readonly exitCode?: number;
+  /** The answer to the read comes this late. */
+  readonly delayMs?: number;
+}
+
+/** What the real server answered on codex-cli 0.163.0, in shape (values made up). */
+export const RATE_LIMITS = {
+  rateLimits: {
+    limitId: "codex",
+    limitName: null,
+    primary: { usedPercent: 3, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+    secondary: { usedPercent: 41, windowDurationMins: 10080, resetsAt: 1_800_400_000 },
+    credits: { hasCredits: false, unlimited: false, balance: "0" },
+    planType: "plus",
+    rateLimitReachedType: null,
+    spendControlReached: false,
+  },
+  rateLimitsByLimitId: {
+    codex: {
+      limitId: "codex",
+      limitName: null,
+      primary: { usedPercent: 3, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+      secondary: { usedPercent: 41, windowDurationMins: 10080, resetsAt: 1_800_400_000 },
+      credits: { hasCredits: false, unlimited: false, balance: "0" },
+      planType: "plus",
+      rateLimitReachedType: null,
+      spendControlReached: false,
+    },
+  },
+  accountId: "acct-not-a-real-one",
+};
 
 export interface ChildRecord {
   readonly argv: string[];
@@ -48,6 +97,39 @@ const { spawn } = require("node:child_process");
 const dir = process.env.FAKE_CODEX_DIR;
 const scenario = JSON.parse(fs.readFileSync(path.join(dir, "scenario.json"), "utf8"));
 const argv = process.argv.slice(2);
+if (argv[0] === "app-server") {
+  const a = scenario.appServer ?? {};
+  fs.writeFileSync(path.join(dir, "record-appserver.json"), JSON.stringify({ argv, env: process.env, cwd: process.cwd(), pid: process.pid }));
+  fs.appendFileSync(path.join(dir, "appserver-starts"), "x");
+  if (a.exitCode !== undefined) process.exit(a.exitCode);
+  const out = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
+  let buf = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (d) => {
+    buf += d;
+    let nl = buf.indexOf("\\n");
+    while (nl >= 0) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      nl = buf.indexOf("\\n");
+      fs.appendFileSync(path.join(dir, "appserver-stdin.jsonl"), line + "\\n");
+      if (a.silent) continue;
+      let m;
+      try { m = JSON.parse(line); } catch { continue; }
+      if (m.method === "initialize") {
+        if (a.notify) out({ method: "remoteControl/status/changed", params: { status: "off" } });
+        if (a.ask) out({ id: "srv-1", method: "item/commandExecution/requestApproval", params: { command: "rm -rf ~" } });
+        out(a.initError ? { id: m.id, error: { code: -32600, message: "no" } } : { id: m.id, result: { userAgent: "codex/0", codexHome: "/x" } });
+      } else if (m.method === "account/rateLimits/read") {
+        if (a.notify) out({ method: "account/updated", params: {} });
+        setTimeout(() => out(a.error ? { id: m.id, error: { code: -32603, message: "no" } } : { id: m.id, result: a.result ?? DEFAULT_RATE_LIMITS }), a.delayMs ?? 0);
+      }
+    }
+  });
+  process.stdin.on("end", () => { if (!a.silent) process.exit(0); });
+  setInterval(() => {}, 1000);
+  return;
+}
 if (argv[0] === "login") {
   fs.writeFileSync(path.join(dir, "record-login.json"), JSON.stringify({ argv, env: process.env }));
   process.stderr.write((scenario.login ?? "Logged in using ChatGPT") + "\\n");
@@ -148,7 +230,10 @@ export class Harness {
     await mkdir(dir);
     await mkdir(tmpRoot);
     const h = new Harness(dir, tmpRoot);
-    await writeFile(join(dir, "fake.cjs"), SCRIPT);
+    await writeFile(
+      join(dir, "fake.cjs"),
+      `const DEFAULT_RATE_LIMITS = ${JSON.stringify(RATE_LIMITS)};\n${SCRIPT}`,
+    );
     await writeFile(join(dir, "models.json"), MODELS);
     await writeFile(
       join(dir, "codex"),
@@ -186,6 +271,27 @@ export class Harness {
   /** The `exec` calls, without `login status` and `debug models`. */
   get turns(): SpawnCall[] {
     return this.spawns.filter((s) => s.args[0] === "exec");
+  }
+
+  /** How the last `app-server` was started. */
+  appServerRecord(): { argv: string[]; env: { [k: string]: string }; cwd: string; pid: number } {
+    return JSON.parse(readFileSync(join(this.dir, "record-appserver.json"), "utf8"));
+  }
+
+  /** What the adapter wrote to every `app-server`, line by line, parsed. */
+  appServerInput(): unknown[] {
+    const file = join(this.dir, "appserver-stdin.jsonl");
+    if (!existsSync(file)) return [];
+    return readFileSync(file, "utf8")
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l));
+  }
+
+  /** How many times `app-server` was started. */
+  get appServerStarts(): number {
+    const file = join(this.dir, "appserver-starts");
+    return existsSync(file) ? readFileSync(file, "utf8").length : 0;
   }
 
   record(): ChildRecord {

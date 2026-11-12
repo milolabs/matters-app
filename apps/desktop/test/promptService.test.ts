@@ -11,6 +11,7 @@ import type {
 import {
   AgentRunError,
   MAX_FOLLOW_KEEP,
+  MAX_PARALLEL_TURNS,
   MAX_PROMPT_BATCH_THREADS,
   MAX_VIEWS,
   NEEDS_YOU_VIEW,
@@ -1325,21 +1326,21 @@ describe("a view with a prompt reads in the background (ADR 0117)", () => {
   });
 });
 
-describe("a plan that reports no windows reads in the background (ADR 0120, rule 9)", () => {
-  it("runs one turn at a time, and stops at the first refusal for a limit until the person continues it", async () => {
+describe("a plan whose windows are read apart from turns (ADR 0120, rule 9)", () => {
+  it("stops at the first refusal for a limit until the person continues it, though the windows let it run", async () => {
     const runtime = new Responder();
-    runtime.info = { ...runtime.info, plan: "ChatGPT", noWindows: true, turnsAtOnce: 1 };
+    runtime.info = { ...runtime.info, plan: "plus", pausesOnLimit: true };
     const h = await build(runtime);
     await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
     await h.addView("asks", PROMPT);
     await h.ready();
     await h.service.promptRun(PROMPT);
-    // Windows another runtime saw, all used up: they say nothing of this plan.
+    // The windows as last read let the background run: the plan says no all the same.
     await h.settings.update({
       limits: {
-        session: { usedPercent: 100, resetsAtMs: NOW + 6 * DAY },
-        week: { usedPercent: 100, resetsAtMs: NOW + 6 * DAY },
-        usingOverage: true,
+        session: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
+        week: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
+        usingOverage: false,
         seenAtMs: NOW,
       },
     });
@@ -1359,8 +1360,10 @@ describe("a plan that reports no windows reads in the background (ADR 0120, rule
     const before = runtime.of("verdicts").length;
     await h.clock.advance(5 * DAY);
     await h.pass();
-    // One turn went and was refused; nothing more was sent.
-    expect(runtime.of("verdicts").length - before).toBe(1);
+    // The turns that went side by side were refused; nothing more was sent.
+    const went = runtime.of("verdicts").length - before;
+    expect(went).toBeGreaterThanOrEqual(1);
+    expect(went).toBeLessThanOrEqual(MAX_PARALLEL_TURNS);
     const held = await h.service.status();
     expect(held.progress).toEqual({ state: "paused", reason: "limit", untilMs: until });
     expect(held.settings.readingPaused).toBe(true);
@@ -1368,12 +1371,12 @@ describe("a plan that reports no windows reads in the background (ADR 0120, rule
     h.service.kick();
     await h.clock.advance(DAY);
     await h.service.idle();
-    expect(runtime.of("verdicts").length - before).toBe(1);
-    // The person continues it: the reading goes on, one turn at a time.
+    expect(runtime.of("verdicts").length - before).toBe(went);
+    // The person continues it: the reading goes on.
     refuse = false;
     await h.service.resumeReading();
     await h.service.idle();
-    expect(runtime.of("verdicts").length - before).toBeGreaterThan(1);
+    expect(runtime.of("verdicts").length - before).toBeGreaterThan(went);
     expect((await h.service.status()).progress.state).toBe("idle");
   });
 });

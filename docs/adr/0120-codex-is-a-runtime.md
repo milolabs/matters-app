@@ -51,10 +51,32 @@ that.
 8. **Models and effort.** The models are those Codex lists for the plan; if it lists none, the
    ones the adapter names, which can lag behind. Effort uses the levels of ADR 0118 that Codex
    takes, by name.
-9. **The plan's windows are not known.** Codex reports none when it runs one turn this way.
-   So background work runs one turn at a time and stops at the first refusal for a limit,
-   until the person continues it; the time Codex names in the refusal is shown. Nothing about
-   windows and shares shows for this runtime.
+9. **The plan's windows are read apart from a turn.** The command that runs one turn reports
+   no windows, but Codex's own server for client apps does. So the adapter starts that server,
+   asks it one thing, the account's limits, and stops it. No model runs and no thread is
+   started; a read took 0.6 to 1 s as measured.
+   - The shorter window Codex reports is the session and the longer the week, whatever their
+     lengths, each with its share used and its reset time. The plan's name comes with them.
+     From there the gates, shares and what Settings shows are those of any runtime with a plan
+     (ADR 0051, rule 7).
+   - The read happens when the runtime is checked and after a turn, at most once in 30
+     seconds. It has 5 seconds; one that fails or is late leaves what was known, which ages as
+     for any runtime.
+   - The read is closed as far as the server allows: the same environment as a turn, every
+     feature and setting of rule 3 off, state and logs in a folder of its own that is removed
+     afterwards. The server has no switch to ignore the person's Codex settings, so their file
+     is read and every key of rule 3 is set over it; a key in it that this Codex does not know
+     fails the read, which then leaves what was known. Their rules are never consulted,
+     because no thread starts. The adapter sends the handshake and that one request and
+     nothing else. Anything the server asks of the adapter is refused, and the process is
+     stopped when the answer is in.
+   - An answer to a turn waits for the read that follows it, about a second and at most the 5;
+     a turn that failed does not wait.
+   - With the windows known, Codex runs as many turns at once as any runtime with a plan.
+   - A refusal for a limit in the background still pauses the reading until the person
+     continues it, with the time Codex names: the windows can be stale, and the plan decides.
+   - Turns stay on the one-turn command, where rule 3 was proven. The server is never used to
+     run one.
 10. **What the person is told** is our words: text Codex writes never reaches the person, as
     for any runtime. The consent question says mail goes to OpenAI, under the person's plan.
 

@@ -7,7 +7,7 @@
 - Amended by: [0119](0119-a-runtime-on-this-machine.md) (one runtime becomes a choice of runtimes,
   with consent and choices per runtime; a runtime may have no plan)
 - Amended by: [0120](0120-codex-is-a-runtime.md) (a second runtime on a plan: Codex, on the
-  person's ChatGPT plan, each turn closed; a plan whose windows are not reported)
+  person's ChatGPT plan, each turn closed; its windows read apart from turns)
 
 ## Context
 

@@ -13,9 +13,11 @@ import type {
   AgentToolServer,
   AgentTurnEvent,
   AgentWorkKind,
+  PlanLimits,
   WholeMediaType,
 } from "@matters/core";
 import { AGENT_EFFORTS, AgentRunError, wholeFilesProblem } from "@matters/core";
+import { parseRateLimits, readRateLimits } from "./limits.ts";
 import {
   classifyFailure,
   dropNulls,
@@ -52,6 +54,9 @@ export interface CodexOptions {
   readonly timeoutMs?: number;
   /** For `login status` and the list of models. Default 20 s. */
   readonly inspectTimeoutMs?: number;
+  /** For the read of the plan's windows (ADR 0120, rule 9). Default 5 s. */
+  readonly limitsTimeoutMs?: number;
+  /** The clock: the age of the windows, the spacing of their reads, stale turn directories. */
   readonly now?: () => number;
 }
 
@@ -119,6 +124,11 @@ export const ENV_PASSED: readonly string[] = [
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_INSPECT_TIMEOUT_MS = 20_000;
+const DEFAULT_LIMITS_TIMEOUT_MS = 5000;
+/** The windows are read at most this often (ADR 0120, rule 9). */
+const LIMITS_EVERY_MS = 30_000;
+/** The plan's name until Codex has named it. */
+const PLAN_FALLBACK = "ChatGPT";
 const DEFAULT_TOOL_TIMEOUT_MS = 300_000;
 const MAX_TOOL_TIMEOUT_MS = 600_000;
 const MAX_STDERR_CHARS = 4096;
@@ -281,8 +291,17 @@ export class CodexRuntime implements AgentRuntimePort {
   private readonly timeoutMs: number;
   private readonly inspectTimeoutMs: number;
   private readonly now: () => number;
+  private readonly limitsTimeoutMs: number;
   /** What Codex last listed, by model; a turn's catalog entry comes from here. */
   private listed = new Map<string, ListedModel>();
+  /** The windows and the plan's name of the last read that gave them; kept when a read fails. */
+  private limits: PlanLimits | undefined;
+  private planName: string | undefined;
+  /** When the last read started, and the one in flight (ADR 0120, rule 9). */
+  private limitsReadAtMs: number | undefined;
+  private reading: Promise<void> | null = null;
+  /** Turns whose Codex was started, so that one refused before it starts reads nothing. */
+  private turnsStarted = 0;
 
   constructor(options: CodexOptions = {}) {
     this.binary = options.binary ?? "codex";
@@ -291,22 +310,24 @@ export class CodexRuntime implements AgentRuntimePort {
     this.baseEnv = options.env ?? process.env;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.inspectTimeoutMs = options.inspectTimeoutMs ?? DEFAULT_INSPECT_TIMEOUT_MS;
+    this.limitsTimeoutMs = options.limitsTimeoutMs ?? DEFAULT_LIMITS_TIMEOUT_MS;
     this.now = options.now ?? Date.now;
   }
 
   /**
-   * Found, signed in with a plan, and the models of the plan (ADR 0120, rules 1, 2 and 8). Asks
-   * `codex login status` and `codex debug models`: neither runs a model or sends mail. Reads no
-   * file of Codex's and no keychain: sign-in is the program's own business.
+   * Found, signed in with a plan, the models of the plan and its windows (ADR 0120, rules 1, 2, 8
+   * and 9). Asks `codex login status`, `codex debug models` and, once signed in, the server for the
+   * account's limits: none of them runs a model or sends mail. Reads no file of Codex's and no
+   * keychain: sign-in is the program's own business.
    */
   async inspect(): Promise<AgentRuntimeInfo> {
     this.sweep();
     const base = {
       id: this.id,
       name: this.name,
-      // Codex reports no windows to `codex exec` (rule 9).
-      noWindows: true,
-      turnsAtOnce: 1,
+      // The windows are read apart from turns and can be stale: a refusal for the limit in the
+      // background pauses the reading until the person continues it (rule 9).
+      pausesOnLimit: true,
     } as const;
     const file = findBinary(this.binary, this.baseEnv);
     if (file === null) return { ...base, models: [], status: "missing", problem: NOT_FOUND };
@@ -321,7 +342,7 @@ export class CodexRuntime implements AgentRuntimePort {
       return { ...base, models: [], status: "signedOut", problem: SIGNED_OUT };
     }
     if (signIn === "other") return { ...base, models: [], status: "signedOut", problem: NOT_PLAN };
-    const models = await this.listModels(file);
+    const [models] = await Promise.all([this.listModels(file), this.readLimits(file)]);
     const names = models.map((m) => m.slug);
     const first = (kind: AgentWorkKind) => STARTING_MODELS[kind].find((n) => names.includes(n));
     const defaultModels: Partial<Record<AgentWorkKind, string>> = {};
@@ -332,12 +353,13 @@ export class CodexRuntime implements AgentRuntimePort {
     return {
       ...base,
       status: "found",
-      plan: "ChatGPT",
+      plan: this.planName ?? PLAN_FALLBACK,
       models: names,
       modelEfforts: Object.fromEntries(models.map((m) => [m.slug, [...m.levels]])),
       modelFiles: Object.fromEntries(models.map((m) => [m.slug, m.images ? [...IMAGE_TYPES] : []])),
       ...(names[0] === undefined ? {} : { defaultModel: names[0] }),
       defaultModels,
+      ...(this.limits === undefined ? {} : { limits: this.limits }),
     };
   }
 
@@ -345,7 +367,7 @@ export class CodexRuntime implements AgentRuntimePort {
     request: AgentRunRequest,
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<AgentRunResult> {
-    return this.start(request, options.signal, undefined);
+    return this.withLimits(() => this.start(request, options.signal, undefined));
   }
 
   /**
@@ -368,7 +390,63 @@ export class CodexRuntime implements AgentRuntimePort {
     ) {
       throw new AgentRunError("failed", "The tool server is not one this app made.");
     }
-    return this.start(request, options.signal, { server, options });
+    return this.withLimits(() => this.start(request, options.signal, { server, options }));
+  }
+
+  /**
+   * A turn's result with the plan's windows (ADR 0120, rule 9): after the turn they are read again,
+   * unless they were read in the last 30 seconds, and the result carries the last that are known.
+   * The answer waits for a read at most its 5 seconds, and never fails because of it. A turn that
+   * failed once Codex was started starts the read too, without waiting for it: what it finds comes
+   * with what is asked next.
+   */
+  private async withLimits(turn: () => Promise<AgentRunResult>): Promise<AgentRunResult> {
+    const before = this.turnsStarted;
+    let result: AgentRunResult;
+    try {
+      result = await turn();
+    } catch (error) {
+      const file = this.turnsStarted > before ? findBinary(this.binary, this.baseEnv) : null;
+      if (file !== null) void this.readLimits(file);
+      throw error;
+    }
+    const file = findBinary(this.binary, this.baseEnv);
+    if (file !== null) await this.readLimits(file);
+    return this.limits === undefined ? result : { ...result, limits: this.limits };
+  }
+
+  /**
+   * Reads the windows, at most once in 30 seconds; a read in flight is shared. Never throws: a read
+   * that fails or is late leaves what was known.
+   */
+  private readLimits(file: string): Promise<void> {
+    if (this.reading !== null) return this.reading;
+    const now = this.now();
+    if (this.limitsReadAtMs !== undefined && now - this.limitsReadAtMs < LIMITS_EVERY_MS) {
+      return Promise.resolve();
+    }
+    this.limitsReadAtMs = now;
+    this.reading = (async () => {
+      try {
+        const result = await readRateLimits({
+          file,
+          spawn: this.spawn,
+          env: childEnv(this.baseEnv),
+          tmpRoot: this.tmpRoot,
+          prefix: TURN_PREFIX,
+          timeoutMs: this.limitsTimeoutMs,
+        });
+        if (result === null) return;
+        const read = parseRateLimits(result, this.now());
+        if (read.limits !== undefined) this.limits = read.limits;
+        if (read.plan !== undefined) this.planName = read.plan;
+      } catch {
+        // What was known stays.
+      } finally {
+        this.reading = null;
+      }
+    })();
+    return this.reading;
   }
 
   private async start(
@@ -632,6 +710,7 @@ export class CodexRuntime implements AgentRuntimePort {
         reject(new AgentRunError("failed", "Codex could not be started."));
         return;
       }
+      this.turnsStarted++;
 
       let outcome:
         | { ok: true; value: AgentRunResult }

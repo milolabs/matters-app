@@ -12,12 +12,10 @@ import {
   effortOptions,
   effortShown,
   hasNoPlan,
-  hasNoWindows,
   journalLine,
   journalLines,
   ledgerEffort,
   loopOffered,
-  noWindowsText,
   ourShare,
   planButton,
   questionButtonText,
@@ -432,9 +430,9 @@ describe("Codex, on the person's ChatGPT plan (ADR 0120)", () => {
     id: "codex",
     name: "Codex",
     status: "ready" as const,
-    plan: "ChatGPT",
+    plan: "plus",
     models: ["gpt-6.1-sol", "gpt-6-luna"],
-    noWindows: true,
+    pausesOnLimit: true,
     modelFiles: { "gpt-6.1-sol": ["image/png" as const], "gpt-6-luna": [] },
   };
   const claude = { id: "claude-code", name: "Claude Code", status: "ready" as const, models: [] };
@@ -459,22 +457,19 @@ describe("Codex, on the person's ChatGPT plan (ADR 0120)", () => {
     expect(signInCommand(claude)).toBe("claude auth login");
   });
 
-  it("shows no windows and never names Claude where none are reported (rule 9)", () => {
-    const s = status({ runtime: codex });
-    expect(hasNoWindows(codex)).toBe(true);
-    expect(hasNoWindows({ noPlan: false })).toBe(false);
-    expect(hasNoWindows({ noPlan: true })).toBe(true);
-    expect(planButton(s, NOW)).toEqual({ text: "Codex · limits not reported", late: false });
+  it("shows its windows as any plan's, and the pause a refusal made (rule 9)", () => {
+    const s = status({ settings: { ...status().settings, runtimeId: "codex" }, runtime: codex });
+    expect(planButton(s, NOW)).toEqual({ text: "Codex 61% left", late: false });
+    expect(planButton({ ...s, settings: { ...s.settings, limits: undefined } }, NOW)).toEqual({
+      text: "Codex · limits not known yet",
+      late: false,
+    });
     expect(
       planButton(
         { ...s, progress: { state: "paused", reason: "limit", untilMs: NOW + 3_600_000 } },
         NOW,
       )?.text,
     ).toMatch(/^Paused until .* · plan limit$/);
-    expect(noWindowsText(codex)).toBe(
-      "Codex does not report your plan's limits. When the plan says no, reading in the background stops until you continue it.",
-    );
-    expect(noWindowsText(codex)).not.toContain("Claude");
   });
 
   it("says what goes whole of a file with no text on each runtime (rule 7)", () => {

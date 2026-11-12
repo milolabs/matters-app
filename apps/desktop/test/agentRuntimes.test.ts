@@ -111,8 +111,7 @@ async function build() {
     defaultModel: "sol",
     defaultModels: { understand: "luna", titles: "luna" },
     modelEfforts: { sol: ["low", "high"], luna: ["low"] },
-    noWindows: true,
-    turnsAtOnce: 1,
+    pausesOnLimit: true,
   });
   const service = new AgentService({
     runtimes: [plan, local, codex],
@@ -296,6 +295,7 @@ describe("effort follows the model (ADR 0119, rule 9)", () => {
 describe("a runtime with no plan (ADR 0119, rule 7)", () => {
   it("passes the plan's gate, and records no limits", async () => {
     const h = await build();
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
     // Windows of another runtime's plan, used up: they do not apply to a runtime with no plan.
     await h.settings.update({
       limits: {
@@ -305,12 +305,21 @@ describe("a runtime with no plan (ADR 0119, rule 7)", () => {
         seenAtMs: NOW,
       },
     });
-    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
     await h.service.testRuntime();
     await expect(h.service.prepare("t1")).rejects.toBeInstanceOf(AgentUnavailableError);
     expect(h.plan.mail).toEqual([]);
 
     await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "local" });
+    // Choosing it dropped the other plan's windows; put back, they still do not apply.
+    expect((await h.settings.get()).limits).toBeUndefined();
+    await h.settings.update({
+      limits: {
+        session: { usedPercent: 100, resetsAtMs: NOW + DAY },
+        week: { usedPercent: 100, resetsAtMs: NOW + DAY },
+        usingOverage: true,
+        seenAtMs: NOW,
+      },
+    });
     await h.service.testRuntime();
     const limitsBefore = (await h.settings.get()).limits;
     h.local.limits = { usingOverage: false, seenAtMs: NOW + 1 };
@@ -415,8 +424,10 @@ describe("Codex is a runtime (ADR 0120)", () => {
     });
   });
 
-  it("is not held back by windows it does not report, and records none (rule 9)", async () => {
+  it("keeps the windows it reads when looked at, and is held to them as any plan (rule 9)", async () => {
     const h = await build();
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+    // The windows of Claude Code's plan, used up: they say nothing of Codex's.
     await h.settings.update({
       limits: {
         session: { usedPercent: 100, resetsAtMs: NOW + DAY },
@@ -425,10 +436,29 @@ describe("Codex is a runtime (ADR 0120)", () => {
         seenAtMs: NOW,
       },
     });
+    const read = {
+      session: { usedPercent: 12, resetsAtMs: NOW + 3_600_000 },
+      week: { usedPercent: 30, resetsAtMs: NOW + 5 * DAY },
+      usingOverage: false,
+      seenAtMs: NOW,
+    };
+    h.codex.info = { ...h.codex.info, plan: "plus", limits: read };
     await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "codex" });
+    expect((await h.settings.get()).limits).toEqual(read);
+    const s = await h.service.inspect();
+    expect(s.runtime?.limits).toEqual(read);
+    // Claude Code's card shows none of Codex's windows.
+    expect(s.runtimes?.find((r) => r.id === "plan")?.info?.limits).toBeUndefined();
     await h.service.testRuntime();
     await h.service.prepare("t1");
     expect(h.codex.mail).toHaveLength(1);
+
+    // A turn's windows are kept as Claude Code's are; full, the person's own turn waits.
+    h.codex.limits = { ...read, session: { usedPercent: 100, resetsAtMs: NOW + 3_600_000 } };
+    await h.service.prepare("t1");
+    expect((await h.settings.get()).limits?.session?.usedPercent).toBe(100);
+    await expect(h.service.prepare("t1")).rejects.toBeInstanceOf(AgentUnavailableError);
+    expect(h.codex.mail).toHaveLength(2);
   });
 
   it("says the person's ChatGPT plan when a turn would run off it", async () => {

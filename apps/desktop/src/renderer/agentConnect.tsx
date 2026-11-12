@@ -13,7 +13,6 @@ import {
   effortOptions,
   effortShown,
   hasNoPlan,
-  hasNoWindows,
   modelName,
   signInCommand,
   statusWords,
@@ -132,7 +131,7 @@ export function RuntimeCard(props: {
           </button>
         </Show>
       </div>
-      <Show when={(r().status === "ready" || r().status === "found") && !hasNoWindows(r())}>
+      <Show when={(r().status === "ready" || r().status === "found") && !hasNoPlan(r())}>
         <div class="flex flex-col gap-0.5 pl-[17px] text-[12px] text-secondary" data-windows>
           <For
             each={[
@@ -493,10 +492,9 @@ export function Limits(props: {
   idPrefix: string;
   onWeekShare: (percent: number) => void;
 }) {
-  // A runtime with no plan has no week to share (ADR 0119, rule 7), and one that reports no
-  // windows has no week to count it in (ADR 0120, rule 9).
+  // A runtime with no plan has no week to share (ADR 0119, rule 7).
   return (
-    <Show when={!hasNoWindows(props.status.runtime)}>
+    <Show when={!hasNoPlan(props.status.runtime)}>
       <Choice
         id={`${props.idPrefix}-share`}
         label="Background limit"

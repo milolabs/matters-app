@@ -124,10 +124,6 @@ export function planButton(status: AgentStatus, now: number): PlanButton | null 
     return { text: `Paused${until}${why ? " · plan limit" : pausedWhy(p.reason)}`, late: true };
   }
   if (hasNoPlan(status.runtime)) return null;
-  // A plan whose windows the runtime does not report (ADR 0120, rule 9): nothing to count down.
-  if (status.runtime?.noWindows === true) {
-    return { text: `${name} · limits not reported`, late: false };
-  }
   const left = percentLeft(status.settings.limits?.session, now);
   if (left === undefined) return { text: `${name} · limits not known yet`, late: false };
   return { text: `${name} ${left}% left`, late: left < LOW_LEFT_PERCENT };
@@ -197,16 +193,6 @@ export function hasNoPlan(runtime: Pick<AgentRuntimeInfo, "noPlan"> | null | und
   return runtime?.noPlan === true;
 }
 
-/**
- * No windows show for the runtime: it has no plan (ADR 0119, rule 7), or it does not report its
- * plan's windows (ADR 0120, rule 9). Windows, the share of the week and the background limit hide.
- */
-export function hasNoWindows(
-  runtime: Pick<AgentRuntimeInfo, "noPlan" | "noWindows"> | null | undefined,
-): boolean {
-  return runtime?.noPlan === true || runtime?.noWindows === true;
-}
-
 /** What is said of a runtime on a plan: where mail goes, the plan, whose privacy settings. */
 interface RuntimeWords {
   /** Who mail goes to: `Claude`, `OpenAI`. */
@@ -251,11 +237,6 @@ export function consentText(runtime: AgentRuntimeInfo | null): string {
   const plan = words?.plan === undefined ? "" : `, under ${words.plan},`;
   const privacy = words?.privacy ?? vendorName(runtime);
   return `Mail goes to ${vendorName(runtime)}${plan} only when you ask about it, and for views with a prompt, such as Needs you, which read new mail as it comes. Your ${privacy} privacy settings apply to what is sent.`;
-}
-
-/** What the plan's popover says for a runtime that reports no windows (ADR 0120, rule 9). */
-export function noWindowsText(runtime: Pick<AgentRuntimeInfo, "name"> | null): string {
-  return `${runtime?.name ?? "The assistant"} does not report your plan's limits. When the plan says no, reading in the background stops until you continue it.`;
 }
 
 /**

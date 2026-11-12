@@ -1,15 +1,7 @@
 import type { AgentModels } from "@matters/core";
 import { createSignal, For, type JSX, onCleanup, onMount, Show } from "solid-js";
 import type { AgentStore } from "./agent.ts";
-import {
-  hasNoWindows,
-  modelName,
-  noWindowsText,
-  ourShare,
-  planButton,
-  seenText,
-  windowLine,
-} from "./agentText.ts";
+import { hasNoPlan, modelName, ourShare, planButton, seenText, windowLine } from "./agentText.ts";
 import type { Backend } from "./client.ts";
 import { ChevronDownIcon } from "./icons.tsx";
 
@@ -194,15 +186,7 @@ function PlanPopover(props: {
           {(plan) => <span class="font-normal text-secondary"> · {plan()}</span>}
         </Show>
       </p>
-      <Show when={props.status.runtime?.noWindows === true}>
-        <p class="mt-2 text-secondary" data-no-windows>
-          {noWindowsText(props.status.runtime)}
-        </p>
-      </Show>
-      <div
-        class="mt-2 flex flex-col gap-1"
-        classList={{ hidden: hasNoWindows(props.status.runtime) }}
-      >
+      <div class="mt-2 flex flex-col gap-1" classList={{ hidden: hasNoPlan(props.status.runtime) }}>
         <For each={lines()}>
           {(line) => (
             <p class="flex items-baseline gap-2">
@@ -215,10 +199,10 @@ function PlanPopover(props: {
           )}
         </For>
       </div>
-      <Show when={!hasNoWindows(props.status.runtime)}>
+      <Show when={!hasNoPlan(props.status.runtime)}>
         <p class="mt-2.5 text-secondary">{ourShare(props.status)}</p>
       </Show>
-      <Show when={limits() && !hasNoWindows(props.status.runtime)}>
+      <Show when={limits() && !hasNoPlan(props.status.runtime)}>
         <p class="text-secondary">{seenText(limits(), now)}</p>
       </Show>
       <button

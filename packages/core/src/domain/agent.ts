@@ -35,13 +35,13 @@ export interface PlanWindow {
 
 /** The plan's windows as the runtime last reported them. */
 export interface PlanLimits {
-  /** The short window (five hours on Claude Code). */
+  /** The short window (five hours on Claude Code; the shorter Codex reports). */
   readonly session?: PlanWindow;
-  /** The long window (seven days on Claude Code). */
+  /** The long window (seven days on Claude Code; the longer Codex reports). */
   readonly week?: PlanWindow;
   /** The plan's own allowance is spent and the runtime bills on top of it. */
   readonly usingOverage: boolean;
-  /** When the runtime said so; limits are known only after a turn, so they age. */
+  /** When the runtime said so; limits are known only after a turn or a read, so they age. */
   readonly seenAtMs: number;
 }
 
@@ -80,11 +80,11 @@ export interface AgentRuntimeInfo {
    */
   readonly noPlan?: boolean;
   /**
-   * It runs on a plan whose windows it does not report (ADR 0120, rule 9): no windows show, the
-   * gates of the windows pass, work runs one turn at a time, and the reading in the background
-   * stops at the first refusal for a limit until the person continues it.
+   * Its windows are read apart from its turns and can be stale (ADR 0120, rule 9): the first
+   * refusal for a limit in the background pauses the reading until the person continues it, with
+   * the time the runtime names. The gates of the windows apply as for any runtime with a plan.
    */
-  readonly noWindows?: boolean;
+  readonly pausesOnLimit?: boolean;
   /**
    * How many characters of untrusted text (mail and the person's words) one turn on each model may
    * carry (ADR 0119, rule 8). Requests sized from mail are made to fit it; a model it does not name,
@@ -242,20 +242,16 @@ export function wholeTypesFor(
 
 /**
  * The gate of the plan for the runtime that runs the turn (ADR 0119, rule 7): a runtime with no
- * plan, or one that reports no windows (ADR 0120, rule 9), has no windows to keep to, so it always
- * passes; any other is `mayRun`, unchanged.
+ * plan has no windows to keep to, so it always passes; any other is `mayRun`, unchanged.
  */
 export function mayRunOn(
-  runtime: Pick<AgentRuntimeInfo, "noPlan" | "noWindows"> | null | undefined,
+  runtime: Pick<AgentRuntimeInfo, "noPlan"> | null | undefined,
   priority: AgentPriority,
   limits: PlanLimits | undefined,
   budget: AgentBudget,
   nowMs: number,
 ): MayRun {
   if (runtime?.noPlan === true) return { ok: true };
-  // No windows are reported, so none can be kept to: the plan refuses by itself, and the first
-  // refusal stops the background (ADR 0120, rule 9).
-  if (runtime?.noWindows === true) return { ok: true };
   return mayRun(priority, limits, budget, nowMs);
 }
 
