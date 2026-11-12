@@ -1,3 +1,5 @@
+import { hasAddressShape } from "./recipients.ts";
+
 /** How a connection is protected. `none` exists for the test server only (ADR 0018). */
 export type TransportSecurity = "tls" | "starttls" | "none";
 
@@ -98,5 +100,5 @@ export function suggestedSmtpUsername(servers: DiscoveredServers, address: strin
 
 /** Looks like `name@host.tld`; the server has the last word. */
 export function isPlausibleAddress(address: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address);
+  return hasAddressShape(address);
 }

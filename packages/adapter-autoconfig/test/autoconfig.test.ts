@@ -52,6 +52,24 @@ describe("parseXml", () => {
     expect(() => parseXml("<a>".repeat(100) + "</a>".repeat(100))).toThrow(/deeply/);
     expect(() => parseXml(`<a>${"<b/>".repeat(6000)}</a>`)).toThrow(/too many/);
   });
+
+  it("reads attributes with white space around `=` and none between them", () => {
+    const root = parseXml(`<a\tx = "1"y='2'\n z\t=\t"3" />`);
+    expect(root.attrs).toEqual({ x: "1", y: "2", z: "3" });
+    expect(() => parseXml(`<a x="1></a>`)).toThrow(XmlError);
+    expect(() => parseXml(`<a x></a>`)).toThrow(XmlError);
+  });
+
+  it.each([
+    ["white space", `<a${"\t".repeat(50_000)}x`],
+    ["a long name", `<a ${"A".repeat(50_000)}`],
+    ["a long name and white space", `<a ${"A".repeat(25_000)}${"\t".repeat(25_000)}`],
+    ["a long closing tag", `<a></${"A".repeat(50_000)}\t`],
+  ])("rejects a tag of %s in linear time", (_name, xml) => {
+    const start = performance.now();
+    expect(() => parseXml(xml)).toThrow(XmlError);
+    expect(performance.now() - start).toBeLessThan(250);
+  });
 });
 
 describe("parseConfig", () => {

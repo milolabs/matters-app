@@ -210,7 +210,9 @@ function decodeEntities(text: string): string {
   });
 }
 
-const RUN = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>|<w:tab\s*\/>|<w:br\s*\/>|<w:cr\s*\/>/g;
+// The attributes of a `<w:t>` stop at a `<` too (well-formed XML has none in a tag), so a run of
+// unclosed `<w:t ` tags is read once and not again from each of them.
+const RUN = /<w:t(?:\s[^<>]*)?>([^<]*)<\/w:t>|<w:tab\s*\/>|<w:br\s*\/>|<w:cr\s*\/>/g;
 
 /**
  * The paragraphs of a Word document's `word/document.xml` as lines of text (ADR 0087, rule 3):

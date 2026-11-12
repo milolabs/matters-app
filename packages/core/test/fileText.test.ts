@@ -14,6 +14,7 @@ import {
   wholeFilesProblem,
   wholeMediaType,
 } from "../src/index.ts";
+import { QUICK_MS, timed } from "./support.ts";
 
 // ADR 0087: which files are read, how much of them goes to a model, how Word paragraphs come out,
 // how a thread's files are numbered, and how one file is read (kept text, limits, one run).
@@ -402,5 +403,20 @@ describe("reading a file whole (rule 8)", () => {
     });
     expect(await rig({ bytes: null }).reader.whole(1, "2")).toMatchObject({ kind: "not" });
     expect(await rig({ noBytes: true }).reader.whole(1, "2")).toMatchObject({ kind: "not" });
+  });
+});
+
+describe("docxXmlToText and unclosed runs", () => {
+  it("takes linear time on many `<w:t` tags that never close", () => {
+    const xml = `<w:p>${"<w:t\t".repeat(50_000)}<w:t>end</w:t></w:p>`;
+    const { result, ms } = timed(() => docxXmlToText(xml));
+    expect(result).toBe("end");
+    expect(ms).toBeLessThan(QUICK_MS);
+  });
+
+  it("still reads a run with attributes", () => {
+    expect(docxXmlToText('<w:p><w:t xml:space="preserve"> a </w:t><w:t\n>b</w:t></w:p>')).toBe(
+      "a b",
+    );
   });
 });

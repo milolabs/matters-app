@@ -1,4 +1,5 @@
 import type { EditorView } from "@codemirror/view";
+import { parseRecipients } from "@matters/core";
 import { createSignal, Index, type JSX, onCleanup, onMount, Show, untrack } from "solid-js";
 import { AgentButton, AgentNote, CheckLine, createAgentHelp } from "./agentHelp.tsx";
 import { ChipView } from "./attachmentStrip.tsx";
@@ -79,13 +80,17 @@ export function ReplyEditor(props: {
   }
 
   const problems = () => s().problems();
-  const names = () =>
-    s()
-      .to()
-      .split(",")
-      .map((p) => p.replace(/<[^>]*>/, "").trim())
+  // Each recipient by name, or by address when it has none; a piece that is no address yet shows
+  // what stands before its `<`.
+  const names = () => {
+    const { participants, invalid } = parseRecipients(s().to());
+    return [
+      ...participants.map((p) => p.name ?? p.address),
+      ...invalid.map((p) => (p.split("<")[0] ?? "").trim()),
+    ]
       .filter((p) => p !== "")
       .join(", ");
+  };
 
   // The agent's help (ADR 0098), shared with the full composer.
   const help = createAgentHelp({ session: s, view, agent: () => props.agent });

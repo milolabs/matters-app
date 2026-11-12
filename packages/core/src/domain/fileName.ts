@@ -51,7 +51,21 @@ function splitExtension(name: string): [string, string] {
   return byteLength(extension) > MAX_EXTENSION_BYTES ? [name, ""] : [name.slice(0, dot), extension];
 }
 
-const stripEdges = (text: string): string => text.replace(/^[.\s]+/, "").replace(/[.\s]+$/, "");
+// Dots and white space at the edges, removed by a loop: `/[.\s]+$/` takes quadratic time on a
+// long run that does not reach the end.
+const EDGE = /[.\s]/;
+
+const stripEnd = (text: string): string => {
+  let end = text.length;
+  while (end > 0 && EDGE.test(text[end - 1] as string)) end--;
+  return text.slice(0, end);
+};
+
+const stripEdges = (text: string): string => {
+  let start = 0;
+  while (start < text.length && EDGE.test(text[start] as string)) start++;
+  return stripEnd(text.slice(start));
+};
 
 /**
  * A name that is safe to show and to create on any supported platform, always non-empty:
@@ -241,7 +255,7 @@ const RUNNABLE: ReadonlySet<string> = new Set([
  * runnable: the files we write are mode 0600, so they have no execute bit to be launched by.
  */
 export function isRunnableFile(name: string): boolean {
-  const trimmed = name.replace(/[.\s]+$/, "");
+  const trimmed = stripEnd(name);
   const dot = trimmed.lastIndexOf(".");
   if (dot < 0 || dot === trimmed.length - 1) return false;
   return RUNNABLE.has(trimmed.slice(dot + 1).toLowerCase());

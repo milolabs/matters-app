@@ -9,7 +9,7 @@
  * `:` of `https://` goes, and the `@` of an address, so nothing in a name or a subject links.
  */
 export function escapeMarkdown(text: string): string {
-  return escapeAddress(text).replace(/@/g, "\\@");
+  return escapeText(text, /[\\`*[\]<>~@]/g);
 }
 
 /**
@@ -17,9 +17,17 @@ export function escapeMarkdown(text: string): string {
  * address and to nothing else, which is a link a reader can use.
  */
 export function escapeAddress(text: string): string {
+  return escapeText(text, /[\\`*[\]<>~]/g);
+}
+
+/**
+ * Both escapes in one pass over the specials, a backslash among them, so a backslash in the text
+ * is escaped in the same step as what follows it and can never cancel an escape added here.
+ */
+function escapeText(text: string, specials: RegExp): string {
   return text
     .replace(/\s+/g, " ")
-    .replace(/[\\`*[\]<>~]/g, "\\$&")
+    .replace(specials, "\\$&")
     .replace(/(?<![\p{L}\p{N}])_|_(?![\p{L}\p{N}])/gu, "\\_")
     .replace(/&(?=#?\w+;)/g, "\\&")
     .replace(/:(?=\/\/)/g, "\\:");

@@ -19,7 +19,8 @@ export const FORWARD_MARK = "> Forwarded message";
  * stays: `Fwd: Re: Budget` says what it is. An empty subject stays empty after the prefix.
  */
 export function forwardSubject(subject: string): string {
-  const bare = subject.replace(/^\s*((fwd?|pd|wg)\s*(\[\d+\])?\s*:\s*)+/i, "").trim();
+  // Each run of white space can be matched one way only, so a long one costs linear time.
+  const bare = subject.replace(/^(?:\s*(?:fwd?|pd|wg)\s*(?:\[\d+\]\s*)?:)+/i, "").trim();
   return bare === "" ? "Fwd:" : `Fwd: ${bare}`;
 }
 

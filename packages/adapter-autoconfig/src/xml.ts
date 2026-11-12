@@ -15,8 +15,6 @@ export class XmlError extends Error {
 
 const MAX_DEPTH = 32;
 const MAX_NODES = 5000;
-const NAME = /[A-Za-z_][\w.:-]*/y;
-const ATTR = /\s*([A-Za-z_][\w.:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/y;
 const ENTITY = /&(?:#(\d+)|#x([0-9a-fA-F]+)|(amp|lt|gt|quot|apos));/g;
 const NAMED: Readonly<Record<string, string>> = {
   amp: "&",
@@ -25,6 +23,42 @@ const NAMED: Readonly<Record<string, string>> = {
   quot: '"',
   apos: "'",
 };
+
+// Names and attributes are read by hand, so the time a tag takes grows with its length only.
+const SPACE = /\s/;
+
+const isNameStart = (c: number) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
+const isNameChar = (c: number) =>
+  isNameStart(c) || (c >= 48 && c <= 57) || c === 45 || c === 46 || c === 58;
+
+/** Where the name `[A-Za-z_][\w.:-]*` at `at` ends, or -1 when none starts there. */
+function nameEnd(s: string, at: number): number {
+  if (!isNameStart(s.charCodeAt(at))) return -1;
+  let p = at + 1;
+  while (p < s.length && isNameChar(s.charCodeAt(p))) p++;
+  return p;
+}
+
+function skipSpace(s: string, at: number): number {
+  let p = at;
+  while (p < s.length && SPACE.test(s[p] as string)) p++;
+  return p;
+}
+
+/** `name="value"` or `name='value'` at `at`, after optional white space; null when there is none. */
+function attribute(s: string, at: number): { name: string; value: string; end: number } | null {
+  const start = skipSpace(s, at);
+  const end = nameEnd(s, start);
+  if (end === -1) return null;
+  let p = skipSpace(s, end);
+  if (s[p] !== "=") return null;
+  p = skipSpace(s, p + 1);
+  const quote = s[p];
+  if (quote !== '"' && quote !== "'") return null;
+  const close = s.indexOf(quote, p + 1);
+  if (close === -1) return null;
+  return { name: s.slice(start, end), value: s.slice(p + 1, close), end: close + 1 };
+}
 
 const UNKNOWN_ENTITY = /&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)[\w#]+;/;
 
@@ -85,38 +119,38 @@ export function parseXml(source: string): XmlNode {
     } else if (s.startsWith("<!", i)) {
       throw new XmlError("DOCTYPE and entity declarations are not accepted", i);
     } else if (s.startsWith("</", i)) {
-      NAME.lastIndex = i + 2;
-      const m = NAME.exec(s);
-      const end = m ? s.indexOf(">", NAME.lastIndex) : -1;
+      const nameAt = i + 2;
+      const after = nameEnd(s, nameAt);
+      const end = after === -1 ? -1 : s.indexOf(">", after);
       const open = stack.pop();
-      if (!m || end === -1 || s.slice(NAME.lastIndex, end).trim() !== "") {
+      if (end === -1 || s.slice(after, end).trim() !== "") {
         throw new XmlError("malformed closing tag", i);
       }
-      if (!open || open.name !== m[0]) {
-        throw new XmlError(`closing tag ${m[0]} does not match ${open?.name ?? "anything"}`, i);
+      const name = s.slice(nameAt, after);
+      if (!open || open.name !== name) {
+        throw new XmlError(`closing tag ${name} does not match ${open?.name ?? "anything"}`, i);
       }
       i = end + 1;
     } else {
-      NAME.lastIndex = i + 1;
-      const m = NAME.exec(s);
-      if (!m) throw new XmlError("malformed tag", i);
+      const after = nameEnd(s, i + 1);
+      if (after === -1) throw new XmlError("malformed tag", i);
+      const name = s.slice(i + 1, after);
       if (++nodes > MAX_NODES) throw new XmlError("too many elements", i);
       const attrs: Record<string, string> = {};
-      let p = NAME.lastIndex;
+      let p = after;
       for (;;) {
-        ATTR.lastIndex = p;
-        const a = ATTR.exec(s);
+        const a = attribute(s, p);
         if (!a) break;
-        attrs[a[1] as string] = decode(a[2] ?? a[3] ?? "", p);
-        p = ATTR.lastIndex;
+        attrs[a.name] = decode(a.value, p);
+        p = a.end;
       }
-      while (/\s/.test(s[p] ?? "")) p++;
+      p = skipSpace(s, p);
       const selfClosing = s[p] === "/";
       if (selfClosing) p++;
       if (s[p] !== ">") throw new XmlError("malformed tag", i);
       i = p + 1;
 
-      const node: XmlNode = { name: m[0], attrs, children: [], text: "" };
+      const node: XmlNode = { name, attrs, children: [], text: "" };
       const parent = stack[stack.length - 1];
       if (parent) parent.children.push(node);
       else if (root) throw new XmlError("more than one root element", lt);

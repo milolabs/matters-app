@@ -1,4 +1,4 @@
-# Static analysis of our code and of these workflows (ADR 0122). Findings appear under
+# Static analysis of our code and of these workflows (ADR 0122), tests left out (ADR 0128). Findings appear under
 # Security → Code scanning.
 name: CodeQL
 
@@ -33,6 +33,9 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: none
+          # Tests are not scanned (ADR 0128). The globs match no workflow file, so the same file
+          # serves both languages.
+          config-file: ./.github/codeql/codeql-config.yml
 
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
