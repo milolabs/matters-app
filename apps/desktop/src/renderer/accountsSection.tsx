@@ -1,5 +1,6 @@
 import type { AccountInfo } from "@matters/contracts";
 import type { AgentStatus } from "@matters/core";
+import { runtimesInUse } from "@matters/core";
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { AccountColor } from "./accountMarks.ts";
 import type { AccountsStore } from "./accounts.ts";
@@ -60,7 +61,10 @@ export function AccountsSection(props: {
   async function askToRead(account: AccountInfo) {
     try {
       const status = await props.backend.agentStatus();
-      if (status.settings.enabled && status.runtime !== null) setReading({ account, status });
+      // The same question as in first run, for every runtime a kind of work is on (ADR 0121).
+      if (status.settings.enabled && runtimesInUse(status.settings).length > 0) {
+        setReading({ account, status });
+      }
     } catch {
       // AI cannot be reached: the account is added, and nothing is asked.
     }

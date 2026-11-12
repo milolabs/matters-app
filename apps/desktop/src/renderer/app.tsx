@@ -1,6 +1,6 @@
 import type { ThreadMessage } from "@matters/contracts";
 import type { ImageChoice, Message, Participant, StoppableSource, TalkHit } from "@matters/core";
-import { parseQuery, replyPromptTarget } from "@matters/core";
+import { accountsAgreedTo, parseQuery, replyPromptTarget } from "@matters/core";
 import { createVirtualizer } from "@tanstack/solid-virtual";
 import {
   createEffect,
@@ -27,6 +27,7 @@ import {
   openAgentPrompt,
   registerAgentOpener,
 } from "./agentTalk.tsx";
+import { talkRuntimeName } from "./agentText.ts";
 import { appDark } from "./appTheme.ts";
 import { DWELL_MS } from "./autoRead.ts";
 import { linkify, SHORT_SIGNATURE_LINES, splitBody, splitSignature } from "./body.ts";
@@ -377,6 +378,7 @@ function Mail(props: Stores) {
       name: !other || own().has(other.address.toLowerCase()) ? "" : firstName(displayName(other)),
       subject: open.thread.subject,
       ...(last === undefined ? {} : { lastMessageMs: last.dateMs }),
+      accountId: open.thread.accountId,
     };
   });
   // One window width, read before the first paint, for the list, the agent's column and the store.
@@ -408,14 +410,14 @@ function Mail(props: Stores) {
   const talkPrepared = () => threadAgent.prepared();
   /** The account was not shared: known once the answer for the thread is read. */
   const talkShared = () => !threadAgent.known() || threadAgent.available();
-  /** The accounts All mail searches: the ones the person agreed to, for this runtime. */
+  /**
+   * The accounts All mail searches: the ones the person agreed to for the runtime the talk runs
+   * on, its own choice or the one for questions (ADR 0121, rules 4 and 8).
+   */
   const talkAddresses = () => {
     const status = agent.status();
-    const agreed = new Set(
-      (status?.consents ?? [])
-        .filter((c) => c.runtimeId === status?.settings.runtimeId)
-        .map((c) => c.accountId),
-    );
+    const runtimeId = talk.choice()?.runtimeId ?? status?.settings.kindRuntime.answer;
+    const agreed = accountsAgreedTo(status?.consents ?? [], runtimeId);
     return accounts
       .accounts()
       .filter((a) => agreed.has(a.id))
@@ -1291,7 +1293,7 @@ function Mail(props: Stores) {
                 prepared={talkPrepared}
                 shared={talkShared}
                 addresses={talkAddresses}
-                runtimeName={() => agent.status()?.runtime?.name ?? "The agent"}
+                runtimeName={() => talkRuntimeName(agent.status(), talk.scope(), talk.choice())}
                 onSeeWork={goToAgentPanel}
                 onOpenHit={openHit}
                 onShowSearch={showSearch}

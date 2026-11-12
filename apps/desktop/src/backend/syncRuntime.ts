@@ -639,8 +639,8 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
           accountIds: command.accountIds,
           runtimeId: command.runtimeId,
         });
-      case "agentChooseRuntime":
-        return needAgent().chooseRuntime(command.runtimeId);
+      case "agentSetKindRuntime":
+        return needAgent().setKindRuntime(command.kinds, command.runtimeId);
       case "agentDisable":
         return needAgent().disable();
       case "agentSetModels":
@@ -656,14 +656,14 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
       case "agentResumeReading":
         return needAgent().resumeReading();
       case "agentTestRuntime":
-        return needAgent().testRuntime();
+        return needAgent().testRuntime(command.runtimeId);
       case "agentPrepare":
         return needAgent().prepare(command.threadId, {
           ...(command.direction === undefined ? {} : { direction: command.direction }),
           ...(command.answer === undefined ? {} : { answer: command.answer }),
         });
       case "agentTalk":
-        return needAgent().talk(command.threadId, command.words);
+        return needAgent().talk(command.threadId, command.words, command.choice);
       case "agentRewriteDraft":
         return needAgent().rewriteDraft(command.threadId, command.text, command.how);
       case "agentAnswerQuestions":
@@ -676,7 +676,7 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         await needAgent().talkStop(command.threadId);
         return null;
       case "agentTalkAll":
-        return needAgent().talkAll(command.words, command.talkId ?? null);
+        return needAgent().talkAll(command.words, command.talkId ?? null, command.choice);
       case "agentTalkAllStop":
         await needAgent().talkAllStop();
         return null;
@@ -704,7 +704,7 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         await needAgent().removeRule(command.ruleId);
         return null;
       case "agentRevokeConsent":
-        return needAgent().revokeConsent(command.accountId);
+        return needAgent().revokeConsent(command.accountId, command.runtimeId);
       case "agentDraftFromPrepared":
         return needAgent().draftFromPrepared(command.threadId, command.body);
       case "agentMatchAct":

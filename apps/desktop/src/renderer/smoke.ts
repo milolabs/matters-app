@@ -1,10 +1,11 @@
-import { NEEDS_YOU_VIEW } from "@matters/core";
+import { AGENT_WORK_KINDS, kindInfo, NEEDS_YOU_VIEW } from "@matters/core";
 import DOMPurify from "dompurify";
 import { createComponent, createSignal } from "solid-js";
 import { render } from "solid-js/web";
 import type { AccountsStore } from "./accounts.ts";
 import type { AgentStore } from "./agent.ts";
 import { Choice } from "./agentConnect.tsx";
+import { AgentSection } from "./agentSection.tsx";
 import { askTheAgent } from "./agentTalk.tsx";
 import type { Backend } from "./client.ts";
 import type { ComposeStore } from "./compose.ts";
@@ -1070,6 +1071,44 @@ function choiceKeepsItsValue(): boolean {
 }
 
 /**
+ * Settings › Agents with AI on (ADR 0121): every runtime listed with its state and what it is used
+ * for, one row per kind of work with its runtime, model and effort, and per account one consent
+ * for each runtime in use. Drawn in this window from the same component the settings window uses.
+ */
+async function settingsShowKinds(backend: Backend): Promise<{ ok: boolean; detail: string }> {
+  const list = (await backend.listAccounts()).accounts;
+  const accounts = { accounts: () => list } as unknown as AccountsStore;
+  const host = document.createElement("div");
+  host.style.cssText = "position:fixed;left:-10000px;top:0;width:720px;height:900px";
+  document.body.append(host);
+  const dispose = render(() => createComponent(AgentSection, { backend, accounts }), host);
+  const kinds = () => host.querySelectorAll("[data-kind]");
+  try {
+    await until(() => kinds().length === AGENT_WORK_KINDS.length, 5000);
+    const rows = [...kinds()];
+    const runtimeSelects = rows.filter((r) => r.querySelector('select[data-row="runtime"]'));
+    const modelSelects = rows.filter((r) => r.querySelector('select[data-row="model"]'));
+    const runtimes = host.querySelectorAll("[data-runtime-option]").length;
+    const inUse = host.querySelectorAll("[data-runtime-option][data-in-use]").length;
+    const consents = host.querySelectorAll("[data-consent-runtime]").length;
+    const ok =
+      rows.length === AGENT_WORK_KINDS.length &&
+      runtimeSelects.length === rows.length &&
+      modelSelects.length === rows.length &&
+      runtimes > 0 &&
+      inUse === 1 &&
+      consents === list.length;
+    return {
+      ok,
+      detail: `kinds ${rows.length}, runtime selects ${runtimeSelects.length}, model selects ${modelSelects.length}, runtimes ${runtimes} (${inUse} in use), consents ${consents} for ${list.length} accounts`,
+    };
+  } finally {
+    dispose();
+    host.remove();
+  }
+}
+
+/**
  * The agent's column widened over the window (⇧⌘E): it leaves a 54 px strip of the list, reaches
  * the right edge, moves nothing under it, and goes back to its side on Escape and on a click in
  * the strip. Runs with AI on.
@@ -1173,24 +1212,29 @@ async function measureAgent(extras: {
     pauseHeld: false,
     continueWorked: false,
     choiceKeepsItsValue: false,
+    settingsKinds: false,
+    settingsDetail: "",
     detail: "",
   };
 
   // The demo runtime is `found` until it passed the test with a made-up message (ADR 0051).
   let status = await backend.agentInspect();
-  // The person picks who works on the mail (ADR 0119, rule 2); the demo run lists only one.
+  // The person picks who works on the mail (ADR 0119, rule 2): every kind of work goes on it
+  // (ADR 0121, rule 12). The demo run lists only one.
   const demo = status.runtimes[0];
-  if (status.runtime === null && demo !== undefined) {
-    status = await backend.agentChooseRuntime(demo.id);
+  if (status.settings.kindRuntime.understand === undefined && demo !== undefined) {
+    status = await backend.agentSetKindRuntime(AGENT_WORK_KINDS, demo.id);
   }
-  if (status.runtime?.status !== "ready") status = await backend.agentTestRuntime();
-  if (status.runtime?.status !== "ready") {
-    out.detail = `the demo runtime is ${status.runtime?.status ?? "missing"}`;
+  const reading = () => kindInfo(status, "understand");
+  if (reading()?.status !== "ready") status = await backend.agentTestRuntime(demo?.id);
+  const ready = reading();
+  if (ready === null || ready.status !== "ready") {
+    out.detail = `the demo runtime is ${ready?.status ?? "missing"}`;
     return out;
   }
   if (!status.settings.enabled) {
     const accounts = (await backend.listAccounts()).accounts.map((a) => a.id);
-    status = await backend.agentSetEnabled({ accountIds: accounts, runtimeId: status.runtime.id });
+    status = await backend.agentSetEnabled({ accountIds: accounts, runtimeId: ready.id });
     // Turned on as the first-run screen does it: the window's store takes the answer at once
     // (`onAgentStatus` in app.tsx). The rest reaches the window by the backend's pushes.
     agent.setStatus(status);
@@ -1355,6 +1399,9 @@ async function measureAgent(extras: {
   out.continueWorked = resumed.settings.readingPaused !== true;
 
   out.choiceKeepsItsValue = choiceKeepsItsValue();
+  const shown = await settingsShowKinds(backend);
+  out.settingsKinds = shown.ok;
+  out.settingsDetail = shown.detail;
   return out;
 }
 

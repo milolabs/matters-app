@@ -5,7 +5,7 @@
 // mail run side by side and neither loses text. It does not depend on a mounted component: `sync`
 // is called when the open thread may have changed. A turn runs in the backend and never blocks this
 // window, so typing, reading and moving between talks wait for no model.
-import type { TalkAgentEntry, TalkEntry, TalkSummary } from "@matters/core";
+import type { TalkAgentEntry, TalkChoice, TalkEntry, TalkSummary } from "@matters/core";
 import { startsNewTalk, talkTitle } from "@matters/core";
 import { batch, createSignal } from "solid-js";
 import { COALESCE_MS } from "./agent.ts";
@@ -22,6 +22,8 @@ export interface TalkThreadRef {
   readonly subject: string;
   /** The date of the thread's last message. */
   readonly lastMessageMs?: number;
+  /** The thread's account: which runtimes it agreed to (ADR 0121, rule 8). */
+  readonly accountId?: string;
 }
 
 export interface AgentTalkOptions {
@@ -116,6 +118,8 @@ const MAX_TRAIL_STEPS_SHOWN = 12;
 /** The loop of ADR 0083 takes up to 30 calls and writes a line before each: it shows more. */
 const MAX_LOOP_STEPS_SHOWN = 40;
 const threadKey = (id: string) => `thread:${id}`;
+/** Where the runtime and model chosen in a talk across all mail are kept; `new` before it has an id. */
+const talkKey = (id: number | null) => `talk:${id ?? "new"}`;
 
 /** What the search of the turn that is running has found so far; null before it has finished. */
 export interface TalkStep {
@@ -263,6 +267,8 @@ export function createAgentTalk(options: AgentTalkOptions) {
   const words = createKeyed<string>();
   const turns = createKeyed<string>(); // scope key -> the words of the turn that is running
   const problems = createKeyed<string>();
+  // The runtime and model the person chose in a talk (ADR 0121, rule 8), for this run of the app.
+  const choices = createKeyed<TalkChoice>();
   const [undone, setUndone] = createSignal<ReadonlySet<number>>(new Set());
   let seq = 0;
   let seqAll = 0;
@@ -275,6 +281,13 @@ export function createAgentTalk(options: AgentTalkOptions) {
     const t = thread();
     return scope() === "all" || t === null ? ALL_KEY : threadKey(t.id);
   };
+
+  /** Where the choice of runtime and model of the talk in view is kept. */
+  const choiceKey = (): string => {
+    const t = thread();
+    return scope() === "all" || t === null ? talkKey(openTalk() ?? null) : threadKey(t.id);
+  };
+  const withChoice = (choice: TalkChoice | undefined) => (choice === undefined ? [] : [choice]);
 
   /**
    * Shows or hides the column. In a narrow window this is for now only: the kept choice is for
@@ -453,7 +466,7 @@ export function createAgentTalk(options: AgentTalkOptions) {
     setOpen(true);
     let result: Awaited<ReturnType<typeof backend.agentTalk>>;
     try {
-      result = await backend.agentTalk(id, text);
+      result = await backend.agentTalk(id, text, ...withChoice(choices.get(key)));
     } catch (error) {
       const message = error instanceof Error ? error.message : "That did not work.";
       batch(() => {
@@ -496,6 +509,8 @@ export function createAgentTalk(options: AgentTalkOptions) {
     const known = open === null ? null : (talks().find((t) => t.id === open) ?? null);
     const fresh = open === null || (known !== null && startsNewTalk(known, now(), chosenTalk()));
     const target = fresh ? null : open;
+    // What the person chose in the talk in view goes with the question, and stays with its talk.
+    const picked = choices.get(talkKey(open));
     batch(() => {
       words.set(ALL_KEY, "");
       problems.delete(ALL_KEY);
@@ -521,7 +536,7 @@ export function createAgentTalk(options: AgentTalkOptions) {
     };
     let talkId: number | undefined;
     try {
-      talkId = (await backend.agentTalkAll(text, target)).talkId;
+      talkId = (await backend.agentTalkAll(text, target, ...withChoice(picked))).talkId;
     } catch (error) {
       const message = error instanceof Error ? error.message : "That did not work.";
       batch(() => {
@@ -534,6 +549,7 @@ export function createAgentTalk(options: AgentTalkOptions) {
     // The person still looks at the talk it was asked in: that is now the talk it landed in.
     const here = (openTalk() ?? null) === target;
     const landed = talkId ?? target;
+    if (picked !== undefined) choices.set(talkKey(landed), picked);
     const [list, entries] = await Promise.all([
       readTalks(),
       here ? readAll(landed) : Promise.resolve(null),
@@ -654,6 +670,17 @@ export function createAgentTalk(options: AgentTalkOptions) {
       if (next === "thread" && thread() === null) return;
       setChosen(next);
       sync();
+    },
+    /**
+     * The runtime and model chosen in the talk in view (ADR 0121, rule 8), or null: it runs on the
+     * choice for its kind of work. Kept for this run of the app.
+     */
+    choice: (): TalkChoice | null => choices.get(choiceKey()) ?? null,
+    /** The account of the thread in view; null across all mail, or when it is not known. */
+    accountId: (): string | null => (scope() === "thread" ? (thread()?.accountId ?? null) : null),
+    setChoice(choice: TalkChoice | null): void {
+      if (choice === null) choices.delete(choiceKey());
+      else choices.set(choiceKey(), choice);
     },
     /** What the person is typing in the scope in view. */
     words: (): string => words.get(keyOf()) ?? "",

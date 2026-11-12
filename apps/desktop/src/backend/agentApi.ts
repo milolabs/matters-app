@@ -7,6 +7,7 @@ import type {
   AgentModels,
   AgentRule,
   AgentStatus,
+  AgentWorkKind,
   GapSuggestion,
   JournalEntry,
   PreparedGuidance,
@@ -19,6 +20,7 @@ import type {
   ReplyCheck,
   RewriteHow,
   RuleOffer,
+  TalkChoice,
   TalkEntry,
   TalkResult,
   TalkSummary,
@@ -91,39 +93,52 @@ export interface AgentApi {
    * that is not accepted is empty too, never an error.
    */
   remember(threadId: string, words: string): Promise<RememberResult>;
-  /** Records the person's consent for these accounts and this runtime, and turns AI on. */
+  /**
+   * Records the person's consent for these accounts and this runtime, and turns AI on. The first
+   * time, every kind of work goes on this runtime (ADR 0121, rule 12); after, it moves none.
+   */
   setEnabled(input: { accountIds: readonly string[]; runtimeId: string }): Promise<AgentStatus>;
   /**
-   * Chooses the runtime (ADR 0119, rule 2): stops what runs on the one before, sends nothing, and
-   * agrees to nothing. Refuses a runtime the app does not know.
+   * Moves kinds of work to a runtime (ADR 0121, rule 1): stops what runs for them, sends nothing,
+   * and agrees to nothing. Refuses a runtime the app does not know.
    */
-  chooseRuntime(runtimeId: string): Promise<AgentStatus>;
+  setKindRuntime(kinds: readonly AgentWorkKind[], runtimeId: string): Promise<AgentStatus>;
   /** Turns AI off and takes every consent back. */
   disable(): Promise<AgentStatus>;
-  /** Takes back the consent for one account; AI stays on for the others. */
-  revokeConsent(accountId: string): Promise<AgentStatus>;
-  /** The model and the effort of each kind of work (ADR 0118); a kind left out keeps its own. */
+  /**
+   * Takes back an account's consent for one runtime, or for every runtime without one; AI stays
+   * on for the others.
+   */
+  revokeConsent(accountId: string, runtimeId?: string): Promise<AgentStatus>;
+  /**
+   * The model and the effort of each kind of work (ADR 0118), on the runtime the kind is on (ADR
+   * 0121, rule 5); a kind left out keeps its own.
+   */
   setModels(models: Partial<AgentModels>, efforts?: Partial<AgentEfforts>): Promise<AgentStatus>;
   setWeekShare(percent: number): Promise<AgentStatus>;
   /** The agent searches in a loop with tools instead of the plan and follow turns (ADR 0083). */
   setTalkLoop(on: boolean): Promise<AgentStatus>;
-  /** Looks at the runtime again; spends nothing and sends no mail. */
+  /** Looks at every runtime again; spends nothing and sends no mail. */
   inspect(): Promise<AgentStatus>;
   /** The person stops the reading in the background; it stays stopped across restarts (ADR 0117). */
   pauseReading(): Promise<AgentStatus>;
   resumeReading(): Promise<AgentStatus>;
-  /** The test with a made-up message (ADR 0051, rule 5). */
-  testRuntime(): Promise<AgentStatus>;
+  /**
+   * The test with a made-up message (ADR 0051, rule 5): of this runtime, or of every runtime in use
+   * without one.
+   */
+  testRuntime(runtimeId?: string): Promise<AgentStatus>;
   /** `P0`: the person asked for it. */
   prepare(threadId: string, guidance?: PreparedGuidance): Promise<PrepareResult>;
   /**
    * The person talks about one thread (ADR 0064, rule 6): one `P0` turn with the thread and its
-   * talk, on the model for writing. The answer is text, a draft, a question or a closing. Refused
+   * talk, on the model for writing, or on the runtime and model chosen in this talk (ADR 0121,
+   * rule 8). The answer is text, a draft, a question or a closing. Refused
    * with a sentence and no turn when the words are blank, and when a turn for the thread is already
    * running. A turn that fails, is stopped or gives an answer the code does not accept stores
    * nothing, not even the words; the person tries again. May take a while.
    */
-  talk(threadId: string, words: string): Promise<TalkResult>;
+  talk(threadId: string, words: string, choice?: TalkChoice): Promise<TalkResult>;
   /**
    * The agent helps write a reply (ADR 0098). Each is one `P0` turn for the thread, with the gates
    * of `prepare`: AI on, the thread there, its account agreed, the runtime ready, room in the plan.
@@ -156,8 +171,9 @@ export interface AgentApi {
    * and an answer the code does not accept: the first ends with an answer that says so and sends no
    * mail; the others store nothing, not even the words. The turn is asked in the talk `talkId`
    * (ADR 0086); `null`, absent or a talk that is gone starts a new talk, which the result names.
+   * With `choice`, it runs on that runtime and model, for this talk only (ADR 0121, rule 8).
    */
-  talkAll(words: string, talkId?: number | null): Promise<TalkResult>;
+  talkAll(words: string, talkId?: number | null, choice?: TalkChoice): Promise<TalkResult>;
   /** Cuts the running turn across all mail short, at either of its two turns. */
   talkAllStop(): Promise<void>;
   /**

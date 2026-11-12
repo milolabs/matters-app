@@ -12,6 +12,7 @@ import type {
   RuleJournalEntry,
   RuleOffer,
 } from "@matters/core";
+import { everyKindOn } from "@matters/core";
 import { createRoot } from "solid-js";
 import { describe, expect, it } from "vitest";
 import {
@@ -32,20 +33,34 @@ const models = { understand: "haiku", write: "sonnet", answer: "sonnet", titles:
 const status = (over: Partial<AgentStatus> = {}): AgentStatus => ({
   settings: {
     enabled: true,
-    runtimeId: "claude-code",
+    kindRuntime: everyKindOn("claude-code"),
     models,
     efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
     weekSharePercent: 10,
-    usedByUsPercent: 4.2,
-    limits: {
-      session: { usedPercent: 39, resetsAtMs: NOW + 3_600_000 },
-      week: { usedPercent: 22, resetsAtMs: NOW + 3 * 86_400_000 },
-      usingOverage: false,
-      seenAtMs: NOW - 60_000,
+    plans: {
+      "claude-code": {
+        usedByUsPercent: 4.2,
+        limits: {
+          session: { usedPercent: 39, resetsAtMs: NOW + 3_600_000 },
+          week: { usedPercent: 22, resetsAtMs: NOW + 3 * 86_400_000 },
+          usingOverage: false,
+          seenAtMs: NOW - 60_000,
+        },
+      },
     },
   },
-  runtime: { id: "claude-code", name: "Claude Code", status: "ready", models: ["haiku", "sonnet"] },
-  runtimes: [],
+  runtimes: [
+    {
+      id: "claude-code",
+      name: "Claude Code",
+      info: {
+        id: "claude-code",
+        name: "Claude Code",
+        status: "ready",
+        models: ["haiku", "sonnet"],
+      },
+    },
+  ],
   unlisted: [],
   consents: [],
   progress: { state: "idle" },

@@ -1580,8 +1580,8 @@ export interface AgentSettingsPort {
   /** The stored settings; the defaults (AI off) when nothing was stored. */
   get(): Promise<AgentSettings>;
   /**
-   * Changes these fields only; `limits` and `usedWeekResetsAtMs` can be cleared with `null`.
-   * `models` and `efforts` are kept per runtime, as `patchAgentSettings` says (ADR 0119, rule 4).
+   * Changes these fields only, as `patchAgentSettings` says: models and efforts are kept per
+   * runtime (ADR 0119, rule 4), the windows and our use per plan (ADR 0121, rule 6).
    */
   update(patch: AgentSettingsPatch): Promise<AgentSettings>;
   /** Idempotent: granting again keeps the first time. */

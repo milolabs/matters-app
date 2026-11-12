@@ -16,6 +16,7 @@ import type {
   AgentModels,
   AgentRule,
   AgentStatus,
+  AgentWorkKind,
   DeleteForeverResult,
   Draft,
   DraftContent,
@@ -43,6 +44,7 @@ import type {
   SortRanked,
   StoppableSource,
   SyncStatus,
+  TalkChoice,
   TalkResult,
   UndoMoveResult,
   UndoResult,
@@ -139,7 +141,7 @@ export type WorkerCommand =
   | { readonly name: "agentSetWeekShare"; readonly percent: number }
   | { readonly name: "agentSetTalkLoop"; readonly on: boolean }
   | { readonly name: "agentInspect" }
-  | { readonly name: "agentTestRuntime" }
+  | { readonly name: "agentTestRuntime"; readonly runtimeId?: string }
   | { readonly name: "agentPauseReading" }
   | { readonly name: "agentResumeReading" }
   | {
@@ -148,7 +150,12 @@ export type WorkerCommand =
       readonly direction?: string;
       readonly answer?: string;
     }
-  | { readonly name: "agentTalk"; readonly threadId: string; readonly words: string }
+  | {
+      readonly name: "agentTalk";
+      readonly threadId: string;
+      readonly words: string;
+      readonly choice?: TalkChoice;
+    }
   | { readonly name: "agentTalkStop"; readonly threadId: string }
   | {
       readonly name: "agentRewriteDraft";
@@ -164,13 +171,22 @@ export type WorkerCommand =
     }
   | { readonly name: "agentCheckReply"; readonly threadId: string; readonly text: string }
   | { readonly name: "agentFillGaps"; readonly threadId: string; readonly text: string }
-  | { readonly name: "agentTalkAll"; readonly words: string; readonly talkId?: number }
+  | {
+      readonly name: "agentTalkAll";
+      readonly words: string;
+      readonly talkId?: number;
+      readonly choice?: TalkChoice;
+    }
   | { readonly name: "agentTalkAllStop" }
   | { readonly name: "agentTalkRename"; readonly talkId: number; readonly title: string }
   | { readonly name: "agentTalkDelete"; readonly talkId: number }
   | { readonly name: "agentTalkDeleteAll" }
-  | { readonly name: "agentRevokeConsent"; readonly accountId: string }
-  | { readonly name: "agentChooseRuntime"; readonly runtimeId: string }
+  | { readonly name: "agentRevokeConsent"; readonly accountId: string; readonly runtimeId?: string }
+  | {
+      readonly name: "agentSetKindRuntime";
+      readonly kinds: readonly AgentWorkKind[];
+      readonly runtimeId: string;
+    }
   | {
       readonly name: "agentUndoFeedback";
       readonly threadId: string;
@@ -278,7 +294,7 @@ export interface CommandResults {
   readonly agentAddRule: AgentRule;
   readonly agentRemoveRule: null;
   readonly agentRevokeConsent: AgentStatus;
-  readonly agentChooseRuntime: AgentStatus;
+  readonly agentSetKindRuntime: AgentStatus;
   readonly agentDraftFromPrepared: { readonly draftId: string; readonly existing: boolean };
   readonly agentMatchAct: ActMatches;
   readonly agentPromptCount: PromptCount;

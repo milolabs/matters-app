@@ -1,5 +1,6 @@
 import type { AccountInfo } from "@matters/contracts";
 import type { AgentStatus } from "@matters/core";
+import { AGENT_WORK_KINDS, runtimeInfo } from "@matters/core";
 import { createSignal, onMount, Show } from "solid-js";
 import { ConsentQuestion, NotYet, RuntimeChoice, WhatDoesWhat } from "./agentConnect.tsx";
 import type { Backend } from "./client.ts";
@@ -24,6 +25,12 @@ export function RuntimeStep(props: {
   const [looking, setLooking] = createSignal(true);
   const [checking, setChecking] = createSignal(false);
   const [failure, setFailure] = createSignal("");
+  /** The runtime every kind of work is on until the person chooses otherwise (ADR 0121, rule 12). */
+  const chosen = () => status()?.settings.kindRuntime.understand;
+  const chosenInfo = () => {
+    const s = status();
+    return s === null ? null : runtimeInfo(s, chosen());
+  };
 
   function take(next: AgentStatus) {
     setStatus(next);
@@ -48,7 +55,7 @@ export function RuntimeStep(props: {
     props.onBusy?.(true);
     setFailure("");
     try {
-      const next = await props.backend.agentTestRuntime();
+      const next = await props.backend.agentTestRuntime(chosen());
       take(next);
       return next;
     } catch {
@@ -62,23 +69,28 @@ export function RuntimeStep(props: {
 
   async function next() {
     const current = status();
-    if (current?.runtime == null || checking()) return;
+    const info = chosenInfo();
+    if (current === null || info === null || checking()) return;
     // A runtime that passed the test with this plan is not asked to prove it again.
-    const result = current.runtime.status === "ready" ? current : await check();
-    if (result?.runtime?.status === "ready") props.onContinue(result);
+    const result = info.status === "ready" ? current : await check();
+    const after = result === null ? null : runtimeInfo(result, chosen());
+    if (result !== null && after?.status === "ready") props.onContinue(result);
     else if (result !== null && failure() === "") {
-      setFailure(result.runtime?.problem ?? "The check did not pass.");
+      setFailure(after?.problem ?? "The check did not pass.");
     }
   }
 
   const [choosing, setChoosing] = createSignal(false);
-  /** The person picks who works on the mail (ADR 0119, rule 2). Nothing is sent. */
+  /**
+   * The person picks who works on the mail (ADR 0119, rule 2): every kind of work goes on it, until
+   * they choose otherwise in Settings (ADR 0121, rule 12). Nothing is sent.
+   */
   async function choose(runtimeId: string) {
-    if (choosing() || status()?.settings.runtimeId === runtimeId) return;
+    if (choosing() || chosen() === runtimeId) return;
     setChoosing(true);
     setFailure("");
     try {
-      take(await props.backend.agentChooseRuntime(runtimeId));
+      take(await props.backend.agentSetKindRuntime(AGENT_WORK_KINDS, runtimeId));
     } catch (e) {
       setFailure(e instanceof Error ? e.message : "That did not work.");
     } finally {
@@ -98,7 +110,7 @@ export function RuntimeStep(props: {
   }
 
   const usable = () => {
-    const s = status()?.runtime?.status;
+    const s = chosenInfo()?.status;
     return s === "ready" || s === "found" || s === "failed";
   };
 
@@ -135,7 +147,7 @@ export function RuntimeStep(props: {
         {(s) => <WhatDoesWhat status={s()} idPrefix="setup" suggested onChange={setModels} />}
       </Show>
       <NotYet />
-      <Show when={failure() !== "" && !status()?.runtime}>
+      <Show when={failure() !== "" && chosenInfo() === null}>
         <p role="alert" class="text-[13px] text-late">
           {failure()}
         </p>
@@ -150,7 +162,7 @@ export function RuntimeStep(props: {
         >
           {checking() ? "Checking…" : "Continue"}
         </button>
-        <Show when={status()?.runtime && !usable()}>
+        <Show when={chosenInfo() !== null && !usable()}>
           <button type="button" class={pill} disabled={looking()} onClick={() => void look()}>
             Look again
           </button>

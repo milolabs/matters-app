@@ -15,12 +15,13 @@ export type PromptOff = "off" | "noConsent";
 
 /**
  * From the same state that decides whether Matters is there: AI is off, or the status says no
- * account is shared with the runtime that is chosen. A status not read yet says nothing more.
+ * account is shared with the runtime for understanding mail, which reads for a prompt (ADR 0121,
+ * rule 9). A status not read yet says nothing more.
  */
 export function promptOff(enabled: boolean, status: AgentStatus | null): PromptOff | null {
   if (!enabled) return "off";
   if (status === null) return null;
-  const runtime = status.settings.runtimeId;
+  const runtime = status.settings.kindRuntime.understand;
   return status.consents.some((c) => c.runtimeId === runtime) ? null : "noConsent";
 }
 

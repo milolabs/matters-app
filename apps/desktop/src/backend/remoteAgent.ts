@@ -7,6 +7,7 @@ import type {
   AgentModels,
   AgentRule,
   AgentStatus,
+  AgentWorkKind,
   GapSuggestion,
   JournalEntry,
   PreparedGuidance,
@@ -19,6 +20,7 @@ import type {
   ReplyCheck,
   RewriteHow,
   RuleOffer,
+  TalkChoice,
   TalkEntry,
   TalkResult,
   TalkSummary,
@@ -126,8 +128,14 @@ export class RemoteAgent implements AgentApi {
     return this.changed(this.host.command({ name: "agentDisable" }));
   }
 
-  revokeConsent(accountId: string): Promise<AgentStatus> {
-    return this.changed(this.host.command({ name: "agentRevokeConsent", accountId }));
+  revokeConsent(accountId: string, runtimeId?: string): Promise<AgentStatus> {
+    return this.changed(
+      this.host.command({
+        name: "agentRevokeConsent",
+        accountId,
+        ...(runtimeId === undefined ? {} : { runtimeId }),
+      }),
+    );
   }
 
   setModels(models: Partial<AgentModels>, efforts?: Partial<AgentEfforts>): Promise<AgentStatus> {
@@ -140,8 +148,8 @@ export class RemoteAgent implements AgentApi {
     );
   }
 
-  chooseRuntime(runtimeId: string): Promise<AgentStatus> {
-    return this.changed(this.host.command({ name: "agentChooseRuntime", runtimeId }));
+  setKindRuntime(kinds: readonly AgentWorkKind[], runtimeId: string): Promise<AgentStatus> {
+    return this.changed(this.host.command({ name: "agentSetKindRuntime", kinds, runtimeId }));
   }
 
   setWeekShare(percent: number): Promise<AgentStatus> {
@@ -164,8 +172,13 @@ export class RemoteAgent implements AgentApi {
     return this.changed(this.host.command({ name: "agentResumeReading" }));
   }
 
-  testRuntime(): Promise<AgentStatus> {
-    return this.changed(this.host.command({ name: "agentTestRuntime" }));
+  testRuntime(runtimeId?: string): Promise<AgentStatus> {
+    return this.changed(
+      this.host.command({
+        name: "agentTestRuntime",
+        ...(runtimeId === undefined ? {} : { runtimeId }),
+      }),
+    );
   }
 
   prepare(threadId: string, guidance?: PreparedGuidance): Promise<PrepareResult> {
@@ -177,8 +190,13 @@ export class RemoteAgent implements AgentApi {
     });
   }
 
-  talk(threadId: string, words: string): Promise<TalkResult> {
-    return this.host.command({ name: "agentTalk", threadId, words });
+  talk(threadId: string, words: string, choice?: TalkChoice): Promise<TalkResult> {
+    return this.host.command({
+      name: "agentTalk",
+      threadId,
+      words,
+      ...(choice === undefined ? {} : { choice }),
+    });
   }
 
   rewriteDraft(threadId: string, text: string, how: RewriteHow): Promise<{ text: string }> {
@@ -214,11 +232,12 @@ export class RemoteAgent implements AgentApi {
     return readTalk(this.reads, threadId);
   }
 
-  talkAll(words: string, talkId?: number | null): Promise<TalkResult> {
+  talkAll(words: string, talkId?: number | null, choice?: TalkChoice): Promise<TalkResult> {
     return this.host.command({
       name: "agentTalkAll",
       words,
       ...(typeof talkId === "number" ? { talkId } : {}),
+      ...(choice === undefined ? {} : { choice }),
     });
   }
 

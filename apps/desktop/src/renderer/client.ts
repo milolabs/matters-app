@@ -88,6 +88,7 @@ import type {
   AgentModels,
   AgentRule,
   AgentStatus,
+  AgentWorkKind,
   DeleteForeverResult,
   Draft,
   DraftContent,
@@ -120,6 +121,7 @@ import type {
   SendOperation,
   SortRanked,
   StoppableSource,
+  TalkChoice,
   TalkEntry,
   TalkResult,
   TalkSummary,
@@ -312,20 +314,21 @@ export interface Backend {
   /** Turns AI on for these accounts. Sends nothing by itself beyond what reading then does. */
   agentSetEnabled(args: { accountIds: readonly string[]; runtimeId: string }): Promise<AgentStatus>;
   agentDisable(): Promise<AgentStatus>;
-  agentRevokeConsent(accountId: string): Promise<AgentStatus>;
-  /** The model and the effort of each kind of work (ADR 0118). */
+  /** An account's consent for one runtime, or for every runtime without one (ADR 0121, rule 4). */
+  agentRevokeConsent(accountId: string, runtimeId?: string): Promise<AgentStatus>;
+  /** The model and the effort of each kind of work, on its runtime (ADR 0118; ADR 0121, rule 5). */
   agentSetModels(
     models: Partial<AgentModels>,
     efforts?: Partial<AgentEfforts>,
   ): Promise<AgentStatus>;
   agentSetWeekShare(percent: number): Promise<AgentStatus>;
   agentSetTalkLoop(on: boolean): Promise<AgentStatus>;
-  /** Chooses the runtime (ADR 0119, rule 2); sends nothing and agrees to nothing. */
-  agentChooseRuntime(runtimeId: string): Promise<AgentStatus>;
-  /** Looks at the runtime again. Spends nothing. */
+  /** Moves kinds of work to a runtime (ADR 0121, rule 1); sends nothing and agrees to nothing. */
+  agentSetKindRuntime(kinds: readonly AgentWorkKind[], runtimeId: string): Promise<AgentStatus>;
+  /** Looks at every runtime again. Spends nothing. */
   agentInspect(): Promise<AgentStatus>;
-  /** The test with a made-up message. Never mail. */
-  agentTestRuntime(): Promise<AgentStatus>;
+  /** The test with a made-up message, of one runtime or of every one in use. Never mail. */
+  agentTestRuntime(runtimeId?: string): Promise<AgentStatus>;
   agentPauseReading(): Promise<AgentStatus>;
   agentResumeReading(): Promise<AgentStatus>;
   /** The person asked: a draft or a question, now. May take a while. */
@@ -337,7 +340,7 @@ export interface Backend {
    * The person talks about a thread (ADR 0064): one turn that gives text, a draft, a question or a
    * closing. May take a while. A failure (also a stop) stores nothing; the words stay in the prompt.
    */
-  agentTalk(threadId: string, words: string): Promise<TalkResult>;
+  agentTalk(threadId: string, words: string, choice?: TalkChoice): Promise<TalkResult>;
   /** Cuts the running talk turn of the thread short. */
   agentTalkStop(threadId: string): Promise<void>;
   // Help with a reply (ADR 0098). Each is one turn the person asked for, on their plan; none sends
@@ -364,7 +367,7 @@ export interface Backend {
    * The person asks across all their mail (ADR 0064, rule 7): a search turn, a search on this
    * machine, an answer turn. May take a while. A failure (also a stop) stores nothing.
    */
-  agentTalkAll(words: string, talkId?: number | null): Promise<TalkResult>;
+  agentTalkAll(words: string, talkId?: number | null, choice?: TalkChoice): Promise<TalkResult>;
   /** Cuts the running turn across all mail short. */
   agentTalkAllStop(): Promise<void>;
   /** The talk across all mail, oldest first, at most the newest 200. A local read. */
@@ -644,8 +647,14 @@ export function createBackend(port: MessagePort): Backend {
     agentSetEnabled: async (args) =>
       (await request<AgentStatusResponse>({ type: "agentSetEnabled", ...args })).status,
     agentDisable: async () => (await request<AgentStatusResponse>({ type: "agentDisable" })).status,
-    agentRevokeConsent: async (accountId) =>
-      (await request<AgentStatusResponse>({ type: "agentRevokeConsent", accountId })).status,
+    agentRevokeConsent: async (accountId, runtimeId) =>
+      (
+        await request<AgentStatusResponse>({
+          type: "agentRevokeConsent",
+          accountId,
+          ...(runtimeId === undefined ? {} : { runtimeId }),
+        })
+      ).status,
     agentSetModels: async (models, efforts) =>
       (
         await request<AgentStatusResponse>({
@@ -658,15 +667,21 @@ export function createBackend(port: MessagePort): Backend {
       (await request<AgentStatusResponse>({ type: "agentSetWeekShare", percent })).status,
     agentSetTalkLoop: async (on) =>
       (await request<AgentStatusResponse>({ type: "agentSetTalkLoop", on })).status,
-    agentChooseRuntime: async (runtimeId) =>
-      (await request<AgentStatusResponse>({ type: "agentChooseRuntime", runtimeId })).status,
+    agentSetKindRuntime: async (kinds, runtimeId) =>
+      (await request<AgentStatusResponse>({ type: "agentSetKindRuntime", kinds, runtimeId }))
+        .status,
     agentInspect: async () => (await request<AgentStatusResponse>({ type: "agentInspect" })).status,
     agentPauseReading: async () =>
       (await request<AgentStatusResponse>({ type: "agentPauseReading" })).status,
     agentResumeReading: async () =>
       (await request<AgentStatusResponse>({ type: "agentResumeReading" })).status,
-    agentTestRuntime: async () =>
-      (await request<AgentStatusResponse>({ type: "agentTestRuntime" })).status,
+    agentTestRuntime: async (runtimeId) =>
+      (
+        await request<AgentStatusResponse>({
+          type: "agentTestRuntime",
+          ...(runtimeId === undefined ? {} : { runtimeId }),
+        })
+      ).status,
     agentPrepare: async (threadId, guidance) =>
       (
         await request<AgentPrepareResponse>({
@@ -676,8 +691,15 @@ export function createBackend(port: MessagePort): Backend {
           ...(guidance?.answer === undefined ? {} : { answer: guidance.answer }),
         })
       ).prepared,
-    agentTalk: async (threadId, words) =>
-      (await request<AgentTalkResponse>({ type: "agentTalk", threadId, words })).result,
+    agentTalk: async (threadId, words, choice) =>
+      (
+        await request<AgentTalkResponse>({
+          type: "agentTalk",
+          threadId,
+          words,
+          ...(choice === undefined ? {} : { choice }),
+        })
+      ).result,
     agentTalkStop: async (threadId) => {
       await request({ type: "agentTalkStop", threadId });
     },
@@ -699,12 +721,13 @@ export function createBackend(port: MessagePort): Backend {
       (await request<AgentFillGapsResponse>({ type: "agentFillGaps", threadId, text })).suggestions,
     agentTalkEntries: async (threadId) =>
       (await request<AgentTalkEntriesResponse>({ type: "agentTalkEntries", threadId })).entries,
-    agentTalkAll: async (words, talkId) =>
+    agentTalkAll: async (words, talkId, choice) =>
       (
         await request<AgentTalkAllResponse>({
           type: "agentTalkAll",
           words,
           ...(typeof talkId === "number" ? { talkId } : {}),
+          ...(choice === undefined ? {} : { choice }),
         })
       ).result,
     agentTalkAllStop: async () => {

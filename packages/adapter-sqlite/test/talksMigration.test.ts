@@ -96,7 +96,8 @@ describe("migration 40: talks across all mail", () => {
     const settings = await new SqliteAgentSettings(db).get();
     // What only the reading of ADR 0052 had is not read (ADR 0117).
     expect("windowDays" in settings).toBe(false);
-    expect(settings.models).toEqual({
+    // They name no runtime: what they hold is Claude Code's (ADR 0119, rule 4).
+    expect(settings.choices?.["claude-code"]?.models).toEqual({
       understand: "a",
       write: "c",
       answer: "d",

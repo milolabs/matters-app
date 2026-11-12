@@ -44,6 +44,7 @@ import type {
   SetSeenResult,
   SortRanked,
   StoppableSource,
+  TalkChoice,
   TransportSecurity,
   UndoMoveResult,
   UndoResult,
@@ -434,6 +435,13 @@ const MAX_AGENT_REPLY = 20_000;
 /** A name the person types for a talk; the store cuts it to 60 characters (ADR 0086). */
 const MAX_TALK_TITLE_TEXT = 500;
 
+/** The runtime and model chosen in a talk (ADR 0121, rule 8): undefined when none, null when bad. */
+function talkChoiceOf(v: unknown): TalkChoice | undefined | null {
+  if (v === undefined) return undefined;
+  if (!isRecord(v) || !shortString(v.runtimeId, 100) || !shortString(v.model, 128)) return null;
+  return { runtimeId: v.runtimeId, model: v.model };
+}
+
 function isTalkId(v: unknown): v is number {
   return typeof v === "number" && Number.isSafeInteger(v) && v > 0;
 }
@@ -456,7 +464,6 @@ function parseAgentRequest(
     case "agentInspect":
     case "agentPauseReading":
     case "agentResumeReading":
-    case "agentTestRuntime":
     case "agentTalkAllStop":
     case "agentTalks":
     case "agentTalkDeleteAll":
@@ -576,10 +583,30 @@ function parseAgentRequest(
       }
       return { type, requestId, models, efforts };
     }
-    case "agentChooseRuntime":
+    case "agentTestRuntime":
+      if (raw.runtimeId === undefined) return { type, requestId };
       return shortString(raw.runtimeId, 100)
         ? { type, requestId, runtimeId: raw.runtimeId }
         : "runtimeId must be a string";
+    case "agentSetKindRuntime": {
+      const kinds = raw.kinds;
+      if (
+        !Array.isArray(kinds) ||
+        kinds.length === 0 ||
+        kinds.length > MODEL_KEYS.length ||
+        !kinds.every((k) => (MODEL_KEYS as readonly unknown[]).includes(k))
+      ) {
+        return "kinds holds understand, write, answer or titles";
+      }
+      return shortString(raw.runtimeId, 100)
+        ? {
+            type,
+            requestId,
+            kinds: kinds as (typeof MODEL_KEYS)[number][],
+            runtimeId: raw.runtimeId,
+          }
+        : "runtimeId must be a string";
+    }
     case "agentSetWeekShare":
       return typeof raw.percent === "number" && Number.isFinite(raw.percent)
         ? { type, requestId, percent: raw.percent }
@@ -603,12 +630,21 @@ function parseAgentRequest(
         ...(typeof raw.answer === "string" ? { answer: raw.answer } : {}),
       };
     }
-    case "agentTalk":
+    case "agentTalk": {
+      const choice = talkChoiceOf(raw.choice);
+      if (choice === null) return "choice holds a runtimeId and a model, as short strings";
       return shortString(raw.threadId, 1000) &&
         typeof raw.words === "string" &&
         raw.words.length <= MAX_GUIDANCE_TEXT
-        ? { type, requestId, threadId: raw.threadId, words: raw.words }
+        ? {
+            type,
+            requestId,
+            threadId: raw.threadId,
+            words: raw.words,
+            ...(choice === undefined ? {} : { choice }),
+          }
         : "threadId and short words are required";
+    }
     case "agentRewriteDraft":
     case "agentAnswerQuestions":
     case "agentCheckReply":
@@ -635,18 +671,22 @@ function parseAgentRequest(
         ? { type, requestId, threadId: raw.threadId, text: raw.text, how: raw.how as RewriteHow }
         : "how must be shorter, formal or english";
     }
-    case "agentTalkAll":
+    case "agentTalkAll": {
       if (raw.talkId !== undefined && !isTalkId(raw.talkId)) {
         return "talkId must be a positive integer";
       }
+      const choice = talkChoiceOf(raw.choice);
+      if (choice === null) return "choice holds a runtimeId and a model, as short strings";
       return typeof raw.words === "string" && raw.words.length <= MAX_GUIDANCE_TEXT
         ? {
             type,
             requestId,
             words: raw.words,
             ...(raw.talkId === undefined ? {} : { talkId: raw.talkId }),
+            ...(choice === undefined ? {} : { choice }),
           }
         : "short words are required";
+    }
     case "agentTalkStop":
     case "agentTalkEntries":
       return shortString(raw.threadId, 1000)
@@ -658,8 +698,16 @@ function parseAgentRequest(
         ? { type, requestId, threadId: raw.threadId, kind: raw.kind }
         : "threadId and a kind (notImportant, later or closed) are required";
     case "agentRevokeConsent":
+      if (raw.runtimeId !== undefined && !shortString(raw.runtimeId, 100)) {
+        return "runtimeId must be a string";
+      }
       return shortString(raw.accountId, 200)
-        ? { type, requestId, accountId: raw.accountId }
+        ? {
+            type,
+            requestId,
+            accountId: raw.accountId,
+            ...(typeof raw.runtimeId === "string" ? { runtimeId: raw.runtimeId } : {}),
+          }
         : "accountId must be a string";
     case "agentDraftFromPrepared":
       return shortString(raw.threadId, 1000) && shortString(raw.body, MAX_AGENT_REPLY)
@@ -1677,7 +1725,7 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
                 ? agent.pauseReading()
                 : request.type === "agentResumeReading"
                   ? agent.resumeReading()
-                  : agent.testRuntime());
+                  : agent.testRuntime(request.runtimeId));
         return { type: request.type, requestId, ok: true, status };
       }
       case "agentSetEnabled":
@@ -1690,12 +1738,12 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
             runtimeId: request.runtimeId,
           }),
         };
-      case "agentChooseRuntime":
+      case "agentSetKindRuntime":
         return {
-          type: "agentChooseRuntime",
+          type: "agentSetKindRuntime",
           requestId,
           ok: true,
-          status: await needAgent(deps).chooseRuntime(request.runtimeId),
+          status: await needAgent(deps).setKindRuntime(request.kinds, request.runtimeId),
         };
       case "agentSetModels":
         return {
@@ -1797,7 +1845,7 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           type: "agentTalk",
           requestId,
           ok: true,
-          result: await needAgent(deps).talk(request.threadId, request.words),
+          result: await needAgent(deps).talk(request.threadId, request.words, request.choice),
         };
       case "agentRewriteDraft":
         return {
@@ -1849,7 +1897,11 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           type: "agentTalkAll",
           requestId,
           ok: true,
-          result: await needAgent(deps).talkAll(request.words, request.talkId ?? null),
+          result: await needAgent(deps).talkAll(
+            request.words,
+            request.talkId ?? null,
+            request.choice,
+          ),
         };
       case "agentTalkAllStop":
         await needAgent(deps).talkAllStop();
@@ -1884,7 +1936,7 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           type: "agentRevokeConsent",
           requestId,
           ok: true,
-          status: await needAgent(deps).revokeConsent(request.accountId),
+          status: await needAgent(deps).revokeConsent(request.accountId, request.runtimeId),
         };
       case "agentDraftFromPrepared": {
         const made = await needAgent(deps).draftFromPrepared(request.threadId, request.body);

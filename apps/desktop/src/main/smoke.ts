@@ -157,6 +157,9 @@ export interface SmokeReport {
     readonly pauseHeld: boolean;
     readonly continueWorked: boolean;
     readonly choiceKeepsItsValue: boolean;
+    /** Settings › Agents shows a runtime, a model and an effort per kind of work (ADR 0121). */
+    readonly settingsKinds: boolean;
+    readonly settingsDetail: string;
     readonly detail: string;
   };
   /** ADR 0116: a prompt counted, run with ↵, and its rows in its order with a reason. */
@@ -573,6 +576,9 @@ export function runSmoke(report: SmokeReport, processStartEpochMs: number, phase
     if (!agent.choiceKeepsItsValue) {
       failures.push("a settings select lost its value when a new status arrived");
     }
+    if (!agent.settingsKinds) {
+      failures.push(`Settings › Agents did not show each kind of work: ${agent.settingsDetail}`);
+    }
   }
   const prompt = report.prompt;
   if (!prompt) failures.push("the prompt scenario did not run");
@@ -666,6 +672,7 @@ export function runSmoke(report: SmokeReport, processStartEpochMs: number, phase
       agent: agent && {
         starterOpenedByItself: agent.starterOpenedByItself,
         tabFrameMedianMs,
+        settings: agent.settingsDetail,
       },
       prompt,
       attach: attach && {

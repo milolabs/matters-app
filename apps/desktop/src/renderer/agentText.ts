@@ -4,8 +4,10 @@
 import type {
   AgentEffortSetting,
   AgentModels,
+  AgentRuntimeId,
   AgentRuntimeInfo,
   AgentStatus,
+  AgentWorkKind,
   JournalEntry,
   PlanLimits,
   PlanWindow,
@@ -13,7 +15,16 @@ import type {
   ThreadCategory,
 } from "@matters/core";
 
-import { AGENT_EFFORTS, levelsFor, modelUsesTools } from "@matters/core";
+import {
+  AGENT_EFFORTS,
+  AGENT_WORK_KINDS,
+  kindsOn,
+  levelsFor,
+  modelUsesTools,
+  planUseOf,
+  runtimeInfo,
+  TITLES_OFF,
+} from "@matters/core";
 
 const DAY_MS = 86_400_000;
 
@@ -111,20 +122,26 @@ export function questionButtonText(busy: boolean, directionChosen: boolean): str
 }
 
 /**
- * The button of the status line: `Claude Code 61% left`, `limits not known yet`, or why work is
- * paused. The session is the window that decides what can run now. A runtime with no plan has no
+ * The button of the status line for the runtime a talk runs on: `Claude Code 61% left`, `limits
+ * not known yet`, or why the reading is paused. The session is the window that decides what can
+ * run now; the windows are that runtime's own (ADR 0121, rule 6). A runtime with no plan has no
  * button but while reading is paused (ADR 0119, rule 7): null.
  */
-export function planButton(status: AgentStatus, now: number): PlanButton | null {
-  const name = status.runtime?.name ?? "Agent";
+export function planButton(
+  status: AgentStatus,
+  runtimeId: AgentRuntimeId | undefined,
+  now: number,
+): PlanButton | null {
+  const runtime = runtimeInfo(status, runtimeId);
+  const name = runtime?.name ?? "Agent";
   const p = status.progress;
   if (p.state === "paused") {
     const until = p.untilMs === undefined ? "" : ` until ${resetText(p.untilMs, now)}`;
     const why = p.reason === "limit" || p.reason === "sessionLimit" || p.reason === "weekLimit";
     return { text: `Paused${until}${why ? " · plan limit" : pausedWhy(p.reason)}`, late: true };
   }
-  if (hasNoPlan(status.runtime)) return null;
-  const left = percentLeft(status.settings.limits?.session, now);
+  if (hasNoPlan(runtime)) return null;
+  const left = percentLeft(planUseOf(status.settings, runtimeId).limits?.session, now);
   if (left === undefined) return { text: `${name} · limits not known yet`, late: false };
   return { text: `${name} ${left}% left`, late: left < LOW_LEFT_PERCENT };
 }
@@ -255,11 +272,95 @@ export function wholeFilesText(
   return `With ${runtime.name}, a photo that has no text goes whole, up to three a question; a scan in a PDF does not.`;
 }
 
-/** "Matters this week: about 4% of Claude". The share is of the plan's week, as counted by us. */
-export function ourShare(status: AgentStatus): string {
-  const used = status.settings.usedByUsPercent;
+/**
+ * "Matters this week: about 4% of Claude". The share is of this runtime's plan's week, as counted
+ * by us (ADR 0121, rule 6).
+ */
+export function ourShare(status: AgentStatus, runtimeId: AgentRuntimeId | undefined): string {
+  const used = planUseOf(status.settings, runtimeId).usedByUsPercent;
   const about = used < 1 ? "less than 1%" : `about ${Math.round(used)}%`;
-  return `Matters this week: ${about} of ${vendorName(status.runtime)}`;
+  return `Matters this week: ${about} of ${vendorName(runtimeInfo(status, runtimeId))}`;
+}
+
+// --- A runtime for each kind of work (ADR 0121) ---
+
+/** The kinds of work in the person's words, lower case, for a sentence. */
+export const KIND_WORDS: Readonly<Record<AgentWorkKind, string>> = {
+  understand: "understanding mail",
+  write: "writing",
+  answer: "questions",
+  titles: "talk titles",
+};
+
+/** `understanding mail and writing`, or `understanding mail, writing and questions`. */
+export function kindsWords(kinds: readonly AgentWorkKind[]): string {
+  const words = kinds.map((k) => KIND_WORDS[k]);
+  if (words.length <= 1) return words[0] ?? "";
+  return `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
+}
+
+/** What a runtime does, as its card says it: `Used for writing and questions`, or `Not used`. */
+export function usedForLine(status: AgentStatus, runtimeId: AgentRuntimeId): string {
+  const kinds = kindsOn(status.settings, runtimeId);
+  if (kinds.length === 0) return "Not used";
+  if (kinds.length === AGENT_WORK_KINDS.length) return "Used for all work";
+  return `Used for ${kindsWords(kinds)}`;
+}
+
+/**
+ * Why a kind of work waits, in one sentence, or "" while it can run (ADR 0121, rule 3): its runtime
+ * is not ready, or no account agreed to it. Another kind is not stopped by it.
+ */
+export function kindWaits(status: AgentStatus, kind: AgentWorkKind): string {
+  const id = status.settings.kindRuntime[kind];
+  if (id === undefined) return "";
+  if (kind === "titles" && status.settings.models.titles === TITLES_OFF) return "";
+  const runtime = runtimeInfo(status, id);
+  const name = runtime?.name ?? status.runtimes.find((r) => r.id === id)?.name ?? id;
+  if (runtime !== null && runtime.status !== "ready") {
+    return `Waits: ${name} is ${statusWords(runtime).toLowerCase()}.`;
+  }
+  if (status.settings.enabled && !status.consents.some((c) => c.runtimeId === id)) {
+    return `Waits: no account is agreed to ${name}. Tick ${name} under Which account goes where.`;
+  }
+  return "";
+}
+
+/** The name of the runtime the talk in view runs on: its own choice, else its kind's (rule 8). */
+export function talkRuntimeName(
+  status: AgentStatus | null,
+  scope: "thread" | "all",
+  choice: { readonly runtimeId: AgentRuntimeId } | null,
+): string {
+  if (status === null) return "The agent";
+  const id = choice?.runtimeId ?? status.settings.kindRuntime[scope === "all" ? "answer" : "write"];
+  return status.runtimes.find((r) => r.id === id)?.name ?? "The agent";
+}
+
+/** One runtime a talk can run on (ADR 0121, rule 8), with the models it lists. */
+export interface TalkRuntime {
+  readonly id: AgentRuntimeId;
+  readonly name: string;
+  readonly models: readonly string[];
+}
+
+/**
+ * The runtimes the model choice of a talk lists (ADR 0121, rule 8): every one that is ready and
+ * that the mail in question agreed to (the thread's account, or any account across all mail), in
+ * the order the app offers them.
+ */
+export function talkRuntimes(
+  status: AgentStatus,
+  accountId: string | null,
+): readonly TalkRuntime[] {
+  return status.runtimes.flatMap((r) => {
+    const info = r.info;
+    if (info === null || info.status !== "ready" || info.models.length === 0) return [];
+    const agreed = status.consents.some(
+      (c) => c.runtimeId === r.id && (accountId === null || c.accountId === accountId),
+    );
+    return agreed ? [{ id: r.id, name: r.name, models: info.models }] : [];
+  });
 }
 
 /**
@@ -281,7 +382,7 @@ export function sentLine(runtimeName: string): string {
     : `Sent this thread to ${runtimeName}. Nothing else left this Mac.`;
 }
 
-/** The model that wrote a draft: every draft is written on request, by the writing model. */
+/** The model that wrote a draft: every draft is written on request, on the runtime for writing. */
 export function writtenByLine(runtime: AgentRuntimeInfo | null, models: AgentModels): string {
   const where = runtime?.onThisMachine === true ? "on this Mac" : "your plan";
   return `${runtime?.name ?? "Agent"}, ${modelName(models.write)}, ${where}`;

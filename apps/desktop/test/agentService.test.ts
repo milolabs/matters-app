@@ -4,6 +4,7 @@ import type {
   AgentRunRequest,
   AgentRunResult,
   AgentRuntimeInfo,
+  AgentStatus,
   AgentToolRunOptions,
   Draft,
   Message,
@@ -13,12 +14,15 @@ import type {
 import {
   AgentRunError,
   buildRememberRequest,
+  everyKindOn,
+  kindInfo,
   MAX_GUIDANCE_CHARS,
   MAX_INSTRUCTION_CHARS,
   MAX_INSTRUCTIONS,
   MAX_TALK_THREADS,
   PREPARED_INSTRUCTIONS,
   PROMPT_INSTRUCTIONS,
+  planUseOf,
   REMEMBER_INSTRUCTIONS,
   TALK_ALL_FACTS_RULES,
   TALK_ALL_INSTRUCTIONS,
@@ -62,6 +66,9 @@ const account = (id: string, address: string): StoredAccount => ({
   imap: { host: "imap.example.com", port: 993, security: "tls", username: id },
   createdAtMs: 1,
 });
+
+/** The runtime for understanding mail as the status shows it: every kind is on one here. */
+const reading = (status: AgentStatus) => kindInfo(status, "understand");
 
 /** A runtime that answers from a function and remembers every request. */
 class Responder {
@@ -169,8 +176,9 @@ async function build(
   await clock.advance(NOW);
   const insights = new InMemoryAgentInsightStore();
   const settings = new InMemoryAgentSettings();
-  // The person chose this runtime (ADR 0119, rule 2); AI stays off until they agree.
-  await settings.update({ runtimeId: "fake" });
+  // The person chose this runtime for every kind of work (ADR 0121, rule 12); AI stays off until
+  // they agree.
+  await settings.update({ kindRuntime: everyKindOn("fake") });
   const runtime = new Responder();
   if (options.takesFiles === true) runtime.takesFiles = true;
   await storage.accounts.add(account("acc1", "me@example.com"));
@@ -320,9 +328,9 @@ describe("AgentService: nothing happens without a yes", () => {
 
   it("does not ask the program for the status while AI is off, only when the person inspects", async () => {
     const h = await build();
-    expect((await h.service.status()).runtime).toBeNull();
+    expect(reading(await h.service.status())).toBeNull();
     expect(h.runtime.inspected).toBe(0);
-    expect((await h.service.inspect()).runtime).toMatchObject({ id: "fake" });
+    expect(reading(await h.service.inspect())).toMatchObject({ id: "fake" });
     expect(h.runtime.inspected).toBe(1);
   });
 
@@ -347,7 +355,7 @@ describe("AgentService: nothing happens without a yes", () => {
   it("sends nothing when AI is on but no account has consent for the runtime", async () => {
     const h = await build();
     await h.addMail(offerThread());
-    await h.settings.update({ enabled: true, runtimeId: "fake" });
+    await h.settings.update({ enabled: true, kindRuntime: everyKindOn("fake") });
     await h.pass();
     expect(h.runtime.calls).toEqual([]);
     expect(h.background.reads).toBe(0);
@@ -417,12 +425,12 @@ describe("AgentService: the runtime is tested before it gets any mail", () => {
     const props = (test?.schema as { properties?: object } | undefined)?.properties ?? {};
     expect(Object.keys(props)).toEqual(["verdicts"]);
     const status = await h.service.status();
-    expect(status.runtime?.status).toBe("ready");
+    expect(reading(status)?.status).toBe("ready");
     expect(await h.settings.getRuntimeRecord("fake")).toMatchObject({
       status: "ready",
       plan: "pro",
     });
-    expect((await h.settings.get()).limits?.week?.usedPercent).toBe(10);
+    expect(planUseOf(await h.settings.get(), "fake").limits?.week?.usedPercent).toBe(10);
     // Then the pass goes on to the views with a prompt, and ends.
     expect(h.background.reads).toBe(1);
     expect(status.progress).toEqual({ state: "idle" });
@@ -435,7 +443,7 @@ describe("AgentService: the runtime is tested before it gets any mail", () => {
     await h.pass();
     expect(h.runtime.calls.length).toBe(1);
     expect(h.runtime.calls[0]?.untrusted).toContain(TEST_PROMPT_QUOTE);
-    expect((await h.service.status()).runtime).toMatchObject({ status: "failed" });
+    expect(reading(await h.service.status())).toMatchObject({ status: "failed" });
     expect(await h.settings.getRuntimeRecord("fake")).toMatchObject({ status: "failed" });
     expect((await h.service.status()).progress).toMatchObject({ state: "off", reason: "runtime" });
     expect(h.background.reads).toBe(0);
@@ -452,19 +460,19 @@ describe("AgentService: the runtime is tested before it gets any mail", () => {
       h.runtime.handler = () => ({ value: testVerdict(over) });
       await h.service.inspect();
       const status = await h.service.testRuntime();
-      expect(status.runtime?.status, JSON.stringify(over)).toBe("failed");
+      expect(reading(status)?.status, JSON.stringify(over)).toBe("failed");
     }
     // A verdict with no quote proves nothing either.
     const h = await build();
     h.runtime.handler = () => ({ value: { verdicts: [{ thread: 1, fit: 2, why: "Yes." }] } });
     await h.service.inspect();
-    expect((await h.service.testRuntime()).runtime?.status).toBe("failed");
+    expect(reading(await h.service.testRuntime())?.status).toBe("failed");
   });
   it("does not run for a program that is missing or signed out", async () => {
     const h = await build();
     h.runtime.info = { ...h.runtime.info, status: "missing", problem: "not installed" };
     const status = await h.service.testRuntime();
-    expect(status.runtime?.status).toBe("missing");
+    expect(reading(status)?.status).toBe("missing");
     expect(h.runtime.calls).toEqual([]);
   });
 
@@ -489,9 +497,9 @@ describe("AgentService: the runtime is tested before it gets any mail", () => {
       visibleText,
       onChanged: () => {},
     });
-    expect((await again.inspect()).runtime?.status).toBe("ready");
+    expect(reading(await again.inspect())?.status).toBe("ready");
     h.runtime.info = { ...h.runtime.info, plan: "max" };
-    expect((await again.inspect()).runtime?.status).toBe("found");
+    expect(reading(await again.inspect())?.status).toBe("found");
   });
 
   it("stops everything and says so when the program is signed out", async () => {
@@ -502,7 +510,7 @@ describe("AgentService: the runtime is tested before it gets any mail", () => {
     await h.pass();
     expect(h.runtime.calls).toHaveLength(1);
     const status = await h.service.status();
-    expect(status.runtime?.status).toBe("signedOut");
+    expect(reading(status)?.status).toBe("signedOut");
     expect(status.progress).toMatchObject({ reason: "signedOut" });
     expect(h.background.reads).toBe(0);
     // It waits for the person: a later kick does not try again by itself.
@@ -517,7 +525,7 @@ describe("AgentService: the runtime is tested before it gets any mail", () => {
     answering(h.runtime, () => null);
     await h.service.inspect();
     await h.service.idle();
-    expect((await h.service.status()).runtime?.status).toBe("ready");
+    expect(reading(await h.service.status())?.status).toBe("ready");
     expect(h.background.reads).toBe(1);
   });
 
@@ -526,7 +534,7 @@ describe("AgentService: the runtime is tested before it gets any mail", () => {
     h.runtime.handler = () => new AgentRunError("notPlan", "no");
     await h.enable();
     await h.pass();
-    expect((await h.service.status()).runtime).toMatchObject({
+    expect(reading(await h.service.status())).toMatchObject({
       status: "signedOut",
       // A runtime the app has no plan's name for says the plan plainly (ADR 0120).
       problem: "The assistant is not using your plan.",
@@ -679,7 +687,7 @@ describe("AgentService: the budget", () => {
     await h.pass();
     await h.service.prepare("t1");
     await h.service.prepare("t2");
-    const s = await h.settings.get();
+    const s = planUseOf(await h.settings.get(), "fake");
     expect(s.limits?.week?.usedPercent).toBe(13);
     expect(s.usedByUsPercent).toBeCloseTo(3, 5);
     expect(s.usedWeekResetsAtMs).toBe(NOW + 3 * DAY);
@@ -692,7 +700,7 @@ describe("AgentService: the budget", () => {
       limits: { ...limits(5), week: { usedPercent: 5, resetsAtMs: NOW + 10 * DAY } },
     });
     await h.service.prepare("t3");
-    const later = await h.settings.get();
+    const later = planUseOf(await h.settings.get(), "fake");
     expect(later.usedByUsPercent).toBe(0);
     expect(later.usedWeekResetsAtMs).toBe(NOW + 10 * DAY);
   });
@@ -720,7 +728,7 @@ describe("AgentService: a new week", () => {
     await h.pass();
     await h.service.prepare("t1");
     await h.service.prepare("t2");
-    const s = await h.settings.get();
+    const s = planUseOf(await h.settings.get(), "fake");
     expect(s.usedWeekResetsAtMs).toBe(NOW + 10 * DAY);
     expect(s.usedByUsPercent).toBe(0);
   });
@@ -1142,7 +1150,7 @@ describe("AgentService: drafts", () => {
     await h.addMail(offerThread("t1"));
     await h.enable();
     await h.pass();
-    await h.settings.update({ limits: limits(100, 10) });
+    await h.settings.update({ plan: { runtimeId: "fake", limits: limits(100, 10) } });
     await expect(h.service.prepare("t1")).rejects.toBeInstanceOf(AgentUnavailableError);
   });
 
@@ -1327,7 +1335,7 @@ describe("AgentService: settings", () => {
     await h.pass();
     const status = await h.service.status();
     expect(status.settings.enabled).toBe(true);
-    expect(status.runtime).toMatchObject({
+    expect(reading(status)).toMatchObject({
       id: "fake",
       status: "ready",
       limits: { week: { usedPercent: 7 } },
@@ -1370,7 +1378,9 @@ describe("AgentService: the state of the pass, and the pause (ADR 0053, ADR 0117
     await h.addMail(offerThread("t1"));
     answering(h.runtime, () => null, limits(1, 1));
     await h.settings.update({
-      models: { understand: "small", write: "large", answer: "large", titles: "small" },
+      choices: {
+        fake: { models: { understand: "small", write: "large", answer: "large", titles: "small" } },
+      },
     });
     const seen: { test: boolean; state: string }[] = [];
     watching(h, async (request) => {
@@ -1487,7 +1497,7 @@ describe("AgentService: the state of the pass, and the pause (ADR 0053, ADR 0117
       await h.service.idle();
       expect(h.runtime.calls).toHaveLength(1);
       // The test that began has its result.
-      expect((await h.service.status()).runtime?.status).toBe("ready");
+      expect(reading(await h.service.status())?.status).toBe("ready");
       expect((await h.service.status()).progress).toEqual({
         state: "paused",
         reason: "pausedByPerson",
@@ -1729,7 +1739,7 @@ describe("AgentService: instructions and what writes them (ADR 0054, rules 7 to 
 
   it("skips quietly when the plan has no room for background work, and never retries", async () => {
     const h = await withReading();
-    await h.settings.update({ limits: limits(100, 10) });
+    await h.settings.update({ plan: { runtimeId: "fake", limits: limits(100, 10) } });
     expect((await h.service.remember("t1", WORDS)).items).toEqual([]);
     expect(rememberTurns(h)).toEqual([]);
     expect(await rememberLedger(h)).toEqual([]);
@@ -2044,9 +2054,9 @@ describe("AgentService: a talk about one thread (ADR 0064)", () => {
     await h.service.pauseReading();
     await h.service.testRuntime();
     await expect(h.service.talk("missing", WORDS)).rejects.toBeInstanceOf(ThingNotFoundError);
-    await h.settings.update({ limits: limits(100, 10) });
+    await h.settings.update({ plan: { runtimeId: "fake", limits: limits(100, 10) } });
     await expect(h.service.talk("t1", WORDS)).rejects.toBeInstanceOf(AgentUnavailableError);
-    await h.settings.update({ limits: limits(1, 1) });
+    await h.settings.update({ plan: { runtimeId: "fake", limits: limits(1, 1) } });
     await h.settings.revokeConsent("acc1");
     await expect(h.service.talk("t1", WORDS)).rejects.toBeInstanceOf(AgentUnavailableError);
     expect(talkCalls(h)).toEqual([]);
@@ -3491,12 +3501,12 @@ describe("AgentService: a talk across all mail (ADR 0064, rules 7 to 12; ADR 008
     for (const words of ["", "  ", "\n"]) {
       await expect(h.service.talkAll(words)).rejects.toBeInstanceOf(InvalidAgentSettingError);
     }
-    await h.settings.update({ limits: limits(100, 10) });
+    await h.settings.update({ plan: { runtimeId: "fake", limits: limits(100, 10) } });
     await expect(h.service.talkAll(WORDS)).rejects.toBeInstanceOf(AgentUnavailableError);
-    await h.settings.update({ limits: limits(1, 1) });
+    await h.settings.update({ plan: { runtimeId: "fake", limits: limits(1, 1) } });
     await h.settings.revokeConsent("acc1");
     await expect(h.service.talkAll(WORDS)).rejects.toMatchObject({
-      message: "This account has not been agreed to for the assistant.",
+      message: "No account has been agreed to for Fake. Choose one in Settings › Agents.",
     });
     expect(planCalls(h)).toEqual([]);
     expect(await talkLedger(h)).toEqual([]);
@@ -3855,7 +3865,7 @@ describe("AgentService: a talk across all mail (ADR 0064, rules 7 to 12; ADR 008
 
     it("names nothing and sends nothing while titles are off", async () => {
       const h = await ready();
-      await h.settings.update({ models: { ...(await h.settings.get()).models, titles: "off" } });
+      await h.settings.update({ choices: { fake: { models: { titles: "off" } } } });
       naming(h, { title: "Offer for Anna" });
       await h.service.talkAll(WORDS);
       for (let i = 0; i < 10; i++) await settle();
@@ -3865,7 +3875,7 @@ describe("AgentService: a talk across all mail (ADR 0064, rules 7 to 12; ADR 008
     it("names nothing when the runtime no longer offers the model for titles: no other in its place (ADR 0119, rule 4)", async () => {
       const h = await ready();
       await h.settings.update({
-        models: { ...(await h.settings.get()).models, understand: "small", titles: "gone" },
+        choices: { fake: { models: { understand: "small", titles: "gone" } } },
       });
       naming(h, { title: "Offer for Anna" });
       await h.service.talkAll(WORDS);

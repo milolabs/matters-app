@@ -7,6 +7,7 @@ import type {
   AgentModels,
   AgentRule,
   AgentStatus,
+  AgentWorkKind,
   AttachmentState,
   DeleteForeverResult,
   DiscoveredServers,
@@ -49,6 +50,7 @@ import type {
   SortRanked,
   StoppableSource,
   SyncStatus,
+  TalkChoice,
   TalkEntry,
   TalkResult,
   TalkSummary,
@@ -671,12 +673,13 @@ export interface AgentSetEnabledRequest {
 }
 
 /**
- * Chooses the runtime that runs the agent (ADR 0119, rule 2). It stops what runs on the one
- * before, sends nothing and agrees to nothing: consent stays per account and runtime.
+ * Moves kinds of work to a runtime (ADR 0121, rule 1). It stops what runs for those kinds, sends
+ * nothing and agrees to nothing: consent stays per account and runtime.
  */
-export interface AgentChooseRuntimeRequest {
-  readonly type: "agentChooseRuntime";
+export interface AgentSetKindRuntimeRequest {
+  readonly type: "agentSetKindRuntime";
   readonly requestId: RequestId;
+  readonly kinds: readonly AgentWorkKind[];
   readonly runtimeId: string;
 }
 
@@ -725,10 +728,14 @@ export interface AgentResumeReadingRequest {
   readonly requestId: RequestId;
 }
 
-/** The test with a made-up message (ADR 0051, rule 5). Never mail. */
+/**
+ * The test with a made-up message (ADR 0051, rule 5). Never mail. Of this runtime, or of every
+ * runtime in use without one (ADR 0121, rule 2).
+ */
 export interface AgentTestRuntimeRequest {
   readonly type: "agentTestRuntime";
   readonly requestId: RequestId;
+  readonly runtimeId?: string;
 }
 
 /** Prepares a draft for a thing, now. The person's direction and words go to the model as theirs. */
@@ -749,6 +756,8 @@ export interface AgentTalkRequest {
   readonly requestId: RequestId;
   readonly threadId: string;
   readonly words: string;
+  /** The runtime and model chosen in this talk (ADR 0121, rule 8); absent: the choice for writing. */
+  readonly choice?: TalkChoice;
 }
 
 /**
@@ -814,6 +823,8 @@ export interface AgentTalkAllRequest {
   readonly words: string;
   /** The talk it is asked in (ADR 0086); absent starts a new talk. */
   readonly talkId?: number;
+  /** The runtime and model chosen in this talk (ADR 0121, rule 8); absent: the choice for questions. */
+  readonly choice?: TalkChoice;
 }
 
 /** Cuts the running turn across all mail short. */
@@ -865,6 +876,8 @@ export interface AgentRevokeConsentRequest {
   readonly type: "agentRevokeConsent";
   readonly requestId: RequestId;
   readonly accountId: string;
+  /** Only this runtime's consent (ADR 0121, rule 4); absent: every runtime's. */
+  readonly runtimeId?: string;
 }
 
 /** Undo of the latest `agentFeedback` of this kind for the thread. */
@@ -972,7 +985,7 @@ export type BackendRequest =
   | AgentAddRuleRequest
   | AgentRemoveRuleRequest
   | AgentSetEnabledRequest
-  | AgentChooseRuntimeRequest
+  | AgentSetKindRuntimeRequest
   | AgentDisableRequest
   | AgentSetModelsRequest
   | AgentSetWeekShareRequest
@@ -1649,7 +1662,7 @@ export interface AgentStatusResponse {
   readonly type:
     | "agentStatus"
     | "agentSetEnabled"
-    | "agentChooseRuntime"
+    | "agentSetKindRuntime"
     | "agentDisable"
     | "agentRevokeConsent"
     | "agentSetModels"

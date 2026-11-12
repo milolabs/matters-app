@@ -10,6 +10,7 @@ import {
   effortFor,
   inputCharsFor,
   isAgentRunError,
+  kindsOn,
   LEGACY_RUNTIME_ID,
   levelsFor,
   MAX_PARALLEL_TURNS,
@@ -21,6 +22,7 @@ import {
   promptBatchChars,
   readAgentSettings,
   renderThread,
+  runtimesInUse,
   startingChoices,
   threadRoom,
   turnsAtOnce,
@@ -94,9 +96,15 @@ describe("mayRunOn and turnsAtOnce (rule 7)", () => {
     expect(turnsAtOnce({ turnsAtOnce: 0 })).toBe(1);
     expect(turnsAtOnce({ turnsAtOnce: Number.NaN })).toBe(MAX_PARALLEL_TURNS);
   });
+
+  it("is each runtime's own, so one with no plan does not hold back one on a plan (ADR 0121, rule 7)", () => {
+    const local = { noPlan: true, turnsAtOnce: 4 };
+    const plan = { turnsAtOnce: 3 };
+    expect([local, plan].map((r) => turnsAtOnce(r))).toEqual([1, 3]);
+  });
 });
 
-describe("settings read back in both shapes (rule 4)", () => {
+describe("settings read back in every shape (ADR 0119, rule 4; ADR 0121, rule 12)", () => {
   const flat = {
     enabled: true,
     runtimeId: "claude-code",
@@ -105,23 +113,29 @@ describe("settings read back in both shapes (rule 4)", () => {
     weekSharePercent: 25,
     usedByUsPercent: 3,
   };
+  const all = (id: string) => ({ understand: id, write: id, answer: id, titles: id });
 
   it("reads flat models and efforts from before as the choices of the runtime they name", () => {
     const s = readAgentSettings(flat);
     expect(s.models).toEqual(flat.models);
     expect(s.efforts).toEqual(flat.efforts);
     expect(s.choices).toEqual({ "claude-code": { models: flat.models, efforts: flat.efforts } });
-    expect(s).toMatchObject({ enabled: true, runtimeId: "claude-code", weekSharePercent: 25 });
+    expect(s).toMatchObject({
+      enabled: true,
+      kindRuntime: all("claude-code"),
+      weekSharePercent: 25,
+    });
+    expect("runtimeId" in s).toBe(false);
   });
 
-  it("reads them as Claude Code's when no runtime was chosen, and chooses none", () => {
+  it("reads them as Claude Code's when no runtime was chosen, and puts no kind anywhere", () => {
     const { runtimeId: _r, ...none } = flat;
     const s = readAgentSettings(none);
-    expect(s.runtimeId).toBeUndefined();
+    expect(s.kindRuntime).toEqual({});
     expect(s.choices?.[LEGACY_RUNTIME_ID]?.models).toEqual(flat.models);
   });
 
-  it("reads choices per runtime, and the chosen runtime's as models and efforts", () => {
+  it("reads one chosen runtime as every kind on it, with its own choices", () => {
     const stored = {
       ...flat,
       runtimeId: "ollama",
@@ -139,42 +153,91 @@ describe("settings read back in both shapes (rule 4)", () => {
       },
     };
     const s = readAgentSettings(stored);
+    expect(s.kindRuntime).toEqual(all("ollama"));
     expect(s.models.understand).toBe("qwen3:8b");
     expect(s.efforts.understand).toBe("default");
     expect(s.choices?.["claude-code"]?.models.write).toBe("opus");
   });
 
+  it("reads the stored windows and our use as the chosen runtime's plan (ADR 0121, rule 6)", () => {
+    const limits = { week: { usedPercent: 40, resetsAtMs: 9 }, usingOverage: false, seenAtMs: 5 };
+    const s = readAgentSettings({ ...flat, runtimeId: "codex", limits, usedWeekResetsAtMs: 9 });
+    expect(s.plans).toEqual({ codex: { limits, usedByUsPercent: 3, usedWeekResetsAtMs: 9 } });
+    expect("limits" in s || "usedByUsPercent" in s || "usedWeekResetsAtMs" in s).toBe(false);
+    // Settings with nothing used and nothing seen keep no plan.
+    expect(readAgentSettings({ ...flat, usedByUsPercent: 0 }).plans).toEqual({});
+  });
+
+  it("reads a runtime per kind, each kind's model from its runtime's choices", () => {
+    const s = readAgentSettings({
+      enabled: true,
+      kindRuntime: { understand: "ollama", write: "claude-code", answer: "codex", bogus: "x" },
+      choices: {
+        ollama: { models: { ...all("q"), titles: "off" } },
+        "claude-code": { models: flat.models, efforts: flat.efforts },
+      },
+      plans: { codex: { usedByUsPercent: 2 }, "": { usedByUsPercent: 9 } },
+    });
+    expect(s.kindRuntime).toEqual({ understand: "ollama", write: "claude-code", answer: "codex" });
+    expect(s.models).toEqual({
+      understand: "q",
+      write: "opus",
+      // Codex keeps nothing yet: the start, until the service gives it its own.
+      answer: DEFAULT_AGENT_MODELS.answer,
+      titles: DEFAULT_AGENT_MODELS.titles,
+    });
+    expect(s.efforts.write).toBe("max");
+    expect(s.plans).toEqual({ codex: { usedByUsPercent: 2 } });
+  });
+
   it("defends against values a build does not know", () => {
     const s = readAgentSettings({
       runtimeId: 5,
+      kindRuntime: { understand: 3, write: "" },
       choices: { "": { models: {} }, x: "no", ollama: { models: { write: 3 }, efforts: "high" } },
+      plans: "no",
     });
-    expect(s.runtimeId).toBeUndefined();
+    expect(s.kindRuntime).toEqual({});
     expect(Object.keys(s.choices ?? {})).toEqual(["ollama"]);
     expect(s.choices?.ollama).toEqual({
       models: DEFAULT_AGENT_MODELS,
       efforts: DEFAULT_AGENT_EFFORTS,
     });
+    expect(s.plans).toEqual({});
     expect(readAgentSettings(null)).toEqual(DEFAULT_AGENT_SETTINGS);
     expect(readAgentSettings([1])).toEqual(DEFAULT_AGENT_SETTINGS);
   });
 
-  it("writes models and efforts to the runtime the patch names, and reads another's back", () => {
-    let s = readAgentSettings(flat);
-    s = patchAgentSettings(s, {
-      runtimeId: "ollama",
-      models: { understand: "q", write: "q", answer: "q", titles: "q" },
+  it("moves a kind and keeps what every runtime holds; nothing is cleared (ADR 0121, rules 5, 6)", () => {
+    let s = readAgentSettings({
+      ...flat,
+      limits: { usingOverage: false, seenAtMs: 1 },
     });
-    expect(s.models.write).toBe("q");
-    expect(s.efforts).toEqual(DEFAULT_AGENT_EFFORTS);
-    s = patchAgentSettings(s, { runtimeId: "claude-code" });
+    s = patchAgentSettings(s, {
+      kindRuntime: { understand: "ollama" },
+      choices: { ollama: { models: all("q") } },
+    });
+    expect(s.models).toEqual({ ...flat.models, understand: "q" });
+    expect(s.efforts.understand).toBe(DEFAULT_AGENT_EFFORTS.understand);
+    expect(s.plans?.["claude-code"]?.limits).toEqual({ usingOverage: false, seenAtMs: 1 });
+    s = patchAgentSettings(s, { kindRuntime: { understand: "claude-code" } });
     expect(s.models).toEqual(flat.models);
     expect(s.efforts).toEqual(flat.efforts);
-    s = patchAgentSettings(s, { limits: { usingOverage: false, seenAtMs: 1 } });
-    s = patchAgentSettings(s, { limits: null });
-    expect("limits" in s).toBe(false);
+    s = patchAgentSettings(s, { plan: { runtimeId: "ollama", usedByUsPercent: 0 } });
+    s = patchAgentSettings(s, { plan: { runtimeId: "claude-code", limits: null } });
+    expect("limits" in (s.plans?.["claude-code"] ?? {})).toBe(false);
+    expect(s.choices?.ollama?.models).toEqual(all("q"));
     // What is written reads back the same.
     expect(readAgentSettings(JSON.parse(JSON.stringify(s)))).toEqual(s);
+  });
+
+  it("names the runtimes in use once each, in the order of the kinds", () => {
+    const s = patchAgentSettings(DEFAULT_AGENT_SETTINGS, {
+      kindRuntime: { understand: "ollama", write: "codex", answer: "ollama" },
+    });
+    expect(runtimesInUse(s)).toEqual(["ollama", "codex"]);
+    expect(kindsOn(s, "ollama")).toEqual(["understand", "answer"]);
+    expect(runtimesInUse(DEFAULT_AGENT_SETTINGS)).toEqual([]);
   });
 });
 
@@ -197,10 +260,16 @@ describe("startingChoices and unlistedKinds (rule 4)", () => {
     expect(startingChoices({ models: [] })).toBeNull();
   });
 
-  it("names the kinds whose model is not listed; titles off is not a model", () => {
+  it("names the kinds whose model their runtime does not list; titles off is not a model", () => {
     const models = { understand: "qwen3:8b", write: "gone", answer: "qwen3:8b", titles: "off" };
-    expect(unlistedKinds({ models }, { models: local })).toEqual(["write"]);
-    expect(unlistedKinds({ models }, null)).toEqual([]);
+    const kindRuntime = { understand: "ollama", write: "ollama", answer: "plan", titles: "ollama" };
+    const infos: Record<string, { models: readonly string[] }> = {
+      ollama: { models: local },
+      plan: { models: ["sonnet"] },
+    };
+    expect(unlistedKinds({ models, kindRuntime }, (id) => infos[id])).toEqual(["write", "answer"]);
+    expect(unlistedKinds({ models, kindRuntime }, () => null)).toEqual([]);
+    expect(unlistedKinds({ models, kindRuntime: {} }, (id) => infos[id])).toEqual([]);
   });
 });
 

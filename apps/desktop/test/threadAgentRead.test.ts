@@ -24,7 +24,10 @@ function setup(o: Setup = {}) {
     };
   const deps = {
     settings: {
-      get: note("settings", { enabled: o.enabled ?? true, runtimeId: "fake" }),
+      get: note("settings", {
+        enabled: o.enabled ?? true,
+        kindRuntime: { understand: "fake", write: "fake", answer: "fake", titles: "fake" },
+      }),
       listConsents: note(
         "consents",
         o.consented === false ? [] : [{ accountId: "acc1", runtimeId: "fake" }],

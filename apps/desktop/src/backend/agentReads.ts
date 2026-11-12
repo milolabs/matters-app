@@ -104,6 +104,16 @@ export async function senderHistory(
   return describeHistory(before, company === "" ? "sender" : "company");
 }
 
+/**
+ * Accounts that agreed to any runtime (ADR 0121, rule 4): what a talk shows of what went before,
+ * since each turn of it went to a runtime that its accounts agreed to. A read only: no mail goes.
+ */
+export async function accountsWithConsent(
+  deps: Pick<AgentReadDeps, "settings">,
+): Promise<ReadonlySet<string>> {
+  return new Set((await deps.settings.listConsents()).map((c) => c.accountId));
+}
+
 export async function consentedAccounts(
   deps: Pick<AgentReadDeps, "settings">,
   runtimeId: string | undefined,
@@ -157,7 +167,8 @@ export async function preparedFor(
 /**
  * What the agent already has for one ordinary thread (ADR 0063, as amended by ADR 0117): the work
  * prepared on request for the thread as it stands now, from the store alone. Nothing is read
- * beyond `available` while AI is off or the thread's account has no consent.
+ * beyond `available` while AI is off or the thread's account did not agree to the runtime for
+ * writing, where a turn about the thread goes (ADR 0121, rule 4).
  */
 export async function readThreadAgent(
   deps: AgentReadDeps,
@@ -168,7 +179,7 @@ export async function readThreadAgent(
   if (!settings.enabled) return none;
   const view = await deps.store.getThread(threadId, { visibleOnly: true });
   if (view === null) return none;
-  const consented = await consentedAccounts(deps, settings.runtimeId);
+  const consented = await consentedAccounts(deps, settings.kindRuntime.write);
   if (!consented.has(view.thread.accountId)) return none;
   const record = await deps.insights.getPrepared(threadId, view.thread.lastMessageKey);
   return { available: true, prepared: record?.work ?? null };
@@ -179,7 +190,7 @@ export const MAX_TALK_SHOWN = 200;
 
 /**
  * The talk about one thread, oldest first (ADR 0064, rule 13): a read of the store alone. Empty
- * while AI is off or the thread's account has no consent, like the rest of a thread's agent view.
+ * while AI is off or the thread's account agreed to no runtime.
  */
 export async function readTalk(
   deps: AgentReadDeps,
@@ -189,7 +200,7 @@ export async function readTalk(
   if (!settings.enabled) return [];
   const view = await deps.store.getThread(threadId, { visibleOnly: true });
   if (view === null) return [];
-  const consented = await consentedAccounts(deps, settings.runtimeId);
+  const consented = await accountsWithConsent(deps);
   if (!consented.has(view.thread.accountId)) return [];
   return deps.insights.listTalk(threadId, MAX_TALK_SHOWN);
 }
@@ -198,8 +209,8 @@ export async function readTalk(
  * A talk across all mail, oldest first (ADR 0064, rule 13; ADR 0086): a read of the store alone.
  * With `talkId`, that talk; without it, every entry across all mail. With `beforeId`, the page
  * before that entry (rule 13). Empty while AI is off or no account has consent. A hit or a quote
- * whose thread is gone, hidden, or of an account that has since lost its consent is left out, so a
- * removed thread never shows.
+ * whose thread is gone, hidden, or of an account that has since lost every consent is left out,
+ * so a removed thread never shows.
  */
 export async function readTalkAll(
   deps: AgentReadDeps,
@@ -208,7 +219,7 @@ export async function readTalkAll(
 ): Promise<readonly TalkEntry[]> {
   const settings = await deps.settings.get();
   if (!settings.enabled) return [];
-  const consented = await consentedAccounts(deps, settings.runtimeId);
+  const consented = await accountsWithConsent(deps);
   if (consented.size === 0) return [];
   const entries = await deps.insights.listTalk(null, MAX_TALK_SHOWN, {
     ...(talkId === undefined ? {} : { talkId }),
@@ -333,7 +344,7 @@ export async function readJournal(
 export async function readTalks(deps: AgentReadDeps): Promise<readonly TalkSummary[]> {
   const settings = await deps.settings.get();
   if (!settings.enabled) return [];
-  const consented = await consentedAccounts(deps, settings.runtimeId);
+  const consented = await accountsWithConsent(deps);
   if (consented.size === 0) return [];
   return (await deps.insights.listTalks()).filter((t) => t.entries > 0);
 }

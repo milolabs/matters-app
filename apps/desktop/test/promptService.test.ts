@@ -10,6 +10,7 @@ import type {
 } from "@matters/core";
 import {
   AgentRunError,
+  everyKindOn,
   MAX_FOLLOW_KEEP,
   MAX_PARALLEL_TURNS,
   MAX_PROMPT_BATCH_THREADS,
@@ -19,6 +20,7 @@ import {
   PROMPT_INSTRUCTIONS,
   PROMPT_SEARCH_INSTRUCTIONS,
   PROMPT_VERSION,
+  planUseOf,
 } from "@matters/core";
 import {
   createInMemoryStorage,
@@ -1226,22 +1228,28 @@ describe("a view with a prompt reads in the background (ADR 0117)", () => {
     // The plan is nearly used up: background work waits (ADR 0051, rule 7).
     const resetsAtMs = NOW + DAY;
     await h.settings.update({
-      limits: {
-        session: { usedPercent: 95, resetsAtMs },
-        week: { usedPercent: 10, resetsAtMs },
-        usingOverage: false,
-        seenAtMs: NOW,
+      plan: {
+        runtimeId: "fake",
+        limits: {
+          session: { usedPercent: 95, resetsAtMs },
+          week: { usedPercent: 10, resetsAtMs },
+          usingOverage: false,
+          seenAtMs: NOW,
+        },
       },
     });
     await h.pass();
     expect(runtime.of("verdicts")).toHaveLength(1);
 
     await h.settings.update({
-      limits: {
-        session: { usedPercent: 5, resetsAtMs },
-        week: { usedPercent: 10, resetsAtMs },
-        usingOverage: false,
-        seenAtMs: NOW,
+      plan: {
+        runtimeId: "fake",
+        limits: {
+          session: { usedPercent: 5, resetsAtMs },
+          week: { usedPercent: 10, resetsAtMs },
+          usingOverage: false,
+          seenAtMs: NOW,
+        },
       },
     });
     h.service.kick();
@@ -1350,11 +1358,14 @@ describe("a plan whose windows are read apart from turns (ADR 0120, rule 9)", ()
     await h.service.promptRun(PROMPT);
     // The windows as last read let the background run: the plan says no all the same.
     await h.settings.update({
-      limits: {
-        session: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
-        week: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
-        usingOverage: false,
-        seenAtMs: NOW,
+      plan: {
+        runtimeId: "fake",
+        limits: {
+          session: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
+          week: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
+          usingOverage: false,
+          seenAtMs: NOW,
+        },
       },
     });
     for (let i = 0; i < 25; i++) {
@@ -1428,7 +1439,7 @@ describe("a runtime with no plan reads in the background (ADR 0119, rule 7)", ()
     await h.pass();
     expect(runtime.of("verdicts").length - before).toBe(3);
     expect(most).toBe(1);
-    expect((await h.settings.get()).limits).toBeUndefined();
+    expect(planUseOf(await h.settings.get(), "fake").limits).toBeUndefined();
     // The ledger still says what went and at what effort.
     const lines = (await h.insights.listLedger(50)).filter((l) => l.purpose === "prompt");
     expect(lines.reduce((n, l) => n + l.threads, 0)).toBeGreaterThanOrEqual(26);
@@ -1470,7 +1481,7 @@ describe("a runtime with no plan reads in the background (ADR 0119, rule 7)", ()
     await h.addView("asks", PROMPT);
     await h.ready();
     await h.service.promptRun(PROMPT);
-    await h.settings.update({ limits: null });
+    await h.settings.update({ plan: { runtimeId: "fake", limits: null } });
     for (let i = 0; i < 3; i++) {
       await h.addMail(`o${i}`, ["Please decide by Friday"], {
         dayOffset: 1,
@@ -1483,11 +1494,14 @@ describe("a runtime with no plan reads in the background (ADR 0119, rule 7)", ()
     expect(runtime.of("verdicts").length - before).toBe(0);
     // Once the windows are known and have room, the same mail is read.
     await h.settings.update({
-      limits: {
-        session: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
-        week: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
-        usingOverage: false,
-        seenAtMs: NOW + 5 * DAY,
+      plan: {
+        runtimeId: "fake",
+        limits: {
+          session: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
+          week: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
+          usingOverage: false,
+          seenAtMs: NOW + 5 * DAY,
+        },
       },
     });
     await h.pass();
@@ -1523,7 +1537,7 @@ describe("the starter view (ADR 0117, rule 2)", () => {
   it("is added at the start when AI is already on, and not with no account agreed to", async () => {
     const runtime = new Responder();
     const h = await build(runtime, { starterViews: true });
-    await h.settings.update({ enabled: true, runtimeId: runtime.id });
+    await h.settings.update({ enabled: true, kindRuntime: everyKindOn(runtime.id) });
     await h.service.start();
     expect(await h.storage.views.list()).toEqual([]);
     await h.settings.grantConsent("acc1", runtime.id, NOW);

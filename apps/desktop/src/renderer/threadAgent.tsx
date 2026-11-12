@@ -1,5 +1,6 @@
 import type { ThreadMessage } from "@matters/contracts";
-import type { PreparedWork } from "@matters/core";
+import type { AgentStatus, PreparedWork } from "@matters/core";
+import { kindInfo } from "@matters/core";
 import { createMemo, Show } from "solid-js";
 import type { AgentStore } from "./agent.ts";
 import { AgentRing, DraftFrame, QuestionFrame } from "./agentLayer.tsx";
@@ -8,6 +9,10 @@ import { splitYours, writtenByLine } from "./agentText.ts";
 import { replyPromptName } from "./replyPrompt.ts";
 import type { ThreadAgentStore } from "./threadAgent.ts";
 import { pill, toolButton } from "./ui.ts";
+
+/** The runtime drafts are written on (ADR 0121, rule 1). */
+const writingRuntime = (status: AgentStatus | null) =>
+  status === null ? null : kindInfo(status, "write");
 
 // The agent in an ordinary thread (ADR 0063). It shows only where the agent can be asked here, and
 // everything it shows is the agent's: the dashed edge, the agent colour and the open ring. Model
@@ -153,7 +158,7 @@ function Draft(props: {
   const pieces = createMemo(() => splitYours(props.body, agent.givenFor(props.threadId)));
   const by = () =>
     writtenByLine(
-      agent.status()?.runtime ?? null,
+      writingRuntime(agent.status()),
       agent.status()?.settings.models ?? { understand: "", write: "", answer: "", titles: "" },
     );
   return (
@@ -179,7 +184,7 @@ function Question(props: {
   const { ta, agent } = props;
   const by = () =>
     writtenByLine(
-      agent.status()?.runtime ?? null,
+      writingRuntime(agent.status()),
       agent.status()?.settings.models ?? { understand: "", write: "", answer: "", titles: "" },
     );
   return (

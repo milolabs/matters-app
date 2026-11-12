@@ -95,7 +95,9 @@ describe("efforts in stored settings (ADR 0118, rule 8)", () => {
     const db = openDatabase(":memory:");
     try {
       db.prepare("INSERT INTO agent_settings (id, json) VALUES (1, ?)").run(JSON.stringify(json));
-      return await new SqliteAgentSettings(db).get();
+      // Settings from before name no runtime: what they hold is Claude Code's (ADR 0119, rule 4).
+      const s = await new SqliteAgentSettings(db).get();
+      return { efforts: s.choices?.["claude-code"]?.efforts };
     } finally {
       db.close();
     }

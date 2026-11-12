@@ -8,6 +8,7 @@
   with consent and choices per runtime; a runtime may have no plan)
 - Amended by: [0120](0120-codex-is-a-runtime.md) (a second runtime on a plan: Codex, on the
   person's ChatGPT plan, each turn closed; its windows read apart from turns)
+- Amended by: [0121](0121-a-runtime-for-each-kind-of-work.md) (rule 7: windows, shares and limits per runtime)
 
 ## Context
 

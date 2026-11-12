@@ -94,9 +94,10 @@ await startSyncRuntime({
   ...(config.seed ? { demo: new DemoMail() } : {}),
   agent: {
     // The runtimes the person chooses from (ADR 0119, rule 2): their own `claude` and `codex`,
-    // found on a PATH that also holds the usual install places, and Ollama on this machine. Only
-    // the chosen one ever runs a turn. A seeded demo run answers from canned facts instead, so it needs no
-    // model (and never starts a program or asks a server); the seed is guarded in main.ts.
+    // found on a PATH that also holds the usual install places, and Ollama on this machine. A turn
+    // runs only on the runtime of its kind of work (ADR 0121). A seeded demo run answers from
+    // canned facts instead, so it needs no model (and never starts a program or asks a server);
+    // the seed is guarded in main.ts.
     runtimes: config.seed
       ? [new DemoAgentRuntime()]
       : [

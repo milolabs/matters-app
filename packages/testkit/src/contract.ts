@@ -5526,6 +5526,7 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
     it("starts with AI off and the defaults", async () => {
       expect(await settings().get()).toEqual({
         enabled: false,
+        kindRuntime: {},
         models: {
           understand: "haiku",
           write: "sonnet",
@@ -5534,18 +5535,20 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
         },
         efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
         weekSharePercent: 10,
-        usedByUsPercent: 0,
       });
     });
 
-    it("keeps the efforts as a whole (ADR 0118)", async () => {
+    const allOn = (id: string) => ({ understand: id, write: id, answer: id, titles: id }) as const;
+
+    it("keeps the efforts of a runtime as a whole (ADR 0118)", async () => {
       const efforts = {
         understand: "medium",
         write: "max",
         answer: "default",
         titles: "xhigh",
       } as const;
-      await settings().update({ efforts });
+      await settings().update({ kindRuntime: allOn("claude-code") });
+      await settings().update({ choices: { "claude-code": { efforts } } });
       expect((await settings().get()).efforts).toEqual(efforts);
       await settings().update({ weekSharePercent: 25 });
       expect((await settings().get()).efforts).toEqual(efforts);
@@ -5554,18 +5557,18 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
     it("changes only the fields given, and returns the result", async () => {
       const next = await settings().update({
         enabled: true,
-        runtimeId: "claude-code",
+        kindRuntime: allOn("claude-code"),
       });
       expect(next).toMatchObject({
         enabled: true,
-        runtimeId: "claude-code",
+        kindRuntime: allOn("claude-code"),
         weekSharePercent: 10,
       });
       expect(await settings().get()).toEqual(next);
-      await settings().update({ weekSharePercent: 25 });
+      await settings().update({ weekSharePercent: 25, kindRuntime: { titles: "ollama" } });
       expect(await settings().get()).toMatchObject({
         enabled: true,
-        runtimeId: "claude-code",
+        kindRuntime: { ...allOn("claude-code"), titles: "ollama" },
         weekSharePercent: 25,
       });
     });
@@ -5580,13 +5583,13 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
       expect((await settings().get()).readingPaused).toBe(false);
     });
 
-    it("keeps the models as a whole and 'off' for titles", async () => {
+    it("keeps the models of a runtime and 'off' for titles", async () => {
+      await settings().update({ kindRuntime: allOn("claude-code") });
       await settings().update({
-        models: {
-          understand: "sonnet",
-          write: "opus",
-          answer: "sonnet",
-          titles: "off",
+        choices: {
+          "claude-code": {
+            models: { understand: "sonnet", write: "opus", answer: "sonnet", titles: "off" },
+          },
         },
       });
       expect((await settings().get()).models).toEqual({
@@ -5597,55 +5600,63 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
       });
     });
 
-    it("keeps models and efforts per runtime, and changing back loses nothing (ADR 0119, rule 4)", async () => {
+    it("keeps models and efforts per runtime, and moving a kind back loses nothing (ADR 0121, rule 5)", async () => {
       const local = { understand: "m1", write: "m1", answer: "m1", titles: "m1" };
       const low = { understand: "low", write: "low", answer: "low", titles: "low" } as const;
-      await settings().update({ runtimeId: "claude-code", models: { ...local, write: "opus" } });
-      await settings().update({ runtimeId: "ollama" });
-      // A runtime with no choices yet reads the starting values until it is given some.
-      expect((await settings().get()).models.understand).toBe("haiku");
-      await settings().update({ models: local, efforts: low });
-      expect(await settings().get()).toMatchObject({
-        runtimeId: "ollama",
-        models: local,
-        efforts: low,
+      await settings().update({
+        kindRuntime: allOn("claude-code"),
+        choices: { "claude-code": { models: { write: "opus" } } },
       });
-      await settings().update({ runtimeId: "claude-code" });
+      await settings().update({ kindRuntime: { understand: "ollama" } });
+      // A runtime with no choices yet reads the starting values until it is given some.
+      expect((await settings().get()).models).toMatchObject({ understand: "haiku", write: "opus" });
+      await settings().update({ choices: { ollama: { models: local, efforts: low } } });
+      expect(await settings().get()).toMatchObject({
+        kindRuntime: { ...allOn("claude-code"), understand: "ollama" },
+        models: { understand: "m1", write: "opus", answer: "sonnet", titles: "haiku" },
+        efforts: { understand: "low", write: "default" },
+      });
+      await settings().update({ kindRuntime: { understand: "claude-code", write: "ollama" } });
       const back = await settings().get();
-      expect(back.models).toEqual({ ...local, write: "opus" });
-      expect(back.efforts.write).toBe("default");
-      await settings().update({ runtimeId: "ollama" });
-      expect(await settings().get()).toMatchObject({ models: local, efforts: low });
-      expect(Object.keys((await settings().get()).choices ?? {}).sort()).toEqual([
-        "claude-code",
-        "ollama",
-      ]);
+      expect(back.models).toEqual({
+        understand: "haiku",
+        write: "m1",
+        answer: "sonnet",
+        titles: "haiku",
+      });
+      expect(back.efforts.write).toBe("low");
+      expect(Object.keys(back.choices ?? {}).sort()).toEqual(["claude-code", "ollama"]);
     });
 
     it("names talks with haiku by default (ADR 0086, rule 8)", async () => {
       expect((await settings().get()).models.titles).toBe("haiku");
     });
 
-    it("round-trips the plan's limits and clears them with null", async () => {
+    it("keeps the plan's limits per runtime and clears them with null (ADR 0121, rule 6)", async () => {
       const limits = {
         session: { usedPercent: 12.5, resetsAtMs: 1000 },
         week: { usedPercent: 40, resetsAtMs: 2000 },
         usingOverage: false,
         seenAtMs: 500,
       };
-      await settings().update({ limits, usedByUsPercent: 3.5, usedWeekResetsAtMs: 2000 });
-      expect(await settings().get()).toMatchObject({
-        limits,
-        usedByUsPercent: 3.5,
-        usedWeekResetsAtMs: 2000,
+      await settings().update({
+        plan: { runtimeId: "claude-code", limits, usedByUsPercent: 3.5, usedWeekResetsAtMs: 2000 },
+      });
+      await settings().update({ plan: { runtimeId: "codex", usedByUsPercent: 1 } });
+      expect((await settings().get()).plans).toEqual({
+        "claude-code": { limits, usedByUsPercent: 3.5, usedWeekResetsAtMs: 2000 },
+        codex: { usedByUsPercent: 1 },
       });
       const partial = { usingOverage: true, seenAtMs: 9 };
-      await settings().update({ limits: partial });
-      expect((await settings().get()).limits).toEqual(partial);
-      await settings().update({ limits: null, usedWeekResetsAtMs: null });
-      const cleared = await settings().get();
+      await settings().update({ plan: { runtimeId: "claude-code", limits: partial } });
+      expect((await settings().get()).plans?.["claude-code"]?.limits).toEqual(partial);
+      await settings().update({
+        plan: { runtimeId: "claude-code", limits: null, usedWeekResetsAtMs: null },
+      });
+      const cleared = (await settings().get()).plans?.["claude-code"] ?? {};
       expect("limits" in cleared).toBe(false);
       expect("usedWeekResetsAtMs" in cleared).toBe(false);
+      expect((await settings().get()).plans?.codex).toEqual({ usedByUsPercent: 1 });
     });
 
     it("records consent per account and runtime, and keeps the first time", async () => {

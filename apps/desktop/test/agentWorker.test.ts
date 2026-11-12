@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleText } from "@matters/adapter-mime";
 import { createSqliteReader, createSqliteStorage } from "@matters/adapter-sqlite";
-import type { MailConnectorPort } from "@matters/core";
+import type { AgentStatus, MailConnectorPort } from "@matters/core";
+import { kindInfo } from "@matters/core";
 import {
   FakeComposeRenderer,
   FakeFileWork,
@@ -155,10 +156,10 @@ describe("agents in the sync worker", () => {
     });
 
     await until(async () => {
-      const r = (await h.ask({ type: "agentStatus" })) as unknown as {
-        status: { progress: { state: string }; runtime: { status: string } | null };
-      };
-      return r.status.progress.state === "idle" && r.status.runtime?.status === "ready";
+      const r = (await h.ask({ type: "agentStatus" })) as unknown as { status: AgentStatus };
+      return (
+        r.status.progress.state === "idle" && kindInfo(r.status, "understand")?.status === "ready"
+      );
     }, "the runtime to be tested and the pass to end");
     expect(h.posted.some((m) => m.type === "agent")).toBe(true);
 

@@ -1,5 +1,6 @@
 import type { AccountInfo } from "@matters/contracts";
-import type { AgentStatus, LedgerEntry } from "@matters/core";
+import type { AgentStatus, AgentWorkKind, LedgerEntry } from "@matters/core";
+import { AGENT_WORK_KINDS, choicesOn, kindInfo, runtimeInfo, runtimesInUse } from "@matters/core";
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { AccountsStore } from "./accounts.ts";
 import { createInstructions, createJournal, createRules } from "./agent.ts";
@@ -8,7 +9,7 @@ import {
   ConsentQuestion,
   Limits,
   NotYet,
-  RuntimeChoice,
+  RuntimeList,
   WhatDoesWhat,
 } from "./agentConnect.tsx";
 import {
@@ -27,6 +28,18 @@ import { field, pill, pillPrimary } from "./ui.ts";
 
 const row = "border-b border-hairline px-5 py-3";
 const heading = "mb-2 font-semibold";
+
+/**
+ * Whether Settings offers the search in a loop (ADR 0083): a question runs it on the model its
+ * runtime keeps for writing, and a prompt's search on the one the runtime for understanding mail
+ * keeps (ADR 0121, rule 1). Offered when either can use our tools.
+ */
+function loopOfferedFor(status: AgentStatus): boolean {
+  return (["answer", "understand"] as const).some((kind) => {
+    const id = status.settings.kindRuntime[kind];
+    return loopOffered(kindInfo(status, kind), choicesOn(status.settings, id).models.write);
+  });
+}
 
 /** What a line of the ledger says, in words. */
 export function ledgerWords(entry: LedgerEntry): string {
@@ -92,13 +105,27 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
     void journal.load();
   }
   const [looking, setLooking] = createSignal(true);
-  const [checking, setChecking] = createSignal(false);
+  // The runtime being checked, and the one whose check failed with its sentence.
+  const [checking, setChecking] = createSignal<string | null>(null);
+  const [checkFailed, setCheckFailed] = createSignal<{
+    readonly runtimeId: string;
+    readonly problem: string;
+  } | null>(null);
   const [failure, setFailure] = createSignal("");
   const [problem, setProblem] = createSignal("");
-  // The account whose consent is being asked for, and whether the turn-on flow is open.
-  const [consenting, setConsenting] = createSignal<string | null>(null);
+  // The account and runtime whose consent is being asked for, and whether the turn-on flow is open.
+  const [consenting, setConsenting] = createSignal<{
+    readonly accountId: string;
+    readonly runtimeId: string;
+  } | null>(null);
   const [turningOn, setTurningOn] = createSignal(false);
   const [picked, setPicked] = createSignal<ReadonlySet<string> | null>(null);
+  // A kind of work moving to a runtime that some of its accounts have not agreed to (rule 4).
+  const [moving, setMoving] = createSignal<{
+    readonly kind: AgentWorkKind;
+    readonly runtimeId: string;
+    readonly accounts: readonly AccountInfo[];
+  } | null>(null);
 
   async function look() {
     setLooking(true);
@@ -144,40 +171,29 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
     }
   }
 
-  const [choosing, setChoosing] = createSignal(false);
-  /** The person picks a runtime (ADR 0119, rule 2): nothing is sent, nothing is agreed to. */
-  async function choose(runtimeId: string) {
-    if (choosing() || status()?.settings.runtimeId === runtimeId) return;
-    setChoosing(true);
-    setFailure("");
-    setConsenting(null);
-    setTurningOn(false);
+  /** The test of one runtime with a made-up message; any runtime, in use or not (rule 2). */
+  async function check(runtimeId: string) {
+    setChecking(runtimeId);
+    setCheckFailed(null);
     try {
-      await order.settle(props.backend.agentChooseRuntime(runtimeId), setStatus);
-    } catch (e) {
-      setProblem(e instanceof Error ? e.message : "That did not work.");
-    } finally {
-      setChoosing(false);
-    }
-  }
-
-  async function check() {
-    setChecking(true);
-    setFailure("");
-    try {
-      const next = await order.settle(props.backend.agentTestRuntime(), setStatus);
-      if (next.runtime?.status === "failed") {
-        setFailure(next.runtime.problem ?? "The check did not pass.");
+      const next = await order.settle(props.backend.agentTestRuntime(runtimeId), setStatus);
+      const info = runtimeInfo(next, runtimeId);
+      if (info?.status === "failed") {
+        setCheckFailed({ runtimeId, problem: info.problem ?? "The check did not pass." });
       }
     } catch {
-      setFailure("The check did not finish. Nothing was sent.");
+      setCheckFailed({ runtimeId, problem: "The check did not finish. Nothing was sent." });
     } finally {
-      setChecking(false);
+      setChecking(null);
     }
   }
 
   const enabled = () => status()?.settings.enabled === true;
-  const consented = (id: string) => status()?.consents.some((c) => c.accountId === id) === true;
+  const inUse = () => runtimesInUse(status()?.settings ?? { kindRuntime: {} });
+  const nameOf = (runtimeId: string | undefined) =>
+    status()?.runtimes.find((r) => r.id === runtimeId)?.name ?? runtimeId ?? "";
+  const agreed = (accountId: string, runtimeId: string) =>
+    status()?.consents.some((c) => c.accountId === accountId && c.runtimeId === runtimeId) === true;
   const addressOf = (id: string) => props.accounts.accounts().find((a) => a.id === id)?.address;
   const selection = createMemo<readonly AccountInfo[]>(() => {
     const chosen = picked();
@@ -191,6 +207,37 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
     else next.add(id);
     setPicked(next);
   }
+
+  /**
+   * The person moves a kind of work to another runtime (ADR 0121, rule 1). The accounts its mail
+   * comes from that have not agreed to that runtime are asked first (rule 4); while no kind is on
+   * any runtime, every kind goes there (rule 12).
+   */
+  function moveKind(kind: AgentWorkKind, runtimeId: string) {
+    const s = status();
+    if (s === null) return;
+    setMoving(null);
+    const none = runtimesInUse(s.settings).length === 0;
+    const kinds = none ? AGENT_WORK_KINDS : [kind];
+    // The accounts the agent works with at all: those that agreed to some runtime. Asking only
+    // those of the runtime the kind is on now would move it in silence when that one has none,
+    // and the kind would then wait with nobody asked.
+    const works = (id: string) => s.consents.some((c) => c.accountId === id);
+    const asked = s.settings.enabled
+      ? props.accounts.accounts().filter((a) => works(a.id) && !agreed(a.id, runtimeId))
+      : [];
+    if (asked.length > 0) {
+      setMoving({ kind, runtimeId, accounts: asked });
+      return;
+    }
+    void change(props.backend.agentSetKindRuntime(kinds, runtimeId));
+  }
+
+  /** Whether a runtime can be agreed to now: it is ready, or checked once agreed. */
+  const canAgree = (runtimeId: string) => {
+    const state = status()?.runtimes.find((r) => r.id === runtimeId)?.info?.status;
+    return state === "ready" || state === "found";
+  };
 
   return (
     <section aria-label="Agents" class="flex h-full flex-col">
@@ -209,13 +256,11 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
             }
           >
             {(s) => (
-              <RuntimeChoice
+              <RuntimeList
                 status={s()}
                 checking={checking()}
-                {...(failure() !== "" ? { checkFailed: failure() } : {})}
-                choosing={choosing()}
-                onChoose={(id) => void choose(id)}
-                onCheck={() => void check()}
+                {...(checkFailed() === null ? {} : { checkFailed: checkFailed() ?? undefined })}
+                onCheck={(id) => void check(id)}
                 onLookAgain={() => void look()}
               />
             )}
@@ -233,13 +278,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
         <Show when={status()}>
           {(s) => (
             <>
-              <Show
-                when={
-                  s().runtime &&
-                  s().runtime?.status !== "missing" &&
-                  (s().runtime?.models.length ?? 0) > 0
-                }
-              >
+              <Show when={s().runtimes.some((r) => (r.info?.models.length ?? 0) > 0)}>
                 <div class={row}>
                   <WhatDoesWhat
                     status={s()}
@@ -247,7 +286,35 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                     onChange={(models, efforts) =>
                       void change(props.backend.agentSetModels(models, efforts))
                     }
+                    onRuntime={moveKind}
                   />
+                  <Show when={moving()}>
+                    {(m) => (
+                      <div
+                        class="mt-3 rounded-[10px] border border-hairline p-3.5"
+                        data-move-consent={m().runtimeId}
+                      >
+                        <ConsentQuestion
+                          backend={props.backend}
+                          status={s()}
+                          accounts={m().accounts}
+                          runtimeIds={[m().runtimeId]}
+                          kinds={[m().kind]}
+                          startLabel={`Agree and move to ${nameOf(m().runtimeId)}`}
+                          declineLabel={`Keep on ${nameOf(s().settings.kindRuntime[m().kind])}`}
+                          onStatus={setStatus}
+                          onStarted={(next) => {
+                            setStatus(next);
+                            setMoving(null);
+                            void change(
+                              props.backend.agentSetKindRuntime([m().kind], m().runtimeId),
+                            );
+                          }}
+                          onDeclined={() => setMoving(null)}
+                        />
+                      </div>
+                    )}
+                  </Show>
                 </div>
               </Show>
               <div class={row}>
@@ -256,8 +323,14 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                   idPrefix="settings"
                   onWeekShare={(percent) => void change(props.backend.agentSetWeekShare(percent))}
                 />
-                <Show when={enabled() && !hasNoPlan(s().runtime)}>
-                  <p class="mt-3 text-[12px] text-secondary">{ourShare(s())}</p>
+                <Show when={enabled()}>
+                  <For each={inUse().filter((id) => !hasNoPlan(runtimeInfo(s(), id)))}>
+                    {(id) => (
+                      <p class="mt-3 text-[12px] text-secondary" data-our-share={id}>
+                        {ourShare(s(), id)}
+                      </p>
+                    )}
+                  </For>
                 </Show>
                 <Show when={enabled()}>
                   <label
@@ -285,7 +358,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                     </span>
                   </label>
                 </Show>
-                <Show when={enabled() && loopOffered(s().runtime, s().settings.models.write)}>
+                <Show when={enabled() && loopOfferedFor(s())}>
                   <label
                     class="mt-3 flex cursor-default items-start gap-2.5 text-[13px]"
                     data-talk-loop
@@ -304,7 +377,8 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                         The agent searches, reads and searches again, and shows each step. It reads
                         whole threads, and the files attached to them too (PDF, Word and text files,
                         up to five a question): their text goes to the assistant.{" "}
-                        {wholeFilesText(s().runtime)} It takes longer and uses more of your plan.
+                        {wholeFilesText(kindInfo(s(), "answer"))} It takes longer and uses more of
+                        your plan.
                       </span>
                     </span>
                   </label>
@@ -326,9 +400,9 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                         <button
                           type="button"
                           class={pillPrimary}
-                          disabled={s().runtime?.status !== "ready"}
+                          disabled={!inUse().some((id) => runtimeInfo(s(), id)?.status === "ready")}
                           title={
-                            s().runtime?.status === "ready"
+                            inUse().some((id) => runtimeInfo(s(), id)?.status === "ready")
                               ? undefined
                               : "Check the assistant above first"
                           }
@@ -360,6 +434,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                         backend={props.backend}
                         status={s()}
                         accounts={selection()}
+                        runtimeIds={inUse().filter((id) => canAgree(id))}
                         declineLabel="Leave AI off"
                         onStatus={setStatus}
                         onStarted={(next) => {
@@ -373,46 +448,75 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                 }
               >
                 <div class={row} data-consents>
-                  <h3 class={heading}>Accounts the assistant may read</h3>
+                  <h3 class={heading}>Which account goes where</h3>
                   <ul class="m-0 flex list-none flex-col gap-2 p-0">
                     <For each={props.accounts.accounts()}>
                       {(a) => (
-                        <li class="flex flex-col gap-3">
-                          <label class="flex cursor-default items-center gap-2.5 text-[13px]">
-                            <input
-                              type="checkbox"
-                              checked={consented(a.id) || consenting() === a.id}
-                              disabled={status()?.runtime?.status !== "ready"}
-                              onChange={(e) => {
-                                if (e.currentTarget.checked) setConsenting(a.id);
-                                else {
-                                  setConsenting(null);
-                                  void change(props.backend.agentRevokeConsent(a.id));
-                                }
-                              }}
-                            />
-                            {a.address}
-                          </label>
-                          <Show when={consenting() === a.id && !consented(a.id)}>
-                            <div class="rounded-[10px] border border-hairline p-3.5">
-                              <ConsentQuestion
-                                backend={props.backend}
-                                status={s()}
-                                accounts={[a]}
-                                declineLabel="Not this account"
-                                onStatus={setStatus}
-                                onStarted={(next) => {
-                                  setStatus(next);
-                                  setConsenting(null);
-                                }}
-                                onDeclined={() => setConsenting(null)}
-                              />
-                            </div>
+                        <li class="flex flex-col gap-3" data-consent-account={a.id}>
+                          <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px]">
+                            <span class="min-w-0 flex-1 truncate">{a.address}</span>
+                            <For each={inUse()}>
+                              {(id) => (
+                                <label
+                                  class="flex cursor-default items-center gap-1.5 text-[12.5px]"
+                                  data-consent-runtime={id}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={
+                                      agreed(a.id, id) ||
+                                      (consenting()?.accountId === a.id &&
+                                        consenting()?.runtimeId === id)
+                                    }
+                                    disabled={!canAgree(id) && !agreed(a.id, id)}
+                                    onChange={(e) => {
+                                      if (e.currentTarget.checked) {
+                                        setConsenting({ accountId: a.id, runtimeId: id });
+                                      } else {
+                                        setConsenting(null);
+                                        void change(props.backend.agentRevokeConsent(a.id, id));
+                                      }
+                                    }}
+                                  />
+                                  {nameOf(id)}
+                                </label>
+                              )}
+                            </For>
+                          </div>
+                          <Show
+                            when={
+                              consenting()?.accountId === a.id &&
+                              !agreed(a.id, consenting()?.runtimeId ?? "")
+                                ? consenting()
+                                : null
+                            }
+                          >
+                            {(c) => (
+                              <div class="rounded-[10px] border border-hairline p-3.5">
+                                <ConsentQuestion
+                                  backend={props.backend}
+                                  status={s()}
+                                  accounts={[a]}
+                                  runtimeIds={[c().runtimeId]}
+                                  declineLabel="Not this account"
+                                  onStatus={setStatus}
+                                  onStarted={(next) => {
+                                    setStatus(next);
+                                    setConsenting(null);
+                                  }}
+                                  onDeclined={() => setConsenting(null)}
+                                />
+                              </div>
+                            )}
                           </Show>
                         </li>
                       )}
                     </For>
                   </ul>
+                  <p class="mt-2 text-[12px] text-secondary">
+                    An assistant reads only the accounts agreed to it. Its work leaves the others
+                    out.
+                  </p>
                   <div class="mt-4 flex items-center gap-3">
                     <button
                       type="button"
@@ -672,6 +776,8 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                             <span class="text-secondary">
                               {" · "}
                               {addressOf(entry.accountId) ?? "an account that was removed"}
+                              {" · "}
+                              {nameOf(entry.runtimeId)}
                             </span>
                           </span>
                           <span class="text-secondary tabular-nums">

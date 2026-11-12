@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { DEFAULT_AGENT_MODELS } from "@matters/core";
 import { describe, expect, it } from "vitest";
 import {
   LATEST_SCHEMA_VERSION,
@@ -11,8 +12,9 @@ import {
   schemaVersion,
 } from "../src/index.ts";
 
-// ADR 0119, rule 4: models and efforts are kept per runtime. Settings stored before read as the
-// choices of the runtime they name, and are written back in the new shape.
+// ADR 0119, rule 4: models and efforts are kept per runtime. ADR 0121: a runtime per kind of work.
+// Settings stored before read as the choices of the runtime they name, every kind on it, and are
+// written back in the new shape.
 
 const stored = async (json: unknown, work?: (s: SqliteAgentSettings) => Promise<void>) => {
   const db = openDatabase(":memory:");
@@ -38,28 +40,36 @@ const old = {
   usedByUsPercent: 0,
 };
 
-describe("choices per runtime in stored settings (ADR 0119, rule 4)", () => {
-  it("reads flat settings from before as the chosen runtime's, and writes the new shape", async () => {
-    const { read, raw } = await stored(old, async (s) => {
-      await s.update({ runtimeId: "ollama" });
-      await s.update({ models: { understand: "q", write: "q", answer: "q", titles: "q" } });
+const all = (id: string) => ({ understand: id, write: id, answer: id, titles: id });
+
+describe("choices per runtime in stored settings (ADR 0119, rule 4; ADR 0121, rule 12)", () => {
+  it("reads one chosen runtime from before as every kind on it, and writes the new shape", async () => {
+    const limits = { week: { usedPercent: 20, resetsAtMs: 50 }, usingOverage: false, seenAtMs: 4 };
+    const { read, raw } = await stored({ ...old, limits, usedByUsPercent: 2 }, async (s) => {
+      await s.update({ kindRuntime: { understand: "ollama" } });
+      await s.update({ choices: { ollama: { models: all("q") } } });
     });
-    expect(read.models.write).toBe("q");
+    expect(read.kindRuntime).toEqual({ ...all("claude-code"), understand: "ollama" });
+    expect(read.models).toEqual({ ...old.models, understand: "q" });
+    expect(read.plans).toEqual({ "claude-code": { limits, usedByUsPercent: 2 } });
     expect(
       (raw.choices as Record<string, { models: { write: string } }>)["claude-code"]?.models.write,
     ).toBe("opus");
+    for (const key of ["runtimeId", "limits", "usedByUsPercent"]) expect(key in raw).toBe(false);
     const back = await stored(raw, async (s) => {
-      await s.update({ runtimeId: "claude-code" });
+      await s.update({ kindRuntime: { understand: "claude-code" } });
     });
     expect(back.read.models).toEqual(old.models);
     expect(back.read.efforts).toEqual(old.efforts);
+    expect(back.read.plans?.["claude-code"]?.limits).toEqual(limits);
   });
 
-  it("reads flat settings that chose no runtime as Claude Code's, and chooses none", async () => {
+  it("reads flat settings that chose no runtime as Claude Code's, and puts no kind on any", async () => {
     const { runtimeId: _r, ...none } = old;
     const { read } = await stored(none);
-    expect(read.runtimeId).toBeUndefined();
-    expect(read.models).toEqual(old.models);
+    expect(read.kindRuntime).toEqual({});
+    // No kind is on a runtime: the start shows until one is, and Claude Code's are kept for it.
+    expect(read.models).toEqual(DEFAULT_AGENT_MODELS);
     expect(read.choices?.["claude-code"]?.models).toEqual(old.models);
   });
 });

@@ -222,7 +222,10 @@ describe("the prompt in the bar (rules 1 and 11)", () => {
 
   it("says AI is off, or that nothing is shared, and where to change it", () => {
     const status = (consents: AgentStatus["consents"]) =>
-      ({ settings: { runtimeId: "claude-code" }, consents }) as unknown as AgentStatus;
+      ({
+        settings: { kindRuntime: { understand: "claude-code" } },
+        consents,
+      }) as unknown as AgentStatus;
     expect(promptOff(false, null)).toBe("off");
     expect(promptOff(true, null)).toBeNull();
     expect(promptOff(true, status([]))).toBe("noConsent");

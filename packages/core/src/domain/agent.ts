@@ -557,6 +557,15 @@ export type TalkEntry = TalkYouEntry | TalkAgentEntry;
 /** An entry as it is given to the store, which assigns the id. */
 export type NewTalkEntry = Omit<TalkYouEntry, "id"> | Omit<TalkAgentEntry, "id">;
 
+/**
+ * The runtime and model one talk runs on, chosen in that talk (ADR 0121, rule 8). It changes that
+ * talk only; without it a talk runs on the choice for its kind of work.
+ */
+export interface TalkChoice {
+  readonly runtimeId: AgentRuntimeId;
+  readonly model: string;
+}
+
 /** The two entries one turn adds: the person's words, then the answer. */
 export interface TalkResult {
   readonly entries: readonly TalkEntry[];
@@ -906,29 +915,56 @@ export interface AgentChoices {
   readonly efforts: AgentEfforts;
 }
 
-export interface AgentSettings {
-  /** AI is off until the person turns it on. */
-  readonly enabled: boolean;
-  /** The runtime they chose; absent while none is. Only this runtime ever runs a turn (ADR 0119, rule 3). */
-  readonly runtimeId?: AgentRuntimeId;
-  /** The models of the chosen runtime: `choices` of `runtimeId` (ADR 0119, rule 4). */
-  readonly models: AgentModels;
-  /** The efforts of the chosen runtime (ADR 0118); stored settings without it read as the start. */
-  readonly efforts: AgentEfforts;
-  /**
-   * The choices kept for each runtime, so changing the runtime and changing back loses nothing
-   * (ADR 0119, rule 4). A runtime with no entry has not started yet: the service gives it its
-   * starting choices when it lists models.
-   */
-  readonly choices?: Readonly<Record<AgentRuntimeId, AgentChoices>>;
-  /** Share of the plan's week that background work may use, in percent (ADR 0051, rule 7). */
-  readonly weekSharePercent: number;
+/**
+ * The runtime of each kind of work (ADR 0121, rule 1). A kind it does not name has no runtime and
+ * runs nothing; until the person chooses otherwise every kind is on the first runtime they connect
+ * (rule 12).
+ */
+export type KindRuntimes = Readonly<Partial<Record<AgentWorkKind, AgentRuntimeId>>>;
+
+/**
+ * What one runtime's plan showed and what we used of it (ADR 0051, rule 7; ADR 0121, rule 6). A
+ * runtime with no plan keeps none.
+ */
+export interface PlanUse {
   /** The plan's windows as last seen. */
   readonly limits?: PlanLimits;
   /** How much of the plan's week our own runs have used, in percent of the week. */
   readonly usedByUsPercent: number;
   /** The reset time of the week `usedByUsPercent` was counted in; a different one starts it again. */
   readonly usedWeekResetsAtMs?: number;
+}
+
+export const NO_PLAN_USE: PlanUse = { usedByUsPercent: 0 };
+
+export interface AgentSettings {
+  /** AI is off until the person turns it on. */
+  readonly enabled: boolean;
+  /**
+   * The runtime of each kind of work (ADR 0121, rule 1). A turn runs on the runtime of its kind
+   * and on no other (rule 3). Empty while none is chosen.
+   */
+  readonly kindRuntime: KindRuntimes;
+  /**
+   * The model each kind of work runs on: what its runtime keeps for it in `choices` (ADR 0121,
+   * rule 5), or the start while it keeps nothing. Read from `choices`; a patch sets `choices`.
+   */
+  readonly models: AgentModels;
+  /** The effort of each kind of work on its runtime (ADR 0118), read the same way. */
+  readonly efforts: AgentEfforts;
+  /**
+   * The choices kept for each runtime, so moving a kind and moving it back loses nothing (ADR
+   * 0119, rule 4; ADR 0121, rule 5). A runtime with no entry has not started yet: the service gives
+   * it its starting choices when it lists models.
+   */
+  readonly choices?: Readonly<Record<AgentRuntimeId, AgentChoices>>;
+  /**
+   * Share of the plan's week that background work may use, in percent (ADR 0051, rule 7). One
+   * setting, applied to each plan by itself (ADR 0121, rule 6).
+   */
+  readonly weekSharePercent: number;
+  /** The windows and our use of each runtime's plan (ADR 0121, rule 6). */
+  readonly plans?: Readonly<Record<AgentRuntimeId, PlanUse>>;
   /**
    * The person stopped the reading in the background (ADR 0053, rule 8; ADR 0117, rule 3). It
    * lasts until they continue it, across restarts. Absent in settings stored before it existed,
@@ -949,10 +985,10 @@ export interface AgentSettings {
 
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   enabled: false,
+  kindRuntime: {},
   models: DEFAULT_AGENT_MODELS,
   efforts: DEFAULT_AGENT_EFFORTS,
   weekSharePercent: DEFAULT_WEEK_SHARE_PERCENT,
-  usedByUsPercent: 0,
 };
 
 /**
@@ -961,12 +997,61 @@ export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
  */
 export const LEGACY_RUNTIME_ID = "claude-code";
 
-/** The key of the choices of the runtime the settings name. */
-function choiceKey(runtimeId: AgentRuntimeId | undefined): AgentRuntimeId {
-  return runtimeId ?? LEGACY_RUNTIME_ID;
+const MAX_MODEL_NAME = 128;
+const MAX_RUNTIME_ID = 64;
+
+const isRuntimeId = (value: unknown): value is AgentRuntimeId =>
+  typeof value === "string" && value.length > 0 && value.length <= MAX_RUNTIME_ID;
+
+/** The runtime of a kind of work, or none (ADR 0121, rule 1). */
+export function runtimeOfKind(
+  settings: Pick<AgentSettings, "kindRuntime">,
+  kind: AgentWorkKind,
+): AgentRuntimeId | undefined {
+  return settings.kindRuntime[kind];
 }
 
-const MAX_MODEL_NAME = 128;
+/** Every kind of work on one runtime: where they start (ADR 0121, rule 12). */
+export function everyKindOn(runtimeId: AgentRuntimeId): KindRuntimes {
+  return Object.fromEntries(AGENT_WORK_KINDS.map((k) => [k, runtimeId]));
+}
+
+/** The runtimes a kind names, each once, in the order of the kinds (ADR 0121, rule 2). */
+export function runtimesInUse(
+  settings: Pick<AgentSettings, "kindRuntime">,
+): readonly AgentRuntimeId[] {
+  const out: AgentRuntimeId[] = [];
+  for (const kind of AGENT_WORK_KINDS) {
+    const id = settings.kindRuntime[kind];
+    if (id !== undefined && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** The kinds of work on a runtime, in their order. */
+export function kindsOn(
+  settings: Pick<AgentSettings, "kindRuntime">,
+  runtimeId: AgentRuntimeId,
+): readonly AgentWorkKind[] {
+  return AGENT_WORK_KINDS.filter((k) => settings.kindRuntime[k] === runtimeId);
+}
+
+/** What a runtime keeps for every kind of work, or the start while it keeps nothing (rule 5). */
+export function choicesOn(
+  settings: Pick<AgentSettings, "choices">,
+  runtimeId: AgentRuntimeId | undefined,
+): AgentChoices {
+  const kept = runtimeId === undefined ? undefined : settings.choices?.[runtimeId];
+  return kept ?? { models: DEFAULT_AGENT_MODELS, efforts: DEFAULT_AGENT_EFFORTS };
+}
+
+/** What a runtime's plan showed and what we used of it (ADR 0121, rule 6). */
+export function planUseOf(
+  settings: Pick<AgentSettings, "plans">,
+  runtimeId: AgentRuntimeId | undefined,
+): PlanUse {
+  return (runtimeId === undefined ? undefined : settings.plans?.[runtimeId]) ?? NO_PLAN_USE;
+}
 
 /** Models read back from stored settings: a kind missing or not a short string keeps its start. */
 function readModels(raw: unknown): AgentModels {
@@ -989,18 +1074,87 @@ function readChoices(raw: unknown): Record<AgentRuntimeId, AgentChoices> | undef
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
   const out: Record<AgentRuntimeId, AgentChoices> = {};
   for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (id.length === 0 || id.length > 64 || typeof value !== "object" || value === null) continue;
+    if (!isRuntimeId(id) || typeof value !== "object" || value === null) continue;
     const v = value as Record<string, unknown>;
     out[id] = { models: readModels(v.models), efforts: readEfforts(v.efforts) };
   }
   return out;
 }
 
+function readKindRuntime(raw: unknown): Partial<Record<AgentWorkKind, AgentRuntimeId>> {
+  const out: Partial<Record<AgentWorkKind, AgentRuntimeId>> = {};
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return out;
+  const stored = raw as Record<string, unknown>;
+  for (const kind of AGENT_WORK_KINDS) {
+    const id = stored[kind];
+    if (isRuntimeId(id)) out[kind] = id;
+  }
+  return out;
+}
+
+function readLimits(raw: unknown): PlanLimits | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const l = raw as Partial<PlanLimits>;
+  if (typeof l.seenAtMs !== "number") return undefined;
+  return raw as PlanLimits;
+}
+
+function readPlanUse(raw: Record<string, unknown>): PlanUse {
+  const limits = readLimits(raw.limits);
+  const used =
+    typeof raw.usedByUsPercent === "number" && Number.isFinite(raw.usedByUsPercent)
+      ? raw.usedByUsPercent
+      : 0;
+  const reset = typeof raw.usedWeekResetsAtMs === "number" ? raw.usedWeekResetsAtMs : undefined;
+  return {
+    ...(limits === undefined ? {} : { limits }),
+    usedByUsPercent: used,
+    ...(reset === undefined ? {} : { usedWeekResetsAtMs: reset }),
+  };
+}
+
+function readPlans(raw: unknown): Record<AgentRuntimeId, PlanUse> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const out: Record<AgentRuntimeId, PlanUse> = {};
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isRuntimeId(id) || typeof value !== "object" || value === null) continue;
+    out[id] = readPlanUse(value as Record<string, unknown>);
+  }
+  return out;
+}
+
+/** `models` and `efforts`: each kind's own on its runtime (ADR 0121, rule 5). */
+function withKindChoices(
+  s: Omit<AgentSettings, "models" | "efforts"> & Partial<AgentSettings>,
+): AgentSettings {
+  const pick = <K extends AgentWorkKind>(kind: K) => choicesOn(s, s.kindRuntime[kind]);
+  return {
+    ...s,
+    models: {
+      understand: pick("understand").models.understand,
+      write: pick("write").models.write,
+      answer: pick("answer").models.answer,
+      titles: pick("titles").models.titles,
+    },
+    efforts: {
+      understand: pick("understand").efforts.understand,
+      write: pick("write").efforts.write,
+      answer: pick("answer").efforts.answer,
+      titles: pick("titles").efforts.titles,
+    },
+  };
+}
+
 /**
- * Settings as stored, read defensively (a newer build may have written them). Both shapes read:
- * settings from before ADR 0119 hold one flat `models` and `efforts`, which read as the choices of
- * the runtime they name, or of Claude Code when they name none (rule 4). `models` and `efforts`
- * are then the choices of the chosen runtime, or the starting values when it has none yet.
+ * Settings as stored, read defensively (a newer build may have written them). Every shape reads:
+ *
+ * - From before ADR 0119, one flat `models` and `efforts`: the choices of the runtime they name,
+ *   or of Claude Code when they name none.
+ * - From before ADR 0121, one chosen `runtimeId`: every kind of work on that runtime, with its
+ *   models and efforts (rule 12); its `limits`, `usedByUsPercent` and `usedWeekResetsAtMs` are
+ *   that runtime's plan.
+ *
+ * `models` and `efforts` are then each kind's own on its runtime.
  */
 export function readAgentSettings(raw: unknown): AgentSettings {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return DEFAULT_AGENT_SETTINGS;
@@ -1008,75 +1162,137 @@ export function readAgentSettings(raw: unknown): AgentSettings {
   const {
     windowDays: _window,
     choices: rawChoices,
-    ...stored
-  } = raw as Partial<AgentSettings> & { windowDays?: unknown; choices?: unknown };
-  const runtimeId =
-    typeof stored.runtimeId === "string" && stored.runtimeId.length > 0
-      ? stored.runtimeId
-      : undefined;
+    kindRuntime: rawKinds,
+    plans: rawPlans,
+    runtimeId: rawRuntimeId,
+    limits: rawLimits,
+    usedByUsPercent: rawUsed,
+    usedWeekResetsAtMs: rawReset,
+    models: rawModels,
+    efforts: rawEfforts,
+    ...rest
+  } = raw as Record<string, unknown>;
+  const legacyId = isRuntimeId(rawRuntimeId) ? rawRuntimeId : undefined;
+  const legacyKey = legacyId ?? LEGACY_RUNTIME_ID;
   const choices = readChoices(rawChoices) ?? {
-    [choiceKey(runtimeId)]: {
-      models: readModels(stored.models),
-      efforts: readEfforts(stored.efforts),
-    },
+    [legacyKey]: { models: readModels(rawModels), efforts: readEfforts(rawEfforts) },
   };
-  const { runtimeId: _id, ...rest } = stored;
-  const mine = choices[choiceKey(runtimeId)];
-  return {
+  const kindRuntime =
+    rawKinds !== undefined
+      ? readKindRuntime(rawKinds)
+      : legacyId === undefined
+        ? {}
+        : everyKindOn(legacyId);
+  // Settings with nothing seen and nothing used keep no plan.
+  const legacy = readPlanUse({
+    limits: rawLimits,
+    usedByUsPercent: rawUsed,
+    usedWeekResetsAtMs: rawReset,
+  });
+  const legacyPlan =
+    rawPlans === undefined &&
+    (legacy.limits !== undefined ||
+      legacy.usedByUsPercent !== 0 ||
+      legacy.usedWeekResetsAtMs !== undefined)
+      ? legacy
+      : undefined;
+  const plans =
+    readPlans(rawPlans) ?? (legacyPlan === undefined ? {} : { [legacyKey]: legacyPlan });
+  return withKindChoices({
     ...DEFAULT_AGENT_SETTINGS,
-    ...rest,
-    ...(runtimeId === undefined ? {} : { runtimeId }),
-    models: mine?.models ?? DEFAULT_AGENT_MODELS,
-    efforts: mine?.efforts ?? DEFAULT_AGENT_EFFORTS,
+    ...(rest as Partial<AgentSettings>),
+    enabled: rest.enabled === true,
+    weekSharePercent:
+      typeof rest.weekSharePercent === "number" && Number.isFinite(rest.weekSharePercent)
+        ? rest.weekSharePercent
+        : DEFAULT_WEEK_SHARE_PERCENT,
+    kindRuntime,
     choices,
-  };
+    plans,
+  });
 }
 
-/** What `AgentSettingsPort.update` takes. */
-export type AgentSettingsPatch = Partial<
-  Omit<AgentSettings, "limits" | "usedWeekResetsAtMs" | "choices">
-> & {
+/** What one patch says of a runtime's plan; `null` clears a field. */
+export interface PlanUsePatch {
+  readonly runtimeId: AgentRuntimeId;
   readonly limits?: PlanLimits | null;
+  readonly usedByUsPercent?: number;
   readonly usedWeekResetsAtMs?: number | null;
+}
+
+/** What `AgentSettingsPort.update` takes. A field left out keeps what it holds. */
+export type AgentSettingsPatch = Partial<
+  Pick<
+    AgentSettings,
+    "enabled" | "weekSharePercent" | "readingPaused" | "talkLoop" | "needsYouAdded"
+  >
+> & {
+  /** Kinds of work moved to a runtime (ADR 0121, rule 1); a kind left out stays where it is. */
+  readonly kindRuntime?: KindRuntimes;
+  /**
+   * Models and efforts set on runtimes: a kind left out keeps what the runtime holds for it, and a
+   * runtime with no entry yet starts from the app's own values for the rest.
+   */
+  readonly choices?: Readonly<
+    Record<
+      AgentRuntimeId,
+      { readonly models?: Partial<AgentModels>; readonly efforts?: Partial<AgentEfforts> }
+    >
+  >;
+  /** What one runtime's plan showed and what we used of it (ADR 0121, rule 6). */
+  readonly plan?: PlanUsePatch;
 };
 
 /**
- * The settings after a patch, for every store alike. `models` and `efforts` are the choices of the
- * runtime the settings name after the patch: given with a new `runtimeId`, they are that runtime's
- * starting choices. A new `runtimeId` alone reads that runtime's own choices back (ADR 0119,
- * rule 4); nothing of another runtime is changed.
+ * The settings after a patch, for every store alike. Moving a kind changes nothing that any
+ * runtime keeps: its choices and its plan stay with it (ADR 0121, rules 5 and 6).
  */
 export function patchAgentSettings(
   current: AgentSettings,
   patch: AgentSettingsPatch,
 ): AgentSettings {
-  const { limits, usedWeekResetsAtMs, models, efforts, ...rest } = patch;
+  const { kindRuntime, choices, plan, ...rest } = patch;
   const next: Record<string, unknown> = { ...current };
   for (const [key, value] of Object.entries(rest)) {
     if (value !== undefined) next[key] = value;
   }
-  if (limits === null) delete next.limits;
-  else if (limits !== undefined) next.limits = limits;
-  if (usedWeekResetsAtMs === null) delete next.usedWeekResetsAtMs;
-  else if (usedWeekResetsAtMs !== undefined) next.usedWeekResetsAtMs = usedWeekResetsAtMs;
-  if (next.runtimeId === undefined) delete next.runtimeId;
-  const key = choiceKey(next.runtimeId as AgentRuntimeId | undefined);
-  const choices: Record<AgentRuntimeId, AgentChoices> = { ...(current.choices ?? {}) };
-  if (current.choices === undefined) {
-    // Settings made in memory before choices existed: what they hold is the old runtime's.
-    choices[choiceKey(current.runtimeId)] = { models: current.models, efforts: current.efforts };
+  if (kindRuntime !== undefined) {
+    const kinds: Partial<Record<AgentWorkKind, AgentRuntimeId>> = { ...current.kindRuntime };
+    for (const kind of AGENT_WORK_KINDS) {
+      const id = kindRuntime[kind];
+      if (id !== undefined) kinds[kind] = id;
+    }
+    next.kindRuntime = kinds;
   }
-  if (models !== undefined || efforts !== undefined) {
-    const had = choices[key];
-    choices[key] = {
-      models: models ?? had?.models ?? DEFAULT_AGENT_MODELS,
-      efforts: efforts ?? had?.efforts ?? DEFAULT_AGENT_EFFORTS,
-    };
+  // Both are always written, so every store reads back what it was given.
+  const all: Record<AgentRuntimeId, AgentChoices> = { ...(current.choices ?? {}) };
+  next.choices = all;
+  next.plans = { ...(current.plans ?? {}) };
+  if (choices !== undefined) {
+    for (const [id, change] of Object.entries(choices)) {
+      const had = choicesOn(current, id);
+      all[id] = {
+        models: { ...had.models, ...definedOnly(change.models) },
+        efforts: { ...had.efforts, ...definedOnly(change.efforts) },
+      };
+    }
   }
-  next.choices = choices;
-  next.models = choices[key]?.models ?? DEFAULT_AGENT_MODELS;
-  next.efforts = choices[key]?.efforts ?? DEFAULT_AGENT_EFFORTS;
-  return next as unknown as AgentSettings;
+  if (plan !== undefined) {
+    const { runtimeId, limits, usedByUsPercent, usedWeekResetsAtMs } = plan;
+    const had: Record<string, unknown> = { ...planUseOf(current, runtimeId) };
+    if (limits === null) delete had.limits;
+    else if (limits !== undefined) had.limits = limits;
+    if (usedByUsPercent !== undefined) had.usedByUsPercent = usedByUsPercent;
+    if (usedWeekResetsAtMs === null) delete had.usedWeekResetsAtMs;
+    else if (usedWeekResetsAtMs !== undefined) had.usedWeekResetsAtMs = usedWeekResetsAtMs;
+    (next.plans as Record<AgentRuntimeId, PlanUse>)[runtimeId] = had as unknown as PlanUse;
+  }
+  return withKindChoices(next as unknown as AgentSettings);
+}
+
+function definedOnly<T extends object>(value: T | undefined): Partial<T> {
+  if (value === undefined) return {};
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
 /**
@@ -1114,19 +1330,30 @@ export function startingChoices(
   };
 }
 
+/** Whether a runtime lists this model for this kind now; titles turned off is not a model. */
+export function modelListed(
+  runtime: Pick<AgentRuntimeInfo, "models"> | null | undefined,
+  kind: AgentWorkKind,
+  model: string,
+): boolean {
+  if (kind === "titles" && model === TITLES_OFF) return true;
+  if (runtime === null || runtime === undefined) return true;
+  return runtime.models.includes(model);
+}
+
 /**
- * The kinds of work whose chosen model the runtime does not list now (ADR 0119, rule 4): each waits
- * until the person picks another; nothing is put in its place. Titles turned off is not a model.
+ * The kinds of work whose chosen model their runtime does not list now (ADR 0119, rule 4; ADR
+ * 0121): each waits until the person picks another; nothing is put in its place. A runtime not
+ * looked at yet says nothing.
  */
 export function unlistedKinds(
-  settings: Pick<AgentSettings, "models">,
-  runtime: Pick<AgentRuntimeInfo, "models"> | null | undefined,
+  settings: Pick<AgentSettings, "models" | "kindRuntime">,
+  infoOf: (runtimeId: AgentRuntimeId) => Pick<AgentRuntimeInfo, "models"> | null | undefined,
 ): readonly AgentWorkKind[] {
-  if (runtime === null || runtime === undefined) return [];
   return AGENT_WORK_KINDS.filter((k) => {
-    const model = settings.models[k];
-    if (k === "titles" && model === TITLES_OFF) return false;
-    return !runtime.models.includes(model);
+    const id = settings.kindRuntime[k];
+    if (id === undefined) return false;
+    return !modelListed(infoOf(id), k, settings.models[k]);
   });
 }
 
@@ -1192,19 +1419,44 @@ export interface AgentRuntimeEntry {
 export interface AgentStatus {
   readonly settings: AgentSettings;
   /**
-   * The chosen runtime as last seen. Null while none is chosen, or the service has not been able
-   * to look at it.
+   * Every runtime the app knows, in the order it offers them, as last seen (ADR 0119, rule 2;
+   * ADR 0121, rule 2). A runtime on a plan carries the windows stored for it.
    */
-  readonly runtime: AgentRuntimeInfo | null;
-  /** Every runtime the app knows, in the order it offers them (ADR 0119, rule 2). */
   readonly runtimes: readonly AgentRuntimeEntry[];
   /**
-   * The kinds of work whose model the chosen runtime does not list now (ADR 0119, rule 4); they do
-   * not run until the person picks another. Empty when every model is there.
+   * The kinds of work whose model their runtime does not list now (ADR 0119, rule 4); they do not
+   * run until the person picks another. Empty when every model is there.
    */
   readonly unlisted: readonly AgentWorkKind[];
+  /** Every consent, of every runtime (ADR 0121, rule 4). */
   readonly consents: readonly AgentConsent[];
   readonly progress: ReadingProgress;
   /** Newest first. */
   readonly ledger: readonly LedgerEntry[];
+}
+
+/** A runtime of the status as last seen, or null when it is not known or not looked at yet. */
+export function runtimeInfo(
+  status: Pick<AgentStatus, "runtimes">,
+  runtimeId: AgentRuntimeId | undefined,
+): AgentRuntimeInfo | null {
+  if (runtimeId === undefined) return null;
+  return status.runtimes.find((r) => r.id === runtimeId)?.info ?? null;
+}
+
+/** The runtime of a kind of work as last seen (ADR 0121, rule 1), or null. */
+export function kindInfo(
+  status: Pick<AgentStatus, "runtimes" | "settings">,
+  kind: AgentWorkKind,
+): AgentRuntimeInfo | null {
+  return runtimeInfo(status, status.settings.kindRuntime[kind]);
+}
+
+/** The accounts that agreed to this runtime (ADR 0121, rule 4). */
+export function accountsAgreedTo(
+  consents: readonly AgentConsent[],
+  runtimeId: AgentRuntimeId | undefined,
+): ReadonlySet<string> {
+  if (runtimeId === undefined) return new Set();
+  return new Set(consents.filter((c) => c.runtimeId === runtimeId).map((c) => c.accountId));
 }

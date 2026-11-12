@@ -69,7 +69,6 @@ import {
   withEffort,
 } from "@matters/core";
 import { AgentUnavailableError, InvalidAgentSettingError } from "./agentApi.ts";
-import { consentedAccounts } from "./agentReads.ts";
 import { type MailToolsContext, openMailTools } from "./mailTools.ts";
 import { PromptCandidates, type PromptCandidateThread } from "./promptCandidates.ts";
 import { sha256Hex } from "./promptFits.ts";
@@ -95,18 +94,41 @@ export interface LoadedThread {
   readonly accountId: string;
 }
 
-export interface PromptServiceDeps {
-  /** The chosen runtime, asked each time: only it runs a turn (ADR 0119, rule 3). */
-  runtime(): Pick<AgentRuntimePort, "id" | "run" | "runWithTools">;
-  /** What was last seen of it: how many turns run at once (ADR 0119, rule 7). */
+/**
+ * The runtime for understanding mail, bound when a run starts (ADR 0121, rules 1 and 9): every turn
+ * of a run, its search and its batches, goes to it and to no other, with the accounts that agreed
+ * to it.
+ */
+export interface PromptRuntime {
+  readonly runtime: Pick<AgentRuntimePort, "id" | "run" | "runWithTools">;
+  /** What was last seen of it: how many turns run at once (ADR 0119, rule 7; ADR 0121, rule 7). */
   info(): Pick<
     AgentRuntimeInfo,
     "noPlan" | "turnsAtOnce" | "modelInputChars" | "tools" | "toolModels"
   > | null;
-  /** The model of a kind of work, refused with a sentence when the runtime no longer lists it. */
+  /** The model of a kind of work on it, refused with a sentence when it no longer lists it. */
   modelOf(kind: AgentWorkKind, s: AgentSettings): string;
-  /** The gate of the plan at a priority; open on a runtime with no plan (ADR 0119, rule 7). */
+  /** The gate of its plan at a priority; open on a runtime with no plan (ADR 0119, rule 7). */
   planGate(priority: AgentPriority, s: AgentSettings): MayRun;
+  /** The windows of its plan as last seen, for what a turn used. */
+  limits(s: AgentSettings): PlanLimits | undefined;
+  /** The last gates of a turn the person asked for (`P0`): it is ready, its plan has room. */
+  gate(s: AgentSettings): Promise<void>;
+  /** Records the windows of its plan a turn saw. */
+  noteRun(limits: PlanLimits | undefined, before?: PlanLimits): Promise<void>;
+  /** The effort a turn on the model of `kind` sends, or none (ADR 0118, rules 1 and 4). */
+  effortOf(kind: AgentWorkKind, s: AgentSettings): AgentEffort | undefined;
+  /** What the person is told when a turn they asked for cannot be done. */
+  askFailure(error: unknown, fallback: string): Error;
+  /** The accounts that agreed to it (ADR 0121, rule 4). */
+  consented(): Promise<ReadonlySet<string>>;
+  /** Aborted when AI is turned off or understanding mail moves: nothing more goes. */
+  stopAll(): AbortSignal;
+}
+
+export interface PromptServiceDeps {
+  /** The runtime for understanding mail as it is now, asked once per run. */
+  understand(): PromptRuntime;
   /** The candidate pipeline of ADR 0081 and 0082, and the tools of the loop (ADR 0083). */
   readonly store: MailToolsContext["store"] & Pick<MessageStorePort, "changesSince">;
   /** The ranked search of the agent, and the person's own matching for the mail filters. */
@@ -128,18 +150,8 @@ export interface PromptServiceDeps {
   /** The saved views: a prompt one of them holds is never pruned (rule 12). */
   readonly views?: Pick<SavedViewStorePort, "list">;
   now(): number;
-  /** The last gates of a turn the person asked for (`P0`): the runtime is ready, the plan has room. */
-  gateRuntime(s: AgentSettings): Promise<void>;
   /** The thread as the model reads it, clipped, with its History line (ADR 0066, rule 1). */
   loadThread(threadId: string, consented: ReadonlySet<string>): Promise<LoadedThread | null>;
-  /** Records the plan's windows a turn saw. */
-  noteRun(limits: PlanLimits | undefined, before?: PlanLimits): Promise<void>;
-  /** The effort a turn on the model of `kind` sends, or none (ADR 0118, rules 1 and 4). */
-  effortOf(kind: AgentWorkKind, s: AgentSettings): AgentEffort | undefined;
-  /** What the person is told when a turn they asked for cannot be done. */
-  askFailure(error: unknown, fallback: string): Error;
-  /** Aborted when AI is turned off: nothing more goes once the person says no. */
-  stopAll(): AbortSignal;
   /** How far a run is, as it goes (rule 9). */
   onProgress?(progress: PromptProgress): void;
 }
@@ -300,7 +312,8 @@ export class PromptService {
   async run(query: string, again = false, readAll = false): Promise<PromptRunResult> {
     const asked = await this.ask(query);
     const s = await this.deps.settings.get();
-    const consented = await this.consented(s);
+    const on = this.deps.understand();
+    const consented = await this.consented(s, on);
     if (consented.size === 0) return { ...OFF, stopped: false, rejected: 0 };
     if (this.running !== null) throw new AgentUnavailableError(BUSY);
     const mine: Running = {
@@ -322,9 +335,9 @@ export class PromptService {
     const gate = async () => {
       if (gated) return;
       try {
-        await this.deps.gateRuntime(s);
+        await on.gate(s);
       } catch (error) {
-        throw this.deps.askFailure(error, FAILED);
+        throw on.askFailure(error, FAILED);
       }
       gated = true;
     };
@@ -332,7 +345,7 @@ export class PromptService {
       // A reading in the background gives way: its turns answer before anything is counted here.
       await this.joinBackground();
       await this.prune();
-      const signal = AbortSignal.any([mine.stop.signal, this.deps.stopAll()]);
+      const signal = AbortSignal.any([mine.stop.signal, on.stopAll()]);
       let search = again
         ? null
         : await this.deps.insights.getPromptSearch(asked.key, asked.filters);
@@ -362,7 +375,7 @@ export class PromptService {
       if (search === null) {
         await gate();
         this.progress(mine, false);
-        const searched = await this.search(asked, s, consented, signal, mine);
+        const searched = await this.search(asked, s, consented, signal, mine, on);
         if (searched.kind === "stopped") stopped = true;
         else if (searched.kind === "problem") problem = searched.problem;
         else {
@@ -418,7 +431,7 @@ export class PromptService {
                   mine.fits = now.fitting.length;
                   return now.reached;
                 };
-          const outcome = await this.readBatches(todo, asked, s, consented, signal, mine, {
+          const outcome = await this.readBatches(todo, asked, s, consented, signal, mine, on, {
             ...(enough === undefined ? {} : { enough }),
           });
           rejected = outcome.rejected;
@@ -471,17 +484,19 @@ export class PromptService {
     };
   }
 
-  /** Accounts with consent for this runtime while AI is on for it; empty means off (rule 11). */
-  private async consented(s: AgentSettings): Promise<ReadonlySet<string>> {
-    const runtime = this.deps.runtime();
-    if (!s.enabled || s.runtimeId !== runtime.id) return new Set();
-    return consentedAccounts(this.deps, runtime.id);
+  /**
+   * Accounts that agreed to the runtime for understanding mail, while AI is on; empty means off
+   * (rule 11; ADR 0121, rule 4).
+   */
+  private async consented(s: AgentSettings, on: PromptRuntime): Promise<ReadonlySet<string>> {
+    if (!s.enabled || on.runtime.id === "") return new Set();
+    return on.consented();
   }
 
   private async list(query: string, withRows: boolean): Promise<PromptList> {
     const asked = await this.ask(query);
     const s = await this.deps.settings.get();
-    const consented = await this.consented(s);
+    const consented = await this.consented(s, this.deps.understand());
     if (consented.size === 0) return OFF;
     const run = this.running;
     const ours = run !== null && run.key === asked.key && run.filters === asked.filters;
@@ -642,16 +657,22 @@ export class PromptService {
     consented: ReadonlySet<string>,
     stop: AbortSignal,
     mine: Running,
+    on: PromptRuntime,
   ): Promise<Searched> {
     const { settings } = this.deps;
-    const runtime = this.deps.runtime();
+    const runtime = on.runtime;
+    const writeModel = (() => {
+      try {
+        return on.modelOf("write", s);
+      } catch {
+        return null;
+      }
+    })();
     // The loop only on a model for writing that can use tools (ADR 0119, rule 10).
     const loop =
       s.talkLoop === true &&
-      modelUsesTools(
-        { ...this.deps.info(), tools: runtime.runWithTools !== undefined },
-        s.models.write,
-      )
+      writeModel !== null &&
+      modelUsesTools({ ...on.info(), tools: runtime.runWithTools !== undefined }, writeModel)
         ? runtime.runWithTools
         : undefined;
     const cap = loop === undefined ? TALK_TIME_CAP_MS : TALK_LOOP_TIME_CAP_MS;
@@ -666,11 +687,11 @@ export class PromptService {
       this.progress(mine, false);
     };
     // The loop runs on the model for writing; the plan and follow turns on the one for mail.
-    const effort = this.deps.effortOf(loop === undefined ? "understand" : "write", s);
+    const effort = on.effortOf(loop === undefined ? "understand" : "write", s);
     const failure = (error: unknown): Searched =>
       stop.aborted
         ? { kind: "stopped" }
-        : { kind: "problem", problem: this.deps.askFailure(error, SEARCH_FAILED).message };
+        : { kind: "problem", problem: on.askFailure(error, SEARCH_FAILED).message };
     try {
       if (loop !== undefined) {
         const tools = await openMailTools({
@@ -684,13 +705,13 @@ export class PromptService {
           },
         });
         try {
-          const before = (await settings.get()).limits;
+          const before = on.limits(await settings.get());
           let run: AgentRunResult;
           try {
             run = await loop.call(
               runtime,
               {
-                model: this.deps.modelOf("write", s),
+                model: on.modelOf("write", s),
                 ...buildPromptSearchRequest(asked.text, this.deps.now()),
                 ...withEffort(effort),
               },
@@ -702,7 +723,7 @@ export class PromptService {
             if (stop.aborted || queries.length === 0) return failure(error);
             return { kind: "found", queries: [...queries], threadIds: [...opened] };
           }
-          await this.deps.noteRun(run.limits, before);
+          await on.noteRun(run.limits, before);
           if (stop.aborted) return { kind: "stopped" };
           const answer = parseTalkLoop(run.value);
           const { listed, opened, queries } = tools.state;
@@ -720,12 +741,12 @@ export class PromptService {
         if (stop.aborted) throw new AgentUnavailableError(STOPPED);
       };
       const understand = async (request: AgentRequestBody): Promise<unknown> => {
-        const before = (await settings.get()).limits;
+        const before = on.limits(await settings.get());
         const run = await runtime.run(
-          { model: this.deps.modelOf("understand", s), ...request, ...withEffort(effort) },
+          { model: on.modelOf("understand", s), ...request, ...withEffort(effort) },
           { signal },
         );
-        await this.deps.noteRun(run.limits, before);
+        await on.noteRun(run.limits, before);
         check();
         return run.value;
       };
@@ -778,6 +799,7 @@ export class PromptService {
     consented: ReadonlySet<string>,
     signal: AbortSignal,
     mine: Running,
+    on: PromptRuntime,
     options: BatchOptions = {},
   ): Promise<{
     rejected: number;
@@ -788,7 +810,7 @@ export class PromptService {
   }> {
     const { enough, priority = "P0", stopWhen } = options;
     const { insights, settings } = this.deps;
-    const runtime = this.deps.runtime();
+    const runtime = on.runtime;
     const queue = [...todo];
     /** Threads loaded for a batch that did not fit in it wait at the front for the next. */
     const waiting: { c: Candidate; loaded: LoadedThread }[] = [];
@@ -801,13 +823,13 @@ export class PromptService {
     let full = false;
     const halt = new AbortController();
     const turnSignal = AbortSignal.any([signal, halt.signal]);
-    const effort = this.deps.effortOf("understand", s);
+    const effort = on.effortOf("understand", s);
     // A model the runtime no longer lists reads nothing, and says so (ADR 0119, rule 4).
     let model: string;
     try {
-      model = this.deps.modelOf("understand", s);
+      model = on.modelOf("understand", s);
     } catch (error) {
-      return { rejected: 0, answered: [], problem: this.deps.askFailure(error, FAILED).message };
+      return { rejected: 0, answered: [], problem: on.askFailure(error, FAILED).message };
     }
 
     const nextBatch = async (): Promise<{ c: Candidate; loaded: LoadedThread }[]> => {
@@ -836,7 +858,7 @@ export class PromptService {
         // Each turn is gated at its priority on the windows the last turn saw (ADR 0051, rule 7):
         // `P0` for what the person asked, `P1` or `P3` in the background (ADR 0117, rule 3).
         const now = await settings.get();
-        const gate = this.deps.planGate(priority, now);
+        const gate = on.planGate(priority, now);
         if (!gate.ok) {
           problem ??= USED_UP;
           halt.abort();
@@ -851,18 +873,18 @@ export class PromptService {
           candidates,
           asked.text,
           this.deps.now(),
-          inputCharsFor(this.deps.info(), model),
+          inputCharsFor(on.info(), model),
         );
         const went = sent.map((i) => batch[i] as (typeof batch)[number]);
         const wentSet = new Set(sent);
         waiting.unshift(...batch.filter((_, i) => !wentSet.has(i)));
         try {
-          const before = now.limits;
+          const before = on.limits(now);
           const result = await runtime.run(
             { model, ...request, ...withEffort(effort) },
             { signal: turnSignal },
           );
-          await this.deps.noteRun(result.limits, before);
+          await on.noteRun(result.limits, before);
           answered.push(...went.map((b) => b.c.threadId));
           const accepted = acceptVerdicts(
             result.value,
@@ -897,7 +919,7 @@ export class PromptService {
               error.code === "effortRefused" ||
               error.code === "tooLong")
           ) {
-            problem ??= this.deps.askFailure(error, FAILED).message;
+            problem ??= on.askFailure(error, FAILED).message;
           } else problem ??= FAILED;
           halt.abort();
           return;
@@ -921,8 +943,9 @@ export class PromptService {
       }
     };
 
-    // One at a time on a runtime with no plan; else as many as the runtime takes (ADR 0119, rule 7).
-    await Promise.all(Array.from({ length: turnsAtOnce(this.deps.info()) }, () => worker()));
+    // One at a time on a runtime with no plan; else as many as this runtime takes (ADR 0119, rule
+    // 7): the places are its own, so work on another runtime never waits for one (ADR 0121, rule 7).
+    await Promise.all(Array.from({ length: turnsAtOnce(on.info()) }, () => worker()));
     return {
       rejected,
       answered,
@@ -1001,14 +1024,16 @@ export class PromptService {
 
   private async backgroundPass(options: BackgroundOptions): Promise<void> {
     const views = (await this.deps.views?.list()) ?? [];
-    const signal = this.deps.stopAll();
+    // One pass reads on one runtime: the one for understanding mail when it starts (ADR 0121, rule 9).
+    const on = this.deps.understand();
+    const signal = on.stopAll();
     const over = () => signal.aborted || this.running !== null || options.stopWhen();
     const seen = new Set<string>();
     for (const view of views) {
       if (over()) return;
       if (parseQuery(view.query).prompt === undefined) continue;
       const s = await this.deps.settings.get();
-      const consented = await this.consented(s);
+      const consented = await this.consented(s, on);
       if (consented.size === 0) return;
       const asked = await this.ask(view.query);
       // Two views with the same prompt and filters read once.
@@ -1062,7 +1087,7 @@ export class PromptService {
           complete = false;
           break;
         }
-        const outcome = await this.readBatches(todo, asked, s, consented, signal, mine, {
+        const outcome = await this.readBatches(todo, asked, s, consented, signal, mine, on, {
           priority,
           stopWhen: () => this.running !== null || options.stopWhen(),
         });

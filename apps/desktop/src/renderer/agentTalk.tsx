@@ -101,7 +101,11 @@ export function AgentPaneButton(props: {
 }) {
   const plan = () => {
     const status = props.agent.status();
-    return status === null ? null : planButton(status, Date.now());
+    if (status === null) return null;
+    // The plan of the runtime the talk in view runs on (ADR 0121, rules 6 and 8).
+    const kind = props.talk.scope() === "all" ? "answer" : "write";
+    const runtimeId = props.talk.choice()?.runtimeId ?? status.settings.kindRuntime[kind];
+    return planButton(status, runtimeId, Date.now());
   };
   const open = () => props.talk.paneOpen();
   const paused = () => !open() && plan()?.late === true;
@@ -243,8 +247,10 @@ export function AgentPrompt(props: {
         </Show>
         <PlansLine
           agent={props.agent}
-          backend={props.backend}
           scope={talk.scope}
+          choice={talk.choice}
+          onChoose={talk.setChoice}
+          accountId={talk.accountId}
           hint={canSend()}
           onOpenSettings={props.onOpenSettings}
         >

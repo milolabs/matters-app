@@ -4,7 +4,7 @@ import { delimiter, join } from "node:path";
 import { visibleText } from "@matters/adapter-mime";
 import { createSqliteStorage } from "@matters/adapter-sqlite";
 import type { AgentStatus, StoredAccount } from "@matters/core";
-import { acceptVerdicts, buildPromptRequest, PROMPT_VERSION } from "@matters/core";
+import { acceptVerdicts, buildPromptRequest, kindInfo, PROMPT_VERSION } from "@matters/core";
 import { ManualClock, settle } from "@matters/testkit";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -30,6 +30,7 @@ afterEach(async () => {
 const status: AgentStatus = {
   settings: {
     enabled: false,
+    kindRuntime: {},
     models: {
       understand: "haiku",
       write: "sonnet",
@@ -38,9 +39,7 @@ const status: AgentStatus = {
     },
     efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
     weekSharePercent: 10,
-    usedByUsPercent: 0,
   },
-  runtime: null,
   runtimes: [],
   unlisted: [],
   consents: [],
@@ -108,7 +107,7 @@ function stub(overrides: Partial<AgentApi> = {}) {
     deleteTalk: note("deleteTalk", undefined),
     deleteAllTalks: note("deleteAllTalks", 0),
     setEnabled: note("setEnabled", status),
-    chooseRuntime: note("chooseRuntime", status),
+    setKindRuntime: note("setKindRuntime", status),
     disable: note("disable", status),
     setModels: note("setModels", status),
     setWeekShare: note("setWeekShare", status),
@@ -179,16 +178,19 @@ describe("agent requests", () => {
       {},
       { understand: "max", write: "default", answer: "xhigh", titles: "low" },
     ]);
-    expect(await ask({ type: "agentChooseRuntime", runtimeId: "ollama" })).toMatchObject({
-      type: "agentChooseRuntime",
-      ok: true,
-      status,
-    });
-    expect(calls.filter((c) => c[0] === "chooseRuntime")).toEqual([["chooseRuntime", "ollama"]]);
+    // A kind of work moves to a runtime (ADR 0121, rule 1).
+    expect(
+      await ask({ type: "agentSetKindRuntime", kinds: ["write", "answer"], runtimeId: "ollama" }),
+    ).toMatchObject({ type: "agentSetKindRuntime", ok: true, status });
+    expect(calls.filter((c) => c[0] === "setKindRuntime")).toEqual([
+      ["setKindRuntime", ["write", "answer"], "ollama"],
+    ]);
     expect(await ask({ type: "agentSetWeekShare", percent: 15 })).toMatchObject({ ok: true });
     expect(await ask({ type: "agentSetTalkLoop", on: true })).toMatchObject({ ok: true });
     expect(await ask({ type: "agentInspect" })).toMatchObject({ type: "agentInspect" });
     expect(await ask({ type: "agentTestRuntime" })).toMatchObject({ type: "agentTestRuntime" });
+    // One runtime, in use or not, can be checked by itself (ADR 0121, rule 2).
+    await ask({ type: "agentTestRuntime", runtimeId: "codex" });
     expect(await ask({ type: "agentPauseReading" })).toMatchObject({ type: "agentPauseReading" });
     expect(await ask({ type: "agentResumeReading" })).toMatchObject({
       type: "agentResumeReading",
@@ -210,6 +212,7 @@ describe("agent requests", () => {
       ok: true,
       status,
     });
+    await ask({ type: "agentRevokeConsent", accountId: "a", runtimeId: "codex" });
     expect(
       await ask({ type: "agentDraftFromPrepared", threadId: "t1", body: "Hello" }),
     ).toMatchObject({ type: "agentDraftFromPrepared", draftId: "d1", existing: false });
@@ -229,18 +232,28 @@ describe("agent requests", () => {
       "disable",
       "setModels",
       "setModels",
-      "chooseRuntime",
+      "setKindRuntime",
       "setWeekShare",
       "setTalkLoop",
       "inspect",
+      "testRuntime",
       "testRuntime",
       "pauseReading",
       "resumeReading",
       "prepare",
       "undoFeedback",
       "revokeConsent",
+      "revokeConsent",
       "draftFromPrepared",
       "matchAct",
+    ]);
+    expect(calls.filter((c) => c[0] === "testRuntime")).toEqual([
+      ["testRuntime", undefined],
+      ["testRuntime", "codex"],
+    ]);
+    expect(calls.filter((c) => c[0] === "revokeConsent")).toEqual([
+      ["revokeConsent", "a", undefined],
+      ["revokeConsent", "a", "codex"],
     ]);
     expect(calls.filter((c) => c[0] === "journal")).toEqual([
       ["journal", undefined],
@@ -323,10 +336,18 @@ describe("agent requests", () => {
       ok: true,
       entries: [],
     });
+    // The runtime and model chosen in the talk go with it (ADR 0121, rule 8).
+    await ask({
+      type: "agentTalk",
+      threadId: "t1",
+      words: "And now?",
+      choice: { runtimeId: "ollama", model: "qwen3:8b" },
+    });
     expect(calls).toEqual([
-      ["talk", "t1", "What is open?"],
+      ["talk", "t1", "What is open?", undefined],
       ["talkStop", "t1"],
       ["talkEntries", "t1"],
+      ["talk", "t1", "And now?", { runtimeId: "ollama", model: "qwen3:8b" }],
     ]);
     const bad: object[] = [
       { type: "agentTalk" },
@@ -334,6 +355,9 @@ describe("agent requests", () => {
       { type: "agentTalk", threadId: "t1" },
       { type: "agentTalk", threadId: "t1", words: 3 },
       { type: "agentTalk", threadId: "t1", words: "x".repeat(2001) },
+      { type: "agentTalk", threadId: "t1", words: "x", choice: "ollama" },
+      { type: "agentTalk", threadId: "t1", words: "x", choice: { runtimeId: "ollama" } },
+      { type: "agentTalk", threadId: "t1", words: "x", choice: { runtimeId: "", model: "m" } },
       { type: "agentTalkStop" },
       { type: "agentTalkEntries", threadId: 4 },
     ];
@@ -343,7 +367,7 @@ describe("agent requests", () => {
         code: "invalidRequest",
       });
     }
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
   });
 
   it("carries the help with a reply to the service and back (ADR 0098)", async () => {
@@ -407,10 +431,17 @@ describe("agent requests", () => {
       ok: true,
       entries: [],
     });
+    await ask({
+      type: "agentTalkAll",
+      words: "And now?",
+      talkId: 2,
+      choice: { runtimeId: "codex", model: "sol" },
+    });
     expect(calls).toEqual([
-      ["talkAll", "Who waits?", null],
+      ["talkAll", "Who waits?", null, undefined],
       ["talkAllStop"],
       ["talkAllEntries", undefined, undefined],
+      ["talkAll", "And now?", 2, { runtimeId: "codex", model: "sol" }],
     ]);
     for (const request of [
       { type: "agentTalkAll" },
@@ -418,6 +449,7 @@ describe("agent requests", () => {
       { type: "agentTalkAll", words: "x".repeat(2001) },
       { type: "agentTalkAll", words: "x", talkId: 0 },
       { type: "agentTalkAll", words: "x", talkId: "1" },
+      { type: "agentTalkAll", words: "x", choice: { runtimeId: "codex", model: 3 } },
       { type: "agentTalkAllEntries", talkId: -1 },
       { type: "agentTalkAllEntries", talkId: 1, beforeId: 1.5 },
     ]) {
@@ -426,7 +458,7 @@ describe("agent requests", () => {
         code: "invalidRequest",
       });
     }
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
   });
 
   it("carries the requests of a prompt to the service and back (ADR 0116)", async () => {
@@ -506,7 +538,7 @@ describe("agent requests", () => {
     expect(await ask({ type: "agentTalkDelete", talkId: 4 })).toMatchObject({ ok: true });
     expect(await ask({ type: "agentTalkDeleteAll" })).toMatchObject({ ok: true, count: 0 });
     expect(calls).toEqual([
-      ["talkAll", "Who waits?", 4],
+      ["talkAll", "Who waits?", 4, undefined],
       ["talkAllEntries", 4, 90],
       ["talks"],
       ["renameTalk", 4, "Job change"],
@@ -612,10 +644,15 @@ describe("agent requests", () => {
       { type: "agentSetEnabled", accountIds: "a", runtimeId: "r" },
       { type: "agentSetEnabled", accountIds: [1], runtimeId: "r" },
       { type: "agentSetEnabled", accountIds: ["a"] },
-      { type: "agentChooseRuntime" },
-      { type: "agentChooseRuntime", runtimeId: "" },
-      { type: "agentChooseRuntime", runtimeId: 3 },
-      { type: "agentChooseRuntime", runtimeId: "x".repeat(101) },
+      { type: "agentSetKindRuntime", runtimeId: "r" },
+      { type: "agentSetKindRuntime", kinds: [], runtimeId: "r" },
+      { type: "agentSetKindRuntime", kinds: ["draftAhead"], runtimeId: "r" },
+      { type: "agentSetKindRuntime", kinds: "write", runtimeId: "r" },
+      { type: "agentSetKindRuntime", kinds: ["write"] },
+      { type: "agentSetKindRuntime", kinds: ["write"], runtimeId: "" },
+      { type: "agentSetKindRuntime", kinds: ["write"], runtimeId: "x".repeat(101) },
+      { type: "agentTestRuntime", runtimeId: "" },
+      { type: "agentTestRuntime", runtimeId: 3 },
       { type: "agentSetModels", models: { mystery: "x" } },
       { type: "agentSetModels", models: { write: 3 } },
       { type: "agentSetModels", models: "write" },
@@ -631,6 +668,7 @@ describe("agent requests", () => {
       { type: "agentPrepare", threadId: "t", answer: "x".repeat(2001) },
       { type: "agentUndoFeedback", threadId: "t", kind: "delete" },
       { type: "agentRevokeConsent" },
+      { type: "agentRevokeConsent", accountId: "a", runtimeId: "" },
       { type: "agentDraftFromPrepared", threadId: "t", body: "" },
       { type: "agentDraftFromPrepared", threadId: "t", body: "x".repeat(20_001) },
       { type: "agentMatchAct" },
@@ -714,7 +752,7 @@ describe("RemoteAgent", () => {
     await remote.setTalkLoop(true);
     await remote.inspect();
     await remote.testRuntime();
-    await remote.chooseRuntime("ollama");
+    await remote.setKindRuntime(["write"], "ollama");
     expect(log.filter((l) => l === "told")).toHaveLength(11);
     // Each one after its answer: a window that reads then sees the change.
     expect(log.every((l, i) => (l === "told") === (i % 2 === 1))).toBe(true);
@@ -1001,7 +1039,7 @@ describe("the demo assistant over the demo mailbox, with a real database", () =>
 
     // The made-up test ran by itself once the person agreed, and the pass ended (ADR 0117).
     const status = await service.status();
-    expect(status.runtime?.status).toBe("ready");
+    expect(kindInfo(status, "understand")?.status).toBe("ready");
     expect(status.progress).toEqual({ state: "idle" });
 
     // A draft on request, for a seeded thread with mail from someone else.

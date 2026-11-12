@@ -6,6 +6,7 @@
   runtimes; a runtime without a plan), [0118](0118-effort-is-set-per-kind-of-work.md) (rule 4:
   levels can differ by model)
 - Builds on: [0083](0083-the-agent-searches-in-a-loop.md), [0116](0116-a-prompt-is-a-filter.md)
+- Amended by: [0121](0121-a-runtime-for-each-kind-of-work.md) (rules 2 and 3: a runtime is chosen per kind of work)
 
 ## Context
 

@@ -1,9 +1,12 @@
 import type {
+  AgentRuntimeInfo,
   AgentStatus,
   FeedbackJournalEntry,
   InstructionJournalEntry,
+  PlanLimits,
   RuleJournalEntry,
 } from "@matters/core";
+import { everyKindOn, kindInfo } from "@matters/core";
 import { describe, expect, it } from "vitest";
 import {
   answeredByLine,
@@ -14,6 +17,8 @@ import {
   hasNoPlan,
   journalLine,
   journalLines,
+  kindsWords,
+  kindWaits,
   ledgerEffort,
   loopOffered,
   ourShare,
@@ -24,6 +29,9 @@ import {
   signInCommand,
   splitYours,
   statusWords,
+  talkRuntimeName,
+  talkRuntimes,
+  usedForLine,
   vendorName,
   wholeFilesText,
   writtenByLine,
@@ -31,23 +39,35 @@ import {
 
 const NOW = Date.UTC(2026, 10, 5, 10, 42);
 const models = { understand: "haiku", write: "sonnet", answer: "sonnet", titles: "haiku" };
-const status = (over: Partial<AgentStatus> = {}): AgentStatus => ({
+const LIMITS: PlanLimits = {
+  session: { usedPercent: 39, resetsAtMs: NOW + 3_600_000 },
+  week: { usedPercent: 22, resetsAtMs: NOW + 3 * 86_400_000 },
+  usingOverage: false,
+  seenAtMs: NOW - 60_000,
+};
+const claudeInfo: AgentRuntimeInfo = {
+  id: "claude-code",
+  name: "Claude Code",
+  status: "ready",
+  models: ["haiku", "sonnet"],
+};
+/** Every kind of work on `runtime`, with its plan's windows (`null`: none seen yet). */
+const status = (
+  over: Partial<AgentStatus> = {},
+  runtime: AgentRuntimeInfo = claudeInfo,
+  limits: PlanLimits | null = LIMITS,
+): AgentStatus => ({
   settings: {
     enabled: true,
-    runtimeId: "claude-code",
+    kindRuntime: everyKindOn(runtime.id),
     models,
     efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
     weekSharePercent: 10,
-    usedByUsPercent: 4.2,
-    limits: {
-      session: { usedPercent: 39, resetsAtMs: NOW + 3_600_000 },
-      week: { usedPercent: 22, resetsAtMs: NOW + 3 * 86_400_000 },
-      usingOverage: false,
-      seenAtMs: NOW - 60_000,
+    plans: {
+      [runtime.id]: { usedByUsPercent: 4.2, ...(limits === null ? {} : { limits }) },
     },
   },
-  runtime: { id: "claude-code", name: "Claude Code", status: "ready", models: ["haiku", "sonnet"] },
-  runtimes: [],
+  runtimes: [{ id: runtime.id, name: runtime.name, info: runtime }],
   unlisted: [],
   consents: [],
   progress: { state: "idle" },
@@ -92,28 +112,23 @@ const instructionEntry = (
 
 describe("the status line", () => {
   it("shows the session's percent left, late under 20", () => {
-    expect(planButton(status(), NOW)).toEqual({ text: "Claude Code 61% left", late: false });
-    const low = status();
-    const s = {
-      ...low,
-      settings: {
-        ...low.settings,
-        limits: {
-          ...(low.settings.limits as object),
-          usingOverage: false,
-          seenAtMs: NOW,
-          week: undefined,
-          session: { usedPercent: 85, resetsAtMs: NOW + 1000 },
-        },
-      },
-    };
-    expect(planButton(s, NOW)).toEqual({ text: "Claude Code 15% left", late: true });
+    expect(planButton(status(), "claude-code", NOW)).toEqual({
+      text: "Claude Code 61% left",
+      late: false,
+    });
+    const s = status({}, claudeInfo, {
+      usingOverage: false,
+      seenAtMs: NOW,
+      session: { usedPercent: 85, resetsAtMs: NOW + 1000 },
+    });
+    expect(planButton(s, "claude-code", NOW)).toEqual({ text: "Claude Code 15% left", late: true });
   });
 
   it("says when limits are not known, and when work is paused", () => {
-    const s = status();
-    const unknown = { ...s, settings: { ...s.settings, limits: undefined } };
-    expect(planButton(unknown, NOW)?.text).toBe("Claude Code · limits not known yet");
+    const unknown = status({}, claudeInfo, null);
+    expect(planButton(unknown, "claude-code", NOW)?.text).toBe(
+      "Claude Code · limits not known yet",
+    );
     const paused = status({
       progress: {
         state: "paused",
@@ -121,14 +136,16 @@ describe("the status line", () => {
         untilMs: new Date(2026, 10, 5, 14, 0).getTime(),
       },
     });
-    expect(planButton(paused, new Date(2026, 10, 5, 10, 0).getTime())?.text).toBe(
+    expect(planButton(paused, "claude-code", new Date(2026, 10, 5, 10, 0).getTime())?.text).toBe(
       "Paused until 14:00 · plan limit",
     );
   });
 
   it("says our share and who wrote a draft: always the writing model", () => {
-    expect(ourShare(status())).toBe("Matters this week: about 4% of Claude");
-    expect(writtenByLine(status().runtime, models)).toBe("Claude Code, Sonnet, your plan");
+    expect(ourShare(status(), "claude-code")).toBe("Matters this week: about 4% of Claude");
+    expect(writtenByLine(kindInfo(status(), "write"), models)).toBe(
+      "Claude Code, Sonnet, your plan",
+    );
     expect(writtenByLine(null, { ...models, write: "opus" })).toBe("Agent, Opus, your plan");
   });
 
@@ -393,17 +410,23 @@ describe("a runtime on this machine (ADR 0119)", () => {
   });
 
   it("shows no plan: no plan button but a pause, and words that say where it ran (rule 7)", () => {
-    const local = status({ runtime: ollama });
-    expect(hasNoPlan(local.runtime)).toBe(true);
-    expect(hasNoPlan(status().runtime)).toBe(false);
-    expect(planButton(local, NOW)).toBeNull();
+    const local = status({}, ollama, null);
+    expect(hasNoPlan(kindInfo(local, "understand"))).toBe(true);
+    expect(hasNoPlan(kindInfo(status(), "understand"))).toBe(false);
+    expect(planButton(local, "ollama", NOW)).toBeNull();
     expect(
-      planButton({ ...local, progress: { state: "paused", reason: "pausedByPerson" } }, NOW),
+      planButton(
+        { ...local, progress: { state: "paused", reason: "pausedByPerson" } },
+        "ollama",
+        NOW,
+      ),
     ).toMatchObject({ late: true });
     expect(writtenByLine(ollama, { ...models, write: "qwen3:8b" })).toBe(
       "Ollama, Qwen3:8b, on this Mac",
     );
-    expect(writtenByLine(status().runtime, models)).toBe("Claude Code, Sonnet, your plan");
+    expect(writtenByLine(kindInfo(status(), "write"), models)).toBe(
+      "Claude Code, Sonnet, your plan",
+    );
     expect(answeredByLine("Ollama", "qwen3:8b")).toBe("Ollama, Qwen3:8b, on this Mac");
     expect(answeredByLine("Claude Code", "sonnet")).toBe("Claude Code, Sonnet, your plan");
     expect(sentLine("Ollama")).toBe(
@@ -458,15 +481,16 @@ describe("Codex, on the person's ChatGPT plan (ADR 0120)", () => {
   });
 
   it("shows its windows as any plan's, and the pause a refusal made (rule 9)", () => {
-    const s = status({ settings: { ...status().settings, runtimeId: "codex" }, runtime: codex });
-    expect(planButton(s, NOW)).toEqual({ text: "Codex 61% left", late: false });
-    expect(planButton({ ...s, settings: { ...s.settings, limits: undefined } }, NOW)).toEqual({
+    const s = status({}, codex);
+    expect(planButton(s, "codex", NOW)).toEqual({ text: "Codex 61% left", late: false });
+    expect(planButton(status({}, codex, null), "codex", NOW)).toEqual({
       text: "Codex · limits not known yet",
       late: false,
     });
     expect(
       planButton(
         { ...s, progress: { state: "paused", reason: "limit", untilMs: NOW + 3_600_000 } },
+        "codex",
         NOW,
       )?.text,
     ).toMatch(/^Paused until .* · plan limit$/);
@@ -479,5 +503,84 @@ describe("Codex, on the person's ChatGPT plan (ADR 0120)", () => {
     expect(wholeFilesText(claude)).toContain("With Claude Code, a scan or a photo");
     expect(wholeFilesText({ ...codex, modelFiles: {} })).toBe("");
     expect(wholeFilesText(null)).toBe("");
+  });
+});
+
+describe("a runtime for each kind of work (ADR 0121)", () => {
+  const ollama: AgentRuntimeInfo = {
+    id: "ollama",
+    name: "Ollama",
+    status: "ready",
+    models: ["qwen3:8b"],
+    noPlan: true,
+  };
+  const codex: AgentRuntimeInfo = { id: "codex", name: "Codex", status: "signedOut", models: [] };
+  /** Understanding mail on Ollama, writing and questions on Claude Code, titles on Codex. */
+  const spread = (over: Partial<AgentStatus> = {}): AgentStatus => {
+    const base = status();
+    return {
+      ...base,
+      settings: {
+        ...base.settings,
+        kindRuntime: {
+          understand: "ollama",
+          write: "claude-code",
+          answer: "claude-code",
+          titles: "codex",
+        },
+        plans: {
+          "claude-code": { usedByUsPercent: 4.2, limits: LIMITS },
+          codex: { usedByUsPercent: 0.5 },
+        },
+      },
+      runtimes: [
+        { id: "claude-code", name: "Claude Code", info: claudeInfo },
+        { id: "ollama", name: "Ollama", info: ollama },
+        { id: "codex", name: "Codex", info: codex },
+      ],
+      consents: [
+        { accountId: "a", runtimeId: "claude-code", grantedAtMs: 1 },
+        { accountId: "b", runtimeId: "ollama", grantedAtMs: 1 },
+      ],
+      ...over,
+    };
+  };
+
+  it("says what each runtime is used for", () => {
+    expect(usedForLine(spread(), "claude-code")).toBe("Used for writing and questions");
+    expect(usedForLine(spread(), "ollama")).toBe("Used for understanding mail");
+    expect(usedForLine(status(), "claude-code")).toBe("Used for all work");
+    expect(usedForLine(status(), "ollama")).toBe("Not used");
+    expect(kindsWords(["understand", "write", "titles"])).toBe(
+      "understanding mail, writing and talk titles",
+    );
+  });
+
+  it("says why a kind waits while the others run (rule 3)", () => {
+    expect(kindWaits(spread(), "titles")).toBe("Waits: Codex is not signed in.");
+    expect(kindWaits(spread(), "write")).toBe("");
+    expect(kindWaits(spread(), "understand")).toBe("");
+    const none = spread({ consents: [] });
+    expect(kindWaits(none, "write")).toBe(
+      "Waits: no account is agreed to Claude Code. Tick Claude Code under Which account goes where.",
+    );
+  });
+
+  it("shows each plan's own windows and share (rule 6)", () => {
+    expect(planButton(spread(), "claude-code", NOW)?.text).toBe("Claude Code 61% left");
+    expect(planButton(spread(), "ollama", NOW)).toBeNull();
+    expect(ourShare(spread(), "codex")).toBe("Matters this week: less than 1% of OpenAI");
+    expect(ourShare(spread(), "claude-code")).toBe("Matters this week: about 4% of Claude");
+  });
+
+  it("lists for a talk every runtime that is ready and agreed to for its mail (rule 8)", () => {
+    expect(talkRuntimes(spread(), null).map((r) => r.id)).toEqual(["claude-code", "ollama"]);
+    expect(talkRuntimes(spread(), "a").map((r) => r.id)).toEqual(["claude-code"]);
+    expect(talkRuntimes(spread(), "b")).toEqual([
+      { id: "ollama", name: "Ollama", models: ["qwen3:8b"] },
+    ]);
+    expect(talkRuntimeName(spread(), "all", null)).toBe("Claude Code");
+    expect(talkRuntimeName(spread(), "thread", { runtimeId: "ollama" })).toBe("Ollama");
+    expect(talkRuntimeName(null, "all", null)).toBe("The agent");
   });
 });

@@ -3,9 +3,17 @@ import type {
   AgentRunRequest,
   AgentRunResult,
   AgentRuntimeInfo,
+  AgentStatus,
   StoredAccount,
 } from "@matters/core";
-import { AgentRunError, PREPARED_INSTRUCTIONS } from "@matters/core";
+import {
+  AgentRunError,
+  everyKindOn,
+  kindInfo,
+  PREPARED_INSTRUCTIONS,
+  planUseOf,
+  runtimeInfo,
+} from "@matters/core";
 import {
   createInMemoryStorage,
   InMemoryAgentInsightStore,
@@ -18,9 +26,13 @@ import { describe, expect, it } from "vitest";
 import { AgentUnavailableError, InvalidAgentSettingError } from "../src/backend/agentApi.ts";
 import { AgentService, KICK_DEBOUNCE_MS, TEST_PROMPT_QUOTE } from "../src/backend/agentService.ts";
 
-// ADR 0119: runtimes are a list and one is chosen; only the chosen one runs, consent is per runtime,
-// choices are kept per runtime, a model that is gone is said and not replaced, and a runtime with
-// no plan has no plan's gates.
+// ADR 0119: runtimes are a list; consent is per runtime, choices are kept per runtime, a model that
+// is gone is said and not replaced, and a runtime with no plan has no plan's gates. ADR 0121: each
+// kind of work has its own runtime; a turn runs on the runtime of its kind and on no other, with the
+// accounts that agreed to it, and each plan keeps its own windows.
+
+/** The runtime for understanding mail as the status shows it. */
+const reading = (status: AgentStatus) => kindInfo(status, "understand");
 
 const NOW = Date.UTC(2026, 10, 12, 12);
 const DAY = 86_400_000;
@@ -150,27 +162,50 @@ async function build() {
     await service.idle();
     await settle();
   };
-  return { service, settings, insights, plan, local, codex, clock, pass };
+  /** A second account with a thread of its own. */
+  const addThread = async (accountId: string, threadId: string) => {
+    await storage.accounts.add(account(accountId, `${accountId}@example.com`));
+    const other = makeMessage({
+      seq: 2,
+      accountId,
+      threadId,
+      providerId: `${threadId}-1`,
+      dateMs: NOW - DAY,
+      from: { name: "Bob", address: "bob@example.org" },
+      to: [{ address: `${accountId}@example.com` }],
+      subject: "Lunch",
+      labelIds: ["inbox"],
+    });
+    const added = await storage.store.upsertMessages([other]);
+    await storage.bodies.putBodies(
+      added.keys.map((key) => ({ key, threadId, text: "Lunch on Friday?" })),
+    );
+  };
+  return { service, settings, insights, plan, local, codex, clock, pass, addThread };
 }
 
-describe("runtimes are a list, and one is chosen (ADR 0119, rules 2 and 3)", () => {
-  it("lists every runtime, chooses none by itself, and runs nothing until one is chosen", async () => {
+const ALL = ["understand", "write", "answer", "titles"] as const;
+
+describe("runtimes are a list, and each kind of work has one (ADR 0119, rule 2; ADR 0121, rules 1 to 3)", () => {
+  it("lists every runtime, puts no kind on one by itself, and runs nothing until one is", async () => {
     const h = await build();
     const first = await h.service.status();
-    expect(first.runtime).toBeNull();
     expect(first.runtimes).toEqual([
       { id: "plan", name: "Plan runtime", info: null },
       { id: "local", name: "Local", info: null },
       { id: "codex", name: "Codex", info: null },
     ]);
     const looked = await h.service.inspect();
-    expect(looked.runtime).toBeNull();
     expect(looked.runtimes.map((r) => r.info?.status)).toEqual(["found", "found", "found"]);
-    expect(looked.settings.runtimeId).toBeUndefined();
+    expect(looked.settings.kindRuntime).toEqual({});
+    // No runtime in use: none is tested.
     await h.service.testRuntime();
     expect(h.plan.calls).toEqual([]);
     expect(h.local.calls).toEqual([]);
-    await expect(h.service.chooseRuntime("elsewhere")).rejects.toBeInstanceOf(
+    await expect(h.service.setKindRuntime(["write"], "elsewhere")).rejects.toBeInstanceOf(
+      InvalidAgentSettingError,
+    );
+    await expect(h.service.testRuntime("elsewhere")).rejects.toBeInstanceOf(
       InvalidAgentSettingError,
     );
     await expect(
@@ -178,36 +213,75 @@ describe("runtimes are a list, and one is chosen (ADR 0119, rules 2 and 3)", () 
     ).rejects.toBeInstanceOf(InvalidAgentSettingError);
   });
 
-  it("runs only the chosen runtime; another needs its own consent", async () => {
+  it("puts every kind on the first runtime connected; agreeing to another moves none (rule 12)", async () => {
     const h = await build();
-    await h.service.chooseRuntime("plan");
-    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
-    await h.pass();
-    expect((await h.service.testRuntime()).runtime?.status).toBe("ready");
-    await h.service.prepare("t1");
-    expect(h.plan.mail).toHaveLength(1);
-    expect(h.local.calls).toEqual([]);
-
-    // Choosing another agrees to nothing: it waits for the consent question, and sends nothing.
-    const chosen = await h.service.chooseRuntime("local");
-    expect(chosen.settings).toMatchObject({ runtimeId: "local", enabled: true });
-    expect(chosen.consents).toEqual([]);
-    await h.pass();
-    expect((await h.service.status()).progress).toMatchObject({ state: "off", reason: "consent" });
-    await expect(h.service.prepare("t1")).rejects.toBeInstanceOf(AgentUnavailableError);
-    expect(h.local.mail).toEqual([]);
-    expect(h.plan.mail).toHaveLength(1);
-    // The consent for the other runtime is kept, as it was given.
-    expect((await h.settings.listConsents()).map((c) => c.runtimeId)).toEqual(["plan"]);
-
-    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "local" });
-    await h.service.testRuntime();
-    await h.service.prepare("t1");
-    expect(h.local.mail).toHaveLength(1);
-    expect(h.plan.mail).toHaveLength(1);
+    const on = await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+    expect(on.settings.kindRuntime).toEqual(everyKindOn("plan"));
+    const other = await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "local" });
+    expect(other.settings.kindRuntime).toEqual(everyKindOn("plan"));
+    expect(other.consents.map((c) => c.runtimeId).sort()).toEqual(["local", "plan"]);
   });
 
-  it("agreeing for a runtime chooses it, and stops what ran on the other", async () => {
+  it("checks a runtime no kind is on when the person asks, so it can be connected first (rule 2)", async () => {
+    const h = await build();
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+    const s = await h.service.testRuntime("local");
+    expect(runtimeInfo(s, "local")?.status).toBe("ready");
+    expect(h.local.mail).toEqual([]);
+    // Without a runtime named, only the ones in use are tested.
+    const tested = h.local.calls.length;
+    await h.service.testRuntime();
+    expect(h.local.calls).toHaveLength(tested);
+  });
+
+  it("runs each kind on its own runtime, side by side, and on no other", async () => {
+    const h = await build();
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "local" });
+    await h.service.setKindRuntime(["understand"], "local");
+    // The pass tests every runtime in use that an account agreed to (ADR 0121, consequences).
+    await h.pass();
+    const s = await h.service.status();
+    expect(runtimeInfo(s, "plan")?.status).toBe("ready");
+    expect(runtimeInfo(s, "local")?.status).toBe("ready");
+    await h.service.prepare("t1");
+    expect(h.plan.mail).toHaveLength(1);
+    expect(h.local.mail).toEqual([]);
+    // Checking a reply is help with a reply: writing, so it runs where writing does, on the
+    // model that runtime keeps for reading. Its answer here is not one the code accepts.
+    await h.service.checkReply("t1", "Tuesday is fine.").catch(() => {});
+    expect(h.plan.mail).toHaveLength(2);
+    expect(h.plan.mail.at(-1)?.model).toBe("haiku");
+    expect(h.local.mail).toEqual([]);
+    // The ledger names the runtime of each turn (rule 11).
+    const lines = await h.insights.listLedger(10);
+    expect(lines.filter((l) => l.purpose === "prepare").every((l) => l.runtimeId === "plan")).toBe(
+      true,
+    );
+  });
+
+  it("a kind whose runtime cannot be used waits and says why; the others go on (rule 3)", async () => {
+    const h = await build();
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "codex" });
+    h.codex.info = { ...h.codex.info, status: "signedOut" };
+    await h.service.setKindRuntime(["write"], "codex");
+    await h.pass();
+    const error = await h.service.prepare("t1").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AgentUnavailableError);
+    expect((error as Error).message).toBe(
+      "Codex is not ready. Check it in Settings, then try again.",
+    );
+    expect(h.codex.calls).toEqual([]);
+    // Nothing moved to the other runtime by itself.
+    expect(h.plan.mail).toEqual([]);
+    // Reading for views goes on, on its own runtime.
+    const s = await h.service.status();
+    expect(s.progress).toEqual({ state: "idle" });
+    expect(runtimeInfo(s, "plan")?.status).toBe("ready");
+  });
+
+  it("a moved kind stops what runs for it; another kind's turn goes on", async () => {
     const h = await build();
     await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
     await h.service.testRuntime();
@@ -215,17 +289,105 @@ describe("runtimes are a list, and one is chosen (ADR 0119, rules 2 and 3)", () 
     const running = h.service.prepare("t1").catch((e: unknown) => e);
     for (let i = 0; i < 50 && h.plan.mail.length === 0; i++) await settle();
     expect(h.plan.mail).toHaveLength(1);
-    await h.service.chooseRuntime("local");
+    // Understanding mail moves: the draft, which is writing, is not stopped.
+    await h.service.setKindRuntime(["understand"], "local");
+    await settle();
+    expect(h.plan.stopped).toBe(0);
+    // Writing moves: its turn stops, and nothing went to the new runtime.
+    await h.service.setKindRuntime(["write"], "local");
     expect(await running).toBeInstanceOf(AgentUnavailableError);
     expect(h.plan.stopped).toBe(1);
     expect(h.local.mail).toEqual([]);
   });
 });
 
-describe("models and efforts are kept per runtime (ADR 0119, rule 4)", () => {
-  it("starts a runtime on its own models, and changing back loses nothing", async () => {
+describe("consent follows the mail (ADR 0121, rule 4)", () => {
+  it("each turn works with the accounts that agreed to the runtime of its kind", async () => {
     const h = await build();
-    await h.service.chooseRuntime("plan");
+    await h.addThread("acc2", "u1");
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+    await h.service.setEnabled({ accountIds: ["acc2"], runtimeId: "local" });
+    await h.service.setKindRuntime(["write"], "local");
+    await h.service.testRuntime();
+    // acc1 agreed to Plan runtime only: its mail never goes to Local.
+    const error = await h.service.prepare("t1").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AgentUnavailableError);
+    expect((error as Error).message).toBe(
+      "This account has not been agreed to for Local. Choose it in Settings › Agents.",
+    );
+    expect(h.local.mail).toEqual([]);
+    expect(h.plan.mail).toEqual([]);
+    // acc2 agreed to Local: its thread goes there.
+    await h.service.prepare("u1");
+    expect(h.local.mail).toHaveLength(1);
+    expect(h.local.mail[0]?.untrusted).toContain("Lunch on Friday?");
+  });
+
+  it("takes back the consent for one runtime only", async () => {
+    const h = await build();
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "local" });
+    const s = await h.service.revokeConsent("acc1", "local");
+    expect(s.consents.map((c) => c.runtimeId)).toEqual(["plan"]);
+    const ledger = await h.insights.listLedger(10);
+    expect(ledger.find((l) => l.purpose === "revoke")?.runtimeId).toBe("local");
+  });
+});
+
+describe("a talk can change its runtime (ADR 0121, rule 8)", () => {
+  it("runs a talk about a thread on the runtime and model chosen in it, for that talk only", async () => {
+    const h = await build();
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "local" });
+    await h.service.testRuntime("local");
+    await h.service.testRuntime();
+    // Its answer is not one the code accepts; what matters here is where it went.
+    await h.service.talk("t1", "When?", { runtimeId: "local", model: "m-small" }).catch(() => {});
+    expect(h.local.mail.map((c) => c.model)).toEqual(["m-small"]);
+    expect(h.plan.mail).toEqual([]);
+    // Nothing of the settings changed.
+    expect((await h.settings.get()).kindRuntime).toEqual(everyKindOn("plan"));
+    await h.service.talk("t1", "When?").catch(() => {});
+    expect(h.plan.mail.map((c) => c.model)).toEqual(["sonnet"]);
+  });
+
+  it("refuses a model the runtime does not list, and a runtime the account did not agree to", async () => {
+    const h = await build();
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+    await h.service.testRuntime("local");
+    await expect(
+      h.service.talk("t1", "When?", { runtimeId: "local", model: "gone" }),
+    ).rejects.toBeInstanceOf(InvalidAgentSettingError);
+    await expect(
+      h.service.talk("t1", "When?", { runtimeId: "local", model: "m-small" }),
+    ).rejects.toBeInstanceOf(AgentUnavailableError);
+    await expect(
+      h.service.talkAll("Anything from Anna?", null, { runtimeId: "local", model: "m-small" }),
+    ).rejects.toMatchObject({
+      message: "No account has been agreed to for Local. Choose one in Settings › Agents.",
+    });
+    expect(h.local.mail).toEqual([]);
+  });
+
+  it("runs a question across all mail wholly on the runtime chosen in its talk", async () => {
+    const h = await build();
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "local" });
+    await h.service.testRuntime("local");
+    await h.service
+      .talkAll("Anything from Anna?", null, { runtimeId: "local", model: "m-small" })
+      .catch(() => {});
+    // The plan turn ran on Local, on the model Local keeps for reading.
+    expect(h.local.mail.length).toBeGreaterThan(0);
+    expect(h.local.mail[0]?.model).toBe("m-large");
+    expect(h.plan.mail).toEqual([]);
+  });
+});
+
+describe("models and efforts are kept per runtime (ADR 0119, rule 4; ADR 0121, rule 5)", () => {
+  it("starts a runtime on its own models, and moving a kind back loses nothing", async () => {
+    const h = await build();
+    await h.service.setKindRuntime(ALL, "plan");
     expect((await h.service.status()).settings.models).toEqual({
       understand: "haiku",
       write: "sonnet",
@@ -233,19 +395,23 @@ describe("models and efforts are kept per runtime (ADR 0119, rule 4)", () => {
       titles: "haiku",
     });
     await h.service.setModels({ write: "opus" }, { write: "high" });
-    const local = await h.service.chooseRuntime("local");
-    // No fixed names: every kind starts on the model the runtime names, titles too.
+    const local = await h.service.setKindRuntime(["write", "understand"], "local");
+    // No fixed names: every kind starts on the model the runtime names; the others stay.
     expect(local.settings.models).toEqual({
       understand: "m-large",
       write: "m-large",
-      answer: "m-large",
-      titles: "m-large",
+      answer: "sonnet",
+      titles: "haiku",
     });
     await h.service.setModels({ understand: "m-small" });
-    const back = await h.service.chooseRuntime("plan");
+    // A model is checked against the runtime of its kind.
+    await expect(h.service.setModels({ write: "opus" })).rejects.toBeInstanceOf(
+      InvalidAgentSettingError,
+    );
+    const back = await h.service.setKindRuntime(["write"], "plan");
     expect(back.settings.models.write).toBe("opus");
     expect(back.settings.efforts.write).toBe("high");
-    expect((await h.service.chooseRuntime("local")).settings.models.understand).toBe("m-small");
+    expect(back.settings.models.understand).toBe("m-small");
   });
 
   it("says a model the runtime no longer lists, and does not run that kind", async () => {
@@ -265,7 +431,7 @@ describe("models and efforts are kept per runtime (ADR 0119, rule 4)", () => {
     expect(h.local.mail).toHaveLength(before);
     // The model for reading gone too: the reading in the background waits, and says why.
     await h.service.setModels({ write: "m-large" });
-    await h.settings.update({ models: { ...(await h.settings.get()).models, understand: "x" } });
+    await h.settings.update({ choices: { local: { models: { understand: "x" } } } });
     await h.pass();
     expect((await h.service.status()).progress).toMatchObject({
       state: "off",
@@ -292,43 +458,59 @@ describe("effort follows the model (ADR 0119, rule 9)", () => {
   });
 });
 
-describe("a runtime with no plan (ADR 0119, rule 7)", () => {
-  it("passes the plan's gate, and records no limits", async () => {
+describe("windows, shares and limits are per runtime (ADR 0121, rule 6)", () => {
+  const full = {
+    session: { usedPercent: 100, resetsAtMs: NOW + DAY },
+    week: { usedPercent: 100, resetsAtMs: NOW + DAY },
+    usingOverage: true,
+    seenAtMs: NOW,
+  };
+
+  it("a runtime with no plan passes its gate, and records no limits (ADR 0119, rule 7)", async () => {
     const h = await build();
     await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
-    // Windows of another runtime's plan, used up: they do not apply to a runtime with no plan.
-    await h.settings.update({
-      limits: {
-        session: { usedPercent: 100, resetsAtMs: NOW + DAY },
-        week: { usedPercent: 100, resetsAtMs: NOW + DAY },
-        usingOverage: true,
-        seenAtMs: NOW,
-      },
-    });
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "local" });
+    await h.settings.update({ plan: { runtimeId: "plan", limits: full } });
     await h.service.testRuntime();
     await expect(h.service.prepare("t1")).rejects.toBeInstanceOf(AgentUnavailableError);
     expect(h.plan.mail).toEqual([]);
 
-    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "local" });
-    // Choosing it dropped the other plan's windows; put back, they still do not apply.
-    expect((await h.settings.get()).limits).toBeUndefined();
-    await h.settings.update({
-      limits: {
-        session: { usedPercent: 100, resetsAtMs: NOW + DAY },
-        week: { usedPercent: 100, resetsAtMs: NOW + DAY },
-        usingOverage: true,
-        seenAtMs: NOW,
-      },
-    });
+    // Writing moves to the runtime with no plan: the used-up windows are another plan's.
+    await h.service.setKindRuntime(["write"], "local");
     await h.service.testRuntime();
-    const limitsBefore = (await h.settings.get()).limits;
     h.local.limits = { usingOverage: false, seenAtMs: NOW + 1 };
     await h.service.prepare("t1");
     expect(h.local.mail).toHaveLength(1);
-    expect((await h.settings.get()).limits).toEqual(limitsBefore);
-    expect((await h.service.status()).runtime?.limits).toBeUndefined();
-    // The ledger still says what went.
+    const s = await h.service.status();
+    // Nothing is kept for Local, and nothing of Plan runtime's was cleared by the move.
+    expect(s.settings.plans?.local).toBeUndefined();
+    expect(s.settings.plans?.plan?.limits).toEqual(full);
+    expect(runtimeInfo(s, "local")?.limits).toBeUndefined();
     expect((await h.insights.listLedger(10)).some((l) => l.runtimeId === "local")).toBe(true);
+  });
+
+  it("keeps each plan's windows and our use apart; one plan full does not stop the other", async () => {
+    const h = await build();
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "codex" });
+    await h.service.setKindRuntime(["write"], "codex");
+    await h.settings.update({ plan: { runtimeId: "plan", limits: full, usedByUsPercent: 4 } });
+    await h.service.testRuntime();
+    const week = { usedPercent: 30, resetsAtMs: NOW + 5 * DAY };
+    h.codex.limits = { week, usingOverage: false, seenAtMs: NOW };
+    await h.service.prepare("t1");
+    h.codex.limits = { week: { ...week, usedPercent: 32 }, usingOverage: false, seenAtMs: NOW };
+    await h.service.prepare("t1");
+    expect(h.codex.mail).toHaveLength(2);
+    const s = await h.service.status();
+    expect(planUseOf(s.settings, "codex")).toMatchObject({
+      usedByUsPercent: 2,
+      usedWeekResetsAtMs: NOW + 5 * DAY,
+    });
+    expect(planUseOf(s.settings, "plan")).toMatchObject({ limits: full, usedByUsPercent: 4 });
+    // Each card shows its own windows.
+    expect(runtimeInfo(s, "codex")?.limits?.week?.usedPercent).toBe(32);
+    expect(runtimeInfo(s, "plan")?.limits).toEqual(full);
   });
 });
 
@@ -340,7 +522,7 @@ describe("the test is for a model (ADR 0119)", () => {
     await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "local" });
     await h.service.testRuntime();
     expect((await h.settings.getRuntimeRecord("local"))?.model).toBe("m-large");
-    expect((await h.service.status()).runtime?.status).toBe("ready");
+    expect(reading(await h.service.status())?.status).toBe("ready");
     await h.service.idle();
     const before = tests(h.local).length;
     expect(tests(h.local).every((c) => c.model === "m-large")).toBe(true);
@@ -352,23 +534,23 @@ describe("the test is for a model (ADR 0119)", () => {
         .map((c) => c.model),
     ).toEqual(["m-small"]);
     expect((await h.settings.getRuntimeRecord("local"))?.model).toBe("m-small");
-    expect((await h.service.status()).runtime?.status).toBe("ready");
+    expect(reading(await h.service.status())?.status).toBe("ready");
     // No mail went with either test.
     expect(h.local.mail).toEqual([]);
   });
 
   it("with AI off, a new model is not checked yet until the person checks it", async () => {
     const h = await build();
-    await h.service.chooseRuntime("local");
+    await h.service.setKindRuntime(ALL, "local");
     await h.service.testRuntime();
-    expect((await h.service.status()).runtime?.status).toBe("ready");
+    expect(reading(await h.service.status())?.status).toBe("ready");
     await h.service.setModels({ understand: "m-small" });
     await settle();
-    expect((await h.service.status()).runtime?.status).toBe("found");
+    expect(reading(await h.service.status())?.status).toBe("found");
     expect(tests(h.local)).toHaveLength(1);
     // Back to the model that was tested: the record holds for the last one tested only.
     await h.service.setModels({ understand: "m-large" });
-    expect((await h.service.status()).runtime?.status).toBe("ready");
+    expect(reading(await h.service.status())?.status).toBe("ready");
   });
 
   it("keeps a record from before, with no model, ready for the model chosen now", async () => {
@@ -379,23 +561,23 @@ describe("the test is for a model (ADR 0119)", () => {
       plan: "pro",
       testedAtMs: NOW - DAY,
     });
-    await h.service.chooseRuntime("plan");
-    expect((await h.service.status()).runtime?.status).toBe("ready");
+    await h.service.setKindRuntime(ALL, "plan");
+    expect(reading(await h.service.status())?.status).toBe("ready");
     expect(h.plan.calls).toEqual([]);
   });
 });
 
 describe("Codex is a runtime (ADR 0120)", () => {
-  it("needs its own consent, and only it runs once chosen", async () => {
+  it("needs its own consent, and runs only the kinds put on it", async () => {
     const h = await build();
     await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
     await h.service.testRuntime();
     await h.service.prepare("t1");
     expect(h.plan.mail).toHaveLength(1);
 
-    const chosen = await h.service.chooseRuntime("codex");
-    // Agreeing for Claude Code agreed to nothing for Codex.
-    expect(chosen.consents).toEqual([]);
+    const moved = await h.service.setKindRuntime(ALL, "codex");
+    // Agreeing for the plan runtime agreed to nothing for Codex.
+    expect(moved.consents.map((c) => c.runtimeId)).toEqual(["plan"]);
     await h.pass();
     expect((await h.service.status()).progress).toMatchObject({ state: "off", reason: "consent" });
     await expect(h.service.prepare("t1")).rejects.toBeInstanceOf(AgentUnavailableError);
@@ -415,7 +597,7 @@ describe("Codex is a runtime (ADR 0120)", () => {
 
   it("starts each kind of work on the model Codex suggests for it", async () => {
     const h = await build();
-    const s = await h.service.chooseRuntime("codex");
+    const s = await h.service.setKindRuntime(ALL, "codex");
     expect(s.settings.models).toEqual({
       understand: "luna",
       write: "sol",
@@ -427,13 +609,16 @@ describe("Codex is a runtime (ADR 0120)", () => {
   it("keeps the windows it reads when looked at, and is held to them as any plan (rule 9)", async () => {
     const h = await build();
     await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
-    // The windows of Claude Code's plan, used up: they say nothing of Codex's.
+    // The windows of the plan runtime, used up: they say nothing of Codex's.
     await h.settings.update({
-      limits: {
-        session: { usedPercent: 100, resetsAtMs: NOW + DAY },
-        week: { usedPercent: 100, resetsAtMs: NOW + DAY },
-        usingOverage: true,
-        seenAtMs: NOW,
+      plan: {
+        runtimeId: "plan",
+        limits: {
+          session: { usedPercent: 100, resetsAtMs: NOW + DAY },
+          week: { usedPercent: 100, resetsAtMs: NOW + DAY },
+          usingOverage: true,
+          seenAtMs: NOW,
+        },
       },
     });
     const read = {
@@ -444,19 +629,20 @@ describe("Codex is a runtime (ADR 0120)", () => {
     };
     h.codex.info = { ...h.codex.info, plan: "plus", limits: read };
     await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "codex" });
-    expect((await h.settings.get()).limits).toEqual(read);
+    await h.service.setKindRuntime(ALL, "codex");
+    expect(planUseOf(await h.settings.get(), "codex").limits).toEqual(read);
     const s = await h.service.inspect();
-    expect(s.runtime?.limits).toEqual(read);
-    // Claude Code's card shows none of Codex's windows.
-    expect(s.runtimes?.find((r) => r.id === "plan")?.info?.limits).toBeUndefined();
+    expect(runtimeInfo(s, "codex")?.limits).toEqual(read);
+    // The plan runtime keeps its own windows, and shows none of Codex's.
+    expect(runtimeInfo(s, "plan")?.limits?.week?.usedPercent).toBe(100);
     await h.service.testRuntime();
     await h.service.prepare("t1");
     expect(h.codex.mail).toHaveLength(1);
 
-    // A turn's windows are kept as Claude Code's are; full, the person's own turn waits.
+    // A turn's windows are kept as any plan's are; full, the person's own turn waits.
     h.codex.limits = { ...read, session: { usedPercent: 100, resetsAtMs: NOW + 3_600_000 } };
     await h.service.prepare("t1");
-    expect((await h.settings.get()).limits?.session?.usedPercent).toBe(100);
+    expect(planUseOf(await h.settings.get(), "codex").limits?.session?.usedPercent).toBe(100);
     await expect(h.service.prepare("t1")).rejects.toBeInstanceOf(AgentUnavailableError);
     expect(h.codex.mail).toHaveLength(2);
   });
@@ -468,6 +654,6 @@ describe("Codex is a runtime (ADR 0120)", () => {
       throw new AgentRunError("notPlan", "The turn would not run on a ChatGPT plan.");
     };
     const s = await h.service.testRuntime();
-    expect(s.runtime?.problem).toBe("The assistant is not using your ChatGPT plan.");
+    expect(runtimeInfo(s, "codex")?.problem).toBe("The assistant is not using your ChatGPT plan.");
   });
 });

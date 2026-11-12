@@ -128,3 +128,4 @@ Format: copy [`template.md`](template.md).
 | [0118](0118-effort-is-set-per-kind-of-work.md) | Effort is set per kind of work (amends 0051) | Accepted |
 | [0119](0119-a-runtime-on-this-machine.md) | A runtime on this machine (amends 0051, 0118) | Accepted |
 | [0120](0120-codex-is-a-runtime.md) | Codex is a runtime (amends 0051, 0090) | Accepted |
+| [0121](0121-a-runtime-for-each-kind-of-work.md) | A runtime for each kind of work (amends 0051, 0119) | Accepted |
