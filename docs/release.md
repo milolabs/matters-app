@@ -1,7 +1,8 @@
 # Releasing Matters
 
 How a version of Matters gets from `main` to a download. The decision and its reasons are in
-[ADR 0123](adr/0123-releases.md); this page is the plan and the steps.
+[ADR 0123](adr/0123-releases.md) and [ADR 0124](adr/0124-the-release-workflow-sets-the-version.md);
+this page is the plan and the steps.
 
 ## Where we are
 
@@ -21,20 +22,14 @@ one-time setup below.
 
 **Making one**
 
-1. Run a [rehearsal](#rehearsal) on the commit and see that its app started.
-2. Set the version in `apps/desktop/package.json` to `0.1.0-alpha.1` (then `-alpha.2`, …) and
-   commit it on `main`.
-3. Tag that commit and push the tag:
-
-   ```sh
-   git tag -s v0.1.0-alpha.1 -m "Matters 0.1.0-alpha.1"
-   git push origin v0.1.0-alpha.1
-   ```
-
-4. The run makes a **draft** pre-release with the disk image, the SBOM, the checksums and notes
-   that say how to open it. Add what changed and what is known not to work, then publish, and send
+1. Open Actions → Release → Run workflow, on `main`. Leave the version empty and run it.
+2. The run does the checks, sets the next version (`0.1.0-alpha.1`, then `-alpha.2`, …), commits
+   it to `main`, tags it, builds the app and starts it.
+3. It leaves a **draft** pre-release with the disk image, the SBOM, the checksums and notes that
+   say how to open it. Add what changed and what is known not to work, then publish, and send
    the link to the testers. A published pre-release is public: anyone can find it, and the notes
    say it is for invited testers.
+4. `git pull`, so your `main` has the version commit.
 
 **What a tester does**
 
@@ -55,7 +50,8 @@ one-time setup below.
 - Problems go to the issue tracker; a security problem goes the private way of
   [SECURITY.md](../SECURITY.md).
 
-Alphas end with the first signed pre-release. A tag without `-alpha.` always takes the signed path.
+Alphas end with the first signed pre-release. A version without `-alpha.` always takes the signed
+path.
 
 ## One-time setup (the owner)
 
@@ -66,7 +62,7 @@ Alphas end with the first signed pre-release. A tag without `-alpha.` always tak
 3. **Make an App Store Connect API key** (Users and Access → Integrations → Team keys, role
    Developer). Keep the `.p8` file, the key ID and the issuer ID.
 4. **Create the GitHub environment `release`** (Settings → Environments): add yourself as a required
-   reviewer, and limit it to tags matching `v*`.
+   reviewer, and limit it to the branch `main`.
 5. **Add the secrets to that environment**, not to the repository:
 
    | Secret | What |
@@ -77,13 +73,14 @@ Alphas end with the first signed pre-release. A tag without `-alpha.` always tak
    | `APPLE_API_KEY_ID` | the key ID |
    | `APPLE_API_ISSUER` | the issuer ID |
 
-6. **Protect the tags**: a ruleset that lets only the owner create tags matching `v*`.
+6. **Protect the tags**: a ruleset that lets only the owner and GitHub Actions create tags
+   matching `v*`.
 
 ## Rehearsal
 
-Run the `Release` workflow by hand (Actions → Release → Run workflow), on `main`. It runs the checks,
-builds the app signed ad hoc, starts it, and keeps the disk image with the run for five days. It uses
-no secret, sends nothing to Apple and publishes nothing. Do this before the first release and after
+Run the `Release` workflow (Actions → Release → Run workflow) on `main` with **rehearsal** ticked.
+It runs the checks, builds the app signed ad hoc, starts it, and keeps the disk image with the run for five days. It uses
+no secret, sends nothing to Apple, and commits, tags and publishes nothing. Do this before the first release and after
 any change to `tools/bundle-macos.ts`, `tools/release-macos.ts` or the workflow.
 
 The same on a Mac, without starting the app:
@@ -97,7 +94,7 @@ release build has no dev switches and opens your real data folder.
 
 ## Before a release
 
-- [ ] CI is green on the commit to be tagged.
+- [ ] CI is green on `main`.
 - [ ] `bun run test` passes whole, with the two `*Perf.test.ts` files CI leaves out.
 - [ ] `bun run test:imap` passes (needs Docker).
 - [ ] `bun run smoke:security` passes (needs Docker), and
@@ -110,16 +107,13 @@ release build has no dev switches and opens your real data folder.
 
 ## Making a release
 
-1. Set the version in `apps/desktop/package.json` (semantic versioning; a suffix such as
-   `-beta.1` makes it a pre-release) and commit it on `main`.
-2. Tag that commit and push the tag:
-
-   ```sh
-   git tag -s v0.1.0-beta.1 -m "Matters 0.1.0-beta.1"
-   git push origin v0.1.0-beta.1
-   ```
-
-3. Approve the run when GitHub asks (the `release` environment).
+1. Open Actions → Release → Run workflow, on `main`.
+2. The version: leave it empty to count on from the last one (`0.1.0-beta.1` → `0.1.0-beta.2`,
+   `0.1.0` → `0.1.1`), or type it when the step is a decision: the first beta (`0.1.0-beta.1`),
+   leaving the suffix behind (`0.1.0`), a new minor or major version. A suffix makes it a
+   pre-release.
+3. The run does the checks, commits the version to `main` and tags it. Then it waits: approve it
+   when GitHub asks (the `release` environment). `git pull` afterwards.
 4. When it is done there is a **draft** release. Download the disk image on a Mac, open it, drag
    the app to Applications and start it. Then check it as a stranger would:
 
@@ -134,7 +128,11 @@ release build has no dev switches and opens your real data folder.
 
 ## If something is wrong
 
-- **Before publishing:** delete the draft and the tag, fix, tag again.
+- **The build failed after the version was committed:** fix nothing by hand. "Re-run failed jobs"
+  builds the same tag again; or fix the cause on `main` and run the workflow afresh, which makes
+  the next number.
+- **Before publishing:** delete the draft, fix, and run the workflow again. The skipped number
+  does no harm.
 - **After publishing:** do not replace files under a published version. Fix, and release the next
   version. If the fault is a security problem, publish an advisory that names the versions
   ([SECURITY.md](../SECURITY.md)).

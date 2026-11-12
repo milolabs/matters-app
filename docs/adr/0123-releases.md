@@ -6,6 +6,8 @@
   only (a packaged app has no dev switches); the local bundle of 0107 is unchanged
 - Builds on: [0105](0105-the-app-identity-moves-to-matters.md),
   [0122](0122-security-policy-and-checks-on-every-change.md)
+- Amended by: [0124](0124-the-release-workflow-sets-the-version.md) (the workflow is started by
+  hand, sets the version, and makes the commit and the tag itself)
 
 ## Context
 
