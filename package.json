@@ -28,10 +28,12 @@
     "smoke:identity": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/smoke-identity.ts",
     "smoke:instance": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/smoke-instance.ts",
     "bundle:macos": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/bundle-macos.ts",
+    "release:macos": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && MATTERS_RELEASE=1 ELECTRON_RUN_AS_NODE=1 electron tools/bundle-macos.ts && ELECTRON_RUN_AS_NODE=1 electron tools/release-macos.ts",
     "smoke:security": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/smoke-security.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",
+    "@electron/fuses": "2.1.3",
     "@types/node": "24.19.2",
     "electron": "45.2.1",
     "typescript": "7.0.2",

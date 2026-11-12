@@ -13,6 +13,13 @@
 // `app.isPackaged` is true only when it is renamed, and the app then drops its dev switches
 // (MATTERS_USER_DATA and the rest). Kept as it is, the bundle runs the same code paths as
 // `electron apps/desktop` today: same name, same userData, same Keychain item.
+//
+// With MATTERS_RELEASE=1 it builds dist/release/Matters.app instead: the app to hand to someone
+// (ADR 0123). The executable is renamed to Matters, so the app is packaged and has no dev
+// switches; the fuses that let a signed app run other people's code are turned off; signatures
+// carry a secure timestamp, which notarization needs. The identity must be named then
+// (MATTERS_SIGN_IDENTITY): a Developer ID Application certificate, or `-` for an ad-hoc signature
+// that only proves the bundle can be built. `tools/release-macos.ts` takes it from there.
 import { execFileSync } from "node:child_process";
 import {
   closeSync,
@@ -32,6 +39,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { FuseV1Options, FuseVersion, flipFuses } from "@electron/fuses";
 
 // Electron's fs reads an .asar as a folder; here it is a file to delete like any other.
 (process as { noAsar?: boolean }).noAsar = true;
@@ -40,8 +48,11 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktop = join(root, "apps/desktop");
 const BUNDLE_ID = "app.getmatters.Matters";
 const NAME = "Matters";
+const release = process.env.MATTERS_RELEASE === "1";
 // At the root, git-ignored (`dist/`) and outside what biome and vitest look at.
-const output = join(root, "dist", `${NAME}.app`);
+const output = release
+  ? join(root, "dist/release", `${NAME}.app`)
+  : join(root, "dist", `${NAME}.app`);
 
 function fail(message: string): never {
   console.error(`bundle-macos: ${message}`);
@@ -64,6 +75,9 @@ if (!runtime.endsWith(".app") || basename(process.execPath) !== "Electron")
 function signingIdentity(): string {
   const chosen = process.env.MATTERS_SIGN_IDENTITY;
   if (chosen) return chosen;
+  // A release is never signed with whatever happens to be in the keychain.
+  if (release)
+    fail("a release build needs MATTERS_SIGN_IDENTITY (a Developer ID, or - for ad hoc)");
   const found = run("security", ["find-identity", "-v", "-p", "codesigning"])
     .split("\n")
     .map((line) => /^\s*\d+\)\s+([0-9A-F]{40})\s/.exec(line)?.[1])
@@ -76,6 +90,7 @@ function signingIdentity(): string {
   );
 }
 const identity = signingIdentity();
+const adHoc = identity === "-";
 
 // Built next to the output and renamed into place, so a failed run never leaves half an app there.
 mkdirSync(dirname(output), { recursive: true });
@@ -139,6 +154,24 @@ for (const entry of readdirSync(frameworks)) {
     ["-replace", "CFBundleDisplayName", "-string", helperName],
     ["-replace", "CFBundleExecutable", "-string", helperName],
   );
+}
+
+// --- A release is a packaged app (ADR 0123) ---------------------------------------------------
+
+if (release) {
+  // `app.isPackaged` is true once the executable is not named Electron: no dev switches.
+  renameSync(join(contents, "MacOS/Electron"), join(contents, "MacOS", NAME));
+  plist(join(contents, "Info.plist"), ["-replace", "CFBundleExecutable", "-string", NAME]);
+  // Off: running the signed app as plain Node, and steering it through NODE_OPTIONS or
+  // --inspect. Each would let another program run its own code under Matters' signature, and so
+  // with its access to the Keychain item. The app starts itself only as itself (the identity
+  // helper), so nothing of ours needs them.
+  await flipFuses(join(frameworks, "Electron Framework.framework/Versions/A/Electron Framework"), {
+    version: FuseVersion.V1,
+    [FuseV1Options.RunAsNode]: false,
+    [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
+    [FuseV1Options.EnableNodeCliInspectArguments]: false,
+  });
 }
 
 // --- The app: what `electron apps/desktop` loads, and nothing that points back into the repo -----
@@ -274,7 +307,8 @@ function sign(path: string): void {
     "--sign",
     identity,
     "--force",
-    "--timestamp=none",
+    // Notarization asks for Apple's timestamp; an ad-hoc signature cannot carry one.
+    release && !adHoc ? "--timestamp" : "--timestamp=none",
     "--options",
     "runtime",
     "--entitlements",
@@ -322,5 +356,5 @@ try {
 rmSync(output, { recursive: true, force: true });
 renameSync(staging, output);
 console.log(
-  `bundle-macos: ${relative(root, output)} (${BUNDLE_ID}): ${packages} packages, ${signed} signatures`,
+  `bundle-macos: ${relative(root, output)} (${BUNDLE_ID}${release ? ", release" : ""}${adHoc ? ", ad hoc" : ""}): ${packages} packages, ${signed} signatures`,
 );

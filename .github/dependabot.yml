@@ -1,0 +1,24 @@
+# Updates arrive as pull requests, so each one passes the same checks as any change, the license
+# check among them (ADR 0013, ADR 0122). A new version waits a week first: a release that turns out
+# to be bad is usually withdrawn within days.
+version: 2
+updates:
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7

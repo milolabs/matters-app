@@ -48,7 +48,8 @@ is developed and tested on macOS.
   depends on the model: one that takes tools searches in a loop and reads the
   text of attached files, one that sees images gets images whole, and a scan
   in a PDF is not sent whole.
-- **No installer, no updates, no Windows or Linux build.**
+- **No download, no updates, no Windows or Linux build.** How the first release will be made is
+  in [docs/release.md](docs/release.md).
 
 ## Build and run
 
@@ -87,7 +88,8 @@ the copyright with them ([ADR 0002](docs/adr/0002-license-agpl-and-cla.md)).
 The agreement is not set up yet; until it is, please open an issue before
 starting on a larger change.
 
-Please report security problems privately, not in a public issue.
+Please report security problems privately, not in a public issue:
+[SECURITY.md](SECURITY.md) says how, and what the app is meant to withstand.
 
 ## License
 

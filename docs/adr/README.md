@@ -129,3 +129,5 @@ Format: copy [`template.md`](template.md).
 | [0119](0119-a-runtime-on-this-machine.md) | A runtime on this machine (amends 0051, 0118) | Accepted |
 | [0120](0120-codex-is-a-runtime.md) | Codex is a runtime (amends 0051, 0090) | Accepted |
 | [0121](0121-a-runtime-for-each-kind-of-work.md) | A runtime for each kind of work (amends 0051, 0119) | Accepted |
+| [0122](0122-security-policy-and-checks-on-every-change.md) | A security policy, and checks on every change (builds on 0012, 0013, 0047) | Accepted |
+| [0123](0123-releases.md) | Releases (turns around 0107 rule 4 for a release build; builds on 0105, 0122) | Accepted |

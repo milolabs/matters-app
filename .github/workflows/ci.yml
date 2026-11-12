@@ -1,0 +1,62 @@
+# The checks every change must pass (ADR 0122). They are the same commands a person runs by hand;
+# the README lists them.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # A release runs these same checks first (release.yml, ADR 0123).
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Types, lint, boundaries, licenses, tests
+    # macOS, because that is where Matters is developed and tested today.
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      # The lockfile is the list of versions we chose; an install that would change it fails.
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Types
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Boundaries of the architecture
+        run: bun run check:boundaries
+
+      - name: Licenses of dependencies
+        run: bun run check:licenses
+
+      # Includes the node tier of the hostile-mail corpus (ADR 0047). A test gets two more tries:
+      # a few tests time a child process being killed, and miss when every file runs at once.
+      # The two tests that hold a search to a budget in milliseconds are left out: the budget is
+      # set on a developer's machine, and a shared runner is slower and uneven (ADR 0122).
+      - name: Tests
+        run: bun run test --retry=2 --exclude '**/*Perf.test.ts'
+
+      # The app as a release would build it, signed ad hoc: proves on every change that the
+      # bundle, the fuses and the disk image can still be made (ADR 0123). Nothing is kept.
+      - name: Package
+        run: bun run release:macos
+        env:
+          MATTERS_SIGN_IDENTITY: "-"

@@ -179,7 +179,7 @@ from what the browser tier tests.
 | 16 current Electron | holds: pinned at 45.2.1 in `package.json` (whether it is the newest was not checked) |
 | 17 validate IPC senders | partly: every handler compares `event.sender` with the window's `webContents`; none checks `senderFrame` (the message frame cannot send: it has no scripts) |
 | 18 avoid `file://` | gap, accepted: ADR 0046 kept it; `isOwnPage` accepts any `file:` URL |
-| 19 fuses | gap: the repository has no packaging step, so no fuse is set; the Electron binary the tooling runs has `runAsNode` on (the test commands use it) |
+| 19 fuses | partly: a release build turns off `RunAsNode`, `EnableNodeOptionsEnvironmentVariable` and `EnableNodeCliInspectArguments` ([ADR 0123](../adr/0123-releases.md); read back with `electron-fuses read` on an ad-hoc build). The app is not an asar, so the two asar fuses stay off. The local bundle of ADR 0107 and the Electron binary the tooling runs keep `runAsNode` on (the test commands use it) |
 | 20 do not expose Electron APIs | holds: the preload exposes nothing through `contextBridge`; it forwards named messages from `window.postMessage` after an `event.source` check |
 
 ### A7. Mail read by a model
