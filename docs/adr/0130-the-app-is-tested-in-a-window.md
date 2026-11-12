@@ -30,10 +30,12 @@ the mail in the list. A change that broke that path between the parts would pass
    start is filmed and traced, and leaves a last screenshot and the app's output; all of it goes to
    `.e2e/`, which git ignores.
 3. **No hook in the app.** The app runs with no smoke mode, no seeded account and no permission for
-   plaintext servers. The only things passed in are what a person could pass: Chromium's own
-   keychain switch on the command line (a mock keychain on macOS, so the login keychain never asks;
-   GNOME Keyring on Linux, which Chromium cannot guess on a runner without a desktop), the demo
-   mailbox (`MATTERS_SEED=1`) for the specs that use it, and Node's `NODE_EXTRA_CA_CERTS`.
+   plaintext servers. What is passed in comes from outside it: the demo mailbox (`MATTERS_SEED=1`)
+   for the specs that use it, Node's `NODE_EXTRA_CA_CERTS`, and the choice of keychain. Playwright
+   starts Electron with Chromium's mock keychain on macOS, so the login keychain never asks, and
+   with the plain-text password store on Linux, which the app refuses (ADR 0018). On Linux the
+   suite therefore loads one line before the app (`e2e/keyring.cjs`, through `electron -r`) that
+   names GNOME Keyring again; a switch on the command line would lose to Playwright's own.
 4. **The setup screen is typed in, against a real server.** The setup screen offers TLS and
    STARTTLS only, and the Dovecot test server speaks plaintext. The UI stays as it is: each test
    puts a TLS front on 127.0.0.1 before the test server, and another before an SMTP server in the

@@ -18,14 +18,15 @@ export { expect } from "@playwright/test";
 const appDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
- * Chromium switches for the keychain, on the command line like any other Chromium switch. macOS:
- * a mock keychain, so the login keychain never asks for permission in the middle of a run. Linux:
- * the Secret Service (GNOME Keyring), named because a runner has no desktop for Chromium to guess
- * it from, and the app refuses the plain-text fallback.
+ * What the app is started with for the keychain. macOS: Chromium's mock keychain, so the login
+ * keychain never asks for permission in the middle of a run (Playwright's loader sets the same
+ * switch; it is named here so the suite does not depend on that). Linux: `keyring.cjs`, loaded
+ * before the app, which puts the Secret Service back after Playwright's loader chose the
+ * plain-text store.
  */
-function keychainSwitches(): string[] {
+function keychainArgs(): string[] {
   if (process.platform === "darwin") return ["--use-mock-keychain"];
-  if (process.platform === "linux") return ["--password-store=gnome-libsecret"];
+  if (process.platform === "linux") return ["-r", join(appDir, "e2e/keyring.cjs")];
   return [];
 }
 
@@ -96,7 +97,7 @@ export const test = base.extend<Fixtures>({
       // No `executablePath`: Playwright then starts the `electron` package's binary with its own
       // loader, which holds the app until Playwright is attached, so no window is missed.
       const app = await _electron.launch({
-        args: [...keychainSwitches(), appDir],
+        args: [...keychainArgs(), appDir],
         env: {
           ...cleanEnv(),
           MATTERS_DB_PATH: join(dataDir, "matters.db"),
