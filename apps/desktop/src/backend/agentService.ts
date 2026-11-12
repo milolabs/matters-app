@@ -1183,7 +1183,7 @@ export class AgentService implements AgentApi {
     const pausesOnLimit = this.infoOf(runtime.id)?.pausesOnLimit === true;
     this.limitHeld = null;
     try {
-      await this.prompts.readInBackground({
+      const more = await this.prompts.readInBackground({
         recentDays: RECENT_DAYS,
         stopWhen: () => this.readingPaused || this.stopped,
         ...(pausesOnLimit
@@ -1194,6 +1194,8 @@ export class AgentService implements AgentApi {
             }
           : {}),
       });
+      // A view has threads left that one pass did not take: the next pass reads on.
+      if (more && !this.readingPaused) this.again = true;
     } catch (error) {
       this.deps.onError?.(
         `agents: a prompt's reading failed (${error instanceof Error ? error.name : "unknown"})`,
@@ -2149,8 +2151,11 @@ export class AgentService implements AgentApi {
     return this.prompts.badge(query);
   }
 
-  promptRun(query: string, again?: boolean, readAll?: boolean): Promise<PromptRunResult> {
-    return this.prompts.run(query, again === true, readAll === true);
+  async promptRun(query: string, again?: boolean, readAll?: boolean): Promise<PromptRunResult> {
+    const result = await this.prompts.run(query, again === true, readAll === true);
+    // What the run left unread of a saved view is read on in the background (ADR 0117, rule 3).
+    this.kick();
+    return result;
   }
 
   async promptStop(): Promise<void> {

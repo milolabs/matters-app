@@ -19,6 +19,7 @@ export function PromptLine(props: { prompt: PromptRunStore }) {
           progress: prompt.progress(),
           stopping: prompt.stopping(),
           outcome: prompt.outcome(),
+          view: prompt.isView(),
         })
       : null;
   // A mouse down must not take the focus from where it is.

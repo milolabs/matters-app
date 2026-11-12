@@ -186,6 +186,8 @@ export function promptLine(state: {
   readonly progress: PromptProgressShown | null;
   readonly stopping: boolean;
   readonly outcome: PromptOutcome | null;
+  /** The text is a saved view's: what is left is read on in the background (ADR 0117, rule 3). */
+  readonly view?: boolean;
 }): PromptLine | null {
   const { count, progress, outcome } = state;
   if (progress !== null) {
@@ -235,5 +237,9 @@ export function promptLine(state: {
     return { kind: "count", text: toFindText(count.limit, count.fits, todo) };
   }
   const read = count.read > 0 ? `, ${num(count.read)} read already` : "";
-  return { kind: "count", text: `${threads(todo)} to read${read}.` };
+  const text = `${threads(todo)} to read${read}.`;
+  return {
+    kind: "count",
+    text: state.view === true ? `${text} Reading on in the background.` : text,
+  };
 }

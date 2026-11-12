@@ -68,6 +68,14 @@ notifications. Those are what a view has to gain before the tab can go.
      while one runs; one that starts waits for the turns already sent and keeps their verdicts,
      so no thread is sent twice.
    - A thread sent twice with no verdict back is left until it changes.
+   - It also reads what a run of the person's left unread above the line of ADR 0116, rule 4,
+     so a saved view is read to its end with no other `↵`. That is old mail, `P3`: on a plan
+     it goes only while the plan's gates for background work let it, and waits otherwise. One
+     pass takes at most `PROMPT_ASK_ABOVE` threads of a view, and the next follows by itself
+     while threads are left and nothing was refused. (At first only mail newer than the
+     view's last reading was read, and the rest waited for the person.)
+   - On a runtime with no plan nothing is counted against the person, so one pass reads a
+     view whole, and a run the person starts never stops to ask.
 4. **A view with a prompt has a badge.** Its number is the unread threads among those it shows
    (fit 2 or 3 under its mail filters), counted from stored verdicts with no model. It means
    what every tab's number means (ADR 0093), counted in threads. A view never read shows none.

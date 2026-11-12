@@ -88,6 +88,7 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
   // The text is a saved view's, opened (rule 3): the tab is named for the prompt, so the list is
   // only ever what fits it. The mail filters' result alone would show mail the prompt never kept.
   let asView = false;
+  const [viewShown, setViewShown] = createSignal(false);
 
   /** The prompt's key, learned from any answer for this text: progress of other prompts is not ours. */
   function learn(key: string) {
@@ -160,6 +161,7 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
     if (run !== null) stopInFlight();
     asView = false;
     batch(() => {
+      setViewShown(false);
       setText(next);
       setHas(hasPrompt);
       setOpening(false);
@@ -271,6 +273,7 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
     // At once, before anything is asked: the mail filters' result never shows under the view's name.
     asView = true;
     batch(() => {
+      setViewShown(true);
       if (rows() === null) setRows([]);
       setOpening(true);
     });
@@ -370,6 +373,8 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
     outcome,
     /** A view was opened and its kept rows are on their way: an empty list is not yet an answer. */
     opening,
+    /** The text is a saved view's, opened as one. */
+    isView: () => viewShown(),
     setQuery,
     /** `↵`: once the count is known the person has seen it, so it reads everything (rule 4). */
     run: () => {

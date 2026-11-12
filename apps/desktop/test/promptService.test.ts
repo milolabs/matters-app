@@ -1147,7 +1147,7 @@ describe("a view with a prompt reads in the background (ADR 0117)", () => {
   /** The threads every verdict turn sent, in order of the turns. */
   const judged = (runtime: Responder) => runtime.of("verdicts").flatMap((c) => subjectsOf(c));
 
-  it("reads only new threads with no verdict, only for views run once, with no search (rule 3)", async () => {
+  it("reads threads with no verdict, only for views run once, with no search; old mail waits for room in the plan (rule 3)", async () => {
     const runtime = new Responder();
     const h = await build(runtime);
     await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
@@ -1174,9 +1174,11 @@ describe("a view with a prompt reads in the background (ADR 0117)", () => {
     expect(h.progress.every((p) => p.background === true && p.phase === "reading")).toBe(true);
     expect(h.progress.at(-1)).toMatchObject({ promptKey: key, finished: true, background: true });
     expect((await h.insights.listLedger(10)).filter((l) => l.purpose === "prompt")).toHaveLength(3);
-    expect((await h.insights.getPromptSearch(key, ""))?.readAtMs).toBe(NOW + 60_000);
+    // The old thread is `P3`: with the plan's windows not known yet it waits (ADR 0051, rule 7),
+    // so the view is not read to its end and the last reading stays where it was.
+    expect((await h.insights.getPromptSearch(key, ""))?.readAtMs).toBe(NOW);
 
-    // Nothing new: another pass costs nothing. The old thread is the person's to read.
+    // Nothing the plan lets through: another pass costs nothing.
     await h.pass();
     expect(runtime.of("verdicts")).toHaveLength(2);
     expect(await h.service.promptCount(PROMPT)).toMatchObject({ found: 3, read: 2 });
@@ -1205,7 +1207,7 @@ describe("a view with a prompt reads in the background (ADR 0117)", () => {
     expect(await h.service.promptBadge(PROMPT)).toEqual({ ai: "off", unread: null });
   });
 
-  it("stops for the person's pause, waits while the plan says no, and reads at most PROMPT_ASK_ABOVE a pass", async () => {
+  it("stops for the person's pause, waits while the plan says no, and reads a view on to its end", async () => {
     const runtime = new Responder();
     const h = await build(runtime);
     await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
@@ -1255,13 +1257,42 @@ describe("a view with a prompt reads in the background (ADR 0117)", () => {
     h.service.kick();
     await h.clock.advance(5000);
     await h.service.idle();
-    expect(judged(runtime).length - 1).toBe(PROMPT_ASK_ABOVE);
-    // The last reading stays where it was until every new thread is read: the next pass reads on.
-    h.service.kick();
-    await h.clock.advance(5000);
-    await h.service.idle();
+    // One pass takes at most PROMPT_ASK_ABOVE of a view; with threads left and nothing refused,
+    // the next pass follows by itself, so one kick reads the view to its end.
     expect(judged(runtime).length - 1).toBe(n);
     expect(await h.service.promptCount(PROMPT)).toMatchObject({ found: n + 1, read: n + 1 });
+  });
+
+  it("reads on in the background what a run left above PROMPT_ASK_ABOVE, with no other ↵", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime);
+    const n = PROMPT_ASK_ABOVE + 60;
+    for (let i = 0; i < n; i++) {
+      await h.addMail(`t${String(i).padStart(3, "0")}`, ["Please decide by Friday"], {
+        dayOffset: 40 + i,
+        from: `person${i}@example${i}.org`,
+      });
+    }
+    await h.addView("asks", PROMPT);
+    await h.ready();
+    // The first ↵ reads the best of them and asks about the rest.
+    expect(await h.service.promptRun(PROMPT)).toMatchObject({ ask: true, read: PROMPT_ASK_ABOVE });
+    // The plan has room: the rest is old mail, read at `P3` with nothing more pressed.
+    const resetsAtMs = NOW + DAY;
+    await h.settings.update({
+      plan: {
+        runtimeId: "fake",
+        limits: {
+          session: { usedPercent: 5, resetsAtMs },
+          week: { usedPercent: 10, resetsAtMs },
+          usingOverage: false,
+          seenAtMs: NOW,
+        },
+      },
+    });
+    await h.pass();
+    expect(await h.service.promptCount(PROMPT)).toMatchObject({ found: n, read: n });
+    expect(new Set(runtime.of("verdicts").flatMap(subjectsOf)).size).toBe(n);
   });
 
   it("gives way to a run the person starts, which waits for its turn: nothing is sent twice", async () => {

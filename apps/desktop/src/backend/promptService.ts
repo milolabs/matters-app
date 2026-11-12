@@ -403,7 +403,8 @@ export class PromptService {
         // one `↵` spends is bounded, and the line says how many are left).
         // Without a limit the same holds for the first `↵` (rule 4): it reads the best
         // `PROMPT_ASK_ABOVE`, so the list fills at once, and asks before the rest.
-        const bounded = asked.limit !== undefined || !readAll;
+        // On a runtime with no plan nothing is asked: reading costs the person nothing.
+        const bounded = asked.limit !== undefined || (!readAll && on.info()?.noPlan !== true);
         const todo =
           bounded && window.todo.length > PROMPT_ASK_ABOVE
             ? window.todo.slice(0, PROMPT_ASK_ABOVE)
@@ -1007,22 +1008,24 @@ export class PromptService {
    * started; AI being on, consent, the runtime and the pause are the caller's gates, and are
    * checked again here where they can change.
    */
-  async readInBackground(options: BackgroundOptions): Promise<void> {
-    if (this.running !== null || this.back !== null || this.deps.views === undefined) return;
+  async readInBackground(options: BackgroundOptions): Promise<boolean> {
+    if (this.running !== null || this.back !== null || this.deps.views === undefined) return false;
     let release = () => {};
     const done = new Promise<void>((resolve) => {
       release = resolve;
     });
     this.back = { done };
     try {
-      await this.backgroundPass(options);
+      return await this.backgroundPass(options);
     } finally {
       this.back = null;
       release();
     }
   }
 
-  private async backgroundPass(options: BackgroundOptions): Promise<void> {
+  /** True when a view has threads left that another pass can read now: nothing refused or failed. */
+  private async backgroundPass(options: BackgroundOptions): Promise<boolean> {
+    let more = false;
     const views = (await this.deps.views?.list()) ?? [];
     // One pass reads on one runtime: the one for understanding mail when it starts (ADR 0121, rule 9).
     const on = this.deps.understand();
@@ -1030,11 +1033,11 @@ export class PromptService {
     const over = () => signal.aborted || this.running !== null || options.stopWhen();
     const seen = new Set<string>();
     for (const view of views) {
-      if (over()) return;
+      if (over()) return false;
       if (parseQuery(view.query).prompt === undefined) continue;
       const s = await this.deps.settings.get();
       const consented = await this.consented(s, on);
-      if (consented.size === 0) return;
+      if (consented.size === 0) return false;
       const asked = await this.ask(view.query);
       // Two views with the same prompt and filters read once.
       const name = `${asked.key}\n${asked.filters}`;
@@ -1049,11 +1052,11 @@ export class PromptService {
       const ordered = inReadingOrder(candidates, asked.sort);
       const known = await this.known(asked.key, ordered);
       const window = promptWindow(ordered, known, asked.limit, asked.sort);
-      const since = (search.readAtMs ?? search.atMs) - options.recentDays * DAY_MS;
+      // Everything a run would read now and has not: new mail, and what a run of the person's
+      // left unread above the line (ADR 0116, rule 4). A saved view is read to its end without
+      // another `↵`; the gates of the plan at `P3` are what bound it.
       const fresh = window.todo.filter(
-        (c) =>
-          c.newest.dateMs > since &&
-          (this.tried.get(triedKey(asked.key, c)) ?? 0) < BACKGROUND_TRIES,
+        (c) => (this.tried.get(triedKey(asked.key, c)) ?? 0) < BACKGROUND_TRIES,
       );
       if (fresh.length === 0) {
         // Nothing new: the next pass looks from here.
@@ -1063,7 +1066,8 @@ export class PromptService {
       const recentSince = startedAt - options.recentDays * DAY_MS;
       const recent = fresh.filter((c) => c.newest.dateMs >= recentSince);
       const older = fresh.filter((c) => c.newest.dateMs < recentSince);
-      const take = PROMPT_ASK_ABOVE;
+      // A runtime with no plan spends nothing of the person's: one pass reads it all.
+      const take = on.info()?.noPlan === true ? fresh.length : PROMPT_ASK_ABOVE;
       const groups: [AgentPriority, readonly Candidate[]][] = [
         ["P1", recent.slice(0, take)],
         ["P3", older.slice(0, Math.max(0, take - recent.length))],
@@ -1080,6 +1084,7 @@ export class PromptService {
       };
       let complete = fresh.length <= take;
       let stopped = false;
+      let refused = false;
       const answered: string[] = [];
       for (const [priority, todo] of groups) {
         if (todo.length === 0) continue;
@@ -1099,6 +1104,7 @@ export class PromptService {
           stopped = true;
         }
         if (outcome.problem !== undefined || outcome.rejected > 0 || over()) complete = false;
+        if (outcome.problem !== undefined) refused = true;
         // Refused or failed at this priority: the older mail of this view waits for a later pass.
         if (outcome.problem !== undefined) break;
       }
@@ -1118,7 +1124,10 @@ export class PromptService {
         this.tried.delete(first);
       }
       if (complete) await this.deps.insights.putPromptSearch({ ...search, readAtMs: startedAt });
-      if (stopped) return;
+      if (stopped) return false;
+      // Threads left only because one pass takes so many: the next pass reads on.
+      if (!complete && !refused && !over() && fresh.length > take) more = true;
     }
+    return more;
   }
 }
