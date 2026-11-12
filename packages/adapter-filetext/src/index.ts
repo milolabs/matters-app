@@ -92,7 +92,6 @@ async function pdfText(bytes: Uint8Array, options: ExtractOptions): Promise<Extr
   const started = Date.now();
   const task = pdfjs.getDocument({
     data: bytes,
-    isEvalSupported: false,
     disableFontFace: true,
     useSystemFonts: false,
     // Nothing a file asks for over the network, and no standard font files: text only.
