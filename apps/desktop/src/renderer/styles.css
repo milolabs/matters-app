@@ -106,6 +106,13 @@ body,
   margin: 0;
 }
 
+/* The window never scrolls: every pane scrolls by itself. Clipped, not hidden, so that bringing
+   something into view inside a pane cannot move the whole app up and leave a gap under it. */
+#root {
+  position: relative;
+  overflow: clip;
+}
+
 body {
   background: var(--bg);
   color: var(--ink);

@@ -64,9 +64,11 @@ ADR 0117 then removed that tab in favour of a view with a prompt.
    own. They are read best match first, so what fits most shows early. The search costs the budget
    of ADR 0083, rule 5; the reading costs what the search found, which is not known before it.
    So the bar says how many threads were found as soon as the search ends. Up to
-   `PROMPT_ASK_ABOVE` (200, a starting value) the reading goes on by itself; above it the bar
-   waits for one more `↵`, because that much reading is a large part of a plan's window. That is
-   a question, not a limit: the person can read all of them. Stop and the plan's own limit
+   `PROMPT_ASK_ABOVE` (200, a starting value) the reading goes on by itself. Above it the run
+   reads the best that many, so the list fills on the first `↵`, and then the bar says how many
+   are left and waits for one more `↵`, which reads them all: that much reading is a large part
+   of a plan's window. That is a question, not a limit. (At first nothing was read above the
+   line; a `↵` that only showed a number looked like a run that had not started.) Stop and the plan's own limit
    (ADR 0051, rule 7) end a reading and keep what was read; the bar then says how many are left.
    The queries the search wrote are kept with the prompt and the mail filters. Coming back to a
    view runs them again on this machine, with no model, and only threads they find that have no

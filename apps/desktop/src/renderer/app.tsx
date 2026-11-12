@@ -1223,7 +1223,9 @@ function Mail(props: Stores) {
               ref={reader}
               tabIndex={-1}
               aria-label="Thread"
-              class="selectable min-h-0 min-w-0 flex-1 overflow-y-auto outline-none"
+              // Positioned, so that text for screen readers deep in a long thread stays inside this
+              // scroller and cannot make the window itself taller than it is.
+              class="selectable relative min-h-0 min-w-0 flex-1 overflow-y-auto outline-none"
             >
               <Show when={marks.active()}>
                 <MailStack
@@ -1539,13 +1541,27 @@ function MessageList(props: {
       return layout().items.length;
     },
     getScrollElement: () => scroller,
-    // A new function per layout: the virtualizer drops its cached sizes when the items move.
     get estimateSize() {
       const items = layout().items;
       return (i: number) => (items[i]?.kind === "head" ? HEAD_HEIGHT : ROW_HEIGHT);
     },
     overscan: 8,
   });
+  // The virtualizer places items anew only when their number changes. A layout with as many
+  // items but a heading elsewhere would keep the old places, and a row would stand where a
+  // heading's height was kept for it. So such a layout is measured again; any other already is,
+  // and measuring it twice would cost a keystroke its time.
+  let placed = layout().items.length;
+  createEffect(
+    on(
+      layout,
+      (l) => {
+        if (l.items.length === placed) virtualizer.measure();
+        placed = l.items.length;
+      },
+      { defer: true },
+    ),
+  );
 
   // Follows the message, not its index: mail arriving above moves the index of the same message,
   // and scrolling for that would add to what the anchor below already corrects.

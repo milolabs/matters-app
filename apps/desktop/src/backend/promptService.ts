@@ -293,8 +293,9 @@ export class PromptService {
    * Runs the prompt of `query` (rule 3), `P0`. Without a kept search, or with `again`, the agent
    * searches first (rule 4); then the threads found that have no verdict are read in batches on
    * the model for understanding mail (rule 9), each batch kept as it returns. Refused with a
-   * sentence while another run goes on. While AI is off it answers `off` and sends nothing. More
-   * than `PROMPT_ASK_ABOVE` to read are read only with `readAll`; else the run ends with `ask`.
+   * sentence while another run goes on. While AI is off it answers `off` and sends nothing. Of
+   * more than `PROMPT_ASK_ABOVE` to read, the first that many are read and the run ends with
+   * `ask`; with `readAll` it reads them all.
    */
   async run(query: string, again = false, readAll = false): Promise<PromptRunResult> {
     const asked = await this.ask(query);
@@ -387,18 +388,21 @@ export class PromptService {
         // the threads before the limit's worth can be thousands. So under a limit one run reads
         // at most `PROMPT_ASK_ABOVE` of them, in order, and the next `↵` reads on (rule 4: what
         // one `↵` spends is bounded, and the line says how many are left).
+        // Without a limit the same holds for the first `↵` (rule 4): it reads the best
+        // `PROMPT_ASK_ABOVE`, so the list fills at once, and asks before the rest.
+        const bounded = asked.limit !== undefined || !readAll;
         const todo =
-          asked.limit !== undefined && window.todo.length > PROMPT_ASK_ABOVE
+          bounded && window.todo.length > PROMPT_ASK_ABOVE
             ? window.todo.slice(0, PROMPT_ASK_ABOVE)
             : window.todo;
         mine.phase = "reading";
         mine.total = todo.length;
         mine.step = undefined;
         if (asked.limit !== undefined) mine.fits = window.fitting.length;
-        // Rule 4: the count is said first; above the line the reading waits for one more `↵`.
+        // Rule 4: what is left above the line waits for one more `↵`, which reads it all.
         // Under a limit nothing is asked: each run is bounded above.
-        ask = asked.limit === undefined && todo.length > PROMPT_ASK_ABOVE && !readAll;
-        if (todo.length > 0 && !ask) {
+        ask = asked.limit === undefined && todo.length < window.todo.length;
+        if (todo.length > 0) {
           await gate();
           this.progress(mine, false);
           // What a turn answered, or tried and could not: a thread tried counts as read here, so

@@ -1404,9 +1404,10 @@ async function measurePrompt(store: MailStore, backend: Backend) {
     store.ordered() && line()?.dataset.promptLine === "allRead" && store.messages().length > 0;
   enter();
   // The search, then the reading: done when the line says how many fit. Above PROMPT_ASK_ABOVE
-  // found, the line asks first, and one more ↵ reads them all (rule 4).
-  await until(() => read() || line()?.dataset.promptLine === "ask", 20_000);
-  if (line()?.dataset.promptLine === "ask") enter();
+  // found, it reads that many and says how many are left, and one more ↵ reads them all (rule 4).
+  const left = () => ["ask", "count"].includes(line()?.dataset.promptLine ?? "");
+  await until(() => read() || (store.ordered() && left()), 60_000);
+  if (left()) enter();
   out.ran = await until(read, 60_000);
   await frame();
   const kept = await backend.agentPromptVerdicts(query).catch(() => null);

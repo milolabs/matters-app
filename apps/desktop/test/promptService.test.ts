@@ -841,7 +841,7 @@ describe("a prompt is a filter (ADR 0116)", () => {
     expect(result.read).toBe(MAX_PROMPT_BATCH_THREADS);
   });
 
-  it("has no cap of its own: above PROMPT_ASK_ABOVE it asks, then reads every match (rule 4)", async () => {
+  it("has no cap of its own: above PROMPT_ASK_ABOVE it reads that many, asks, then reads every match (rule 4)", async () => {
     const runtime = new Responder();
     const h = await build(runtime);
     const n = 450;
@@ -853,12 +853,25 @@ describe("a prompt is a filter (ADR 0116)", () => {
     }
     await h.ready();
     const asked = await h.service.promptRun(PROMPT);
-    // The count is said and nothing is read: one more ↵ is the person's.
-    expect(asked).toMatchObject({ searched: true, found: n, read: 0, ask: true, stopped: false });
-    expect(runtime.of("verdicts")).toHaveLength(0);
-    expect(h.progress.at(-1)).toMatchObject({ phase: "reading", total: n, finished: true });
-    // Asked again without readAll: still a question, and no search again.
-    expect(await h.service.promptRun(PROMPT)).toMatchObject({ ask: true, read: 0 });
+    // The first ↵ reads the best of them, so the list fills; the rest is the person's to ask for.
+    expect(asked).toMatchObject({
+      searched: true,
+      found: n,
+      read: PROMPT_ASK_ABOVE,
+      ask: true,
+      stopped: false,
+    });
+    expect(runtime.of("verdicts").flatMap(subjectsOf)).toHaveLength(PROMPT_ASK_ABOVE);
+    expect(h.progress.at(-1)).toMatchObject({
+      phase: "reading",
+      total: PROMPT_ASK_ABOVE,
+      finished: true,
+    });
+    // Asked again without readAll: the next of them, still a question, and no search again.
+    expect(await h.service.promptRun(PROMPT)).toMatchObject({
+      ask: true,
+      read: 2 * PROMPT_ASK_ABOVE,
+    });
     const all = await h.service.promptRun(PROMPT, false, true);
     expect(all.ask).toBeUndefined();
     expect(all).toMatchObject({ found: n, read: n, fits: n });
