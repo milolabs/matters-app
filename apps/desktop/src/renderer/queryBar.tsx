@@ -57,6 +57,8 @@ export function createQueryModel(
   store: MailStore,
   accounts: AccountsStore,
   promptOff: () => PromptOff | null = () => null,
+  /** The name of the runtime that reads mail for a prompt, for the words of that reason. */
+  promptRuntime: () => string | undefined = () => undefined,
 ) {
   const parsed = createMemo<ParsedQuery>(() => {
     const off = promptOff();
@@ -64,7 +66,7 @@ export function createQueryModel(
       ...(accounts.loaded() ? { accounts: accounts.accounts() } : {}),
       ...(off === null ? {} : { promptOff: true }),
     });
-    return withPromptOffText(parsed, off);
+    return withPromptOffText(parsed, off, promptRuntime());
   });
   return { parsed };
 }

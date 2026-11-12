@@ -511,7 +511,14 @@ function RowSelect(props: {
       class={`${field} w-full`}
       value={props.value}
       disabled={props.disabled}
-      onChange={(e) => props.onChange(e.currentTarget.value)}
+      onChange={(e) => {
+        const el = e.currentTarget;
+        props.onChange(el.value);
+        // What it shows is what is so: a choice that was not taken, or not yet, goes back.
+        queueMicrotask(() => {
+          if (el.value !== props.value) el.value = props.value;
+        });
+      }}
     >
       <Index each={options()}>
         {(option) => (
@@ -536,6 +543,8 @@ export function WhatDoesWhat(props: {
   onChange: (models: Partial<AgentModels>, efforts?: Partial<AgentEfforts>) => void;
   /** The person moves a kind of work to another runtime. */
   onRuntime?: (kind: AgentWorkKind, runtimeId: string) => void;
+  /** The runtime a kind is about to move to, while the person is asked to agree to it. */
+  pending?: (kind: AgentWorkKind) => string | undefined;
   /** Words for the first-run screen: the values are what the app suggests. */
   suggested?: boolean;
 }) {
@@ -626,7 +635,11 @@ export function WhatDoesWhat(props: {
                       id={`${props.idPrefix}-${work.key}-runtime`}
                       label={`${work.label}, assistant`}
                       data="runtime"
-                      value={props.status.settings.kindRuntime[work.key] ?? ""}
+                      value={
+                        props.pending?.(work.key) ??
+                        props.status.settings.kindRuntime[work.key] ??
+                        ""
+                      }
                       options={runtimeOptions(work.key)}
                       onChange={(value) => {
                         if (value !== "") onRuntime()(work.key, value);
@@ -638,12 +651,24 @@ export function WhatDoesWhat(props: {
                       data="model"
                       value={props.status.settings.models[work.key]}
                       options={modelOptions()}
-                      disabled={models().length === 0}
+                      disabled={models().length === 0 || props.pending?.(work.key) !== undefined}
                       onChange={(value) => props.onChange({ [work.key]: value })}
                     />
                     {effort()}
                   </div>
-                  <Show when={kindWaits(props.status, work.key)}>
+                  <Show when={props.pending?.(work.key)}>
+                    {(id) => (
+                      <p class="text-[12px] text-secondary" data-kind-pending={work.key}>
+                        Still on {nameOf(work.key)}. Agree below to move it to{" "}
+                        {props.status.runtimes.find((r) => r.id === id())?.name ?? id()}.
+                      </p>
+                    )}
+                  </Show>
+                  <Show
+                    when={
+                      props.pending?.(work.key) === undefined && kindWaits(props.status, work.key)
+                    }
+                  >
                     {(waits) => (
                       <p class="text-[12px] text-late" data-kind-waits={work.key}>
                         {waits()}

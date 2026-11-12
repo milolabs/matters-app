@@ -240,6 +240,7 @@ describe("the prompt in the bar (rules 1 and 11)", () => {
     expect(parsed.diagnostics.map((d) => d.message)).toEqual([promptOffText("off")]);
     expect(promptOffText("off")).toMatch(/AI is off.*Settings › Agents/);
     expect(promptOffText("noConsent")).toMatch(/No account is shared.*Settings › Agents/);
+    expect(promptOffText("noConsent", "Local")).toMatch(/shared with Local, which reads mail/);
     // Nothing to put in other words: the same object back.
     const plain = parseQuery("from:office");
     expect(withPromptOffText(plain, "off")).toBe(plain);
@@ -687,7 +688,8 @@ describe("the prompt's run (rules 2, 3 and 9)", () => {
     r.setVerdicts(list([], { ai: "off", promptKey: "", searched: false, found: 0 }));
     p.setQuery(`${QUERY} is:unread`, true);
     await p.open();
-    expect(p.rows()).toBeNull();
+    // Nothing can fit while AI is off: the list is empty, and the diagnostic says why.
+    expect(p.rows()).toEqual([]);
     expect(promptLine(state(p))).toBeNull();
   });
 

@@ -115,7 +115,7 @@ import {
 import { foldRun, letterKeys, sameKeys, sameRun } from "./threadLetters.ts";
 import { type StackItem, ThreadStack } from "./threadStack.tsx";
 import { toolButton } from "./ui.ts";
-import { ALL_MAIL_ID, type ViewsStore } from "./views.ts";
+import { ALL_MAIL_ID, holdsPrompt, type ViewsStore } from "./views.ts";
 import { ViewStatus, ViewTabs } from "./viewTabs.tsx";
 import { createWindowWidth } from "./windowWidth.ts";
 
@@ -258,7 +258,11 @@ function Mail(props: Stores) {
   let bar!: QueryBarHandle;
   // ADR 0116, rule 11: a prompt does nothing while the agent could not read for it.
   const offWhy = createMemo(() => promptOff(agent.enabled(), agent.status()));
-  const model = createQueryModel(store, accounts, offWhy);
+  const model = createQueryModel(store, accounts, offWhy, () => {
+    const s = agent.status();
+    const id = s?.settings.kindRuntime.understand;
+    return s?.runtimes.find((r) => r.id === id)?.name;
+  });
   const showMarks = createMemo(() =>
     showsAccountMarks(accounts.accounts().length, model.parsed().root),
   );
@@ -289,11 +293,17 @@ function Mail(props: Stores) {
     const mine = rankedSortOf(model.parsed());
     untrack(() => sorted.setQuery(text, mine));
   });
+  // The text holds a prompt that cannot work: AI is off, or no account is shared with the runtime
+  // that reads for it (ADR 0116, rule 11). The list is then empty and the line above says why:
+  // the mail filters' result is not what was asked for, and showing it would pass for an answer.
+  const promptIdle = createMemo(() => offWhy() !== null && holdsPrompt(store.query()));
   createEffect(() => {
     const rows = prompt.rows();
     const ranked = sorted.rows();
+    const idle = promptIdle();
     untrack(() => {
-      if (rows !== null) {
+      if (idle) store.showOrdered(store.query(), []);
+      else if (rows !== null) {
         // Under `sort:newest` or `sort:oldest` what fits is by date, with day headings (rule 4b).
         const by = parseQuery(prompt.text()).sort?.value;
         const dated = by === "newest" || by === "oldest";
@@ -1132,7 +1142,7 @@ function Mail(props: Stores) {
               orderedEmpty={() =>
                 sorted.rows() !== null
                   ? "Nothing found."
-                  : prompt.progress() === null && !prompt.opening()
+                  : prompt.progress() === null && !prompt.opening() && !promptIdle()
                     ? NOTHING_FITS
                     : ""
               }

@@ -121,8 +121,9 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
   const [turningOn, setTurningOn] = createSignal(false);
   const [picked, setPicked] = createSignal<ReadonlySet<string> | null>(null);
   // A kind of work moving to a runtime that some of its accounts have not agreed to (rule 4).
+  // Several kinds can wait for the same question: one runtime is asked about at a time.
   const [moving, setMoving] = createSignal<{
-    readonly kind: AgentWorkKind;
+    readonly kinds: readonly AgentWorkKind[];
     readonly runtimeId: string;
     readonly accounts: readonly AccountInfo[];
   } | null>(null);
@@ -216,7 +217,15 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
   function moveKind(kind: AgentWorkKind, runtimeId: string) {
     const s = status();
     if (s === null) return;
-    setMoving(null);
+    const waiting = moving();
+    // Back to where it is: the kind no longer waits for a question.
+    if (s.settings.kindRuntime[kind] === runtimeId) {
+      if (waiting !== null) {
+        const rest = waiting.kinds.filter((k) => k !== kind);
+        setMoving(rest.length === 0 ? null : { ...waiting, kinds: rest });
+      }
+      return;
+    }
     const none = runtimesInUse(s.settings).length === 0;
     const kinds = none ? AGENT_WORK_KINDS : [kind];
     // The accounts the agent works with at all: those that agreed to some runtime. Asking only
@@ -227,8 +236,14 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
       ? props.accounts.accounts().filter((a) => works(a.id) && !agreed(a.id, runtimeId))
       : [];
     if (asked.length > 0) {
-      setMoving({ kind, runtimeId, accounts: asked });
+      // The same runtime again: one question moves every kind that waits for it.
+      const before = waiting !== null && waiting.runtimeId === runtimeId ? waiting.kinds : [];
+      setMoving({ kinds: [...before.filter((k) => k !== kind), kind], runtimeId, accounts: asked });
       return;
+    }
+    if (waiting !== null) {
+      const rest = waiting.kinds.filter((k) => k !== kind);
+      setMoving(rest.length === 0 ? null : { ...waiting, kinds: rest });
     }
     void change(props.backend.agentSetKindRuntime(kinds, runtimeId));
   }
@@ -287,6 +302,10 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                       void change(props.backend.agentSetModels(models, efforts))
                     }
                     onRuntime={moveKind}
+                    pending={(kind) => {
+                      const m = moving();
+                      return m?.kinds.includes(kind) ? m.runtimeId : undefined;
+                    }}
                   />
                   <Show when={moving()}>
                     {(m) => (
@@ -299,16 +318,15 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                           status={s()}
                           accounts={m().accounts}
                           runtimeIds={[m().runtimeId]}
-                          kinds={[m().kind]}
+                          kinds={m().kinds}
                           startLabel={`Agree and move to ${nameOf(m().runtimeId)}`}
-                          declineLabel={`Keep on ${nameOf(s().settings.kindRuntime[m().kind])}`}
+                          declineLabel="Keep as it is"
                           onStatus={setStatus}
                           onStarted={(next) => {
+                            const { kinds, runtimeId } = m();
                             setStatus(next);
                             setMoving(null);
-                            void change(
-                              props.backend.agentSetKindRuntime([m().kind], m().runtimeId),
-                            );
+                            void change(props.backend.agentSetKindRuntime(kinds, runtimeId));
                           }}
                           onDeclined={() => setMoving(null)}
                         />

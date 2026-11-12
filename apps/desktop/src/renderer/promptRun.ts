@@ -278,10 +278,9 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
       const l = await backend.agentPromptVerdicts(text());
       if (mine !== gen) return;
       if (l.ai === "off") {
-        // AI is off: the prompt constrains nothing (rule 11), and the diagnostic says so.
-        asView = false;
+        // AI is off: nothing can fit (rule 11), and the diagnostic says why. The list stays empty.
         batch(() => {
-          setRows(null);
+          setRows([]);
           setOpening(false);
           setCount(countOf(l));
         });

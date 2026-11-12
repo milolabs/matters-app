@@ -130,8 +130,11 @@ ADR 0117 then removed that tab in favour of a view with a prompt.
 10. **A saved view needs nothing new.** The prompt is part of the view's text. Editing it marks
     the view changed as any edit does. Its badge is ADR 0117, rule 4: a count of the mail filters
     alone would not be a count of what the view shows.
-11. **Without AI.** While AI is off, or no account has consent, `prompt:` is reported as a
-    diagnostic that says AI is off, and constrains nothing.
+11. **Without AI.** While AI is off, or no account has consent for the runtime that reads
+    mail, `prompt:` is reported as a diagnostic that says so and where to change it, and the
+    list is empty. The mail filters' result is not what was asked for, and showing it would
+    pass for the prompt's answer. (At first the prompt constrained nothing then, and the list
+    showed the filters' result.)
 12. **Verdicts are the agent's data.** They are removed with the rest of it. Verdicts of a prompt
     that no saved view holds are dropped after 30 days.
 

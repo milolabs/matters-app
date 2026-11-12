@@ -26,16 +26,23 @@ export function promptOff(enabled: boolean, status: AgentStatus | null): PromptO
 }
 
 /** The parser's diagnostic for a prompt while AI is off, in words that say where to turn it on. */
-export function promptOffText(why: PromptOff): string {
-  return why === "off"
-    ? "AI is off, so the prompt does nothing. Turn it on in Settings › Agents."
-    : "No account is shared with the assistant, so the prompt does nothing. Choose accounts in Settings › Agents.";
+export function promptOffText(why: PromptOff, runtime?: string): string {
+  if (why === "off") {
+    return "AI is off, so the prompt cannot run and nothing is listed. Turn it on in Settings › Agents.";
+  }
+  const who =
+    runtime === undefined ? "the assistant that reads mail" : `${runtime}, which reads mail`;
+  return `No account is shared with ${who}, so the prompt cannot run and nothing is listed. Tick it under Which account goes where in Settings › Agents.`;
 }
 
 /** `parsed` with the `prompt-off` diagnostic put in the app's words (rule 11). */
-export function withPromptOffText(parsed: ParsedQuery, why: PromptOff | null): ParsedQuery {
+export function withPromptOffText(
+  parsed: ParsedQuery,
+  why: PromptOff | null,
+  runtime?: string,
+): ParsedQuery {
   if (why === null || !parsed.diagnostics.some((d) => d.code === "prompt-off")) return parsed;
-  const message = promptOffText(why);
+  const message = promptOffText(why, runtime);
   return {
     ...parsed,
     diagnostics: parsed.diagnostics.map(
