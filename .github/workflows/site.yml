@@ -1,0 +1,81 @@
+# The site, getmatters.app (ADR 0127): the files in site/, published with GitHub Pages.
+#
+# It is published again:
+# - when a change to site/ reaches main, so a fix to the page does not wait for a release;
+# - when a person publishes a release, so the download button, the version and the date follow it;
+# - by hand (Actions → Site → Run workflow).
+#
+# Nothing is built. The one generated file is release.json, written here from the latest published
+# release; the copy in the repository says "no release" and is what a local preview shows.
+name: Site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/site.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One at a time, and a run that has started finishes: a half-published site is worse than a late one.
+concurrency:
+  group: site
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Always main, also when a release started the run: the site is what main says it is.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - id: pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      # Alphas and drafts are not "latest", so the site never offers them.
+      - name: Write release.json from the latest release
+        run: node site/scripts/write-release.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # What is published: the pages and their assets, not the script that writes release.json.
+      # 404.html is served for any address, so its links start at the root. Without a domain of
+      # its own the site sits under /<repository>/, and the root is that.
+      - name: Collect the files
+        env:
+          BASE: ${{ steps.pages.outputs.base_path }}
+        run: |
+          mkdir _site
+          cp -R site/. _site/
+          rm -r _site/scripts
+          sed -i "s|=\"/|=\"$BASE/|g" _site/404.html
+          cat _site/release.json >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  publish:
+    name: Publish
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write # to publish
+      id-token: write # Pages checks that the files come from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

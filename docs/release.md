@@ -123,6 +123,9 @@ release build has no dev switches and opens your real data folder.
 
 5. Write the notes: what changed, what is known not to work, and any security fix with its
    advisory. Publish.
+6. Publishing starts the `Site` workflow: the site's download button, version and date now point
+   at this release ([ADR 0127](adr/0127-the-site-lives-in-the-repository.md)). A pre-release does
+   not change the site.
 
 ## If something is wrong
 
