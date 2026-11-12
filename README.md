@@ -82,6 +82,11 @@ plug into its ports; `apps/desktop` is the Electron app with a Solid renderer.
 [docs/architecture.md](docs/architecture.md) is the map, and every decision
 has a record in [docs/adr](docs/adr/README.md).
 
+The site is the folder `site/`: plain HTML and CSS with no build step,
+published with GitHub Pages
+([ADR 0127](docs/adr/0127-the-site-lives-in-the-repository.md)). To see it,
+serve the folder, for example with `python3 -m http.server --directory site`.
+
 ## Contributing
 
 Issues and pull requests are welcome. Contributors are asked to sign a
