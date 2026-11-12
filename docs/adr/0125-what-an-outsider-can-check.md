@@ -5,6 +5,8 @@
 - Builds on: [0047](0047-hostile-mail-corpus.md),
   [0122](0122-security-policy-and-checks-on-every-change.md)
 - Amends: [0123](0123-releases.md), rule 1 (a release also carries its build record as a file)
+- Amended by: [0126](0126-changes-reach-main-by-pull-request.md) (changes reach `main` by pull
+  request, read by an automatic reviewer)
 
 ## Context
 

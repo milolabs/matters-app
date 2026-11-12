@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-11-12
 - Amends: [0123](0123-releases.md), rules 6, 7, 8 and 10 (who sets the version and makes the tag)
+- Amended by: [0126](0126-changes-reach-main-by-pull-request.md) (the version commit is on the tag
+  only, and the next version is counted from the last tag)
 
 ## Context
 

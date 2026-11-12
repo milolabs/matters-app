@@ -90,6 +90,10 @@ the copyright with them ([ADR 0002](docs/adr/0002-license-agpl-and-cla.md)).
 The agreement is not set up yet; until it is, please open an issue before
 starting on a larger change.
 
+Every change reaches `main` through a pull request. The checks run on it, and an
+automatic reviewer reads it first
+([ADR 0126](docs/adr/0126-changes-reach-main-by-pull-request.md)).
+
 Please report security problems privately, not in a public issue:
 [SECURITY.md](SECURITY.md) says how, and what the app is meant to withstand.
 
