@@ -50,7 +50,9 @@ model on the machine is an option beside it, never something the app falls back 
    with a reason, never cut short without saying.
 9. **Effort follows the model.** The levels come from what each model says it takes, so the
    control beside a kind of work shows the levels of the model chosen for it, and none for a
-   model that has none.
+   model that has none. A model whose thinking is only on or off has two: `low` turns it off
+   and `high` turns it on. (At first such a model had no levels, so it thought on every turn,
+   and a batch of mail took minutes on a small model.)
 10. **Attachments, where the model can.** A model that takes tools runs the search loop of
     ADR 0083 with our own tools, so it can read the text of attached files (ADR 0087). A model
     that sees images gets image files whole (ADR 0090). Whether a model can do either is said

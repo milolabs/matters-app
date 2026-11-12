@@ -16,6 +16,7 @@ import type {
   PromptCount,
   PromptList,
   PromptRunResult,
+  ReadingStatus,
   RememberResult,
   ReplyCheck,
   RewriteHow,
@@ -296,6 +297,11 @@ export class RemoteAgent implements AgentApi {
 
   async promptStop(): Promise<void> {
     await this.host.command({ name: "agentPromptStop" });
+  }
+
+  /** Read-only, on the worker, where the reading in the background runs (ADR 0117, rule 3a). */
+  readingStatus(fresh?: boolean): Promise<ReadingStatus> {
+    return this.host.command({ name: "agentReadingStatus", ...(fresh === true ? { fresh } : {}) });
   }
 
   /** Read-only, but on the worker: it walks the index like a count (ADR 0102). */

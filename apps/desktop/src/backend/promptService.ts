@@ -38,6 +38,8 @@ import type {
   PromptThread,
   PromptVerdict,
   QuerySortValue,
+  ReadingView,
+  ReadingWait,
   SavedViewStorePort,
   SearchIndexPort,
 } from "@matters/core";
@@ -100,11 +102,11 @@ export interface LoadedThread {
  * to it.
  */
 export interface PromptRuntime {
-  readonly runtime: Pick<AgentRuntimePort, "id" | "run" | "runWithTools">;
+  readonly runtime: Pick<AgentRuntimePort, "id" | "name" | "run" | "runWithTools">;
   /** What was last seen of it: how many turns run at once (ADR 0119, rule 7; ADR 0121, rule 7). */
   info(): Pick<
     AgentRuntimeInfo,
-    "noPlan" | "turnsAtOnce" | "modelInputChars" | "tools" | "toolModels"
+    "noPlan" | "turnsAtOnce" | "modelInputChars" | "tools" | "toolModels" | "onThisMachine"
   > | null;
   /** The model of a kind of work on it, refused with a sentence when it no longer lists it. */
   modelOf(kind: AgentWorkKind, s: AgentSettings): string;
@@ -185,6 +187,31 @@ interface Running {
   candidates: readonly Candidate[] | null;
   /** A reading in the background for a saved view (ADR 0117, rule 3): no window waits for it. */
   readonly background?: true;
+  /** In the background: the view read, so a window can name it (rule 3a). */
+  readonly view?: PromptProgress["view"];
+  /** The runtime that reads, by name, and whether it runs on this Mac. */
+  runtime?: string;
+  local?: boolean;
+  /** Turns sent and not answered yet: their threads, and when each went. */
+  readonly out: Map<number, { readonly threads: number; readonly atMs: number }>;
+  /** Turns that answered, and when the first turn of the run went. */
+  turns: number;
+  firstSentMs?: number;
+  /** What the run waits for before it reads (rule 3a). */
+  waiting?: "background" | "gate";
+}
+
+/** What the last pass in the background met for a view, when it did not read it to its end. */
+type BackgroundNote = Extract<ReadingWait, { kind: "plan" | "limit" | "failed" }>;
+
+/** The counts of a view as last computed, so a window's status read costs no search (rule 3a). */
+interface KnownCounts {
+  readonly found: number;
+  readonly read: number;
+  readonly toRead: number;
+  readonly left: number;
+  /** A kept search stands for it: it was run once. */
+  readonly searched: boolean;
 }
 
 /** How `readBatches` goes: `P0` for what the person asked, unless told otherwise. */
@@ -199,7 +226,7 @@ interface BatchOptions {
 
 /** What the reading in the background is told by the pass it runs in (ADR 0117, rule 3). */
 export interface BackgroundOptions {
-  /** Mail of this many days is `P1`, older `P3` (ADR 0051, rule 7), as for the reading of a window. */
+  /** Mail of this many days is read first; it and the rest of a view the person ran are `P1`. */
   readonly recentDays: number;
   /** True once the person paused reading or the pass ends: no batch more starts. */
   readonly stopWhen: () => boolean;
@@ -216,10 +243,16 @@ type Searched =
   | { readonly kind: "stopped" }
   | { readonly kind: "problem"; readonly problem: string };
 
+/** A check of the runtime before a run shows on the line once it takes this long. */
+const GATE_SHOWN_AFTER_MS = 250;
+
 /** A thread the background sent this often with no verdict back is left until it changes. */
 const BACKGROUND_TRIES = 2;
 /** Threads the background remembers trying: more than a pass ever sends. */
 const MAX_TRIED = 5000;
+
+/** A prompt and its mail filters: what the background reads once, however many views hold it. */
+const nameOf = (asked: Pick<Asked, "key" | "filters">): string => `${asked.key}\n${asked.filters}`;
 
 const triedKey = (key: string, c: Pick<Candidate, "threadId" | "lastMessageKey">): string =>
   `${key}\n${c.threadId}\n${c.lastMessageKey}`;
@@ -259,6 +292,12 @@ export class PromptService {
   private back: { readonly done: Promise<void> } | null = null;
   /** Threads the background sent and got no verdict for, by prompt, thread and last message. */
   private readonly tried = new Map<string, number>();
+  /** The view the background reads now, by prompt and filters, as it goes (rule 3a). */
+  private backNow: { readonly name: string; readonly mine: Running } | null = null;
+  /** Why the last pass did not read a view to its end, by prompt and filters (rule 3a). */
+  private readonly notes = new Map<string, BackgroundNote>();
+  /** The counts of each prompt and filters as last computed, for the status of the reading. */
+  private readonly counted = new Map<string, KnownCounts>();
   private readonly candidates: PromptCandidates;
 
   constructor(deps: PromptServiceDeps) {
@@ -324,6 +363,10 @@ export class PromptService {
       done: 0,
       total: 0,
       candidates: null,
+      out: new Map(),
+      turns: 0,
+      runtime: on.runtime.name,
+      local: on.info()?.onThisMachine === true,
     };
     this.running = mine;
     const startedAt = this.deps.now();
@@ -334,16 +377,30 @@ export class PromptService {
     let gated = false;
     const gate = async () => {
       if (gated) return;
+      // A check of the runtime that takes a moment shows as one (rule 3a); a quick one shows nothing.
+      const shown = setTimeout(() => {
+        mine.waiting = "gate";
+        this.progress(mine, false);
+      }, GATE_SHOWN_AFTER_MS);
       try {
         await on.gate(s);
       } catch (error) {
         throw on.askFailure(error, FAILED);
+      } finally {
+        clearTimeout(shown);
+        mine.waiting = undefined;
       }
       gated = true;
     };
     try {
       // A reading in the background gives way: its turns answer before anything is counted here.
+      // Meanwhile the line says what the run waits for, not a count that does not move.
+      if (this.back !== null) {
+        mine.waiting = "background";
+        this.progress(mine, false);
+      }
       await this.joinBackground();
+      mine.waiting = undefined;
       await this.prune();
       const signal = AbortSignal.any([mine.stop.signal, on.stopAll()]);
       let search = again
@@ -507,7 +564,10 @@ export class PromptService {
         : {};
     const search = await this.deps.insights.getPromptSearch(asked.key, asked.filters);
     const limit = asked.limit === undefined ? {} : { limit: asked.limit };
+    const name = nameOf(asked);
+    const unsearched = { found: 0, read: 0, toRead: 0, left: 0, searched: false };
     if (search === null) {
+      this.counted.set(name, unsearched);
       const none = { searched: false, found: 0, ...limit, read: 0, fits: 0 };
       return { ai: "on", promptKey: asked.key, ...none, ...running, rows: [] };
     }
@@ -515,6 +575,7 @@ export class PromptService {
       (ours ? run.candidates : null) ?? (await this.candidatesOf(asked, search, consented));
     if (all === null) {
       // A whole match that grew past the line: nothing stands until a run searches (rule 4).
+      this.counted.set(name, unsearched);
       const none = { searched: false, found: 0, ...limit, read: 0, fits: 0 };
       return { ai: "on", promptKey: asked.key, ...none, ...running, rows: [] };
     }
@@ -523,6 +584,7 @@ export class PromptService {
     const ordered = inReadingOrder(all, asked.sort);
     const known = await this.known(asked.key, ordered);
     const window = promptWindow(ordered, known, asked.limit, asked.sort);
+    this.noteCounts(asked, all.length, window.read, window.todo);
     const rows: PromptRow[] = [];
     if (withRows) {
       // Rule 4b: the threads that fit, in the order of `sort:`.
@@ -570,6 +632,17 @@ export class PromptService {
       ...running,
       rows,
     };
+  }
+
+  /** Keeps what a view's counts are now, for the status of the reading (rule 3a). No reads. */
+  private noteCounts(asked: Asked, found: number, read: number, todo: readonly Candidate[]): void {
+    let left = 0;
+    for (const c of todo) {
+      if ((this.tried.get(triedKey(asked.key, c)) ?? 0) >= BACKGROUND_TRIES) left++;
+    }
+    const name = nameOf(asked);
+    this.counted.set(name, { found, read, toRead: todo.length, left, searched: true });
+    if (todo.length === left) this.notes.delete(name);
   }
 
   /** The verdicts kept for these candidates as they stand, by thread. */
@@ -808,6 +881,8 @@ export class PromptService {
     problem?: string;
     /** A turn was refused for the plan's limit; `untilMs` when the runtime said until when. */
     limited?: { readonly untilMs?: number };
+    /** The plan's gate at this priority said no before a turn went (ADR 0051, rule 7). */
+    gated?: Extract<ReadingWait, { kind: "plan" }>;
   }> {
     const { enough, priority = "P0", stopWhen } = options;
     const { insights, settings } = this.deps;
@@ -820,6 +895,8 @@ export class PromptService {
     const answered: string[] = [];
     let problem: string | undefined;
     let limited: { untilMs?: number } | undefined;
+    let gated: Extract<ReadingWait, { kind: "plan" }> | undefined;
+    let turnSeq = 0;
     // The limit is reached: the turns under way finish and are kept, and none more starts.
     let full = false;
     const halt = new AbortController();
@@ -857,11 +934,19 @@ export class PromptService {
           return;
         }
         // Each turn is gated at its priority on the windows the last turn saw (ADR 0051, rule 7):
-        // `P0` for what the person asked, `P1` or `P3` in the background (ADR 0117, rule 3).
+        // `P0` for what the person asked, `P1` in the background (ADR 0117, rule 3).
         const now = await settings.get();
         const gate = on.planGate(priority, now);
         if (!gate.ok) {
           problem ??= USED_UP;
+          gated ??= {
+            kind: "plan",
+            reason: gate.reason,
+            ...(gate.untilMs === undefined ? {} : { untilMs: gate.untilMs }),
+            ...(on.limits(now) === undefined && on.info()?.noPlan !== true
+              ? { unknown: true as const }
+              : {}),
+          };
           halt.abort();
           return;
         }
@@ -879,6 +964,12 @@ export class PromptService {
         const went = sent.map((i) => batch[i] as (typeof batch)[number]);
         const wentSet = new Set(sent);
         waiting.unshift(...batch.filter((_, i) => !wentSet.has(i)));
+        // What is in flight shows while the turn works: the count moves only when it answers.
+        const turn = ++turnSeq;
+        const sentAt = this.deps.now();
+        mine.firstSentMs ??= sentAt;
+        mine.out.set(turn, { threads: went.length, atMs: sentAt });
+        this.progress(mine, false);
         try {
           const before = on.limits(now);
           const result = await runtime.run(
@@ -886,6 +977,8 @@ export class PromptService {
             { signal: turnSignal },
           );
           await on.noteRun(result.limits, before);
+          mine.out.delete(turn);
+          mine.turns++;
           answered.push(...went.map((b) => b.c.threadId));
           const accepted = acceptVerdicts(
             result.value,
@@ -909,6 +1002,7 @@ export class PromptService {
           }
           this.progress(mine, false);
         } catch (error) {
+          mine.out.delete(turn);
           if (turnSignal.aborted) return;
           if (isAgentRunError(error) && error.code === "limit") {
             problem ??= USED_UP;
@@ -952,6 +1046,7 @@ export class PromptService {
       answered,
       ...(problem === undefined ? {} : { problem }),
       ...(limited === undefined ? {} : { limited }),
+      ...(gated === undefined ? {} : { gated }),
     };
   }
 
@@ -973,6 +1068,12 @@ export class PromptService {
   }
 
   private progress(mine: Running, finished: boolean): void {
+    let threads = 0;
+    let sinceMs = Number.POSITIVE_INFINITY;
+    for (const t of mine.out.values()) {
+      threads += t.threads;
+      sinceMs = Math.min(sinceMs, t.atMs);
+    }
     this.deps.onProgress?.({
       promptKey: mine.key,
       phase: mine.phase,
@@ -982,6 +1083,14 @@ export class PromptService {
       ...(mine.fits === undefined ? {} : { fits: mine.fits }),
       finished,
       ...(mine.background === true ? { background: true as const } : {}),
+      ...(mine.view === undefined ? {} : { view: mine.view }),
+      ...(mine.runtime === undefined || mine.runtime === "" ? {} : { runtime: mine.runtime }),
+      ...(mine.local === true ? { local: true as const } : {}),
+      ...(finished || threads === 0 ? {} : { inFlight: { threads, sinceMs } }),
+      ...(mine.firstSentMs === undefined || mine.turns === 0
+        ? {}
+        : { answered: { turns: mine.turns, sinceMs: mine.firstSentMs } }),
+      ...(finished || mine.waiting === undefined ? {} : { waiting: mine.waiting }),
     });
   }
 
@@ -1002,7 +1111,7 @@ export class PromptService {
    * ones a run would read now (`promptWindow`: so never more than the foreground would, a
    * `limit:` included), and of those the ones with mail newer than the view's last reading, less
    * `recentDays` for mail that comes late. At most `PROMPT_ASK_ABOVE` of them per view and pass,
-   * the last days first at `P1`, the rest at `P3`. It never searches and never asks: a kept
+   * the last days first, all at `P1`. It never searches and never asks: a kept
    * whole match that grew past the line stands no more, and waits for the person. The last
    * reading moves on only when every new thread was read. Never runs beside a run the person
    * started; AI being on, consent, the runtime and the pause are the caller's gates, and are
@@ -1019,8 +1128,80 @@ export class PromptService {
       return await this.backgroundPass(options);
     } finally {
       this.back = null;
+      this.backNow = null;
       release();
     }
+  }
+
+  /**
+   * Each saved view with a prompt as the reading in the background stands for it (ADR 0117, rule
+   * 3a): its counts, and whether it is read now, waits and why, is up to date, was never run, or
+   * has only threads left that came back with nothing. No model. The counts are the ones last
+   * computed (a run, a list, a pass); with `fresh`, or for a view not counted yet, they are
+   * computed now from the kept search and the verdicts. Null while nothing can read (AI off, no
+   * consent): the caller says why.
+   */
+  async readingViews(fresh: boolean): Promise<ReadingView[] | null> {
+    const s = await this.deps.settings.get();
+    const consented = await this.consented(s, this.deps.understand());
+    if (consented.size === 0) return null;
+    const views = (await this.deps.views?.list()) ?? [];
+    const out: ReadingView[] = [];
+    for (const view of views) {
+      let asked: Asked;
+      try {
+        if (parseQuery(view.query).prompt === undefined) continue;
+        asked = await this.ask(view.query);
+      } catch {
+        continue;
+      }
+      const name = nameOf(asked);
+      if (fresh || !this.counted.has(name)) await this.list(view.query, false);
+      const c = this.counted.get(name) ?? {
+        found: 0,
+        read: 0,
+        toRead: 0,
+        left: 0,
+        searched: false,
+      };
+      const base = {
+        viewId: view.id,
+        name: view.name,
+        promptKey: asked.key,
+        found: c.found,
+        read: c.read,
+        toRead: c.toRead,
+      };
+      const now = this.backNow;
+      if (now !== null && now.name === name) {
+        out.push({ ...base, state: "reading", done: now.mine.done, total: now.mine.total });
+      } else if (!c.searched) out.push({ ...base, state: "notRun" });
+      else if (c.toRead === 0) out.push({ ...base, state: "upToDate" });
+      else if (c.left >= c.toRead) out.push({ ...base, state: "left", left: c.left });
+      else {
+        const note = this.notes.get(name);
+        out.push({
+          ...base,
+          state: "waiting",
+          ...(note === undefined ? {} : { wait: note }),
+          ...(c.left > 0 ? { left: c.left } : {}),
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * When the plan said the reading can go on again, the soonest over the views it stopped for
+   * (rule 3a): a pass then, so a line that says "until 14:00" holds.
+   */
+  nextTryMs(): number | undefined {
+    let soonest: number | undefined;
+    for (const note of this.notes.values()) {
+      if (note.kind === "failed" || note.untilMs === undefined) continue;
+      soonest = soonest === undefined ? note.untilMs : Math.min(soonest, note.untilMs);
+    }
+    return soonest;
   }
 
   /** True when a view has threads left that another pass can read now: nothing refused or failed. */
@@ -1040,21 +1221,27 @@ export class PromptService {
       if (consented.size === 0) return false;
       const asked = await this.ask(view.query);
       // Two views with the same prompt and filters read once.
-      const name = `${asked.key}\n${asked.filters}`;
+      const name = nameOf(asked);
       if (seen.has(name)) continue;
       seen.add(name);
       const search = await this.deps.insights.getPromptSearch(asked.key, asked.filters);
+      const unsearched = { found: 0, read: 0, toRead: 0, left: 0, searched: false };
       // Never run: it stays unread until the person opens it.
-      if (search === null) continue;
+      if (search === null) {
+        this.counted.set(name, unsearched);
+        continue;
+      }
       const startedAt = this.deps.now();
       const candidates = await this.candidatesOf(asked, search, consented);
+      if (candidates === null) this.counted.set(name, unsearched);
       if (candidates === null || over()) continue;
       const ordered = inReadingOrder(candidates, asked.sort);
       const known = await this.known(asked.key, ordered);
       const window = promptWindow(ordered, known, asked.limit, asked.sort);
+      this.noteCounts(asked, candidates.length, window.read, window.todo);
       // Everything a run would read now and has not: new mail, and what a run of the person's
       // left unread above the line (ADR 0116, rule 4). A saved view is read to its end without
-      // another `↵`; the gates of the plan at `P3` are what bound it.
+      // another `↵`; the gates of the plan at `P1` are what bound it.
       const fresh = window.todo.filter(
         (c) => (this.tried.get(triedKey(asked.key, c)) ?? 0) < BACKGROUND_TRIES,
       );
@@ -1068,9 +1255,10 @@ export class PromptService {
       const older = fresh.filter((c) => c.newest.dateMs < recentSince);
       // A runtime with no plan spends nothing of the person's: one pass reads it all.
       const take = on.info()?.noPlan === true ? fresh.length : PROMPT_ASK_ABOVE;
+      // The new mail first, then the rest of the view: both `P1`, since the person ran this view
+      // and reading it to its end is what they asked for (ADR 0117, rule 3).
       const groups: [AgentPriority, readonly Candidate[]][] = [
-        ["P1", recent.slice(0, take)],
-        ["P3", older.slice(0, Math.max(0, take - recent.length))],
+        ["P1", [...recent, ...older].slice(0, take)],
       ];
       const mine: Running = {
         key: asked.key,
@@ -1081,10 +1269,24 @@ export class PromptService {
         total: Math.min(fresh.length, take),
         candidates,
         background: true,
+        view: {
+          id: view.id,
+          name: view.name,
+          read: window.read,
+          total: window.read + window.todo.length,
+        },
+        runtime: on.runtime.name,
+        local: on.info()?.onThisMachine === true,
+        out: new Map(),
+        turns: 0,
       };
+      this.backNow = { name, mine };
+      // The view's line and the list's foot row show the reading as it starts, before a turn went.
+      this.progress(mine, false);
       let complete = fresh.length <= take;
       let stopped = false;
       let refused = false;
+      let note: BackgroundNote | undefined;
       const answered: string[] = [];
       for (const [priority, todo] of groups) {
         if (todo.length === 0) continue;
@@ -1105,10 +1307,19 @@ export class PromptService {
         }
         if (outcome.problem !== undefined || outcome.rejected > 0 || over()) complete = false;
         if (outcome.problem !== undefined) refused = true;
+        // The true reason it did not go on, as the gate or the runtime gave it (rule 3a).
+        if (outcome.gated !== undefined) note = outcome.gated;
+        else if (outcome.limited !== undefined) note = { kind: "limit", ...outcome.limited };
+        else if (outcome.problem !== undefined && !over()) {
+          note = { kind: "failed", problem: outcome.problem };
+        }
         // Refused or failed at this priority: the older mail of this view waits for a later pass.
         if (outcome.problem !== undefined) break;
       }
+      this.backNow = null;
       this.progress(mine, true);
+      if (note === undefined) this.notes.delete(name);
+      else this.notes.set(name, note);
       // A thread a turn went with and did not answer is tried once more, then left until it
       // changes: the background never spends turn after turn on the same thread.
       const read = await this.known(asked.key, fresh);
@@ -1124,6 +1335,14 @@ export class PromptService {
         this.tried.delete(first);
       }
       if (complete) await this.deps.insights.putPromptSearch({ ...search, readAtMs: startedAt });
+      // What is left now, for the status of the reading: one read of the verdicts, no search.
+      const after = promptWindow(
+        ordered,
+        await this.known(asked.key, ordered),
+        asked.limit,
+        asked.sort,
+      );
+      this.noteCounts(asked, candidates.length, after.read, after.todo);
       if (stopped) return false;
       // Threads left only because one pass takes so many: the next pass reads on.
       if (!complete && !refused && !over() && fresh.length > take) more = true;

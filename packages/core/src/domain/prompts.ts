@@ -198,4 +198,92 @@ export interface PromptProgress {
    * for: no window shows its progress, but verdicts came, so lists and badges are read again.
    */
   readonly background?: true;
+  /**
+   * In the background: the saved view read, so a window can name it (ADR 0117, rule 3a), with
+   * what was read of it when this pass started and what there was to read in all then:
+   * `read + done` of `total` is how far the view is.
+   */
+  readonly view?: {
+    readonly id: string;
+    readonly name: string;
+    readonly read: number;
+    readonly total: number;
+  };
+  /** The runtime that reads, by name: `Ollama`, `Codex`. */
+  readonly runtime?: string;
+  /** The runtime runs on this Mac: a slow turn is the model's, on this machine. */
+  readonly local?: true;
+  /**
+   * Reading: the threads sent and not answered yet, and when the first of those turns went (the
+   * backend's clock). Absent: no turn is out. The count above moves only when a turn answers.
+   */
+  readonly inFlight?: { readonly threads: number; readonly sinceMs: number };
+  /** Reading: turns that answered so far, and when the first turn went: the pace, measured. */
+  readonly answered?: { readonly turns: number; readonly sinceMs: number };
+  /**
+   * The run waits before it reads: for the turns a reading in the background already sent
+   * (`background`), or for the runtime's last gates, its check and its plan (`gate`).
+   */
+  readonly waiting?: "background" | "gate";
+}
+
+/**
+ * Why the reading in the background does not read now (ADR 0117, rule 3a). From the gates a pass
+ * met, never guessed: the person's pause, the plan's gate for background work at the priority it
+ * was refused at (`plan`, with the window that said no), a limit the runtime named, the runtime's
+ * state, consent, or a turn that failed.
+ */
+export type ReadingWait =
+  | { readonly kind: "pausedByPerson" }
+  | {
+      readonly kind: "plan";
+      readonly reason: "sessionLimit" | "weekLimit" | "overage" | "budget";
+      readonly untilMs?: number;
+      /** The plan's windows are not known yet: older mail waits for a turn that shows them. */
+      readonly unknown?: true;
+    }
+  | { readonly kind: "limit"; readonly untilMs?: number }
+  | { readonly kind: "checking" }
+  | { readonly kind: "signedOut" }
+  | { readonly kind: "notPlan" }
+  | { readonly kind: "runtime"; readonly problem?: string }
+  | { readonly kind: "consent" }
+  /** A pass is about to start: the debounce after a sync, or a run of the person's that ended. */
+  | { readonly kind: "soon" }
+  | { readonly kind: "failed"; readonly problem: string };
+
+/** One saved view with a prompt, as the reading in the background stands for it (rule 3a). */
+export interface ReadingView {
+  readonly viewId: string;
+  readonly name: string;
+  readonly promptKey: string;
+  /** What its kept search finds now, how many of those have a verdict, how many a run would read. */
+  readonly found: number;
+  readonly read: number;
+  readonly toRead: number;
+  /**
+   * - `reading`: a pass reads it now (`done` of `total` of this pass).
+   * - `waiting`: threads are left and nothing reads them; `wait` says why.
+   * - `upToDate`: nothing is left to read.
+   * - `notRun`: never searched; it is read only after the person runs it once.
+   * - `left`: what is left was sent twice and came back with nothing; it waits until it changes.
+   */
+  readonly state: "reading" | "waiting" | "upToDate" | "notRun" | "left";
+  readonly done?: number;
+  readonly total?: number;
+  readonly wait?: ReadingWait;
+  /** Of `toRead`, the threads tried twice with nothing back. */
+  readonly left?: number;
+}
+
+/** The reading in the background as a window shows it (ADR 0117, rule 3a). No model is asked. */
+export interface ReadingStatus {
+  readonly ai: "on" | "off";
+  /** The runtime for understanding mail, by name; empty when there is none. */
+  readonly runtime: string;
+  /** The person's `Pause reading`. */
+  readonly paused: boolean;
+  /** Why nothing reads now, when nothing does; absent while a pass reads or nothing is left. */
+  readonly wait?: ReadingWait;
+  readonly views: readonly ReadingView[];
 }

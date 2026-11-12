@@ -739,6 +739,8 @@ function parseAgentRequest(
       };
     case "agentPromptStop":
       return { type, requestId };
+    case "agentReadingStatus":
+      return { type, requestId, ...(raw.fresh === true ? { fresh: true } : {}) };
     default:
       return "unknown request type";
   }
@@ -1982,6 +1984,13 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
       case "agentPromptStop":
         await needAgent(deps).promptStop();
         return { type: "agentPromptStop", requestId, ok: true };
+      case "agentReadingStatus":
+        return {
+          type: "agentReadingStatus",
+          requestId,
+          ok: true,
+          status: await needAgent(deps).readingStatus(request.fresh === true),
+        };
       case "countMatches": {
         const result = await deps.counts.count(request.query, request.cap, request.beforeKey);
         return { type: "countMatches", requestId, ok: true, ...result };

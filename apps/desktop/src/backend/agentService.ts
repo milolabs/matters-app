@@ -45,6 +45,8 @@ import type {
   PromptThread,
   RankedSearchPort,
   ReadingProgress,
+  ReadingStatus,
+  ReadingWait,
   RememberResult,
   ReplyCheck,
   RewriteHow,
@@ -179,6 +181,8 @@ import { followTrail, type TrailResult } from "./talkTrail.ts";
 /** Threads with activity in this many days are read before older ones (`P1`, else `P3`). */
 export const RECENT_DAYS = 2;
 export const KICK_DEBOUNCE_MS = 2000;
+/** After the time the plan named, before the pass that reads again: windows reset on the minute. */
+export const RETRY_MARGIN_MS = 5000;
 /** The newest messages of a thread that go to a model; older ones are dropped, not clipped. */
 export const MAX_PROMPT_MESSAGES = 40;
 const LEDGER_SHOWN = 10;
@@ -419,6 +423,8 @@ export class AgentService implements AgentApi {
   /** Runtimes that wait for the person: signed out, or not on the plan. */
   private readonly blocked = new Map<string, "signedOut" | "notPlan">();
   private cancelKick: (() => void) | null = null;
+  /** A pass at the time the plan said the reading can go on (ADR 0117, rule 3a). */
+  private cancelRetry: (() => void) | null = null;
   /** Stops everything: AI off, a consent taken back. */
   private abort = new AbortController();
   /** Stops the work of one kind, when the kind moves to another runtime (ADR 0121, rule 3). */
@@ -642,6 +648,8 @@ export class AgentService implements AgentApi {
     this.stopped = true;
     this.cancelKick?.();
     this.cancelKick = null;
+    this.cancelRetry?.();
+    this.cancelRetry = null;
     this.abort.abort();
     await this.pass?.catch(() => {});
   }
@@ -1080,6 +1088,8 @@ export class AgentService implements AgentApi {
       this.again = true;
       return;
     }
+    this.cancelRetry?.();
+    this.cancelRetry = null;
     this.pass = (async () => {
       do {
         this.again = false;
@@ -1094,7 +1104,28 @@ export class AgentService implements AgentApi {
       } while (this.again && !this.stopped);
     })().finally(() => {
       this.pass = null;
+      this.retryLater();
     });
+  }
+
+  /**
+   * The plan said no to the reading in the background and named until when: one pass then, so a
+   * line that says "until 14:00" holds (ADR 0117, rule 3a). Never while the person paused it.
+   */
+  private retryLater(): void {
+    if (this.stopped || this.readingPaused) return;
+    const at = this.prompts.nextTryMs();
+    if (at === undefined) return;
+    this.cancelRetry?.();
+    this.cancelRetry = this.deps.clock.setTimeout(
+      () => {
+        this.cancelRetry = null;
+        this.runPass();
+      },
+      Math.max(0, at - this.now) + RETRY_MARGIN_MS,
+    );
+    // The status says "soon" no more: the reading waits for the plan.
+    this.deps.onChanged();
   }
 
   private setProgress(progress: ReadingProgress): void {
@@ -1666,6 +1697,16 @@ export class AgentService implements AgentApi {
     const before = Object.fromEntries(
       Object.keys(change).map((id) => [id, this.testModel(id, current, { models: [] })]),
     );
+    // The model or effort for understanding mail changed: the turns of the old choice stop, and
+    // the reading goes on at once on the new one (ADR 0117, rule 3a), with no ↵ and no sync.
+    const reader = current.kindRuntime.understand;
+    const was = reader === undefined ? undefined : choicesOn(current, reader);
+    const understandChanged =
+      reader !== undefined &&
+      was !== undefined &&
+      ((models.understand !== undefined && models.understand !== was.models.understand) ||
+        (efforts.understand !== undefined && efforts.understand !== was.efforts.understand));
+    if (understandChanged) await this.stopKinds(["understand"]);
     const next = await this.deps.settings.update({ choices: change });
     // The test is for a model (ADR 0119): a runtime whose model for the test changed is not checked
     // yet. With AI on and an account agreed to it, it is tested by itself, with the made-up message.
@@ -1681,11 +1722,17 @@ export class AgentService implements AgentApi {
         runtimesInUse(next).includes(id) &&
         (await consentedAccounts(this.deps, id)).size > 0
       ) {
-        void this.testRuntime(id).catch(() => {});
+        // Once the new choice passed its check, the reading starts on it at once.
+        void this.testRuntime(id)
+          .then(() => {
+            if (understandChanged && id === reader) this.startNow();
+          })
+          .catch(() => {});
       }
     }
     this.deps.onChanged();
-    this.kick();
+    if (understandChanged) this.startNow();
+    else this.kick();
     return this.status();
   }
 
@@ -2152,14 +2199,86 @@ export class AgentService implements AgentApi {
   }
 
   async promptRun(query: string, again?: boolean, readAll?: boolean): Promise<PromptRunResult> {
-    const result = await this.prompts.run(query, again === true, readAll === true);
-    // What the run left unread of a saved view is read on in the background (ADR 0117, rule 3).
-    this.kick();
-    return result;
+    try {
+      return await this.prompts.run(query, again === true, readAll === true);
+    } finally {
+      // What the run left unread of a saved view is read on in the background (ADR 0117, rule 3),
+      // at once, also after a run that was stopped or refused: the person just asked, and the line
+      // must not stand on a count that waits.
+      this.startNow();
+    }
   }
 
   async promptStop(): Promise<void> {
     this.prompts.stop();
+  }
+
+  /**
+   * ADR 0117, rule 3a: the reading in the background as a window shows it. No model; the counts
+   * are the ones last computed unless `fresh`. Why nothing reads comes from the gates the last pass
+   * met and the state of the runtime, never from a guess.
+   */
+  async readingStatus(fresh = false): Promise<ReadingStatus> {
+    const s = await this.currentSettings();
+    const runtime = this.runtimeFor("understand", s);
+    const paused = s.readingPaused === true;
+    if (!s.enabled || runtime === NO_RUNTIME) return { ai: "off", runtime: "", paused, views: [] };
+    const base = { ai: "on" as const, runtime: runtime.name, paused };
+    // Consent is read as it is now: the progress says it only once a pass has looked.
+    if ((await consentedAccounts(this.deps, runtime.id)).size === 0) {
+      return { ...base, wait: { kind: "consent" }, views: [] };
+    }
+    const wait = this.waitOf();
+    const views = (await this.prompts.readingViews(fresh)) ?? [];
+    if (views.some((v) => v.state === "reading")) return { ...base, views };
+    // A view with threads left and no reason of its own waits for the pass the runtime's state
+    // holds back, or for the next pass: one that is due, or one this read starts, so "soon" holds.
+    const pending = this.cancelKick !== null || this.pass !== null;
+    const own = wait ?? (pending ? ({ kind: "soon" } as const) : undefined);
+    let started = false;
+    const shown = views.map((v) => {
+      if (v.state !== "waiting") return v;
+      // The runtime's state or the person's pause comes before what the last pass met.
+      const why = wait ?? v.wait ?? own;
+      if (why !== undefined) return { ...v, wait: why };
+      started = true;
+      return { ...v, wait: { kind: "soon" } as const };
+    });
+    if (started && !paused) this.kick();
+    const first = shown.find((v) => v.state === "waiting")?.wait;
+    return { ...base, ...(first === undefined ? {} : { wait: first }), views: shown };
+  }
+
+  /** Why the reading in the background does not read, from its progress; none while it can. */
+  private waitOf(): ReadingWait | undefined {
+    const { state, reason, untilMs, problem } = this.progress;
+    const until = untilMs === undefined ? {} : { untilMs };
+    switch (state) {
+      case "checking":
+        return { kind: "checking" };
+      case "paused":
+        if (reason === "pausedByPerson") return { kind: "pausedByPerson" };
+        if (reason === "limit") return { kind: "limit", ...until };
+        if (reason === "signedOut" || reason === "notPlan") return { kind: reason };
+        if (
+          reason === "sessionLimit" ||
+          reason === "weekLimit" ||
+          reason === "overage" ||
+          reason === "budget"
+        ) {
+          return { kind: "plan", reason, ...until };
+        }
+        return { kind: "pausedByPerson" };
+      case "off":
+        // Consent is read as it stands by the caller.
+        if (reason === "signedOut") return { kind: "signedOut" };
+        if (reason === "runtime")
+          return { kind: "runtime", ...(problem === undefined ? {} : { problem }) };
+        return undefined;
+      default:
+        // The person's pause holds even while the progress says nothing of it.
+        return this.readingPaused ? { kind: "pausedByPerson" } : undefined;
+    }
   }
 
   // --- The talk across all mail (ADR 0064, rule 7) ---

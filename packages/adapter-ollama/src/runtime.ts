@@ -103,6 +103,8 @@ interface LocalModel {
   readonly name: string;
   readonly size: number;
   readonly levels: readonly AgentEffort[];
+  /** Its thinking is only on or off: `low` turns it off and `high` on (ADR 0119, rule 9). */
+  readonly toggles: boolean;
   readonly thinks: boolean;
   readonly contextLength: number | undefined;
   /** It can call tools (capability `tools`). */
@@ -134,6 +136,19 @@ export function levelsOf(show: Record<string, unknown>): readonly AgentEffort[] 
   if (!isRecord(thinking) || !Array.isArray(thinking.values)) return [];
   const named = new Set(thinking.values.filter((v): v is string => typeof v === "string"));
   return AGENT_EFFORTS.filter((level) => named.has(level));
+}
+
+/**
+ * The two levels of a model whose thinking is only on or off (ADR 0119, rule 9): `low` is off and
+ * `high` is on. Without them such a model thinks on every turn, and reading mail in batches
+ * takes minutes where seconds would do.
+ */
+export const TOGGLE_LEVELS: readonly AgentEffort[] = ["low", "high"];
+
+/** Whether the model can think and names no levels of ours: its thinking is a switch. */
+function togglesThinking(show: Record<string, unknown>): boolean {
+  const caps = Array.isArray(show.capabilities) ? show.capabilities : [];
+  return caps.includes("thinking") && levelsOf(show).length === 0;
 }
 
 /** Whether the model thinks when the turn says nothing about it. */
@@ -450,7 +465,7 @@ export class OllamaRuntime implements AgentRuntimePort {
     model: LocalModel;
     schemaText: string;
     images: string[];
-    think: { think?: AgentEffort };
+    think: { think?: AgentEffort | boolean };
   }> {
     if (!MODEL_NAME.test(request.model)) throw new AgentRunError("failed", "Unknown model name.");
     if (
@@ -503,7 +518,10 @@ export class OllamaRuntime implements AgentRuntimePort {
       model,
       schemaText,
       images: files.map((f) => Buffer.from(f.bytes).toString("base64")),
-      think: request.effort === undefined ? {} : { think: request.effort },
+      think:
+        request.effort === undefined
+          ? {}
+          : { think: model.toggles ? request.effort === "high" : request.effort },
     };
   }
 
@@ -637,7 +655,8 @@ export class OllamaRuntime implements AgentRuntimePort {
     return {
       name,
       size,
-      levels: levelsOf(show.value),
+      levels: togglesThinking(show.value) ? TOGGLE_LEVELS : levelsOf(show.value),
+      toggles: togglesThinking(show.value),
       thinks: thinksByDefault(show.value),
       contextLength: contextLengthOf(show.value),
       tools: caps.includes("tools"),

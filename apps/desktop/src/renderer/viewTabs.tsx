@@ -1,5 +1,6 @@
 import type { ParsedQuery } from "@matters/core";
 import { createEffect, createSignal, For, onMount, Show } from "solid-js";
+import { AgentRing } from "./agentLayer.tsx";
 import { menuPoint, PopMenu } from "./popMenu.tsx";
 import { holdsPrompt, isBuiltInView, type ViewsStore } from "./views.ts";
 
@@ -19,6 +20,11 @@ export function ViewTabs(props: {
   onPicked: () => void;
   /** `+`: a fresh start in the query bar. */
   onNew: () => void;
+  /**
+   * How the reading stands for a view with a prompt (ADR 0117, rule 3a): read now, by a run or in
+   * the background (the ring), or waiting (a still dot); null as it always was.
+   */
+  readingOf?: (viewId: string) => "reading" | "waiting" | null;
 }) {
   const { views } = props;
   let strip!: HTMLDivElement;
@@ -111,7 +117,20 @@ export function ViewTabs(props: {
                   }}
                 >
                   <Show when={asks()}>
-                    <span class="vt-agent" aria-hidden="true" />
+                    <Show
+                      when={props.readingOf?.(view.id) === "reading"}
+                      fallback={
+                        <span
+                          class="vt-agent"
+                          classList={{ waits: props.readingOf?.(view.id) === "waiting" }}
+                          aria-hidden="true"
+                        />
+                      }
+                    >
+                      <span class="-mx-[3px] flex self-center" aria-hidden="true" data-tab-reading>
+                        <AgentRing size={12} />
+                      </span>
+                    </Show>
                   </Show>
                   {view.name}
                   <Show when={badge()}>{(text) => <small aria-hidden="true">{text()}</small>}</Show>

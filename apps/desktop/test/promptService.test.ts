@@ -431,6 +431,7 @@ describe("a prompt is a filter (ADR 0116)", () => {
       done: 0,
       total: 0,
       finished: false,
+      runtime: "Fake",
     });
     expect(h.progress).toContainEqual({
       promptKey: count.promptKey,
@@ -439,6 +440,17 @@ describe("a prompt is a filter (ADR 0116)", () => {
       total: 0,
       step: { query: "decide", threads: 2 },
       finished: false,
+      runtime: "Fake",
+    });
+    // While the batch is out, the line knows how many went, to whom and since when (rule 3a).
+    expect(h.progress).toContainEqual({
+      promptKey: count.promptKey,
+      phase: "reading",
+      done: 0,
+      total: 2,
+      finished: false,
+      runtime: "Fake",
+      inFlight: { threads: 2, sinceMs: NOW },
     });
     expect(h.progress.at(-1)).toEqual({
       promptKey: count.promptKey,
@@ -446,6 +458,8 @@ describe("a prompt is a filter (ADR 0116)", () => {
       done: 2,
       total: 2,
       finished: true,
+      runtime: "Fake",
+      answered: { turns: 1, sinceMs: NOW },
     });
   });
 
@@ -1147,7 +1161,7 @@ describe("a view with a prompt reads in the background (ADR 0117)", () => {
   /** The threads every verdict turn sent, in order of the turns. */
   const judged = (runtime: Responder) => runtime.of("verdicts").flatMap((c) => subjectsOf(c));
 
-  it("reads threads with no verdict, only for views run once, with no search; old mail waits for room in the plan (rule 3)", async () => {
+  it("reads threads with no verdict, only for views run once, with no search; old mail of the view too, at P1 (rule 3)", async () => {
     const runtime = new Responder();
     const h = await build(runtime);
     await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
@@ -1170,21 +1184,21 @@ describe("a view with a prompt reads in the background (ADR 0117)", () => {
     // No search and no plan, and nothing for the view never run.
     expect(runtime.of("plan")).toHaveLength(1);
     expect(runtime.of("follow")).toHaveLength(1);
-    expect(judged(runtime)).toEqual(["Subject a", "Subject c"]);
+    // The new mail first, then the old: both `P1`, so with the plan's windows not known yet the
+    // view is read to its end all the same (ADR 0051, rule 7) and the last reading moves on.
+    expect(judged(runtime)).toEqual(["Subject a", "Subject c", "Subject old"]);
     expect(h.progress.every((p) => p.background === true && p.phase === "reading")).toBe(true);
     expect(h.progress.at(-1)).toMatchObject({ promptKey: key, finished: true, background: true });
     expect((await h.insights.listLedger(10)).filter((l) => l.purpose === "prompt")).toHaveLength(3);
-    // The old thread is `P3`: with the plan's windows not known yet it waits (ADR 0051, rule 7),
-    // so the view is not read to its end and the last reading stays where it was.
-    expect((await h.insights.getPromptSearch(key, ""))?.readAtMs).toBe(NOW);
+    expect((await h.insights.getPromptSearch(key, ""))?.readAtMs).toBe(NOW + 60_000);
 
-    // Nothing the plan lets through: another pass costs nothing.
+    // Nothing new: another pass costs nothing.
     await h.pass();
     expect(runtime.of("verdicts")).toHaveLength(2);
-    expect(await h.service.promptCount(PROMPT)).toMatchObject({ found: 3, read: 2 });
+    expect(await h.service.promptCount(PROMPT)).toMatchObject({ found: 3, read: 3 });
 
     // ADR 0117, rule 4: the number is the unread threads that show; none for a view never run.
-    expect(await h.service.promptBadge(PROMPT)).toEqual({ ai: "on", unread: 2 });
+    expect(await h.service.promptBadge(PROMPT)).toEqual({ ai: "on", unread: 3 });
     expect(await h.service.promptBadge('prompt:"invoices to pay"')).toEqual({
       ai: "on",
       unread: null,
@@ -1378,6 +1392,215 @@ describe("a view with a prompt reads in the background (ADR 0117)", () => {
   });
 });
 
+describe("the reading in the background can be seen (ADR 0117, rule 3a)", () => {
+  const OTHER = 'prompt:"invoices to pay"';
+  const roomy = (sessionUsed: number, resetsAtMs: number) => ({
+    plan: {
+      runtimeId: "fake",
+      limits: {
+        session: { usedPercent: sessionUsed, resetsAtMs },
+        week: { usedPercent: 10, resetsAtMs: NOW + 6 * DAY },
+        usingOverage: false,
+        seenAtMs: NOW,
+      },
+    },
+  });
+
+  /** The runtime's next verdict turn waits until `release`; `started` resolves once it went. */
+  function holdNext(runtime: Responder) {
+    let started: () => void = () => {};
+    const sent = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let armed = true;
+    runtime.answer = async (request) => {
+      if (kindOf(request) === "verdicts" && armed) {
+        armed = false;
+        started();
+        await held;
+      }
+      return { value: judgeAll(request) };
+    };
+    return { sent, release: () => release() };
+  }
+
+  it("says each view's state: never run, up to date, waiting while paused, and reading as it goes", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addView("asks", PROMPT);
+    await h.addView("never", OTHER);
+    await h.addView("plain", "from:robin");
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    let s = await h.service.readingStatus();
+    expect(s).toMatchObject({ ai: "on", runtime: "Fake", paused: true });
+    expect(s.wait).toBeUndefined();
+    expect(s.views.map((v) => [v.viewId, v.state])).toEqual([
+      ["asks", "upToDate"],
+      ["never", "notRun"],
+    ]);
+    expect(s.views[0]).toMatchObject({ found: 1, read: 1, toRead: 0 });
+
+    // New mail: the counts last computed do not know it yet; counted afresh, it waits, paused.
+    await h.addMail("c", ["Please decide by Sunday"], { dayOffset: 0 });
+    expect((await h.service.readingStatus()).views[0]?.state).toBe("upToDate");
+    s = await h.service.readingStatus(true);
+    expect(s.views[0]).toMatchObject({
+      state: "waiting",
+      toRead: 1,
+      read: 1,
+      wait: { kind: "pausedByPerson" },
+    });
+    expect(s.wait).toEqual({ kind: "pausedByPerson" });
+
+    // The person continues it: the view reads, and says how far while its turn is out.
+    const hold = holdNext(runtime);
+    h.progress.length = 0;
+    await h.service.resumeReading();
+    await hold.sent;
+    s = await h.service.readingStatus();
+    expect(s.wait).toBeUndefined();
+    expect(s.views[0]).toMatchObject({ state: "reading", done: 0, total: 1 });
+    expect(h.progress.at(-1)).toMatchObject({
+      background: true,
+      view: { id: "asks", name: "asks", read: 1, total: 2 },
+      runtime: "Fake",
+      inFlight: { threads: 1, sinceMs: NOW },
+      finished: false,
+    });
+    hold.release();
+    await h.service.idle();
+    s = await h.service.readingStatus();
+    expect(s.views[0]).toMatchObject({ state: "upToDate", read: 2, toRead: 0 });
+    expect(s.wait).toBeUndefined();
+  });
+
+  it("names the plan's gate that said no, with its time, and reads again at that time by itself", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addView("asks", PROMPT);
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    const resetsAtMs = NOW + 3_600_000;
+    // Above what background work may use of the session (ADR 0051, rule 7).
+    await h.settings.update(roomy(95, resetsAtMs));
+    await h.addMail("c", ["Please decide by Sunday"], { dayOffset: 0 });
+    const before = runtime.of("verdicts").length;
+    await h.pass();
+    expect(runtime.of("verdicts")).toHaveLength(before);
+    const s = await h.service.readingStatus();
+    const wait = { kind: "plan", reason: "sessionLimit", untilMs: resetsAtMs };
+    expect(s.views[0]).toMatchObject({ state: "waiting", toRead: 1, wait });
+    expect(s.wait).toEqual(wait);
+    // At the time the gate named, the session is new: the pass comes by itself.
+    await h.clock.advance(resetsAtMs - h.clock.now() + 10_000);
+    await h.service.idle();
+    expect(runtime.of("verdicts")).toHaveLength(before + 1);
+    expect((await h.service.readingStatus()).views[0]?.state).toBe("upToDate");
+  });
+
+  it("says the reading is paused at the runtime's limit, with the time it named", async () => {
+    const runtime = new Responder();
+    runtime.info = { ...runtime.info, plan: "plus", pausesOnLimit: true };
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addView("asks", PROMPT);
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    await h.settings.update(roomy(5, NOW + 6 * DAY));
+    await h.addMail("c", ["Please decide by Sunday"], { dayOffset: 0 });
+    const until = NOW + 2 * 3_600_000;
+    runtime.answer = async () => {
+      throw new AgentRunError("limit", "The plan's limit is reached.", until);
+    };
+    await h.pass();
+    const s = await h.service.readingStatus();
+    expect(s.paused).toBe(true);
+    expect(s.wait).toEqual({ kind: "limit", untilMs: until });
+    expect(s.views[0]).toMatchObject({ state: "waiting", wait: { kind: "limit", untilMs: until } });
+  });
+
+  it("says no account is shared, and nothing with AI off", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime);
+    await h.addView("asks", PROMPT);
+    await h.ready();
+    await h.service.revokeConsent("acc1", "fake");
+    expect(await h.service.readingStatus()).toEqual({
+      ai: "on",
+      runtime: "Fake",
+      paused: true,
+      wait: { kind: "consent" },
+      views: [],
+    });
+    await h.service.disable();
+    expect(await h.service.readingStatus()).toEqual({
+      ai: "off",
+      runtime: "",
+      paused: false,
+      views: [],
+    });
+  });
+
+  it("reads on by itself once the model for understanding mail changed, on the new model", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addView("asks", PROMPT);
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    for (let i = 0; i < 25; i++) {
+      await h.addMail(`n${String(i).padStart(2, "0")}`, ["Please decide by Friday"], {
+        dayOffset: 0,
+        from: `p${i}@example${i}.org`,
+      });
+    }
+    const hold = holdNext(runtime);
+    await h.service.resumeReading();
+    await hold.sent;
+    const before = runtime.of("verdicts").length;
+    // The person picks another model while a turn of the old one is out: that pass stops.
+    const changed = h.service.setModels({ understand: "large" });
+    hold.release();
+    await changed;
+    // No sync, no key, no clock: the reading comes back by itself, on the new model.
+    await h.service.idle();
+    const after = runtime.of("verdicts").slice(before);
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.every((r) => r.model === "large")).toBe(true);
+    expect((await h.service.readingStatus(true)).views[0]).toMatchObject({ state: "upToDate" });
+  });
+
+  it("tells a run the person started that it waits for the turns the background sent", async () => {
+    const runtime = new Responder();
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addView("asks", PROMPT);
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    await h.addMail("c", ["Please decide by Sunday"], { dayOffset: 0 });
+    const hold = holdNext(runtime);
+    await h.service.resumeReading();
+    await hold.sent;
+    h.progress.length = 0;
+    const run = h.service.promptRun(PROMPT);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(h.progress.find((p) => p.background !== true)).toMatchObject({
+      waiting: "background",
+      finished: false,
+    });
+    hold.release();
+    await run;
+    await h.service.idle();
+  });
+});
+
 describe("a plan whose windows are read apart from turns (ADR 0120, rule 9)", () => {
   it("stops at the first refusal for a limit until the person continues it, though the windows let it run", async () => {
     const runtime = new Responder();
@@ -1505,7 +1728,7 @@ describe("a runtime with no plan reads in the background (ADR 0119, rule 7)", ()
     expect(counts[0]).toBeLessThan(counts[1] ?? 0);
   });
 
-  it("on a plan, the same older mail waits for known windows", async () => {
+  it("on a plan, the rest of a view the person ran is read at P1 though its windows are not known yet", async () => {
     const runtime = new Responder();
     const h = await build(runtime);
     await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
@@ -1521,22 +1744,10 @@ describe("a runtime with no plan reads in the background (ADR 0119, rule 7)", ()
     }
     const before = runtime.of("verdicts").length;
     await h.clock.advance(5 * DAY);
-    await h.pass();
-    expect(runtime.of("verdicts").length - before).toBe(0);
-    // Once the windows are known and have room, the same mail is read.
-    await h.settings.update({
-      plan: {
-        runtimeId: "fake",
-        limits: {
-          session: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
-          week: { usedPercent: 5, resetsAtMs: NOW + 6 * DAY },
-          usingOverage: false,
-          seenAtMs: NOW + 5 * DAY,
-        },
-      },
-    });
+    // `P3` would wait for the windows; the person asked for this view, so it is `P1` (rule 3).
     await h.pass();
     expect(runtime.of("verdicts").length - before).toBe(1);
+    expect(await h.service.promptCount(PROMPT)).toMatchObject({ found: 4, read: 4 });
   });
 });
 

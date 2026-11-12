@@ -16,6 +16,7 @@ import type {
   PromptCount,
   PromptList,
   PromptRunResult,
+  ReadingStatus,
   RememberResult,
   ReplyCheck,
   RewriteHow,
@@ -190,6 +191,11 @@ export interface AgentApi {
    * among those it shows, from stored verdicts. No model; none for a view never run.
    */
   promptBadge(query: string): Promise<PromptBadge>;
+  /**
+   * The reading in the background (ADR 0117, rule 3a): each saved view with a prompt, how far, and
+   * why nothing reads when nothing does. No model; `fresh` computes the counts now.
+   */
+  readingStatus(fresh?: boolean): Promise<ReadingStatus>;
   /**
    * Runs the prompt of `query` (rule 3): the agent's search first when none is kept or `again`
    * asks for a new one (rule 4), then the threads found with no verdict yet, in `P0` batches, each

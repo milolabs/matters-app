@@ -38,6 +38,7 @@ import type {
   PromptList,
   PromptProgress,
   PromptRunResult,
+  ReadingStatus,
   ReceivedAttachment,
   RememberResult,
   ReplyCheck,
@@ -967,6 +968,17 @@ export interface AgentPromptStopRequest {
   readonly requestId: RequestId;
 }
 
+/**
+ * The reading in the background (ADR 0117, rule 3a): each saved view with a prompt, how far, and
+ * why nothing reads when nothing does. No model. `fresh`: the counts are computed now, not taken
+ * as last computed.
+ */
+export interface AgentReadingStatusRequest {
+  readonly type: "agentReadingStatus";
+  readonly requestId: RequestId;
+  readonly fresh?: boolean;
+}
+
 export type BackendRequest =
   | AgentStatusRequest
   | AgentPromptCountRequest
@@ -974,6 +986,7 @@ export type BackendRequest =
   | AgentPromptBadgeRequest
   | AgentPromptRunRequest
   | AgentPromptStopRequest
+  | AgentReadingStatusRequest
   | AgentThreadRequest
   | AgentJournalRequest
   | AgentRulesRequest
@@ -1907,6 +1920,13 @@ export interface AgentPromptStopResponse {
   readonly ok: true;
 }
 
+export interface AgentReadingStatusResponse {
+  readonly type: "agentReadingStatus";
+  readonly requestId: RequestId;
+  readonly ok: true;
+  readonly status: ReadingStatus;
+}
+
 export type BackendResponse =
   | AgentStatusResponse
   | AgentPromptCountResponse
@@ -1914,6 +1934,7 @@ export type BackendResponse =
   | AgentPromptBadgeResponse
   | AgentPromptRunResponse
   | AgentPromptStopResponse
+  | AgentReadingStatusResponse
   | AgentThreadResponse
   | AgentJournalResponse
   | AgentRulesResponse

@@ -252,13 +252,13 @@ describe("inspect (rules 5, 6, 7, 9)", () => {
     expect((await runtime().inspect()).defaultModel).toBe("reasoner:20b");
   });
 
-  it("gives levels per model: named levels that are ours, none for on and off", async () => {
+  it("gives levels per model: named levels that are ours, low and high for on and off", async () => {
     serve([CODER, QWEN, LEVELS]);
     const info = await runtime().inspect();
     expect(info.efforts).toBeUndefined();
     expect(info.modelEfforts).toEqual({
       "qwen2.5-coder:1.5b-base": [],
-      "qwen3:8b": [],
+      "qwen3:8b": ["low", "high"],
       "reasoner:20b": ["low", "medium", "high"],
     });
   });
@@ -388,9 +388,16 @@ describe("run: the request (rules 8, 9)", () => {
     expect(notListed.message).toBe(
       "reasoner:20b does not take the effort max. Choose another in Settings.",
     );
-    const onOff = await failure(runtime().run(request({ effort: "low" })));
+    // A model whose thinking is a switch: `low` turns it off, `high` on, no effort says nothing.
+    await runtime().run(request({ effort: "low" }));
+    expect(chats()[2]?.body?.think).toBe(false);
+    await runtime().run(request({ effort: "high" }));
+    expect(chats()[3]?.body?.think).toBe(true);
+    await runtime().run(request({}));
+    expect(Object.hasOwn(chats()[4]?.body ?? {}, "think")).toBe(false);
+    const onOff = await failure(runtime().run(request({ effort: "medium" })));
     expect(onOff.code).toBe("effortRefused");
-    expect(chats()).toHaveLength(2);
+    expect(chats()).toHaveLength(5);
   });
 
   it("refuses files and an unknown model name, before any request", async () => {

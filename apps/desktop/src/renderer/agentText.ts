@@ -11,7 +11,11 @@ import type {
   JournalEntry,
   PlanLimits,
   PlanWindow,
+  PromptProgress,
   ReadingProgress,
+  ReadingStatus,
+  ReadingView,
+  ReadingWait,
   ThreadCategory,
 } from "@matters/core";
 
@@ -159,6 +163,185 @@ function pausedWhy(reason: ReadingProgress["reason"]): string {
     default:
       return "";
   }
+}
+
+// --- The reading in the background (ADR 0117, rule 3a) ---
+
+const count = (n: number) => n.toLocaleString("en-US");
+
+/**
+ * Why the reading in the background does not read now, in a few words: `Reading paused`,
+ * `Waits for room in Codex's session until 14:00`. The time is the one the gate or the runtime
+ * gave; none is made up. The foot row, a view's line, the popover and Settings all say it so.
+ */
+export function readingWaitText(wait: ReadingWait, runtime: string, now: number): string {
+  const who = runtime === "" ? "the assistant" : runtime;
+  const whose = runtime === "" ? "the assistant's" : `${runtime}'s`;
+  const until = (ms: number | undefined) =>
+    ms === undefined ? "" : ` until ${resetText(ms, now)}`;
+  switch (wait.kind) {
+    case "pausedByPerson":
+      return "Reading paused";
+    case "limit":
+      return `Reading paused at ${whose} limit${until(wait.untilMs)}`;
+    case "plan":
+      if (wait.unknown === true) return `Waits until ${whose} limits are known`;
+      switch (wait.reason) {
+        case "sessionLimit":
+          return `Waits for room in ${whose} session${until(wait.untilMs)}`;
+        case "weekLimit":
+          return `Waits for room in ${whose} week${until(wait.untilMs)}`;
+        case "budget":
+          return `Waits for its share of ${whose} week${until(wait.untilMs)}`;
+        case "overage":
+          return `Waits: ${who} is past its plan's limit`;
+      }
+      return `Waits for ${who}`;
+    case "checking":
+      return `Waits while ${who} is checked`;
+    case "signedOut":
+      return `Waits: sign in to ${who}`;
+    case "notPlan":
+      return `Waits: ${who} is not on your plan`;
+    case "runtime":
+      return `Waits: ${who} is not ready`;
+    case "consent":
+      return `Waits: no account is shared with ${who}`;
+    case "soon":
+      return "Reading goes on in a moment";
+    case "failed":
+      return "Stopped after a turn failed; tries again with new mail";
+  }
+}
+
+/** The reason is the person's to act on (`--late`): reading cannot go on until they do. */
+export function readingWaitActs(wait: ReadingWait | undefined): boolean {
+  const k = wait?.kind;
+  return k === "consent" || k === "signedOut" || k === "runtime" || k === "notPlan";
+}
+
+/** `292 of 754 read`, or `292 read` once nothing is left; nothing for a view never run. */
+export function readingCountText(view: ReadingView, live?: PromptProgress | null): string {
+  if (view.state === "notRun") return "";
+  const v = live?.view;
+  if (live != null && v !== undefined && v.id === view.viewId && v.total > 0) {
+    return `${count(Math.min(v.read + live.done, v.total))} of ${count(v.total)} read`;
+  }
+  const total = view.read + view.toRead;
+  return view.toRead === 0
+    ? `${count(view.read)} read`
+    : `${count(view.read)} of ${count(total)} read`;
+}
+
+/** The state of one view in the popover, in words. */
+export function readingStateText(view: ReadingView, runtime: string, now: number): string {
+  switch (view.state) {
+    case "reading":
+      return "Reading now";
+    case "upToDate":
+      return "Up to date";
+    case "notRun":
+      return "Not run yet: it is read once you open it";
+    case "left": {
+      const n = view.left ?? view.toRead;
+      return `${count(n)} sent twice came back with nothing; read again when they change`;
+    }
+    case "waiting":
+      return view.wait === undefined ? "Waits" : readingWaitText(view.wait, runtime, now);
+  }
+}
+
+/** The reading's segment of the list's foot row (ADR 0117, rule 3a). */
+export interface ReadingFoot {
+  /** Its words, which carry the state by themselves: `Needs you 292 / 754`, `Reading paused · …`. */
+  readonly text: string;
+  /** `reading`: the ring and the agent's colour; `waiting`: a still dot; `act`: the person acts. */
+  readonly kind: "reading" | "waiting" | "act";
+  /** Reading: how far the view read is, 0 to 1, for the line along the row's top edge. */
+  readonly fraction?: number;
+  /** Reading: a turn is out now, so the line shows work in flight. */
+  readonly inFlight?: boolean;
+  /** Waiting: `text` in two parts, why and which view how far, each a line of its own. */
+  readonly why?: string;
+  readonly which?: string;
+}
+
+/** `292 / 754`: how far, in the foot row's short form; it never breaks across lines. */
+const far = (done: number, total: number) =>
+  `${count(Math.min(done, total))}\u00a0/\u00a0${count(total)}`;
+
+/**
+ * What the list's foot row says of the reading in the background: while a view is read, which
+ * and how far (`Needs you 292 / 754`); while views have threads left and nothing reads them, why,
+ * with the time when known, and which and how far (`Reading paused · Needs you 292 / 754`). Null
+ * when everything is read, when AI is off, or when nothing is known yet.
+ */
+export function readingFoot(
+  status: ReadingStatus | null,
+  live: PromptProgress | null,
+  now: number,
+): ReadingFoot | null {
+  if (live !== null && live.view !== undefined && !live.finished) {
+    const v = live.view;
+    const total = v.total > 0 ? v.total : live.total;
+    const done = v.total > 0 ? v.read + live.done : live.done;
+    return {
+      text: total > 0 ? `${v.name} ${far(done, total)}` : v.name,
+      kind: "reading",
+      fraction: total > 0 ? Math.min(1, done / total) : 0,
+      inFlight: live.inFlight !== undefined,
+    };
+  }
+  if (status === null || status.ai === "off") return null;
+  const reading = status.views.find((v) => v.state === "reading");
+  if (reading !== undefined) {
+    const total = reading.read + reading.toRead;
+    return {
+      text: total > 0 ? `${reading.name} ${far(reading.read, total)}` : reading.name,
+      kind: "reading",
+      fraction: total > 0 ? reading.read / total : 0,
+    };
+  }
+  const waiting = status.views.filter((v) => v.state === "waiting");
+  if (waiting.length === 0) {
+    // No view to speak of; but a reason that holds all of them back still says so.
+    if (status.wait?.kind === "consent") {
+      return { text: readingWaitText(status.wait, status.runtime, now), kind: "act" };
+    }
+    return null;
+  }
+  const first = waiting[0] as ReadingView;
+  const wait = status.wait ?? first.wait;
+  const why = wait === undefined ? "Waits" : readingWaitText(wait, status.runtime, now);
+  const which =
+    waiting.length === 1
+      ? `${first.name} ${far(first.read, first.read + first.toRead)}`
+      : `${waiting.length} views, ${count(waiting.reduce((n, v) => n + v.toRead, 0))} left`;
+  return {
+    text: `${why} · ${which}`,
+    kind: readingWaitActs(wait) ? "act" : "waiting",
+    why,
+    which,
+  };
+}
+
+/** Settings › Agents, beside `Pause reading`: the same words as the foot row, or that all is read. */
+export function readingSettingsText(
+  status: ReadingStatus | null,
+  live: PromptProgress | null,
+  now: number,
+  /** What is out, in words (promptView's `inFlightText`): it ticks with `now`. */
+  out = "",
+): string {
+  const foot = readingFoot(status, live, now);
+  if (foot !== null) {
+    const head = foot.kind === "reading" ? `Reading ${foot.text}` : foot.text;
+    return out === "" ? head : `${head} · ${out}`;
+  }
+  if (status === null || status.ai === "off") return "";
+  if (status.views.length === 0) return "No saved view has a prompt.";
+  if (status.views.every((v) => v.state === "notRun")) return "No view with a prompt was run yet.";
+  return "Every view with a prompt is read.";
 }
 
 export interface WindowLine {

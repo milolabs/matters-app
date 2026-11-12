@@ -177,6 +177,17 @@ export interface SmokeReport {
     readonly relevanceSorted: boolean;
     readonly detail: string;
   };
+  /** ADR 0117, rule 3a: the reading in the background shows in the foot row, the tab and a popover. */
+  readonly reading?: {
+    readonly tabRing: boolean;
+    readonly footWhileRun: string;
+    readonly footWaiting: string;
+    readonly popoverListed: boolean;
+    readonly escapeReturned: boolean;
+    readonly footReading: string;
+    readonly readToEnd: boolean;
+    readonly detail: string;
+  };
   /** Turning AI off left the starter view: it is the person's (ADR 0117, rule 2). */
   readonly starterKeptAfterOff?: boolean;
   /**
@@ -597,6 +608,26 @@ export function runSmoke(report: SmokeReport, processStartEpochMs: number, phase
       failures.push("a prompt under sort:newest did not show what fits by date");
     }
     if (!prompt.relevanceSorted) failures.push("sort:relevance did not rank the list after ↵");
+  }
+  const reading = report.reading;
+  if (!reading) failures.push("the reading scenario did not run");
+  else if (reading.detail !== "") failures.push(`the reading scenario: ${reading.detail}`);
+  else {
+    if (!reading.tabRing) failures.push("a view's tab showed no ring while its run read");
+    if (!reading.footWhileRun.startsWith("Reading check")) {
+      failures.push(`the foot row did not show the view's run (${reading.footWhileRun})`);
+    }
+    if (
+      !reading.footWaiting.startsWith("Reading paused") ||
+      !reading.footWaiting.includes("Reading check")
+    ) {
+      failures.push(`the foot row did not say why the reading waits (${reading.footWaiting})`);
+    }
+    if (!reading.popoverListed) failures.push("the reading popover did not list the view");
+    if (!reading.escapeReturned) {
+      failures.push("Escape did not close the reading popover and give the focus back");
+    }
+    if (!reading.readToEnd) failures.push("Continue reading did not read the view to its end");
   }
   if (report.starterKeptAfterOff !== true) {
     failures.push("turning AI off took the starter view away");

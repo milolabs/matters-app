@@ -18,11 +18,14 @@ import {
   ledgerEffort,
   loopOffered,
   ourShare,
+  readingSettingsText,
   ruleText,
   wholeFilesText,
 } from "./agentText.ts";
 import type { Backend } from "./client.ts";
 import { letterDate } from "./format.ts";
+import { inFlightText } from "./promptView.ts";
+import { createReading, createTicker } from "./reading.ts";
 import { createStatusOrder } from "./statusOrder.ts";
 import { field, pill, pillPrimary } from "./ui.ts";
 
@@ -143,9 +146,20 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
     }
   }
 
+  // The reading in the background, beside `Pause reading`, in the foot row's words (rule 3a).
+  const reading = createReading(props.backend);
+  onCleanup(() => reading.dispose());
+  const readingNow = createTicker(() => reading.live()?.inFlight !== undefined);
+  const readingLine = () => {
+    const l = reading.live();
+    const out = l === null ? "" : inFlightText(l.inFlight, l.runtime, readingNow());
+    return readingSettingsText(reading.status(), l, readingNow(), out);
+  };
+
   // The person opened this section: that is asking for the status (ADR 0051, refinement 4).
   onMount(() => {
     void look();
+    void reading.start();
     void journal.load();
     void rules.load();
     void instructions.load();
@@ -170,6 +184,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
     setProblem("");
     try {
       await order.settle(work, setStatus);
+      void reading.refresh();
     } catch (e) {
       setProblem(e instanceof Error ? e.message : "That did not work.");
     }
@@ -420,6 +435,21 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                         Views with a prompt do not read new mail in the background until you turn
                         this off. What you ask for still runs.
                       </span>
+                      <Show when={readingLine()}>
+                        {(text) => (
+                          <span
+                            class="mt-1 block text-[12px]"
+                            classList={{
+                              "text-agent": reading.live() !== null,
+                              "text-mid": reading.live() === null,
+                            }}
+                            role="status"
+                            data-reading-line
+                          >
+                            {text()}
+                          </span>
+                        )}
+                      </Show>
                     </span>
                   </label>
                 </Show>

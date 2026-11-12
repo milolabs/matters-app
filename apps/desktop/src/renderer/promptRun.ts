@@ -3,10 +3,21 @@
 // kept. It holds signals only; the app decides what
 // the list shows from them. Nothing here is on the keystroke path: the count waits for a quiet
 // moment, and every answer for text that is no longer in the bar is dropped.
-import { PROMPT_ASK_ABOVE, type PromptCount, type PromptList, type PromptRow } from "@matters/core";
+import {
+  PROMPT_ASK_ABOVE,
+  type PromptCount,
+  type PromptList,
+  type PromptProgress,
+  type PromptRow,
+} from "@matters/core";
 import { batch, createSignal } from "solid-js";
 import { type Backend, BackendError } from "./client.ts";
-import { type PromptOutcome, type PromptProgressShown, toReadOf } from "./promptView.ts";
+import {
+  type BackgroundShown,
+  type PromptOutcome,
+  type PromptProgressShown,
+  toReadOf,
+} from "./promptView.ts";
 
 /** After the last keystroke, before the count is asked (rule 4). */
 export const COUNT_QUIET_MS = 400;
@@ -38,6 +49,21 @@ const realSchedule = (run: () => void, ms: number) => {
   const timer = setTimeout(run, ms);
   return () => clearTimeout(timer);
 };
+
+/** What the line shows of a progress event: how far, what is out, and who reads (rule 3a). */
+const shownOf = (event: PromptProgress): BackgroundShown => ({
+  phase: event.phase,
+  done: event.done,
+  total: event.total,
+  ...(event.step === undefined ? {} : { step: event.step }),
+  ...(event.fits === undefined ? {} : { fits: event.fits }),
+  ...(event.inFlight === undefined ? {} : { inFlight: event.inFlight }),
+  ...(event.answered === undefined ? {} : { answered: event.answered }),
+  ...(event.runtime === undefined ? {} : { runtime: event.runtime }),
+  ...(event.local === true ? { local: true as const } : {}),
+  ...(event.waiting === undefined ? {} : { waiting: event.waiting }),
+  ...(event.view === undefined ? {} : { view: event.view }),
+});
 
 const countOf = (l: PromptList): PromptCount => ({
   ai: l.ai,
@@ -73,6 +99,8 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
   const [progress, setProgress] = createSignal<PromptProgressShown | null>(null);
   const [stopping, setStopping] = createSignal(false);
   const [outcome, setOutcome] = createSignal<PromptOutcome | null>(null);
+  // This prompt read in the background now (ADR 0117, rule 3a): shown on the line by itself.
+  const [background, setBackground] = createSignal<BackgroundShown | null>(null);
   // A saved view was opened and what it keeps is not here yet: the list is empty, and says nothing.
   const [opening, setOpening] = createSignal(false);
 
@@ -170,6 +198,7 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
       setProgress(null);
       setStopping(false);
       setOutcome(null);
+      setBackground(null);
     });
     if (!hasPrompt) return;
     const mine = gen;
@@ -311,7 +340,10 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
     if (event.type === "agentPromptProgress" && event.background === true) {
       // A saved view's reading in the background (ADR 0117, rule 3) is no run of ours: its
       // verdicts show in the list of the same prompt, read at most once per `progressReadMs`.
-      if (run !== null || !has() || count()?.promptKey !== event.promptKey) return;
+      if (!has() || count()?.promptKey !== event.promptKey) return;
+      // The line shows it as it goes, with no key pressed (rule 3a).
+      setBackground(event.finished ? null : shownOf(event));
+      if (run !== null) return;
       if (rows() === null && count()?.searched !== true) return;
       if (cancelProgressRead === null) {
         cancelProgressRead = schedule(() => {
@@ -328,13 +360,8 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
         mine.key = event.promptKey;
       } else if (event.promptKey !== mine.key) return;
       if (!event.finished) {
-        setProgress({
-          phase: event.phase,
-          done: event.done,
-          total: event.total,
-          ...(event.step === undefined ? {} : { step: event.step }),
-          ...(event.fits === undefined ? {} : { fits: event.fits }),
-        });
+        const { view: _view, ...shown } = shownOf(event);
+        setProgress(shown);
       }
       // A batch that returned adds rows; a query that ran adds none. While reading, at most once
       // per `progressReadMs`, so a long run costs reads by the second and not by the batch.
@@ -371,6 +398,8 @@ export function createPromptRun(backend: PromptBackend, options: PromptRunOption
     stopping,
     /** What the last run ended with, when that needs saying. */
     outcome,
+    /** This prompt read in the background now, as its events tell it (ADR 0117, rule 3a). */
+    background,
     /** A view was opened and its kept rows are on their way: an empty list is not yet an answer. */
     opening,
     /** The text is a saved view's, opened as one. */

@@ -35,6 +35,7 @@ import type {
   PromptList,
   PromptProgress,
   PromptRunResult,
+  ReadingStatus,
   RememberResult,
   ReplyCheck,
   RewriteHow,
@@ -215,6 +216,7 @@ export type WorkerCommand =
       readonly readAll?: boolean;
     }
   | { readonly name: "agentPromptStop" }
+  | { readonly name: "agentReadingStatus"; readonly fresh?: boolean }
   /** Read-only, but it runs here: a count can take tens of ms and the router serves keystrokes. */
   | {
       readonly name: "countMatches";
@@ -302,6 +304,7 @@ export interface CommandResults {
   readonly agentPromptBadge: PromptBadge;
   readonly agentPromptRun: PromptRunResult;
   readonly agentPromptStop: null;
+  readonly agentReadingStatus: ReadingStatus;
 }
 
 export type CommandResult<C extends WorkerCommand> = CommandResults[C["name"]];

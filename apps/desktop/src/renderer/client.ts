@@ -16,6 +16,7 @@ import type {
   AgentPromptCountResponse,
   AgentPromptRunResponse,
   AgentPromptVerdictsResponse,
+  AgentReadingStatusResponse,
   AgentRememberResponse,
   AgentRewriteDraftResponse,
   AgentRuleOfferResponse,
@@ -112,6 +113,7 @@ import type {
   PromptCount,
   PromptList,
   PromptRunResult,
+  ReadingStatus,
   RememberResult,
   ReplyCheck,
   ReplyMode,
@@ -403,6 +405,8 @@ export interface Backend {
   agentPromptRun(query: string, again?: boolean, readAll?: boolean): Promise<PromptRunResult>;
   /** ADR 0116, rule 9: cuts the running prompt short. */
   agentPromptStop(): Promise<void>;
+  /** ADR 0117, rule 3a: the reading in the background, per saved view with a prompt. No model. */
+  agentReadingStatus(fresh?: boolean): Promise<ReadingStatus>;
   /** Pushes from the backend (changes, sync status). Returns the unsubscribe function. */
   onEvent(listener: (event: BackendEvent) => void): () => void;
 }
@@ -783,6 +787,13 @@ export function createBackend(port: MessagePort): Backend {
     agentPromptStop: async () => {
       await request({ type: "agentPromptStop" });
     },
+    agentReadingStatus: async (fresh) =>
+      (
+        await request<AgentReadingStatusResponse>({
+          type: "agentReadingStatus",
+          ...(fresh === true ? { fresh } : {}),
+        })
+      ).status,
     onEvent(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

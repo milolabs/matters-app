@@ -1,5 +1,12 @@
 import type { ThreadMessage } from "@matters/contracts";
-import type { ImageChoice, Message, Participant, StoppableSource, TalkHit } from "@matters/core";
+import type {
+  ImageChoice,
+  Message,
+  Participant,
+  PromptProgress,
+  StoppableSource,
+  TalkHit,
+} from "@matters/core";
 import { accountsAgreedTo, parseQuery, replyPromptTarget } from "@matters/core";
 import { createVirtualizer } from "@tanstack/solid-virtual";
 import {
@@ -87,6 +94,8 @@ import { createPromptRun } from "./promptRun.ts";
 import { NOTHING_FITS, promptOff } from "./promptView.ts";
 import { createQueryModel, QueryBar, type QueryBarHandle } from "./queryBar.tsx";
 import { addFilter, labelToken, senderToken } from "./queryEdits.ts";
+import { createReading } from "./reading.ts";
+import { ReadingFootSegment } from "./readingFoot.tsx";
 import { ReceivedStrip } from "./receivedStrip.tsx";
 import type { ReplyAgent } from "./replyAgent.ts";
 import { replyPromptName } from "./replyPrompt.ts";
@@ -280,6 +289,47 @@ function Mail(props: Stores) {
   // verdicts give it rows (rules 2 and 7).
   const prompt = createPromptRun(props.backend);
   onCleanup(() => prompt.dispose());
+  // The reading in the background, at the foot of the list and on a view's line (ADR 0117, rule
+  // 3a): read when the agent says something changed, never on a keystroke.
+  const reading = createReading(props.backend);
+  onCleanup(() => reading.dispose());
+  createEffect(
+    on(agent.enabled, (on) => {
+      if (on) void reading.start();
+    }),
+  );
+  /** The saved view in view, as the status of the reading has it, with the runtime that reads. */
+  const viewReading = () => {
+    const s = reading.status();
+    if (s === null || s.ai === "off" || !prompt.isView()) return null;
+    const id = views.active().id;
+    const view = s.views.find((v) => v.viewId === id);
+    return view === undefined ? null : { view, runtime: s.runtime };
+  };
+  /** A run of the open saved view, in the shape of a pass's event: the foot row shows it too. */
+  const viewRun = (): PromptProgress | null => {
+    const p = prompt.progress();
+    if (p === null || p.phase !== "reading" || !prompt.isView()) return null;
+    const v = views.active();
+    return {
+      promptKey: prompt.count()?.promptKey ?? "",
+      phase: "reading",
+      done: p.done,
+      total: p.total,
+      finished: false,
+      view: { id: v.id, name: v.name, read: 0, total: p.total },
+      ...(p.inFlight === undefined ? {} : { inFlight: p.inFlight }),
+    };
+  };
+  /** The ring or the still dot on a view's tab (rule 3a): from signals that change per batch. */
+  const tabReading = (id: string): "reading" | "waiting" | null => {
+    if (viewRun()?.view?.id === id) return "reading";
+    const l = reading.live();
+    if (l !== null && l.view?.id === id && !l.finished) return "reading";
+    const v = reading.status()?.views.find((x) => x.viewId === id);
+    if (v === undefined) return null;
+    return v.state === "reading" ? "reading" : v.state === "waiting" ? "waiting" : null;
+  };
   createEffect(() => {
     const text = store.query();
     const has = model.parsed().prompt !== undefined;
@@ -1083,6 +1133,7 @@ function Mail(props: Stores) {
         </h1>
         <ViewTabs
           views={views}
+          readingOf={tabReading}
           onPicked={() => {
             paneWidth.setWide(false);
             listEl.focus({ preventScroll: true });
@@ -1140,7 +1191,7 @@ function Mail(props: Stores) {
             focusBar={() => bar.input.focus()}
             focusList={() => listEl.focus({ preventScroll: true })}
           />
-          <PromptLine prompt={prompt} />
+          <PromptLine prompt={prompt} reading={viewReading} />
           <SortLine sort={sorted} />
           <div class="min-h-0 flex-1">
             <MessageList
@@ -1155,7 +1206,12 @@ function Mail(props: Stores) {
               orderedEmpty={() =>
                 sorted.rows() !== null
                   ? "Nothing found."
-                  : prompt.progress() === null && !prompt.opening() && !promptIdle()
+                  : prompt.progress() === null &&
+                      prompt.background() === null &&
+                      !prompt.opening() &&
+                      !promptIdle() &&
+                      // Nothing read yet is not "nothing fits": the line says what is left.
+                      ((prompt.count()?.read ?? 0) > 0 || prompt.count()?.found === 0)
                     ? NOTHING_FITS
                     : ""
               }
@@ -1166,7 +1222,7 @@ function Mail(props: Stores) {
               ref={(el) => (listEl = el)}
             />
           </div>
-          <div class="flex h-11 shrink-0 border-t border-hairline bg-chrome">
+          <div class="relative flex h-11 shrink-0 border-t border-hairline bg-chrome">
             <button
               type="button"
               data-sync-status
@@ -1236,6 +1292,14 @@ function Mail(props: Stores) {
                 </For>
               </span>
             </button>
+            <Show when={agent.enabled()}>
+              <ReadingFootSegment
+                reading={reading}
+                run={viewRun}
+                onOpenView={openView}
+                onPause={(paused) => (paused ? agent.pauseReading() : agent.resumeReading())}
+              />
+            </Show>
             <button
               type="button"
               aria-label="Settings"

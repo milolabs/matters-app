@@ -724,6 +724,8 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
       case "agentPromptStop":
         await needAgent().promptStop();
         return null;
+      case "agentReadingStatus":
+        return needAgent().readingStatus(command.fresh === true);
       case "sortRanked":
         return sortRanked(
           {

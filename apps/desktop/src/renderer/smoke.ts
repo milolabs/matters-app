@@ -1406,6 +1406,90 @@ async function measureAgent(extras: {
 }
 
 /**
+ * ADR 0117, rule 3a: the reading in the background can be seen. A saved view with a prompt is
+ * opened with reading paused, and its run is stopped while it reads: the rest waits. The foot row
+ * says so by itself, the tab shows its ring while the run reads, and the popover lists the view
+ * with `Continue reading`, which reads the rest with nothing else pressed. The view goes again.
+ */
+async function measureReading(views: ViewsStore, agent: AgentStore) {
+  const out = {
+    tabRing: false,
+    footWhileRun: "",
+    footWaiting: "",
+    popoverListed: false,
+    escapeReturned: false,
+    footReading: "",
+    readToEnd: false,
+    detail: "",
+  };
+  // A prompt of its own each launch, so the warm start has not read it yet: words the demo does
+  // not match on, picked by the clock, change its key and nothing it finds.
+  const pick = ((Date.now() >> 4) % 127) + 1;
+  const filler = ["what", "that", "this", "with", "from", "have", "only"].filter(
+    (_, i) => (pick >> i) & 1,
+  );
+  const query = `prompt:"faktura termin spotkanie ${filler.join(" ")}"`;
+  await agent.pauseReading();
+  const made = await views.create("Reading check", query);
+  if (!made.ok) {
+    out.detail = made.message;
+    return out;
+  }
+  const id = made.view.id;
+  const line = () => document.querySelector<HTMLElement>("[data-prompt-line]")?.dataset.promptLine;
+  const foot = () =>
+    document.querySelector<HTMLElement>("[data-reading-foot] [data-reading-state]");
+  try {
+    views.select(id);
+    // The view's own run: its tab carries the ring while it reads; then it is stopped.
+    const reading = await until(() => line() === "reading", 30_000);
+    out.tabRing =
+      document.querySelector(`[data-view="${CSS.escape(id)}"] [data-tab-reading]`) !== null;
+    out.footWhileRun = foot()?.textContent ?? "";
+    if (!reading) {
+      out.detail = `the view's run did not read (line ${line() ?? "none"})`;
+      return out;
+    }
+    document.querySelector<HTMLButtonElement>("[data-prompt-stop]")?.click();
+    await until(() => line() !== "reading" && line() !== "searching", 10_000);
+    // Paused: what is left waits, and the foot row says why without a click.
+    const waits = await until(() => foot()?.dataset.readingState === "waiting", 6000);
+    out.footWaiting = foot()?.textContent ?? "";
+    if (!waits) {
+      out.detail = `nothing waited (line ${line() ?? "none"}, foot ${out.footWaiting || "none"})`;
+      return out;
+    }
+    const button = foot() as HTMLButtonElement;
+    button.click();
+    out.popoverListed = await until(
+      () =>
+        document.querySelector(`[data-reading-popover] [data-reading-view="${CSS.escape(id)}"]`) !==
+        null,
+      4000,
+    );
+    document
+      .querySelector("[data-reading-popover]")
+      ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await frame();
+    out.escapeReturned =
+      document.querySelector("[data-reading-popover]") === null &&
+      document.activeElement === button;
+    // `Continue reading` from the popover: the background reads the rest by itself.
+    button.click();
+    await until(() => document.querySelector("[data-reading-pause]") !== null, 2000);
+    document.querySelector<HTMLButtonElement>("[data-reading-pause]")?.click();
+    await until(() => foot()?.dataset.readingState === "reading", 6000);
+    out.footReading = foot()?.textContent ?? "";
+    document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    out.readToEnd = await until(() => line() === "allRead", 30_000);
+  } finally {
+    if (agent.status()?.settings.readingPaused === true) await agent.resumeReading();
+    await views.remove(id);
+  }
+  return out;
+}
+
+/**
  * ADR 0116 on the seeded mailbox: the demo runtime answers the prompt's turns the same each time,
  * the plan turn that searches (it has no tools) and the batches that judge.
  */
@@ -1593,6 +1677,7 @@ export async function runSmoke(
       extras.views.select("all");
       await frame();
       report.prompt = await measurePrompt(store, extras.backend);
+      report.reading = await measureReading(extras.views, extras.agent);
       // While AI is still on: the column widened over the window (⇧⌘E).
       report.widePane = await measureWidePane(store, extras.views);
       // Turning AI off leaves the starter view: it is the person's (ADR 0117, rule 2).

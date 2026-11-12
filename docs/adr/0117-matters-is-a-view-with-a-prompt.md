@@ -58,9 +58,8 @@ notifications. Those are what a view has to gain before the tab can go.
    the reading of ADR 0116 with these differences:
    - It never searches with a model and never asks. A view the person has not run stays unread
      until they open it.
-   - It is `P1` for mail of the last two days and `P3` for older (ADR 0051, rule 7), so it
-     gives way to anything the person asks for. One pass reads at most `PROMPT_ASK_ABOVE`
-     threads per view.
+   - It is `P1` (ADR 0051, rule 7), so it gives way to anything the person asks for. Mail of the
+     last two days goes first. One pass reads at most `PROMPT_ASK_ABOVE` threads per view.
    - It obeys the same switches as the pass it replaces: AI on, consent, a runtime that is
      ready, the plan's limits, and `Pause reading`.
    - Ledger lines are `prompt`, as for a reading the person started.
@@ -69,13 +68,45 @@ notifications. Those are what a view has to gain before the tab can go.
      so no thread is sent twice.
    - A thread sent twice with no verdict back is left until it changes.
    - It also reads what a run of the person's left unread above the line of ADR 0116, rule 4,
-     so a saved view is read to its end with no other `↵`. That is old mail, `P3`: on a plan
-     it goes only while the plan's gates for background work let it, and waits otherwise. One
-     pass takes at most `PROMPT_ASK_ABOVE` threads of a view, and the next follows by itself
-     while threads are left and nothing was refused. (At first only mail newer than the
-     view's last reading was read, and the rest waited for the person.)
+     so a saved view is read to its end with no other `↵`. That is `P1` too: the person ran this
+     view, and reading it to its end is what they asked for. (It was `P3` at first, which is
+     refused while a plan's windows are not known and above 25 % of the session, so on a plan the
+     rest of a view looked as if nothing read it.) On a plan it goes while the gates for `P1`
+     let it, and waits otherwise. One pass takes at most `PROMPT_ASK_ABOVE` threads of a view,
+     and the next follows by itself while threads are left and nothing was refused. (At first
+     only mail newer than the view's last reading was read, and the rest waited for the person.)
+   - When the plan's gate names a time the reading may go on, a pass runs then by itself. When
+     the model, its effort or the runtime for understanding mail changes, the turns of the old
+     choice stop and a pass starts at once on the new one, once it is ready.
    - On a runtime with no plan nothing is counted against the person, so one pass reads a
      view whole, and a run the person starts never stops to ask.
+3a. **The reading in the background can be seen.** Nobody has to press a key or open anything
+   to learn what it does.
+   - The foot row of the list has a segment for it, right of the mail's sync. While a view is
+     read: the agent's ring, the view's name and how far (`Needs you 292 / 754`), and along the
+     row's top edge a 2 px line in the agent's colour as wide as that view is read; while a turn
+     is out, a faint sheen goes along the line. While views have threads left and nothing reads
+     them: a still dot and why, with the time when it is known (`Reading paused`, `Waits for
+     room in Codex's session until 14:00`), and which view and how far. The words are in the
+     late colour only when the person has to act (no account shared, signed out, not ready, not
+     on the plan). With everything read, AI off, or only views never run, the segment is not
+     there.
+   - The segment opens `Reading in the background`: each saved view with a prompt, how much of
+     it is read, and its state (reading now, why it waits, up to date, not run yet, or threads
+     sent twice that came back with nothing); the runtime that reads; and `Pause reading` or
+     `Continue reading`. A row opens its view. Escape closes it and the focus goes back.
+   - A view's tab shows the ring in place of its mark while it is read, by a run or in the
+     background, and a still dot while it waits.
+   - A saved view's line says the same by itself: `Reading 240 of 754 in the background…`, or
+     what is left and why it waits. A run the person started says how many threads are out, to
+     which runtime and for how long (`10 sent to Ollama, 1 min 20 s`), the pace once two turns
+     answered (`about 4 min left`), what it waits for when it is queued (the turns the
+     background sent, the runtime's check), and, when a turn on this Mac is out for two
+     minutes, that a smaller model for understanding mail would be faster.
+   - Settings › Agents says the same line beside `Pause reading`.
+   - Why it waits is what the gates said: the person's pause, the plan's gate at the priority
+     it was refused at with the window and its time, a limit the runtime named, the runtime's
+     state, consent, a turn that failed. Nothing is guessed in a window.
 4. **A view with a prompt has a badge.** Its number is the unread threads among those it shows
    (fit 2 or 3 under its mail filters), counted from stored verdicts with no model. It means
    what every tab's number means (ADR 0093), counted in threads. A view never read shows none.
@@ -113,3 +144,7 @@ notifications. Those are what a view has to gain before the tab can go.
 - New mail that a view's kept searches do not match is not read for that view until the person
   runs `Search again`.
 - Old installs keep rows in tables nothing reads until a later schema removes them.
+- The counts of rule 3a are the ones last computed, by a run, a list or a pass, so the foot row
+  costs no search; opening the popover computes every view's counts once, from the kept searches
+  and the verdicts, with no model. A view whose mail changed since shows its old counts in the
+  foot row until a pass or the popover counts it again.

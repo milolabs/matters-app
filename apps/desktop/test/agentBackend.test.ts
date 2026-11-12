@@ -129,6 +129,7 @@ function stub(overrides: Partial<AgentApi> = {}) {
     promptBadge: note("promptBadge", { ai: "off", unread: null }),
     promptRun: note("promptRun", { ...promptOff, rows: [], stopped: false, rejected: 0 }),
     promptStop: note("promptStop", undefined),
+    readingStatus: note("readingStatus", { ai: "off", runtime: "", paused: false, views: [] }),
     ...overrides,
   };
   const deps = { agent: api } as unknown as BackendDeps;

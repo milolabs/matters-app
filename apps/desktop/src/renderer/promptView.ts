@@ -6,9 +6,12 @@ import {
   PROMPT_ASK_ABOVE,
   type PromptCount,
   type PromptPhase,
+  type PromptProgress,
   type PromptStep,
   type QueryDiagnostic,
+  type ReadingView,
 } from "@matters/core";
+import { readingWaitText } from "./agentText.ts";
 
 /** Why a prompt does nothing now (rule 11), or null while it can be read. */
 export type PromptOff = "off" | "noConsent";
@@ -94,12 +97,124 @@ export interface PromptProgressShown {
   readonly step?: PromptStep;
   /** Under a limit: the threads that fit so far (rule 4a). */
   readonly fits?: number;
+  /** What is out and since when, the pace so far, and who reads (ADR 0117, rule 3a). */
+  readonly inFlight?: PromptProgress["inFlight"];
+  readonly answered?: PromptProgress["answered"];
+  readonly runtime?: string;
+  readonly local?: true;
+  readonly waiting?: PromptProgress["waiting"];
+}
+
+/** A reading in the background of this prompt (ADR 0117, rule 3), as its events tell it. */
+export interface BackgroundShown extends PromptProgressShown {
+  /** What was read of the view when the pass started, and what there was to read in all. */
+  readonly view?: PromptProgress["view"];
+}
+
+/** A turn out this long on a model on this Mac gets a quiet hint (rule 3a). */
+export const SLOW_TURN_MS = 120_000;
+/** The run waits for the turns the background already sent (ADR 0117, rule 3). */
+export const WAITS_FOR_BACKGROUND =
+  "Waiting for the reading in the background to finish the turns it sent…";
+/** The hint of a slow turn on a model on this Mac. Only words: nothing changes by itself. */
+export const SLOW_HERE =
+  "This model is slow on this Mac for reading mail. A smaller model for Understanding mail in Settings › Agents reads faster.";
+
+/** `45 s`, `1 min 20 s`, `1 h 5 min`: how long something has been going, to the second. */
+export function elapsedText(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 === 0 ? `${m} min` : `${m} min ${s % 60} s`;
+  const h = Math.floor(m / 60);
+  return m % 60 === 0 ? `${h} h` : `${h} h ${m % 60} min`;
+}
+
+/** What is out now: `10 sent to Ollama, 1 min 20 s`. Empty when nothing is. */
+export function inFlightText(
+  inFlight: PromptProgress["inFlight"],
+  runtime: string | undefined,
+  now: number,
+): string {
+  if (inFlight === undefined || inFlight.threads <= 0) return "";
+  const to = runtime === undefined || runtime === "" ? "" : ` to ${runtime}`;
+  return `${num(inFlight.threads)} sent${to}, ${elapsedText(now - inFlight.sinceMs)}`;
+}
+
+/**
+ * About how long the rest takes at the pace measured so far: `about 4 min left`. Only after two
+ * turns answered, so one slow or quick turn says nothing; empty when there is too little to go on.
+ */
+export function paceText(
+  answered: PromptProgress["answered"],
+  done: number,
+  total: number,
+  now: number,
+): string {
+  if (answered === undefined || answered.turns < 2 || done <= 0 || total <= done) return "";
+  const spent = now - answered.sinceMs;
+  if (spent <= 0) return "";
+  const leftMs = ((total - done) * spent) / done;
+  const min = Math.round(leftMs / 60_000);
+  if (min < 1) return "under a minute left";
+  if (min < 90) return `about ${min} min left`;
+  return `about ${Math.round(min / 60)} h left`;
+}
+
+/** The quiet hint of a turn on this Mac that is out longer than `SLOW_TURN_MS`, or none. */
+export function slowHint(p: Pick<PromptProgressShown, "inFlight" | "local">, now: number) {
+  if (p.local !== true || p.inFlight === undefined) return undefined;
+  return now - p.inFlight.sinceMs >= SLOW_TURN_MS ? SLOW_HERE : undefined;
+}
+
+/** `Reading 12 of 37 threads…` with what is out and the pace: a count that waits says why. */
+function withWork(text: string, p: PromptProgressShown, now: number): string {
+  const parts = [
+    text,
+    inFlightText(p.inFlight, p.runtime, now),
+    paceText(p.answered, p.done, p.total, now),
+  ];
+  return parts.filter((x) => x !== "").join(" · ");
+}
+
+/** How far a view is read in the background: `Reading 240 of 754 in the background…`. */
+export function backgroundText(p: BackgroundShown, now: number): string {
+  const v = p.view;
+  const head =
+    v === undefined || v.total <= 0
+      ? p.total > 0
+        ? `Reading ${num(Math.min(p.done, p.total))} of ${num(p.total)} in the background…`
+        : "Reading in the background…"
+      : `Reading ${num(Math.min(v.read + p.done, v.total))} of ${num(v.total)} in the background…`;
+  return withWork(head, p, now);
+}
+
+/** What a saved view's line adds when nothing reads it: why it waits, or what is left. */
+export function viewWaitText(view: ReadingView, runtime: string, now: number): string {
+  if (view.state === "waiting" && view.wait !== undefined) {
+    return `${readingWaitText(view.wait, runtime, now)}.`;
+  }
+  if (view.state === "left") return leftText(view.left ?? view.toRead);
+  return "";
+}
+
+/** Threads sent twice that came back with nothing: said, not passed off as being read. */
+export function leftText(n: number): string {
+  return `${n === 1 ? "It was" : "They were"} sent twice and came back with nothing; ${n === 1 ? "it is" : "they are"} read again when ${n === 1 ? "it changes" : "they change"}.`;
 }
 
 /** The one quiet line under the bar while the query holds a prompt (rules 4 and 9). */
 export type PromptLine =
   | { readonly kind: "searching"; readonly text: string; readonly stopping: boolean }
-  | { readonly kind: "reading"; readonly text: string; readonly stopping: boolean }
+  | {
+      readonly kind: "reading";
+      readonly text: string;
+      readonly stopping: boolean;
+      /** A turn on this Mac is slow: what would be faster, in words only. */
+      readonly hint?: string;
+    }
+  /** A saved view is read in the background (ADR 0117, rule 3a): no Stop, it is no run of ours. */
+  | { readonly kind: "background"; readonly text: string; readonly hint?: string }
   /** Not searched yet with these mail filters: the whole line is the `↵` that searches. */
   | { readonly kind: "ready"; readonly text: string }
   /** The search found more than `PROMPT_ASK_ABOVE` and nothing is read: `↵` reads them all. */
@@ -188,25 +303,60 @@ export function promptLine(state: {
   readonly outcome: PromptOutcome | null;
   /** The text is a saved view's: what is left is read on in the background (ADR 0117, rule 3). */
   readonly view?: boolean;
+  /** This prompt read in the background now, as its events tell it (rule 3a). */
+  readonly background?: BackgroundShown | null;
+  /** The saved view in the status of the reading, and the runtime that reads. */
+  readonly reading?: { readonly view: ReadingView; readonly runtime: string } | null;
+  /** The time the line is drawn at: what is out ticks with it. */
+  readonly now?: number;
 }): PromptLine | null {
   const { count, progress, outcome } = state;
+  const now = state.now ?? Date.now();
   if (progress !== null) {
     const stopping = state.stopping;
-    return progress.phase === "searching"
-      ? { kind: "searching", text: stopping ? STOPPING : searchingText(progress.step), stopping }
-      : {
-          kind: "reading",
-          text: stopping
-            ? STOPPING
-            : readingText(
-                progress.done,
-                progress.total,
-                count?.limit === undefined
-                  ? undefined
-                  : { fits: progress.fits ?? count.fits, limit: count.limit },
-              ),
-          stopping,
-        };
+    if (!stopping && progress.waiting !== undefined) {
+      // Queued, not working: the line says what it waits for, not a count that does not move.
+      const runtime = progress.runtime ?? "the assistant";
+      return {
+        kind: "reading",
+        text: progress.waiting === "background" ? WAITS_FOR_BACKGROUND : `Checking ${runtime}…`,
+        stopping,
+      };
+    }
+    if (progress.phase === "searching") {
+      return {
+        kind: "searching",
+        text: stopping ? STOPPING : searchingText(progress.step),
+        stopping,
+      };
+    }
+    const hint = stopping ? undefined : slowHint(progress, now);
+    return {
+      kind: "reading",
+      text: stopping
+        ? STOPPING
+        : withWork(
+            readingText(
+              progress.done,
+              progress.total,
+              count?.limit === undefined
+                ? undefined
+                : { fits: progress.fits ?? count.fits, limit: count.limit },
+            ),
+            progress,
+            now,
+          ),
+      stopping,
+      ...(hint === undefined ? {} : { hint }),
+    };
+  }
+  if (state.background != null && outcome === null) {
+    const hint = slowHint(state.background, now);
+    return {
+      kind: "background",
+      text: backgroundText(state.background, now),
+      ...(hint === undefined ? {} : { hint }),
+    };
   }
   if (outcome?.problem !== undefined) {
     return {
@@ -232,14 +382,21 @@ export function promptLine(state: {
       whole: count.whole === true,
     };
   }
-  if (asksToRead(count)) return { kind: "ask", text: foundText(todo), key: READ_ALL };
-  if (count.limit !== undefined) {
-    return { kind: "count", text: toFindText(count.limit, count.fits, todo) };
+  const r = state.view === true ? state.reading : null;
+  if (r?.view.state === "reading") {
+    // The status says a pass reads it, and its first event is on its way.
+    return { kind: "background", text: "Reading in the background…" };
+  }
+  // A saved view says why nothing reads what is left (ADR 0117, rule 3a), on the line itself.
+  const why = r == null ? "" : viewWaitText(r.view, r.runtime, now);
+  if (asksToRead(count)) {
+    const found = foundText(todo);
+    return { kind: "ask", text: why === "" ? found : `${found} ${why}`, key: READ_ALL };
   }
   const read = count.read > 0 ? `, ${num(count.read)} read already` : "";
-  const text = `${threads(todo)} to read${read}.`;
-  return {
-    kind: "count",
-    text: state.view === true ? `${text} Reading on in the background.` : text,
-  };
+  const text =
+    count.limit !== undefined
+      ? toFindText(count.limit, count.fits, todo)
+      : `${threads(todo)} to read${read}.`;
+  return { kind: "count", text: why === "" ? text : `${text} ${why}` };
 }
