@@ -1,0 +1,7 @@
+# What CodeQL reads (ADR 0128). Tests are left out: their findings are fixtures, not shipped code.
+name: Matters CodeQL config
+
+paths-ignore:
+  - "**/test/**"
+  - "**/*.test.ts"
+  - "**/*.test.tsx"

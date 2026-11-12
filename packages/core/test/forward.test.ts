@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { escapeAddress } from "../src/domain/markdownEscape.ts";
 import type { Message } from "../src/index.ts";
 import {
   buildForward,
@@ -16,7 +17,7 @@ import {
   ownWords,
   prepareForwardDraft,
 } from "../src/index.ts";
-import { content, sha256 } from "./support.ts";
+import { content, QUICK_MS, sha256, timed } from "./support.ts";
 
 const account = { id: "acc1", address: "me@example.com", displayName: "Miłosz Sobczak" };
 
@@ -78,7 +79,15 @@ describe("forwardSubject (rule 3)", () => {
     ["   ", "Fwd:"],
     ["Fwd:", "Fwd:"],
     ["FW: FW:", "Fwd:"],
+    ["PD [2] :\t WG\t: Budget", "Fwd: Budget"],
   ])("%j -> %j", (input, out) => expect(forwardSubject(input)).toBe(out));
+
+  it("takes linear time on a long run of white space that ends in no colon", () => {
+    const subject = `pd${"\t".repeat(50_000)}x`;
+    const { result, ms } = timed(() => forwardSubject(subject));
+    expect(result).toBe(`Fwd: ${subject}`);
+    expect(ms).toBeLessThan(QUICK_MS);
+  });
 });
 
 describe("escapeMarkdown (rule 5)", () => {
@@ -110,6 +119,15 @@ describe("escapeMarkdown (rule 5)", () => {
     expect(escapeMarkdown("_lead")).toBe("\\_lead");
     expect(escapeMarkdown("trail_")).toBe("trail\\_");
     expect(escapeMarkdown("a _b_ c")).toBe("a \\_b\\_ c");
+  });
+
+  it("escapes a backslash too, so one in the text cannot cancel an added escape", () => {
+    // `\@` must become `\\\@` (a backslash, then an escaped `@`), never `\\@`.
+    expect(escapeMarkdown(String.raw`a\@b.example`)).toBe(String.raw`a\\\@b.example`);
+    expect(escapeMarkdown(String.raw`\[x](https://evil.example)`)).toBe(
+      String.raw`\\\[x\](https\://evil.example)`,
+    );
+    expect(escapeAddress(String.raw`a\b@c.example`)).toBe(String.raw`a\\b@c.example`);
   });
 });
 

@@ -72,7 +72,7 @@ const QUOTE_START =
   /^(?:>|-{2,}\s*(?:original message|forwarded message|wiadomosc oryginalna|oryginalna wiadomosc|przekazana wiadomosc)|(?:from|od|sent|wyslano|wyslane):\s|on .{4,200} wrote:$|w dniu .{4,200} (?:napisal|napisala|pisze)\S*:?$|.{0,200}(?:napisal|napisala)\S*\s*(?:\(a\))?:$)/;
 
 /** A subject that answers or passes on another message: `Re:`, `Fwd:`, `Odp:`, `PD:`... */
-const ANSWER_SUBJECT = /^\s*(?:re|fw|fwd|aw|wg|odp|pd|tr|sv|vs)\s*(?:\[\d+\])?\s*:/i;
+const ANSWER_SUBJECT = /^\s*(?:re|fw|fwd|aw|wg|odp|pd|tr|sv|vs)\s*(?:\[\d+\]\s*)?:/i;
 
 /** How far from the end of the sender's own words a footer is looked for. */
 const FOOTER_REACH = 2000;

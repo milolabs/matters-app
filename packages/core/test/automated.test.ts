@@ -6,6 +6,7 @@ import {
   isAutomatedSender,
   looksLikeServiceNotice,
 } from "../src/index.ts";
+import { QUICK_MS, timed } from "./support.ts";
 
 describe("isAutomatedSender", () => {
   it.each([
@@ -185,5 +186,20 @@ describe("looksLikeServiceNotice (ADR 0066, rule 6)", () => {
     "",
   ])("%s is not", (subject) => {
     expect(looksLikeServiceNotice(subject)).toBe(false);
+  });
+});
+
+describe("isAutomatedByBody and a long subject", () => {
+  it("takes linear time on a prefix and a long run of white space with no colon", () => {
+    const subject = `re${"\t".repeat(50_000)}x`;
+    const { result, ms } = timed(() =>
+      isAutomatedByBody("Hello\n\nUnsubscribe from this list", subject),
+    );
+    expect(typeof result).toBe("boolean");
+    expect(ms).toBeLessThan(QUICK_MS);
+  });
+
+  it("still knows a reply by a numbered prefix with white space around it", () => {
+    expect(isAutomatedByBody("Hello\n\nUnsubscribe from this list", "RE [2] : News")).toBe(false);
   });
 });

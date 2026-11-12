@@ -14,6 +14,7 @@ import {
   replyRedirect,
   replySubject,
 } from "../src/index.ts";
+import { QUICK_MS, timed } from "./support.ts";
 
 const account = { id: "acc1", address: "me@example.com", displayName: "Miłosz" };
 
@@ -46,7 +47,19 @@ describe("replySubject", () => {
     ["RE: Re: Wycena", "Re: Wycena"],
     ["Odp: Re: Wycena", "Re: Wycena"],
     ["  re:wycena ", "Re: wycena"],
+    ["Re[2]: Wycena", "Re: Wycena"],
+    [" RE [3] :\tAW:  SV : Wycena", "Re: Wycena"],
+    ["Re [x]: Wycena", "Re: Re [x]: Wycena"],
+    ["Re Wycena", "Re: Re Wycena"],
+    ["Re: Re:", "Re: "],
   ])("%s -> %s", (input, out) => expect(replySubject(input)).toBe(out));
+
+  it("takes linear time on a long run of white space that ends in no colon", () => {
+    const subject = `re${"\t".repeat(50_000)}x`;
+    const { result, ms } = timed(() => replySubject(subject));
+    expect(result).toBe(`Re: ${subject}`);
+    expect(ms).toBeLessThan(QUICK_MS);
+  });
 });
 
 describe("replyQuoteText", () => {

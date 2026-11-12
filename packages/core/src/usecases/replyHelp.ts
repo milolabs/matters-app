@@ -54,7 +54,7 @@ export function splitDraft(text: string): DraftParts {
 
 /** The person's lines and the quote again, one empty line between them. */
 export function joinDraft(own: string, quote: string): string {
-  const body = own.replace(/\s+$/, "");
+  const body = own.trimEnd();
   if (quote === "") return body;
   return body === "" ? `\n\n${quote}` : `${body}\n\n${quote}`;
 }

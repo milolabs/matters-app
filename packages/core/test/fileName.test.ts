@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isRunnableFile, MAX_FILE_NAME_BYTES, nameFromType, safeFileName } from "../src/index.ts";
+import { QUICK_MS, timed } from "./support.ts";
 
 const bytes = (text: string) => new TextEncoder().encode(text).byteLength;
 const char = (code: number) => String.fromCodePoint(code);
@@ -404,4 +405,22 @@ describe("what review found (ADR 0043, rules 5 and 12)", () => {
       expect(isRunnableFile(name)).toBe(false);
     },
   );
+});
+
+describe("long runs of dots and white space", () => {
+  it("are stripped from both edges in linear time", () => {
+    const run = ". \t".repeat(20_000);
+    const { result, ms } = timed(() => safeFileName(`${run}a${run}b${run}`));
+    expect(result.startsWith("a")).toBe(true);
+    expect(result.endsWith("b")).toBe(true);
+    expect(ms).toBeLessThan(QUICK_MS);
+  });
+
+  it("do not slow down the runnable check when they do not reach the end", () => {
+    const name = `a.exe${"\t".repeat(50_000)}x`;
+    const { result, ms } = timed(() => isRunnableFile(name));
+    expect(result).toBe(false);
+    expect(ms).toBeLessThan(QUICK_MS);
+    expect(isRunnableFile(`a.exe${". \t".repeat(1000)}`)).toBe(true);
+  });
 });

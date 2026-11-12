@@ -194,8 +194,9 @@ export interface SmokeReport {
    * The backend process's memory (KB) around the attachment scenario, sampled by main. There is no
    * Sent copy in it, so every byte of growth is the copies' doing.
    */
-  readonly backendMemory?: Readonly<
-    Record<string, { readonly startKB: number; readonly peakKB: number; readonly endKB: number }>
+  readonly backendMemory?: ReadonlyMap<
+    string,
+    { readonly startKB: number; readonly peakKB: number; readonly endKB: number }
   >;
   readonly cspViolations?: readonly string[];
   readonly mailWallProblems?: readonly string[];
@@ -675,7 +676,7 @@ export function runSmoke(report: SmokeReport, processStartEpochMs: number, phase
 
   // The first round warms the process up; the budget is for the second (renderer/smoke.ts).
   const growth = (label: string) => {
-    const m = report.backendMemory?.[label];
+    const m = report.backendMemory?.get(label);
     return m ? Math.round((m.peakKB - m.startKB) / 1024) : undefined;
   };
   const backendGrowthMB = growth("round2");

@@ -7,7 +7,8 @@ export type ReplyMode = "reply" | "replyAll";
 
 /** One `Re:` in front, whatever the chain of `Re:`/`RE:`/`Odp:` looked like. */
 export function replySubject(subject: string): string {
-  const bare = subject.replace(/^\s*((re|odp|aw|sv)\s*(\[\d+\])?\s*:\s*)+/i, "").trim();
+  // Each run of white space can be matched one way only, so a long one costs linear time.
+  const bare = subject.replace(/^(?:\s*(?:re|odp|aw|sv)\s*(?:\[\d+\]\s*)?:)+/i, "").trim();
   return `Re: ${bare}`;
 }
 
@@ -15,7 +16,7 @@ export function replySubject(subject: string): string {
 export function quoteLines(text: string): string {
   return text
     .replace(/\r\n?/g, "\n")
-    .replace(/\s+$/, "")
+    .trimEnd()
     .split("\n")
     .map((line) => (line === "" ? ">" : `> ${line}`))
     .join("\n");

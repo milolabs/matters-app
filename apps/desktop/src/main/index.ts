@@ -1150,7 +1150,8 @@ if (!identityHelper)
         const m = app.getAppMetrics().find((p) => p.pid === backend.pid)?.memory;
         return m ? (m.privateBytes ?? m.workingSetSize) : 0;
       };
-      const memory: Record<string, { startKB: number; peakKB: number; endKB: number }> = {};
+      // A Map: the label comes from the page, and `__proto__` must stay a label like any other.
+      const memory = new Map<string, { startKB: number; peakKB: number; endKB: number }>();
       let sampler: ReturnType<typeof setInterval> | undefined;
       // The page asks the driver for something (new mail) by name; the driver watches stdout.
       ipcMain.on("matters:smoke-signal", (_event, name: unknown) => {
@@ -1159,14 +1160,14 @@ if (!identityHelper)
         if (what === "memory-start" && label) {
           const startKB = backendKB();
           const sample = { startKB, peakKB: startKB, endKB: startKB };
-          memory[label] = sample;
+          memory.set(label, sample);
           clearInterval(sampler);
           sampler = setInterval(() => {
             sample.peakKB = Math.max(sample.peakKB, backendKB());
           }, 20);
         } else if (what === "memory-end" && label) {
           clearInterval(sampler);
-          const sample = memory[label];
+          const sample = memory.get(label);
           if (sample) {
             sample.endKB = backendKB();
             sample.peakKB = Math.max(sample.peakKB, sample.endKB);
