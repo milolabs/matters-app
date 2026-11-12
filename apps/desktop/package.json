@@ -24,7 +24,7 @@
     "@matters/core": "workspace:*",
     "@matters/testkit": "workspace:*",
     "fflate": "0.8.3",
-    "imapflow": "2.10.0",
+    "imapflow": "2.10.2",
     "juice": "12.2.1",
     "markdown-it": "15.0.3",
     "nodemailer": "10.3.1",
@@ -37,14 +37,14 @@
     "@codemirror/state": "6.7.6",
     "@codemirror/view": "6.43.15",
     "@tailwindcss/vite": "4.3.4",
-    "@tanstack/solid-virtual": "3.13.52",
+    "@tanstack/solid-virtual": "3.13.53",
     "@types/smtp-server": "3.5.13",
     "dompurify": "3.4.17",
     "electron-vite": "6.0.0",
     "smtp-server": "3.21.3",
     "solid-js": "1.9.18",
     "tailwindcss": "4.3.4",
-    "vite": "8.3.5",
+    "vite": "8.3.6",
     "vite-plugin-solid": "2.11.15"
   }
 }
