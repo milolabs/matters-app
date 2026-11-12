@@ -1,4 +1,4 @@
-// The end-to-end suite (ADR 0129): the built app in a real window, driven through Playwright's
+// The end-to-end suite (ADR 0130): the built app in a real window, driven through Playwright's
 // Electron support. Run it with `bun run test:e2e` (all specs, needs Docker) or
 // `bun run test:e2e:demo` (the demo mailbox only). The app must be built first; both scripts do it.
 import { dirname, join } from "node:path";

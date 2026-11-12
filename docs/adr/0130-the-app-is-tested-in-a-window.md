@@ -1,4 +1,4 @@
-# 0129. The app is tested in a window, on every change
+# 0130. The app is tested in a window, on every change
 
 - Status: Accepted
 - Date: 2026-11-13

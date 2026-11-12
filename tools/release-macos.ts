@@ -6,7 +6,7 @@
 //
 // What it is given decides what it makes:
 // - MATTERS_SIGN_IDENTITY: the identity the app was signed with. `-` (ad hoc) leaves the disk
-//   image unsigned: a rehearsal, or an alpha for invited testers. macOS refuses to open it until
+//   image unsigned: a rehearsal, or an alpha. macOS refuses to open it until
 //   the person allows it.
 // - APPLE_API_KEY_PATH, APPLE_API_KEY_ID, APPLE_API_ISSUER: an App Store Connect API key. With all
 //   three, the app and then the disk image are notarized and the ticket is stapled to each, so

@@ -61,7 +61,7 @@ jobs:
         env:
           MATTERS_SIGN_IDENTITY: "-"
 
-  # The built app in a real window, driven by Playwright (ADR 0129): the first start with its setup
+  # The built app in a real window, driven by Playwright (ADR 0130): the first start with its setup
   # screen against the Dovecot test server, and the main screens. Linux, because its runners have
   # Docker; the macOS ones do not (ADR 0122).
   e2e:

@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-11-12
 - Builds on: [0123](0123-releases.md), [0126](0126-changes-reach-main-by-pull-request.md)
+- Amended by: [0129](0129-the-site-offers-pre-releases.md) (while there is no stable release, the
+  site offers the newest published pre-release)
 
 ## Context
 
@@ -34,7 +36,9 @@ say things the repository does not.
    and the page reads it. The copy of `release.json` in the repository says "no release"; nothing
    in the automation writes to `main` (ADR 0126, rule 3).
 5. **The site offers what "latest" means on GitHub**: the newest release that is published and is
-   not a pre-release. Drafts and alphas (ADR 0123) never appear on it.
+   not a pre-release. Drafts and alphas (ADR 0123) never appear on it. (Amended by ADR 0129: while
+   there is no stable release, the newest published pre-release is offered, and named as one.
+   Drafts still never appear.)
 6. **The site says what `main` does**, like the README. A feature that is not merged is under
    "Yet to come" or not there. Mail and names shown in the pieces of the app are made up.
 7. **Lint covers `site/`** with the rest of the repository (ADR 0122).

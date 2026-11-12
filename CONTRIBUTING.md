@@ -49,7 +49,7 @@ image can still be made:
 MATTERS_SIGN_IDENTITY=- bun run release:macos
 ```
 
-A second job starts the app on Linux and drives it with Playwright (ADR 0129): the first start
+A second job starts the app on Linux and drives it with Playwright (ADR 0130): the first start
 with its setup screen against a throw-away IMAP server in Docker, sending, reading and archiving,
 and the main screens on the demo mailbox. Each test leaves a video, a trace and a screenshot; the
 job keeps them for 14 days as the `e2e-report` artifact. To run it yourself:
