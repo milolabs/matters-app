@@ -130,6 +130,12 @@ body {
   user-select: text;
 }
 
+/* A fieldset is never narrower than its longest line unless told so, and then it runs out of
+   whatever holds it. None here should: long text in one wraps or is cut by its own rule. */
+fieldset {
+  min-inline-size: 0;
+}
+
 /* The toolbar moves the window; what can be clicked in it opts out. */
 .drag {
   -webkit-app-region: drag;
@@ -1011,6 +1017,18 @@ mark.hit {
   background: var(--button);
   color: var(--ink);
   font-weight: 500;
+}
+/* The line of a prompt keeps one row of one height, whatever it says: a line that wraps or
+   comes and goes would move the list under it. */
+.vstatus.vline {
+  flex-wrap: nowrap;
+  height: 35px;
+  padding-block: 0;
+}
+.vstatus.vline .msg {
+  flex: 1 1 0;
+  overflow-wrap: normal;
+  white-space: nowrap;
 }
 .vstatus input {
   flex: 1 1 120px;

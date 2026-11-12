@@ -299,13 +299,6 @@ function Mail(props: Stores) {
     }),
   );
   /** The saved view in view, as the status of the reading has it, with the runtime that reads. */
-  const viewReading = () => {
-    const s = reading.status();
-    if (s === null || s.ai === "off" || !prompt.isView()) return null;
-    const id = views.active().id;
-    const view = s.views.find((v) => v.viewId === id);
-    return view === undefined ? null : { view, runtime: s.runtime };
-  };
   /** A run of the open saved view, in the shape of a pass's event: the foot row shows it too. */
   const viewRun = (): PromptProgress | null => {
     const p = prompt.progress();
@@ -1191,7 +1184,7 @@ function Mail(props: Stores) {
             focusBar={() => bar.input.focus()}
             focusList={() => listEl.focus({ preventScroll: true })}
           />
-          <PromptLine prompt={prompt} reading={viewReading} />
+          <PromptLine prompt={prompt} />
           <SortLine sort={sorted} />
           <div class="min-h-0 flex-1">
             <MessageList

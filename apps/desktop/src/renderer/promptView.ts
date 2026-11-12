@@ -9,9 +9,7 @@ import {
   type PromptProgress,
   type PromptStep,
   type QueryDiagnostic,
-  type ReadingView,
 } from "@matters/core";
-import { readingWaitText } from "./agentText.ts";
 
 /** Why a prompt does nothing now (rule 11), or null while it can be read. */
 export type PromptOff = "off" | "noConsent";
@@ -177,32 +175,6 @@ function withWork(text: string, p: PromptProgressShown, now: number): string {
   return parts.filter((x) => x !== "").join(" · ");
 }
 
-/** How far a view is read in the background: `Reading 240 of 754 in the background…`. */
-export function backgroundText(p: BackgroundShown, now: number): string {
-  const v = p.view;
-  const head =
-    v === undefined || v.total <= 0
-      ? p.total > 0
-        ? `Reading ${num(Math.min(p.done, p.total))} of ${num(p.total)} in the background…`
-        : "Reading in the background…"
-      : `Reading ${num(Math.min(v.read + p.done, v.total))} of ${num(v.total)} in the background…`;
-  return withWork(head, p, now);
-}
-
-/** What a saved view's line adds when nothing reads it: why it waits, or what is left. */
-export function viewWaitText(view: ReadingView, runtime: string, now: number): string {
-  if (view.state === "waiting" && view.wait !== undefined) {
-    return `${readingWaitText(view.wait, runtime, now)}.`;
-  }
-  if (view.state === "left") return leftText(view.left ?? view.toRead);
-  return "";
-}
-
-/** Threads sent twice that came back with nothing: said, not passed off as being read. */
-export function leftText(n: number): string {
-  return `${n === 1 ? "It was" : "They were"} sent twice and came back with nothing; ${n === 1 ? "it is" : "they are"} read again when ${n === 1 ? "it changes" : "they change"}.`;
-}
-
 /** The one quiet line under the bar while the query holds a prompt (rules 4 and 9). */
 export type PromptLine =
   | { readonly kind: "searching"; readonly text: string; readonly stopping: boolean }
@@ -210,11 +182,7 @@ export type PromptLine =
       readonly kind: "reading";
       readonly text: string;
       readonly stopping: boolean;
-      /** A turn on this Mac is slow: what would be faster, in words only. */
-      readonly hint?: string;
     }
-  /** A saved view is read in the background (ADR 0117, rule 3a): no Stop, it is no run of ours. */
-  | { readonly kind: "background"; readonly text: string; readonly hint?: string }
   /** Not searched yet with these mail filters: the whole line is the `↵` that searches. */
   | { readonly kind: "ready"; readonly text: string }
   /** The search found more than `PROMPT_ASK_ABOVE` and nothing is read: `↵` reads them all. */
@@ -301,12 +269,6 @@ export function promptLine(state: {
   readonly progress: PromptProgressShown | null;
   readonly stopping: boolean;
   readonly outcome: PromptOutcome | null;
-  /** The text is a saved view's: what is left is read on in the background (ADR 0117, rule 3). */
-  readonly view?: boolean;
-  /** This prompt read in the background now, as its events tell it (rule 3a). */
-  readonly background?: BackgroundShown | null;
-  /** The saved view in the status of the reading, and the runtime that reads. */
-  readonly reading?: { readonly view: ReadingView; readonly runtime: string } | null;
   /** The time the line is drawn at: what is out ticks with it. */
   readonly now?: number;
 }): PromptLine | null {
@@ -330,7 +292,6 @@ export function promptLine(state: {
         stopping,
       };
     }
-    const hint = stopping ? undefined : slowHint(progress, now);
     return {
       kind: "reading",
       text: stopping
@@ -347,15 +308,6 @@ export function promptLine(state: {
             now,
           ),
       stopping,
-      ...(hint === undefined ? {} : { hint }),
-    };
-  }
-  if (state.background != null && outcome === null) {
-    const hint = slowHint(state.background, now);
-    return {
-      kind: "background",
-      text: backgroundText(state.background, now),
-      ...(hint === undefined ? {} : { hint }),
     };
   }
   if (outcome?.problem !== undefined) {
@@ -382,21 +334,14 @@ export function promptLine(state: {
       whole: count.whole === true,
     };
   }
-  const r = state.view === true ? state.reading : null;
-  if (r?.view.state === "reading") {
-    // The status says a pass reads it, and its first event is on its way.
-    return { kind: "background", text: "Reading in the background…" };
-  }
-  // A saved view says why nothing reads what is left (ADR 0117, rule 3a), on the line itself.
-  const why = r == null ? "" : viewWaitText(r.view, r.runtime, now);
-  if (asksToRead(count)) {
-    const found = foundText(todo);
-    return { kind: "ask", text: why === "" ? found : `${found} ${why}`, key: READ_ALL };
-  }
+  // What the reading in the background does for a saved view is said in the foot row of the
+  // list (ADR 0117, rule 3a), not here: this line keeps one row and the same words while the
+  // background reads, so the list under it does not move.
+  if (asksToRead(count)) return { kind: "ask", text: foundText(todo), key: READ_ALL };
   const read = count.read > 0 ? `, ${num(count.read)} read already` : "";
   const text =
     count.limit !== undefined
       ? toFindText(count.limit, count.fits, todo)
       : `${threads(todo)} to read${read}.`;
-  return { kind: "count", text: why === "" ? text : `${text} ${why}` };
+  return { kind: "count", text };
 }

@@ -13,6 +13,7 @@ import {
   readingSettingsText,
   readingStateText,
 } from "./agentText.ts";
+import { inFlightText, paceText, slowHint } from "./promptView.ts";
 import { createTicker, type ReadingStore } from "./reading.ts";
 
 export function ReadingFootSegment(props: {
@@ -92,8 +93,23 @@ export function ReadingFootSegment(props: {
     const l = live();
     return (l?.view?.id === v.viewId && !l.finished) || v.state === "reading";
   };
-  const stateOf = (v: ReadingView) =>
-    readsNow(v) ? "Reading now" : readingStateText(v, reading.status()?.runtime ?? "", now());
+  /** What is out to the model and the pace, for the view being read: said here, in the list. */
+  const stateOf = (v: ReadingView) => {
+    if (!readsNow(v)) return readingStateText(v, reading.status()?.runtime ?? "", now());
+    const l = live();
+    if (l === null || l.view?.id !== v.viewId) return "Reading now";
+    return [
+      "Reading now",
+      inFlightText(l.inFlight, l.runtime, now()),
+      paceText(l.answered, l.done, l.total, now()),
+    ]
+      .filter((x) => x !== "")
+      .join(" · ");
+  };
+  const slowOf = (v: ReadingView) => {
+    const l = live();
+    return l !== null && readsNow(v) ? slowHint(l, now()) : undefined;
+  };
 
   return (
     <div ref={root} class="flex min-w-0 max-w-[60%] shrink" data-reading-foot>
@@ -184,6 +200,13 @@ export function ReadingFootSegment(props: {
                 >
                   {stateOf(v)}
                 </span>
+                <Show when={slowOf(v)}>
+                  {(hint) => (
+                    <span class="text-[11.5px] text-secondary" data-reading-slow>
+                      {hint()}
+                    </span>
+                  )}
+                </Show>
               </button>
             )}
           </For>

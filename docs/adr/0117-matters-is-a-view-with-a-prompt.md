@@ -97,12 +97,16 @@ notifications. Those are what a view has to gain before the tab can go.
      `Continue reading`. A row opens its view. Escape closes it and the focus goes back.
    - A view's tab shows the ring in place of its mark while it is read, by a run or in the
      background, and a still dot while it waits.
-   - A saved view's line says the same by itself: `Reading 240 of 754 in the background…`, or
-     what is left and why it waits. A run the person started says how many threads are out, to
-     which runtime and for how long (`10 sent to Ollama, 1 min 20 s`), the pace once two turns
-     answered (`about 4 min left`), what it waits for when it is queued (the turns the
-     background sent, the runtime's check), and, when a turn on this Mac is out for two
-     minutes, that a smaller model for understanding mail would be faster.
+   - The line under the bar does not say it. It keeps one row of one height and the same
+     words while the background reads (`462 threads to read, 292 read already.` with `↵ to
+     read`), so the list under it never moves. A run the person started shows there, with
+     Stop: how far, how many threads are out, to which runtime and for how long (`10 sent to
+     Ollama, 1 min 20 s`), the pace once two turns answered, and what it waits for when it is
+     queued. Long words are cut, not wrapped. (At first the line also showed the background's
+     state and wrapped; the list jumped as it changed, and the foot row already said it.)
+   - What is out, the pace, and a hint when a turn on this Mac is out for two minutes (a
+     smaller model for understanding mail would be faster) are in the list the segment opens,
+     under the view being read.
    - Settings › Agents says the same line beside `Pause reading`.
    - Why it waits is what the gates said: the person's pause, the plan's gate at the priority
      it was refused at with the window and its time, a limit the runtime named, the runtime's

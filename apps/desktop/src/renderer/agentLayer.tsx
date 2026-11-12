@@ -172,7 +172,9 @@ export function QuestionFrame(props: {
           {props.work.missing}
         </p>
         <Show when={props.work.directions.length > 0}>
-          <fieldset class="m-0 mt-3 flex flex-col gap-0.5 border-0 p-0">
+          {/* A fieldset is as wide as its longest line unless told otherwise: `min-w-0` keeps it
+              inside the card, and a long way forward wraps instead of running out of it. */}
+          <fieldset class="m-0 mt-3 flex min-w-0 flex-col gap-0.5 border-0 p-0">
             <legend class="sr-only">Ways forward</legend>
             <For each={props.work.directions}>
               {(text, i) => (
@@ -180,12 +182,12 @@ export function QuestionFrame(props: {
                   type="button"
                   data-direction={i() + 1}
                   aria-pressed={props.direction === text}
-                  class="flex h-[32px] w-full cursor-default items-center gap-2 rounded-[8px] px-3 text-left hover:bg-fill"
+                  class="flex min-h-[32px] w-full min-w-0 cursor-default items-start gap-2 rounded-[8px] px-3 py-[6px] text-left hover:bg-fill"
                   classList={{ "bg-selected font-medium": props.direction === text }}
                   onClick={() => props.onChoose(text)}
                 >
-                  <span class="min-w-0 flex-1 truncate">{text}</span>
-                  <kbd class="rounded-[4px] bg-fill px-1.5 font-sans text-[11px] font-normal text-secondary">
+                  <span class="min-w-0 flex-1 [overflow-wrap:anywhere]">{text}</span>
+                  <kbd class="mt-px shrink-0 rounded-[4px] bg-fill px-1.5 font-sans text-[11px] font-normal text-secondary">
                     {i() + 1}
                   </kbd>
                 </button>

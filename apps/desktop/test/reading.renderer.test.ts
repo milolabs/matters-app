@@ -16,11 +16,11 @@ import {
 import {
   elapsedText,
   inFlightText,
-  leftText,
   paceText,
   promptLine,
   SLOW_HERE,
   SLOW_TURN_MS,
+  slowHint,
   WAITS_FOR_BACKGROUND,
 } from "../src/renderer/promptView.ts";
 import { createReading } from "../src/renderer/reading.ts";
@@ -229,8 +229,11 @@ describe("what is in flight, on the line (rule 3a)", () => {
       text: "Reading 0 of 462 threads… · 10 sent to Ollama, 1 min 20 s",
       stopping: false,
     });
-    expect(line(NOW - SLOW_TURN_MS)).toMatchObject({ hint: SLOW_HERE });
-    expect(line(NOW - SLOW_TURN_MS, false)).not.toHaveProperty("hint");
+    // The hint of a slow turn is not on the line, which keeps one row: the foot row's list has it.
+    expect(line(NOW - SLOW_TURN_MS)).not.toHaveProperty("hint");
+    const out = { threads: 10, sinceMs: NOW - SLOW_TURN_MS };
+    expect(slowHint({ inFlight: out, local: true }, NOW)).toBe(SLOW_HERE);
+    expect(slowHint({ inFlight: out }, NOW)).toBeUndefined();
   });
 
   it("a run that waits says what for, not a count that does not move", () => {
@@ -246,72 +249,28 @@ describe("what is in flight, on the line (rule 3a)", () => {
     expect(waiting("gate")).toBe("Checking Codex…");
   });
 
-  it("a saved view read in the background says so by itself, how far, with what is out", () => {
+  it("a saved view read in the background keeps its line: the foot row says how far", () => {
     const l = promptLine({
       count: { ...count, read: 240, toRead: 514, found: 754 },
       progress: null,
       stopping: false,
       outcome: null,
-      view: true,
-      background: {
-        phase: "reading",
-        done: 0,
-        total: 200,
-        view: { id: "v1", name: "Needs you", read: 240, total: 754 },
-        inFlight: { threads: 10, sinceMs: NOW - 5000 },
-        runtime: "Codex",
-      },
       now: NOW,
     });
-    expect(l).toEqual({
-      kind: "background",
-      text: "Reading 240 of 754 in the background… · 10 sent to Codex, 5 s",
-    });
+    expect(l).toEqual({ kind: "count", text: "514 threads to read, 240 read already." });
   });
 
-  it("a saved view nothing reads says why on its line, in full", () => {
-    const base = {
+  it("a saved view nothing reads keeps its line too: the reason is in the foot row", () => {
+    const l = promptLine({
       count: { ...count, read: 292, toRead: 462, found: 754 },
       progress: null,
       stopping: false,
       outcome: null,
-      view: true,
       now: NOW,
-    };
-    expect(
-      promptLine({
-        ...base,
-        reading: { view: view({ wait: { kind: "pausedByPerson" } }), runtime: "Codex" },
-      }),
-    ).toEqual({ kind: "count", text: "462 threads to read, 292 read already. Reading paused." });
-    expect(
-      promptLine({
-        ...base,
-        reading: {
-          view: view({ wait: { kind: "plan", reason: "sessionLimit", untilMs: NOW + 3_600_000 } }),
-          runtime: "Codex",
-        },
-      })?.text,
-    ).toBe(
-      `462 threads to read, 292 read already. Waits for room in Codex's session until ${resetText(NOW + 3_600_000, NOW)}.`,
-    );
-    expect(
-      promptLine({
-        ...base,
-        reading: { view: view({ state: "left", left: 462 }), runtime: "Codex" },
-      })?.text,
-    ).toBe(`462 threads to read, 292 read already. ${leftText(462)}`);
-    // Not a saved view, or its state not known yet: no claim about the background.
-    expect(promptLine({ ...base, view: false })?.text).toBe(
-      "462 threads to read, 292 read already.",
-    );
-    expect(promptLine({ ...base, reading: null })?.text).toBe(
-      "462 threads to read, 292 read already.",
-    );
+    });
+    expect(l).toEqual({ kind: "count", text: "462 threads to read, 292 read already." });
   });
-});
 
-describe("the store of the reading (rule 3a)", () => {
   it("reads the status on a push after a quiet moment, keeps the pass that reads, and reads afresh on asking", async () => {
     const listeners = new Set<(e: BackendEvent) => void>();
     const asked: boolean[] = [];
@@ -360,7 +319,7 @@ describe("the store of the reading (rule 3a)", () => {
 });
 
 describe("a saved view above the line (rule 3a)", () => {
-  it("says why the background does not read it, beside the question", () => {
+  it("asks above the line with the count alone: the reason is in the foot row", () => {
     const l = promptLine({
       count: {
         ai: "on",
@@ -374,16 +333,11 @@ describe("a saved view above the line (rule 3a)", () => {
       progress: null,
       stopping: false,
       outcome: null,
-      view: true,
-      reading: {
-        view: view({ read: 0, toRead: 1692, wait: { kind: "pausedByPerson" } }),
-        runtime: "Codex",
-      },
       now: NOW,
     });
     expect(l).toEqual({
       kind: "ask",
-      text: "Found 1,692 threads. Reading paused.",
+      text: "Found 1,692 threads.",
       key: "↵ to read them all.",
     });
   });
