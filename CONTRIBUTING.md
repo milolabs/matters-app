@@ -49,7 +49,21 @@ image can still be made:
 MATTERS_SIGN_IDENTITY=- bun run release:macos
 ```
 
-CI does not start the app. Do that yourself when a change touches the app:
+A second job starts the app on Linux and drives it with Playwright (ADR 0129): the first start
+with its setup screen against a throw-away IMAP server in Docker, sending, reading and archiving,
+and the main screens on the demo mailbox. Each test leaves a video, a trace and a screenshot; the
+job keeps them for 14 days as the `e2e-report` artifact. To run it yourself:
+
+```sh
+bun run test:e2e           # builds the app, starts the IMAP server in Docker, runs every spec
+bun run test:e2e:demo      # builds the app and runs the demo-mailbox specs; no Docker
+```
+
+Both write to `.e2e/`; `.e2e/report/index.html` is the report. The specs are in
+`apps/desktop/e2e` and are named `*.e2e.ts`, so `bun run test` never loads them.
+
+The budgets of the launch and of the screens are not in CI. Check them yourself when a change
+touches the app:
 
 ```sh
 bun run smoke:desktop      # builds the app and starts it

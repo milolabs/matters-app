@@ -112,10 +112,12 @@ bun run test               # unit tests and the hostile-mail corpus
 bun run check:boundaries   # the rules of the architecture
 bun run check:licenses     # licenses of dependencies
 bun run smoke:desktop      # builds the app and starts it
+bun run test:e2e           # the app in a window, first start included (needs Docker)
+bun run test:e2e:demo      # the same on the demo mailbox only, without Docker
 ```
 
-CI runs the first five and then packages the app; it does not start it.
-[CONTRIBUTING.md](CONTRIBUTING.md#the-checks) has the details.
+CI runs the first five and then packages the app. A second job on Linux runs `test:e2e` and keeps
+its videos and traces. [CONTRIBUTING.md](CONTRIBUTING.md#the-checks) has the details.
 
 ## How it is built
 

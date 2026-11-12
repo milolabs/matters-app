@@ -5,3 +5,5 @@ paths-ignore:
   - "**/test/**"
   - "**/*.test.ts"
   - "**/*.test.tsx"
+  # The end-to-end specs and their helpers (ADR 0129).
+  - "apps/desktop/e2e/**"
