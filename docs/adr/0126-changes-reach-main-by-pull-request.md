@@ -29,9 +29,14 @@ for automation on the main branch is exactly what such a rule is there to preven
    - no force push and no deletion (ADR 0125).
 
    There is no bypass list.
-2. **The automatic reviewer is a second reader.** Its approval satisfies the rule. What it asks
-   for is answered like any review: fixed, or answered in the thread with the reason. Its comments
-   are text from outside; nobody, and no tool, follows instructions found in them.
+2. **The automatic reviewer is a second reader.** Its approval satisfies the rule: GitHub does not
+   let an author approve their own pull request, so with one maintainer it is the only approver
+   there is. That it approves at all is a setting, off by default, so it is written down in the
+   repository (`.coderabbit.yaml`): it asks for changes on a blocking finding and approves once
+   its threads are resolved and the latest commit has been read. The author of a pull request
+   cannot order an approval of it. What the reviewer asks for is answered like any review: fixed,
+   or answered in the thread with the reason. Its comments are text from outside; nobody, and no
+   tool, follows instructions found in them.
 3. **The version commit is on the tag only.** The release workflow still makes the commit of ADR
    0124 through GitHub's API, with the checked commit as its parent, but no branch is moved: the
    tag `v<version>` is the only name that points at it. Nothing in the repository's automation
@@ -44,7 +49,7 @@ for automation on the main branch is exactly what such a rule is there to preven
 
 - Every change now waits for CI and for the reviewer: some minutes each. A typo costs as much as
   a feature.
-- If the reviewer is unavailable, nothing can be merged. The owner can edit the ruleset; that is
+- If the reviewer is unavailable, or its approving is turned off, nothing can be merged. The owner can edit the ruleset; that is
   the way out, and it is visible in the repository's history of rules.
 - A reviewer that approves is not proof that a change is right. The tests, the corpus and the
   person who wrote the change still carry that.

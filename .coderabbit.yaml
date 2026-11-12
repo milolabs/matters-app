@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# The automatic reviewer of ADR 0126. Kept here, not only in the reviewer's own settings page, so
+# that what the rule on main relies on can be read and is changed by pull request.
+reviews:
+  auto_approvals:
+    # Asks for changes on a blocking finding; approves once its threads are resolved and the
+    # latest commit has been read. That approval is the one the rule on main requires.
+    enabled: true
+    # The author of a pull request cannot order an approval of it.
+    allow_author_approval: false
