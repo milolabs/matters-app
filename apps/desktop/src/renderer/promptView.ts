@@ -32,7 +32,7 @@ export function promptOffText(why: PromptOff, runtime?: string): string {
   }
   const who =
     runtime === undefined ? "the assistant that reads mail" : `${runtime}, which reads mail`;
-  return `No account is shared with ${who}, so the prompt cannot run and nothing is listed. Tick it under Which account goes where in Settings › Agents.`;
+  return `No account is shared with ${who}, so the prompt cannot run and nothing is listed. Allow it in Settings › Agents.`;
 }
 
 /** `parsed` with the `prompt-off` diagnostic put in the app's words (rule 11). */

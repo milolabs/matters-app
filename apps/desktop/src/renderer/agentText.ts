@@ -321,7 +321,7 @@ export function kindWaits(status: AgentStatus, kind: AgentWorkKind): string {
     return `Waits: ${name} is ${statusWords(runtime).toLowerCase()}.`;
   }
   if (status.settings.enabled && !status.consents.some((c) => c.runtimeId === id)) {
-    return `Waits: no account is agreed to ${name}. Tick ${name} under Which account goes where.`;
+    return `Waits: you have not let ${name} read any account yet.`;
   }
   return "";
 }

@@ -562,7 +562,7 @@ describe("a runtime for each kind of work (ADR 0121)", () => {
     expect(kindWaits(spread(), "understand")).toBe("");
     const none = spread({ consents: [] });
     expect(kindWaits(none, "write")).toBe(
-      "Waits: no account is agreed to Claude Code. Tick Claude Code under Which account goes where.",
+      "Waits: you have not let Claude Code read any account yet.",
     );
   });
 

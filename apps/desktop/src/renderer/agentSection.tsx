@@ -128,6 +128,9 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
     readonly accounts: readonly AccountInfo[];
   } | null>(null);
 
+  // A runtime in use that no account lets read its mail: the person is asked here, in one place.
+  const [allowing, setAllowing] = createSignal<string | null>(null);
+
   async function look() {
     setLooking(true);
     setFailure("");
@@ -307,6 +310,50 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                       return m?.kinds.includes(kind) ? m.runtimeId : undefined;
                     }}
                   />
+                  <Show when={enabled() && moving() === null}>
+                    <For
+                      each={inUse().filter(
+                        (id) => canAgree(id) && !s().consents.some((c) => c.runtimeId === id),
+                      )}
+                    >
+                      {(id) => (
+                        <div
+                          class="mt-3 rounded-[10px] border border-hairline p-3.5"
+                          data-allow-runtime={id}
+                        >
+                          <Show
+                            when={allowing() === id}
+                            fallback={
+                              <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+                                <p class="min-w-0 flex-1 text-[13px]">
+                                  {nameOf(id)} is chosen above, but you have not let it read any
+                                  account yet. Until you do, that work waits.
+                                </p>
+                                <button type="button" class={pill} onClick={() => setAllowing(id)}>
+                                  Let {nameOf(id)} read mail…
+                                </button>
+                              </div>
+                            }
+                          >
+                            <ConsentQuestion
+                              backend={props.backend}
+                              status={s()}
+                              accounts={props.accounts.accounts()}
+                              runtimeIds={[id]}
+                              startLabel={`Let ${nameOf(id)} read mail`}
+                              declineLabel="Not now"
+                              onStatus={setStatus}
+                              onStarted={(next) => {
+                                setStatus(next);
+                                setAllowing(null);
+                              }}
+                              onDeclined={() => setAllowing(null)}
+                            />
+                          </Show>
+                        </div>
+                      )}
+                    </For>
+                  </Show>
                   <Show when={moving()}>
                     {(m) => (
                       <div
