@@ -9,6 +9,7 @@
   "dependencies": {
     "@matters/adapter-autoconfig": "workspace:*",
     "@matters/adapter-claude-code": "workspace:*",
+    "@matters/adapter-codex": "workspace:*",
     "@matters/adapter-compose": "workspace:*",
     "@matters/adapter-files": "workspace:*",
     "@matters/adapter-filetext": "workspace:*",

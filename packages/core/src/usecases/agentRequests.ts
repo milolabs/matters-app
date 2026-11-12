@@ -912,9 +912,13 @@ export const MAX_PARALLEL_TURNS = 3;
  * which is what bounds its work (ADR 0119, rule 7); else what it says, at most `MAX_PARALLEL_TURNS`.
  */
 export function turnsAtOnce(
-  runtime: { readonly noPlan?: boolean; readonly turnsAtOnce?: number } | null | undefined,
+  runtime:
+    | { readonly noPlan?: boolean; readonly noWindows?: boolean; readonly turnsAtOnce?: number }
+    | null
+    | undefined,
 ): number {
-  if (runtime?.noPlan === true) return 1;
+  // No windows to watch: one turn at a time, so the first refusal stops the rest (ADR 0120, rule 9).
+  if (runtime?.noPlan === true || runtime?.noWindows === true) return 1;
   const asked = runtime?.turnsAtOnce;
   if (asked === undefined || !Number.isFinite(asked)) return MAX_PARALLEL_TURNS;
   return Math.max(1, Math.min(MAX_PARALLEL_TURNS, Math.floor(asked)));

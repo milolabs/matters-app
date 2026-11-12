@@ -293,6 +293,12 @@ export type TalkStepKind = "search" | "follow" | "read" | "note" | "count" | "lo
 const NOT_READY = "The assistant is not ready. Check it in Settings, then try again.";
 const NO_CONSENT = "This account has not been agreed to for the assistant.";
 const USED_UP = "Your plan's allowance is used up for now. Try again when it resets.";
+
+/** The plan each runtime runs on, as the person knows it, for the sentences that name it. */
+const PLAN_NAMES: Readonly<Record<string, string>> = {
+  "claude-code": "Claude plan",
+  codex: "ChatGPT plan",
+};
 const TALK_FAILED = "The assistant could not answer this. Try again.";
 /** The model is asked to name a talk at most this often in a run of the app (ADR 0086, rule 7). */
 const MAX_TITLE_TRIES = 2;
@@ -401,6 +407,11 @@ export class AgentService implements AgentApi {
   private stopped = false;
   /** The person paused the reading in the background (ADR 0117, rule 3); mirrors the setting. */
   private readingPaused = false;
+  /**
+   * The plan refused a turn in the background on a runtime that reports no windows (ADR 0120,
+   * rule 9): the reading is paused until the person continues it. `untilMs` when it said so.
+   */
+  private limitHeld: { untilMs?: number } | null = null;
   /** The test and the inspection must not run twice at once. */
   private testing: Promise<AgentRuntimeInfo> | null = null;
 
@@ -728,7 +739,7 @@ export class AgentService implements AgentApi {
           status: "signedOut",
           problem:
             error.code === "notPlan"
-              ? "The assistant is not using your Claude plan."
+              ? `The assistant is not using your ${PLAN_NAMES[runtime.id] ?? "plan"}.`
               : "Not signed in. Sign in with the assistant's own program, then check again.",
         };
         return this.info;
@@ -1011,10 +1022,20 @@ export class AgentService implements AgentApi {
       });
       return;
     }
+    // With no windows to watch, the first refusal for the limit stops the background (rule 9).
+    const noWindows = this.info?.noWindows === true;
+    this.limitHeld = null;
     try {
       await this.prompts.readInBackground({
         recentDays: RECENT_DAYS,
         stopWhen: () => this.readingPaused || this.stopped,
+        ...(noWindows
+          ? {
+              onLimit: (untilMs: number | undefined) => {
+                this.limitHeld = untilMs === undefined ? {} : { untilMs };
+              },
+            }
+          : {}),
       });
     } catch (error) {
       this.deps.onError?.(
@@ -1022,6 +1043,19 @@ export class AgentService implements AgentApi {
       );
     }
     if (this.stopped || this.abort.signal.aborted) return;
+    // Set while the pass ran, by the callback above.
+    const held = this.limitHeld as { untilMs?: number } | null;
+    if (held !== null && !this.readingPaused) {
+      // Paused as the person pauses it, so it holds until they continue it, across restarts.
+      this.readingPaused = true;
+      await this.deps.settings.update({ readingPaused: true });
+      this.setProgress({
+        state: "paused",
+        reason: "limit",
+        ...(held.untilMs === undefined ? {} : { untilMs: held.untilMs }),
+      });
+      return;
+    }
     this.setProgress(
       this.readingPaused ? { state: "paused", reason: "pausedByPerson" } : { state: "idle" },
     );
@@ -1250,7 +1284,10 @@ export class AgentService implements AgentApi {
     const { enabled } = await this.deps.settings.get();
     if (enabled) {
       // Not debounced: the person pressed Continue and expects it to move.
-      if (this.progress.state === "paused" && this.progress.reason === "pausedByPerson") {
+      if (
+        this.progress.state === "paused" &&
+        (this.progress.reason === "pausedByPerson" || this.progress.reason === "limit")
+      ) {
         this.setProgress({ state: "checking" });
       }
       this.runPass();

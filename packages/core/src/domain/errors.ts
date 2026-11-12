@@ -122,10 +122,16 @@ export type AgentRunErrorCode =
 
 export class AgentRunError extends Error {
   readonly code: AgentRunErrorCode;
-  constructor(code: AgentRunErrorCode, message: string) {
+  /**
+   * With `limit`: when the runtime said the plan takes turns again, when it said so (ADR 0120,
+   * rule 9). Absent: not known.
+   */
+  readonly untilMs?: number;
+  constructor(code: AgentRunErrorCode, message: string, untilMs?: number) {
     super(message);
     this.name = "AgentRunError";
     this.code = code;
+    if (untilMs !== undefined && Number.isFinite(untilMs)) this.untilMs = untilMs;
   }
 }
 

@@ -124,6 +124,10 @@ export function planButton(status: AgentStatus, now: number): PlanButton | null 
     return { text: `Paused${until}${why ? " · plan limit" : pausedWhy(p.reason)}`, late: true };
   }
   if (hasNoPlan(status.runtime)) return null;
+  // A plan whose windows the runtime does not report (ADR 0120, rule 9): nothing to count down.
+  if (status.runtime?.noWindows === true) {
+    return { text: `${name} · limits not reported`, late: false };
+  }
   const left = percentLeft(status.settings.limits?.session, now);
   if (left === undefined) return { text: `${name} · limits not known yet`, late: false };
   return { text: `${name} ${left}% left`, late: left < LOW_LEFT_PERCENT };
@@ -193,10 +197,81 @@ export function hasNoPlan(runtime: Pick<AgentRuntimeInfo, "noPlan"> | null | und
   return runtime?.noPlan === true;
 }
 
-/** The program's shorter name in a sentence that says where mail goes: `Claude`. */
-export function vendorName(runtime: AgentRuntimeInfo | null): string {
-  if (runtime?.id === "claude-code") return "Claude";
-  return runtime?.name ?? "the assistant";
+/**
+ * No windows show for the runtime: it has no plan (ADR 0119, rule 7), or it does not report its
+ * plan's windows (ADR 0120, rule 9). Windows, the share of the week and the background limit hide.
+ */
+export function hasNoWindows(
+  runtime: Pick<AgentRuntimeInfo, "noPlan" | "noWindows"> | null | undefined,
+): boolean {
+  return runtime?.noPlan === true || runtime?.noWindows === true;
+}
+
+/** What is said of a runtime on a plan: where mail goes, the plan, whose privacy settings. */
+interface RuntimeWords {
+  /** Who mail goes to: `Claude`, `OpenAI`. */
+  readonly vendor: string;
+  /** The plan it goes under, when the vendor's name does not say it already. */
+  readonly plan?: string;
+  /** Whose privacy settings apply. */
+  readonly privacy: string;
+  /** What to run in Terminal to sign in (ADR 0051, rule 2). */
+  readonly signIn: string;
+}
+
+const RUNTIME_WORDS: Readonly<Record<string, RuntimeWords>> = {
+  "claude-code": { vendor: "Claude", privacy: "Claude", signIn: "claude auth login" },
+  codex: {
+    vendor: "OpenAI",
+    plan: "your ChatGPT plan",
+    privacy: "ChatGPT",
+    signIn: "codex login",
+  },
+};
+
+/** Who mail goes to, in a sentence that says so: `Claude`, `OpenAI`. */
+export function vendorName(runtime: Pick<AgentRuntimeInfo, "id" | "name"> | null): string {
+  return RUNTIME_WORDS[runtime?.id ?? ""]?.vendor ?? runtime?.name ?? "the assistant";
+}
+
+/** The command to run in Terminal for a runtime that is signed out (ADR 0051, rule 2). */
+export function signInCommand(runtime: Pick<AgentRuntimeInfo, "id"> | null): string {
+  return RUNTIME_WORDS[runtime?.id ?? ""]?.signIn ?? SIGN_IN_COMMAND;
+}
+
+/**
+ * The consent question's line about where mail goes (ADR 0051, rule 6; ADR 0120, rule 10): to the
+ * vendor, under the person's plan, only when asked and for views with a prompt.
+ */
+export function consentText(runtime: AgentRuntimeInfo | null): string {
+  if (runtime?.onThisMachine === true) {
+    return `${vendorName(runtime)} reads mail only when you ask about it, and for views with a prompt, such as Needs you, which read new mail as it comes. It runs on this Mac: your mail stays on this Mac.`;
+  }
+  const words = RUNTIME_WORDS[runtime?.id ?? ""];
+  const plan = words?.plan === undefined ? "" : `, under ${words.plan},`;
+  const privacy = words?.privacy ?? vendorName(runtime);
+  return `Mail goes to ${vendorName(runtime)}${plan} only when you ask about it, and for views with a prompt, such as Needs you, which read new mail as it comes. Your ${privacy} privacy settings apply to what is sent.`;
+}
+
+/** What the plan's popover says for a runtime that reports no windows (ADR 0120, rule 9). */
+export function noWindowsText(runtime: Pick<AgentRuntimeInfo, "name"> | null): string {
+  return `${runtime?.name ?? "The assistant"} does not report your plan's limits. When the plan says no, reading in the background stops until you continue it.`;
+}
+
+/**
+ * What goes whole of a file with no text, said for the runtime chosen (ADR 0090; ADR 0120, rule
+ * 7). Empty when nothing does.
+ */
+export function wholeFilesText(
+  runtime: Pick<AgentRuntimeInfo, "id" | "name" | "modelFiles"> | null,
+): string {
+  if (runtime === null) return "";
+  if (runtime.id === "claude-code") {
+    return "With Claude Code, a scan or a photo that has no text goes whole, its pages as they look, up to three a question.";
+  }
+  const kinds = Object.values(runtime.modelFiles ?? {}).flat();
+  if (!kinds.some((k) => k.startsWith("image/"))) return "";
+  return `With ${runtime.name}, a photo that has no text goes whole, up to three a question; a scan in a PDF does not.`;
 }
 
 /** "Matters this week: about 4% of Claude". The share is of the plan's week, as counted by us. */

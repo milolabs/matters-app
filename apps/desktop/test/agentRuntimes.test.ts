@@ -105,8 +105,17 @@ async function build() {
     turnsAtOnce: 1,
     modelEfforts: { "m-small": [], "m-large": ["low", "high"] },
   });
+  const codex = new Runtime("codex", "Codex", {
+    plan: "ChatGPT",
+    models: ["sol", "luna"],
+    defaultModel: "sol",
+    defaultModels: { understand: "luna", titles: "luna" },
+    modelEfforts: { sol: ["low", "high"], luna: ["low"] },
+    noWindows: true,
+    turnsAtOnce: 1,
+  });
   const service = new AgentService({
-    runtimes: [plan, local],
+    runtimes: [plan, local, codex],
     store: storage.store,
     index: storage.index,
     bodies: storage.bodies,
@@ -142,7 +151,7 @@ async function build() {
     await service.idle();
     await settle();
   };
-  return { service, settings, insights, plan, local, clock, pass };
+  return { service, settings, insights, plan, local, codex, clock, pass };
 }
 
 describe("runtimes are a list, and one is chosen (ADR 0119, rules 2 and 3)", () => {
@@ -153,10 +162,11 @@ describe("runtimes are a list, and one is chosen (ADR 0119, rules 2 and 3)", () 
     expect(first.runtimes).toEqual([
       { id: "plan", name: "Plan runtime", info: null },
       { id: "local", name: "Local", info: null },
+      { id: "codex", name: "Codex", info: null },
     ]);
     const looked = await h.service.inspect();
     expect(looked.runtime).toBeNull();
-    expect(looked.runtimes.map((r) => r.info?.status)).toEqual(["found", "found"]);
+    expect(looked.runtimes.map((r) => r.info?.status)).toEqual(["found", "found", "found"]);
     expect(looked.settings.runtimeId).toBeUndefined();
     await h.service.testRuntime();
     expect(h.plan.calls).toEqual([]);
@@ -363,5 +373,71 @@ describe("the test is for a model (ADR 0119)", () => {
     await h.service.chooseRuntime("plan");
     expect((await h.service.status()).runtime?.status).toBe("ready");
     expect(h.plan.calls).toEqual([]);
+  });
+});
+
+describe("Codex is a runtime (ADR 0120)", () => {
+  it("needs its own consent, and only it runs once chosen", async () => {
+    const h = await build();
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+    await h.service.testRuntime();
+    await h.service.prepare("t1");
+    expect(h.plan.mail).toHaveLength(1);
+
+    const chosen = await h.service.chooseRuntime("codex");
+    // Agreeing for Claude Code agreed to nothing for Codex.
+    expect(chosen.consents).toEqual([]);
+    await h.pass();
+    expect((await h.service.status()).progress).toMatchObject({ state: "off", reason: "consent" });
+    await expect(h.service.prepare("t1")).rejects.toBeInstanceOf(AgentUnavailableError);
+    expect(h.codex.calls).toEqual([]);
+
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "codex" });
+    await h.service.testRuntime();
+    await h.service.prepare("t1");
+    expect(h.codex.mail).toHaveLength(1);
+    expect(h.plan.mail).toHaveLength(1);
+    expect(h.local.calls).toEqual([]);
+    expect((await h.settings.listConsents()).map((c) => c.runtimeId).sort()).toEqual([
+      "codex",
+      "plan",
+    ]);
+  });
+
+  it("starts each kind of work on the model Codex suggests for it", async () => {
+    const h = await build();
+    const s = await h.service.chooseRuntime("codex");
+    expect(s.settings.models).toEqual({
+      understand: "luna",
+      write: "sol",
+      answer: "sol",
+      titles: "luna",
+    });
+  });
+
+  it("is not held back by windows it does not report, and records none (rule 9)", async () => {
+    const h = await build();
+    await h.settings.update({
+      limits: {
+        session: { usedPercent: 100, resetsAtMs: NOW + DAY },
+        week: { usedPercent: 100, resetsAtMs: NOW + DAY },
+        usingOverage: true,
+        seenAtMs: NOW,
+      },
+    });
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "codex" });
+    await h.service.testRuntime();
+    await h.service.prepare("t1");
+    expect(h.codex.mail).toHaveLength(1);
+  });
+
+  it("says the person's ChatGPT plan when a turn would run off it", async () => {
+    const h = await build();
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "codex" });
+    h.codex.run = async () => {
+      throw new AgentRunError("notPlan", "The turn would not run on a ChatGPT plan.");
+    };
+    const s = await h.service.testRuntime();
+    expect(s.runtime?.problem).toBe("The assistant is not using your ChatGPT plan.");
   });
 });

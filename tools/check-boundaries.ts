@@ -45,6 +45,14 @@ const rules: readonly Rule[] = [
     allowNode: true,
     checkManifest: true,
   },
+  // The person's own `codex` program, started as a child process for each turn (ADR 0120). Node
+  // only; it brings no package of its own.
+  {
+    pkg: "packages/adapter-codex",
+    allowed: ["@matters/core"],
+    allowNode: true,
+    checkManifest: true,
+  },
   // A model on this machine through the Ollama server on the loopback address (ADR 0119). Node's
   // own fetch only; it brings no package of its own.
   {
@@ -126,6 +134,7 @@ const rules: readonly Rule[] = [
       "@matters/testkit",
       "@matters/adapter-autoconfig",
       "@matters/adapter-claude-code",
+      "@matters/adapter-codex",
       "@matters/adapter-compose",
       "@matters/adapter-files",
       "@matters/adapter-filetext",

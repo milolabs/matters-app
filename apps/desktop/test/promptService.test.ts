@@ -1325,6 +1325,59 @@ describe("a view with a prompt reads in the background (ADR 0117)", () => {
   });
 });
 
+describe("a plan that reports no windows reads in the background (ADR 0120, rule 9)", () => {
+  it("runs one turn at a time, and stops at the first refusal for a limit until the person continues it", async () => {
+    const runtime = new Responder();
+    runtime.info = { ...runtime.info, plan: "ChatGPT", noWindows: true, turnsAtOnce: 1 };
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"], { dayOffset: 1 });
+    await h.addView("asks", PROMPT);
+    await h.ready();
+    await h.service.promptRun(PROMPT);
+    // Windows another runtime saw, all used up: they say nothing of this plan.
+    await h.settings.update({
+      limits: {
+        session: { usedPercent: 100, resetsAtMs: NOW + 6 * DAY },
+        week: { usedPercent: 100, resetsAtMs: NOW + 6 * DAY },
+        usingOverage: true,
+        seenAtMs: NOW,
+      },
+    });
+    for (let i = 0; i < 25; i++) {
+      await h.addMail(`o${String(i).padStart(2, "0")}`, ["Please decide by Friday"], {
+        dayOffset: 1,
+        from: `p${i}@example${i}.org`,
+      });
+    }
+    const answer = runtime.answer;
+    const until = NOW + 5 * DAY + 3_600_000;
+    let refuse = true;
+    runtime.answer = async (request, signal) => {
+      if (refuse) throw new AgentRunError("limit", "The plan's limit is reached.", until);
+      return answer(request, signal);
+    };
+    const before = runtime.of("verdicts").length;
+    await h.clock.advance(5 * DAY);
+    await h.pass();
+    // One turn went and was refused; nothing more was sent.
+    expect(runtime.of("verdicts").length - before).toBe(1);
+    const held = await h.service.status();
+    expect(held.progress).toEqual({ state: "paused", reason: "limit", untilMs: until });
+    expect(held.settings.readingPaused).toBe(true);
+    // New mail and the clock do not take the pause back.
+    h.service.kick();
+    await h.clock.advance(DAY);
+    await h.service.idle();
+    expect(runtime.of("verdicts").length - before).toBe(1);
+    // The person continues it: the reading goes on, one turn at a time.
+    refuse = false;
+    await h.service.resumeReading();
+    await h.service.idle();
+    expect(runtime.of("verdicts").length - before).toBeGreaterThan(1);
+    expect((await h.service.status()).progress.state).toBe("idle");
+  });
+});
+
 describe("a runtime with no plan reads in the background (ADR 0119, rule 7)", () => {
   it("passes the plan's gates, P3 included, runs one turn at a time, and records no limits", async () => {
     const runtime = new Responder();

@@ -127,3 +127,4 @@ Format: copy [`template.md`](template.md).
 | [0117](0117-matters-is-a-view-with-a-prompt.md) | Matters is a view with a prompt (supersedes 0052, 0075; amends 0063, 0071, 0078, 0079, 0116) | Accepted |
 | [0118](0118-effort-is-set-per-kind-of-work.md) | Effort is set per kind of work (amends 0051) | Accepted |
 | [0119](0119-a-runtime-on-this-machine.md) | A runtime on this machine (amends 0051, 0118) | Accepted |
+| [0120](0120-codex-is-a-runtime.md) | Codex is a runtime (amends 0051, 0090) | Accepted |

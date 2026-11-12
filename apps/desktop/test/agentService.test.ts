@@ -528,7 +528,8 @@ describe("AgentService: the runtime is tested before it gets any mail", () => {
     await h.pass();
     expect((await h.service.status()).runtime).toMatchObject({
       status: "signedOut",
-      problem: "The assistant is not using your Claude plan.",
+      // A runtime the app has no plan's name for says the plan plainly (ADR 0120).
+      problem: "The assistant is not using your plan.",
     });
     await h.pass();
     expect((await h.service.status()).progress).toMatchObject({

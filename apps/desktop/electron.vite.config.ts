@@ -8,6 +8,7 @@ const bundleWorkspace = {
   exclude: [
     "@matters/adapter-autoconfig",
     "@matters/adapter-claude-code",
+    "@matters/adapter-codex",
     "@matters/adapter-compose",
     "@matters/adapter-files",
     "@matters/adapter-filetext",

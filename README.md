@@ -28,7 +28,9 @@ is developed and tested on macOS.
   or on a model on your computer with Ollama, where mail never leaves it;
   Matters has no server of its own
   ([ADR 0051](docs/adr/0051-agents-on-the-users-own-plans.md),
-  [ADR 0119](docs/adr/0119-a-runtime-on-this-machine.md)). You choose,
+  [ADR 0119](docs/adr/0119-a-runtime-on-this-machine.md)). With a ChatGPT plan
+  it runs through Codex, each turn with its own tools off
+  ([ADR 0120](docs/adr/0120-codex-is-a-runtime.md)). You choose,
   per account, whether the agent may read it, and the app works without AI.
 - **Careful with hostile mail.** Remote content, tracking and active HTML are
   handled by rules that are tested against a corpus of made-up hostile
@@ -40,8 +42,9 @@ is developed and tested on macOS.
 - **Sign-in is by password only.** Gmail, iCloud, Yahoo and Fastmail work with
   an app password. Microsoft 365 and Outlook.com need browser sign-in (OAuth),
   which is not built yet, so they do not work.
-- **The agent connects to Claude Code and to Ollama only.** ChatGPT plans and
-  API keys are planned. With Ollama, what the agent can do with attachments
+- **The agent connects to Claude Code, Codex and Ollama only.** API keys are
+  planned. Codex does not report the plan's limits, so reading in the background
+  stops at the first refusal until you continue it. With Ollama, what the agent can do with attachments
   depends on the model: one that takes tools searches in a loop and reads the
   text of attached files, one that sees images gets images whole, and a scan
   in a PDF is not sent whole.

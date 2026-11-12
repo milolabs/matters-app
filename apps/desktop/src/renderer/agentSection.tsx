@@ -12,12 +12,13 @@ import {
   WhatDoesWhat,
 } from "./agentConnect.tsx";
 import {
-  hasNoPlan,
+  hasNoWindows,
   instructionScopeWords,
   ledgerEffort,
   loopOffered,
   ourShare,
   ruleText,
+  wholeFilesText,
 } from "./agentText.ts";
 import type { Backend } from "./client.ts";
 import { letterDate } from "./format.ts";
@@ -255,7 +256,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                   idPrefix="settings"
                   onWeekShare={(percent) => void change(props.backend.agentSetWeekShare(percent))}
                 />
-                <Show when={enabled() && !hasNoPlan(s().runtime)}>
+                <Show when={enabled() && !hasNoWindows(s().runtime)}>
                   <p class="mt-3 text-[12px] text-secondary">{ourShare(s())}</p>
                 </Show>
                 <Show when={enabled()}>
@@ -302,9 +303,8 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                       <span class="block text-[12px] text-secondary">
                         The agent searches, reads and searches again, and shows each step. It reads
                         whole threads, and the files attached to them too (PDF, Word and text files,
-                        up to five a question): their text goes to the assistant. With Claude Code,
-                        a scan or a photo that has no text goes whole, its pages as they look, up to
-                        three a question. It takes longer and uses more of your plan.
+                        up to five a question): their text goes to the assistant.{" "}
+                        {wholeFilesText(s().runtime)} It takes longer and uses more of your plan.
                       </span>
                     </span>
                   </label>

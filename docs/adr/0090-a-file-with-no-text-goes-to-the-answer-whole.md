@@ -4,6 +4,7 @@
 - Date: 2026-11-09
 - Amends: [0087](0087-the-agent-reads-attached-files.md) (rules 3, 5 and 9)
 - Builds on: [0043](0043-received-attachments.md) (the cache), [0084](0084-the-answer-reads-every-thread-found.md) (the thread's share)
+- Amended by: [0120](0120-codex-is-a-runtime.md) (rule 7: Codex takes images whole and no PDF)
 
 ## Context
 

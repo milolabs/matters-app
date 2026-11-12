@@ -9,13 +9,14 @@ import type {
 } from "@matters/core";
 import { createSignal, For, Index, type JSX, Show } from "solid-js";
 import {
+  consentText,
   effortOptions,
   effortShown,
   hasNoPlan,
+  hasNoWindows,
   modelName,
-  SIGN_IN_COMMAND,
+  signInCommand,
   statusWords,
-  vendorName,
   windowLine,
 } from "./agentText.ts";
 import type { Backend } from "./client.ts";
@@ -131,7 +132,7 @@ export function RuntimeCard(props: {
           </button>
         </Show>
       </div>
-      <Show when={(r().status === "ready" || r().status === "found") && !hasNoPlan(r())}>
+      <Show when={(r().status === "ready" || r().status === "found") && !hasNoWindows(r())}>
         <div class="flex flex-col gap-0.5 pl-[17px] text-[12px] text-secondary" data-windows>
           <For
             each={[
@@ -150,12 +151,24 @@ export function RuntimeCard(props: {
       </Show>
       <Show when={r().status === "signedOut"}>
         <div class="flex flex-col gap-2 pl-[17px] text-[12.5px] leading-[1.5] text-mid">
-          <p>
-            {r().name} is on this Mac but not signed in. Sign in with its own program, in Terminal.
-            This app never signs in for you and never sees your login.
-          </p>
+          <Show
+            when={r().problem}
+            fallback={
+              <p>
+                {r().name} is on this Mac but not signed in. Sign in with its own program, in
+                Terminal. This app never signs in for you and never sees your login.
+              </p>
+            }
+          >
+            {(problem) => (
+              <p data-runtime-problem>
+                <WithCode text={problem()} /> This app never signs in for you and never sees your
+                login.
+              </p>
+            )}
+          </Show>
           <div class="flex items-center gap-2">
-            <CopyCommand command={SIGN_IN_COMMAND} />
+            <CopyCommand command={signInCommand(r())} />
             <button type="button" class={pill} onClick={() => props.onLookAgain()}>
               Look again
             </button>
@@ -168,7 +181,7 @@ export function RuntimeCard(props: {
             {r().name} was not found on this Mac. Install it from its own documentation, sign in
             with{" "}
             <code class="rounded-[5px] bg-fill px-1.5 font-mono text-[12px] text-ink">
-              {SIGN_IN_COMMAND}
+              {signInCommand(r())}
             </code>
             , then look again.
           </p>
@@ -287,10 +300,7 @@ export function RuntimeChoice(props: {
 
 /** What is not connected yet, said plainly and not clickable. */
 export function NotYet() {
-  const items = [
-    { name: "Codex", detail: "OpenAI's program, on your ChatGPT plan." },
-    { name: "Others", detail: "API keys, your own endpoint, other agents." },
-  ];
+  const items = [{ name: "Others", detail: "API keys, your own endpoint, other agents." }];
   return (
     <div class="flex flex-col gap-2">
       <p class="text-[12px] font-semibold text-secondary">Not connected yet</p>
@@ -483,9 +493,10 @@ export function Limits(props: {
   idPrefix: string;
   onWeekShare: (percent: number) => void;
 }) {
-  // A runtime with no plan has no week to share (ADR 0119, rule 7).
+  // A runtime with no plan has no week to share (ADR 0119, rule 7), and one that reports no
+  // windows has no week to count it in (ADR 0120, rule 9).
   return (
-    <Show when={!hasNoPlan(props.status.runtime)}>
+    <Show when={!hasNoWindows(props.status.runtime)}>
       <Choice
         id={`${props.idPrefix}-share`}
         label="Background limit"
@@ -592,22 +603,13 @@ export function ConsentQuestion(props: {
           </button>
         </div>
       </Show>
-      <Show
-        when={runtime()?.onThisMachine === true}
-        fallback={
-          <p class="text-[12.5px] leading-[1.5] text-secondary">
-            Mail goes to {vendorName(runtime())} only when you ask about it, and for views with a
-            prompt, such as Needs you, which read new mail as it comes. Your {vendorName(runtime())}{" "}
-            privacy settings apply to what is sent.
-          </p>
-        }
+      <p
+        class="text-[12.5px] leading-[1.5] text-secondary"
+        data-stays-here={runtime()?.onThisMachine === true ? "" : undefined}
+        data-consent-line
       >
-        <p class="text-[12.5px] leading-[1.5] text-secondary" data-stays-here>
-          {vendorName(runtime())} reads mail only when you ask about it, and for views with a
-          prompt, such as Needs you, which read new mail as it comes. It runs on this Mac: your mail
-          stays on this Mac.
-        </p>
-      </Show>
+        {consentText(runtime())}
+      </p>
       <Show when={problem() !== ""}>
         <p role="alert" class="text-[13px] text-late">
           {problem()}

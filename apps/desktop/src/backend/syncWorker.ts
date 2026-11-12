@@ -8,6 +8,7 @@ import { dirname } from "node:path";
 import { parentPort, Worker, workerData } from "node:worker_threads";
 import { AutoconfigDiscovery } from "@matters/adapter-autoconfig";
 import { ClaudeCodeRuntime } from "@matters/adapter-claude-code";
+import { CodexRuntime } from "@matters/adapter-codex";
 import { MarkdownComposeRenderer } from "@matters/adapter-compose";
 import { createReceivedFiles } from "@matters/adapter-files";
 import { ImapConnector } from "@matters/adapter-imap";
@@ -92,13 +93,17 @@ await startSyncRuntime({
   // The demo's downloads have no server to ask; a real database never has this.
   ...(config.seed ? { demo: new DemoMail() } : {}),
   agent: {
-    // The runtimes the person chooses from (ADR 0119, rule 2): their own `claude`, found on a
-    // PATH that also holds the usual install places, and Ollama on this machine. Only the chosen
-    // one ever runs a turn. A seeded demo run answers from canned facts instead, so it needs no
+    // The runtimes the person chooses from (ADR 0119, rule 2): their own `claude` and `codex`,
+    // found on a PATH that also holds the usual install places, and Ollama on this machine. Only
+    // the chosen one ever runs a turn. A seeded demo run answers from canned facts instead, so it needs no
     // model (and never starts a program or asks a server); the seed is guarded in main.ts.
     runtimes: config.seed
       ? [new DemoAgentRuntime()]
-      : [new ClaudeCodeRuntime({ env: agentEnv() }), new OllamaRuntime()],
+      : [
+          new ClaudeCodeRuntime({ env: agentEnv() }),
+          new CodexRuntime({ env: agentEnv() }),
+          new OllamaRuntime(),
+        ],
     visibleText,
   },
   seed: config.seed,

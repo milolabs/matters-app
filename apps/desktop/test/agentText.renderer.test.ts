@@ -7,21 +7,27 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   answeredByLine,
+  consentText,
   EFFORT_WORDS,
   effortOptions,
   effortShown,
   hasNoPlan,
+  hasNoWindows,
   journalLine,
   journalLines,
   ledgerEffort,
   loopOffered,
+  noWindowsText,
   ourShare,
   planButton,
   questionButtonText,
   ruleText,
   sentLine,
+  signInCommand,
   splitYours,
   statusWords,
+  vendorName,
+  wholeFilesText,
   writtenByLine,
 } from "../src/renderer/agentText.ts";
 
@@ -418,5 +424,65 @@ describe("the search in a loop is offered only where it runs (ADR 0083; ADR 0119
     const some = { ...base, tools: true, toolModels: ["qwen3:8b"] };
     expect(loopOffered(some, "qwen3:8b")).toBe(true);
     expect(loopOffered(some, "gemma:2b")).toBe(false);
+  });
+});
+
+describe("Codex, on the person's ChatGPT plan (ADR 0120)", () => {
+  const codex = {
+    id: "codex",
+    name: "Codex",
+    status: "ready" as const,
+    plan: "ChatGPT",
+    models: ["gpt-6.1-sol", "gpt-6-luna"],
+    noWindows: true,
+    modelFiles: { "gpt-6.1-sol": ["image/png" as const], "gpt-6-luna": [] },
+  };
+  const claude = { id: "claude-code", name: "Claude Code", status: "ready" as const, models: [] };
+
+  it("says mail goes to OpenAI under the ChatGPT plan, only when asked and for views with a prompt", () => {
+    expect(consentText(codex)).toBe(
+      "Mail goes to OpenAI, under your ChatGPT plan, only when you ask about it, and for views with a prompt, such as Needs you, which read new mail as it comes. Your ChatGPT privacy settings apply to what is sent.",
+    );
+    expect(consentText(claude)).toBe(
+      "Mail goes to Claude only when you ask about it, and for views with a prompt, such as Needs you, which read new mail as it comes. Your Claude privacy settings apply to what is sent.",
+    );
+    expect(consentText({ ...claude, id: "ollama", name: "Ollama", onThisMachine: true })).toContain(
+      "your mail stays on this Mac",
+    );
+    expect(vendorName(codex)).toBe("OpenAI");
+    expect(vendorName(claude)).toBe("Claude");
+    expect(vendorName({ id: "other", name: "Other" })).toBe("Other");
+  });
+
+  it("names each runtime's own command to sign in", () => {
+    expect(signInCommand(codex)).toBe("codex login");
+    expect(signInCommand(claude)).toBe("claude auth login");
+  });
+
+  it("shows no windows and never names Claude where none are reported (rule 9)", () => {
+    const s = status({ runtime: codex });
+    expect(hasNoWindows(codex)).toBe(true);
+    expect(hasNoWindows({ noPlan: false })).toBe(false);
+    expect(hasNoWindows({ noPlan: true })).toBe(true);
+    expect(planButton(s, NOW)).toEqual({ text: "Codex · limits not reported", late: false });
+    expect(
+      planButton(
+        { ...s, progress: { state: "paused", reason: "limit", untilMs: NOW + 3_600_000 } },
+        NOW,
+      )?.text,
+    ).toMatch(/^Paused until .* · plan limit$/);
+    expect(noWindowsText(codex)).toBe(
+      "Codex does not report your plan's limits. When the plan says no, reading in the background stops until you continue it.",
+    );
+    expect(noWindowsText(codex)).not.toContain("Claude");
+  });
+
+  it("says what goes whole of a file with no text on each runtime (rule 7)", () => {
+    expect(wholeFilesText(codex)).toBe(
+      "With Codex, a photo that has no text goes whole, up to three a question; a scan in a PDF does not.",
+    );
+    expect(wholeFilesText(claude)).toContain("With Claude Code, a scan or a photo");
+    expect(wholeFilesText({ ...codex, modelFiles: {} })).toBe("");
+    expect(wholeFilesText(null)).toBe("");
   });
 });

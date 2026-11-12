@@ -35,9 +35,9 @@ export interface PlanWindow {
 
 /** The plan's windows as the runtime last reported them. */
 export interface PlanLimits {
-  /** The short window (five hours on Claude). */
+  /** The short window (five hours on Claude Code). */
   readonly session?: PlanWindow;
-  /** The long window (seven days on Claude). */
+  /** The long window (seven days on Claude Code). */
   readonly week?: PlanWindow;
   /** The plan's own allowance is spent and the runtime bills on top of it. */
   readonly usingOverage: boolean;
@@ -69,10 +69,22 @@ export interface AgentRuntimeInfo {
    */
   readonly defaultModel?: string;
   /**
+   * The model each kind of work starts on, where the runtime suggests one per kind (ADR 0120): a
+   * smaller model for understanding mail than for writing. A kind it does not name, or names a
+   * model it does not list, starts as `defaultModel` says.
+   */
+  readonly defaultModels?: Readonly<Partial<Record<AgentWorkKind, string>>>;
+  /**
    * The runtime has no plan (ADR 0119, rule 7): no windows, shares or limits apply or show, and
    * the gates of the plan always pass. Absent: it runs on a plan.
    */
   readonly noPlan?: boolean;
+  /**
+   * It runs on a plan whose windows it does not report (ADR 0120, rule 9): no windows show, the
+   * gates of the windows pass, work runs one turn at a time, and the reading in the background
+   * stops at the first refusal for a limit until the person continues it.
+   */
+  readonly noWindows?: boolean;
   /**
    * How many characters of untrusted text (mail and the person's words) one turn on each model may
    * carry (ADR 0119, rule 8). Requests sized from mail are made to fit it; a model it does not name,
@@ -230,16 +242,20 @@ export function wholeTypesFor(
 
 /**
  * The gate of the plan for the runtime that runs the turn (ADR 0119, rule 7): a runtime with no
- * plan has no windows to keep to, so it always passes; any other is `mayRun`, unchanged.
+ * plan, or one that reports no windows (ADR 0120, rule 9), has no windows to keep to, so it always
+ * passes; any other is `mayRun`, unchanged.
  */
 export function mayRunOn(
-  runtime: Pick<AgentRuntimeInfo, "noPlan"> | null | undefined,
+  runtime: Pick<AgentRuntimeInfo, "noPlan" | "noWindows"> | null | undefined,
   priority: AgentPriority,
   limits: PlanLimits | undefined,
   budget: AgentBudget,
   nowMs: number,
 ): MayRun {
   if (runtime?.noPlan === true) return { ok: true };
+  // No windows are reported, so none can be kept to: the plan refuses by itself, and the first
+  // refusal stops the background (ADR 0120, rule 9).
+  if (runtime?.noWindows === true) return { ok: true };
   return mayRun(priority, limits, budget, nowMs);
 }
 
@@ -1069,12 +1085,13 @@ export function patchAgentSettings(
 
 /**
  * The choices a runtime starts with, from what it lists (ADR 0119, rule 4): the app's own starting
- * models when the runtime lists all of them (Claude Code), else every kind of work, titles too, on
- * the model it names as its default, else on the first it lists. Efforts start as ever (ADR 0118,
+ * models when the runtime lists all of them (Claude Code), else each kind of work on the model the
+ * runtime suggests for it (ADR 0120), else every kind, titles too, on the model it names as its
+ * default, else on the first it lists. Efforts start as ever (ADR 0118,
  * rule 3); a level the model does not take is sent as none. Null when it lists no model.
  */
 export function startingChoices(
-  runtime: Pick<AgentRuntimeInfo, "models" | "defaultModel">,
+  runtime: Pick<AgentRuntimeInfo, "models" | "defaultModel" | "defaultModels">,
 ): AgentChoices | null {
   const names = runtime.models;
   if (names.length === 0) return null;
@@ -1085,8 +1102,18 @@ export function startingChoices(
     runtime.defaultModel !== undefined && names.includes(runtime.defaultModel)
       ? runtime.defaultModel
       : (names[0] as string);
+  // A model the runtime suggests for a kind, when it lists it (ADR 0120); else the one above.
+  const pick = (kind: AgentWorkKind): string => {
+    const named = runtime.defaultModels?.[kind];
+    return named !== undefined && names.includes(named) ? named : one;
+  };
   return {
-    models: { understand: one, write: one, answer: one, titles: one },
+    models: {
+      understand: pick("understand"),
+      write: pick("write"),
+      answer: pick("answer"),
+      titles: pick("titles"),
+    },
     efforts: DEFAULT_AGENT_EFFORTS,
   };
 }

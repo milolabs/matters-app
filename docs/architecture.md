@@ -50,6 +50,8 @@ client. This page is the map; the reasons behind each choice live in
    │ adapter-secrets     CredentialPort      (safeStorage)    │
    │ adapter-autoconfig  ServerDiscoveryPort (ISPDB, DNS SRV) │
    │ adapter-claude-code AgentRuntimePort    (the user's CLI) │
+   │ adapter-codex       AgentRuntimePort    (the user's      │
+   │                     `codex`, each turn closed)           │
    │ adapter-ollama      AgentRuntimePort    (Ollama on       │
    │                     127.0.0.1, Node's fetch)             │
    │ later: adapter-gmail-api, adapter-msgraph, adapter-jmap, │

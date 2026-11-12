@@ -18,6 +18,7 @@
       "dependencies": {
         "@matters/adapter-autoconfig": "workspace:*",
         "@matters/adapter-claude-code": "workspace:*",
+        "@matters/adapter-codex": "workspace:*",
         "@matters/adapter-compose": "workspace:*",
         "@matters/adapter-files": "workspace:*",
         "@matters/adapter-filetext": "workspace:*",
@@ -65,6 +66,13 @@
     },
     "packages/adapter-claude-code": {
       "name": "@matters/adapter-claude-code",
+      "version": "0.0.0",
+      "dependencies": {
+        "@matters/core": "workspace:*",
+      },
+    },
+    "packages/adapter-codex": {
+      "name": "@matters/adapter-codex",
       "version": "0.0.0",
       "dependencies": {
         "@matters/core": "workspace:*",
@@ -317,6 +325,8 @@
     "@matters/adapter-autoconfig": ["@matters/adapter-autoconfig@workspace:packages/adapter-autoconfig"],
 
     "@matters/adapter-claude-code": ["@matters/adapter-claude-code@workspace:packages/adapter-claude-code"],
+
+    "@matters/adapter-codex": ["@matters/adapter-codex@workspace:packages/adapter-codex"],
 
     "@matters/adapter-compose": ["@matters/adapter-compose@workspace:packages/adapter-compose"],
 

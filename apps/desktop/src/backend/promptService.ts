@@ -191,6 +191,11 @@ export interface BackgroundOptions {
   readonly recentDays: number;
   /** True once the person paused reading or the pass ends: no batch more starts. */
   readonly stopWhen: () => boolean;
+  /**
+   * A turn was refused for the plan's limit. Given, the pass ends there, no other view is read,
+   * and this is told when the runtime said the plan takes turns again (ADR 0120, rule 9).
+   */
+  readonly onLimit?: (untilMs: number | undefined) => void;
 }
 
 /** How the search ended: what it wrote, or why nothing is kept. */
@@ -770,7 +775,13 @@ export class PromptService {
     signal: AbortSignal,
     mine: Running,
     options: BatchOptions = {},
-  ): Promise<{ rejected: number; answered: readonly string[]; problem?: string }> {
+  ): Promise<{
+    rejected: number;
+    answered: readonly string[];
+    problem?: string;
+    /** A turn was refused for the plan's limit; `untilMs` when the runtime said until when. */
+    limited?: { readonly untilMs?: number };
+  }> {
     const { enough, priority = "P0", stopWhen } = options;
     const { insights, settings } = this.deps;
     const runtime = this.deps.runtime();
@@ -781,6 +792,7 @@ export class PromptService {
     /** Threads that went in a turn that answered, whether the code accepted the answer or not. */
     const answered: string[] = [];
     let problem: string | undefined;
+    let limited: { untilMs?: number } | undefined;
     // The limit is reached: the turns under way finish and are kept, and none more starts.
     let full = false;
     const halt = new AbortController();
@@ -871,8 +883,10 @@ export class PromptService {
           this.progress(mine, false);
         } catch (error) {
           if (turnSignal.aborted) return;
-          if (isAgentRunError(error) && error.code === "limit") problem ??= USED_UP;
-          else if (
+          if (isAgentRunError(error) && error.code === "limit") {
+            problem ??= USED_UP;
+            limited ??= error.untilMs === undefined ? {} : { untilMs: error.untilMs };
+          } else if (
             isAgentRunError(error) &&
             (error.code === "notSignedIn" ||
               error.code === "notPlan" ||
@@ -905,7 +919,12 @@ export class PromptService {
 
     // One at a time on a runtime with no plan; else as many as the runtime takes (ADR 0119, rule 7).
     await Promise.all(Array.from({ length: turnsAtOnce(this.deps.info()) }, () => worker()));
-    return { rejected, answered, ...(problem === undefined ? {} : { problem }) };
+    return {
+      rejected,
+      answered,
+      ...(problem === undefined ? {} : { problem }),
+      ...(limited === undefined ? {} : { limited }),
+    };
   }
 
   /** Rule 12: prompts no saved view holds, not run for `PROMPT_KEEP_DAYS`, go. Never fails a run. */
@@ -1031,6 +1050,7 @@ export class PromptService {
         background: true,
       };
       let complete = fresh.length <= take;
+      let stopped = false;
       const answered: string[] = [];
       for (const [priority, todo] of groups) {
         if (todo.length === 0) continue;
@@ -1043,6 +1063,12 @@ export class PromptService {
           stopWhen: () => this.running !== null || options.stopWhen(),
         });
         answered.push(...outcome.answered);
+        if (outcome.limited !== undefined && options.onLimit !== undefined) {
+          // The plan said no and no window says until when it is enough: nothing more is read
+          // in the background until the person continues it (ADR 0120, rule 9).
+          options.onLimit(outcome.limited.untilMs);
+          stopped = true;
+        }
         if (outcome.problem !== undefined || outcome.rejected > 0 || over()) complete = false;
         // Refused or failed at this priority: the older mail of this view waits for a later pass.
         if (outcome.problem !== undefined) break;
@@ -1063,6 +1089,7 @@ export class PromptService {
         this.tried.delete(first);
       }
       if (complete) await this.deps.insights.putPromptSearch({ ...search, readAtMs: startedAt });
+      if (stopped) return;
     }
   }
 }

@@ -281,3 +281,42 @@ describe("attachments where the model can (rule 10)", () => {
     expect(wholeTypesFor(local, true, "other")).toEqual([]);
   });
 });
+
+describe("a runtime on a plan that reports no windows (ADR 0120, rule 9)", () => {
+  const budget = { weekSharePercent: 10, usedByUsPercent: 50 };
+  const full = {
+    session: { usedPercent: 100, resetsAtMs: NOW + 1000 },
+    week: { usedPercent: 100, resetsAtMs: NOW + 1000 },
+    usingOverage: true,
+    seenAtMs: NOW,
+  };
+
+  it("passes the gates of the windows at every priority, and runs one turn at a time", () => {
+    for (const p of ["P0", "P1", "P2", "P3"] as const) {
+      expect(mayRunOn({ noWindows: true }, p, full, budget, NOW)).toEqual({ ok: true });
+      expect(mayRunOn({ noWindows: true }, p, undefined, budget, NOW)).toEqual({ ok: true });
+    }
+    expect(turnsAtOnce({ noWindows: true, turnsAtOnce: 4 })).toBe(1);
+  });
+
+  it("carries the time a limit lifts on the error, when the runtime said it", () => {
+    expect(new AgentRunError("limit", "x", NOW).untilMs).toBe(NOW);
+    expect(new AgentRunError("limit", "x").untilMs).toBeUndefined();
+    expect(new AgentRunError("limit", "x", Number.NaN).untilMs).toBeUndefined();
+  });
+});
+
+describe("starting choices per kind of work (ADR 0120)", () => {
+  it("starts each kind on the model the runtime suggests for it, when it lists it", () => {
+    expect(
+      startingChoices({
+        models: ["big", "small"],
+        defaultModel: "big",
+        defaultModels: { understand: "small", titles: "small", write: "gone" },
+      }),
+    ).toEqual({
+      models: { understand: "small", write: "big", answer: "big", titles: "small" },
+      efforts: DEFAULT_AGENT_EFFORTS,
+    });
+  });
+});
