@@ -1,5 +1,7 @@
 # Matters
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/milolabs/matters-app/badge)](https://scorecard.dev/viewer/?uri=github.com/milolabs/matters-app)
+
 Matters is an open-source desktop mail client that keeps your mail on your
 computer and shows you what is still on you: what you promised, who waits for
 an answer, what has a date.
