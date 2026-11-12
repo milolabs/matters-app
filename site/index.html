@@ -6,7 +6,7 @@
     <title>Matters: the mailbox with your LLMs built in</title>
     <meta
       name="description"
-      content="Matters is an open-source mail client with Claude, ChatGPT and local models built in. It runs on the plans you already have, and your mail stays on your computer."
+      content="Matters is an open-source mail client with Claude, ChatGPT and local models built in. It runs on the plans you already have. Mail is stored on your computer, and with a local model nothing leaves it."
     />
     <meta
       http-equiv="Content-Security-Policy"
@@ -21,7 +21,7 @@
     <meta property="og:title" content="Matters: the mailbox with your LLMs built in" />
     <meta
       property="og:description"
-      content="An open-source mail client with Claude, ChatGPT and local models built in, on the plans you already have. Mail stays on your computer."
+      content="An open-source mail client with Claude, ChatGPT and local models built in, on the plans you already have. Mail is stored on your computer."
     />
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="assets/favicon.ico" sizes="any" />
@@ -64,7 +64,7 @@
             <p class="eyebrow rise" style="--d: 0">Open source · Local-first · macOS</p>
             <h1 class="rise" style="--d: 1">The <strong>mailbox</strong> with <em>your LLMs built in.</em></h1>
             <p class="pitch rise" style="--d: 2">
-              Ask your mail, sort it and draft replies with the models you already have. Fast, and all on your computer.
+              Ask your mail, sort it and draft replies with the models you already have. Fast, and stored on your computer.
             </p>
             <ul class="llms rise" style="--d: 3" aria-label="Models it runs on">
               <li><i></i><strong>Claude</strong><span>your plan</span></li>
@@ -151,7 +151,7 @@
           <div class="st-copy">
             <p class="kicker"><b>03</b> Agents</p>
             <h2>Your agents. Your&nbsp;plans.</h2>
-            <p>It runs on the subscription you already pay for, or on a model on your Mac. Matters has no server.</p>
+            <p>It runs on the subscription you already pay for, or on a model on your Mac. With a plan, the mail the agent reads goes to that provider. With a local model, nothing leaves.</p>
           </div>
           <figure class="frag runtimes" id="runtimes" aria-label="A piece of Matters: where the agent runs">
             <figcaption>The agent runs on</figcaption>
@@ -304,6 +304,7 @@
           </div>
           <figure class="frag term" id="term" aria-label="Run Matters from source">
             <pre><code><span class="t-l"><b>$</b> git clone https://github.com/milolabs/matters-app</span>
+<span class="t-l"><b>$</b> cd matters-app</span>
 <span class="t-l"><b>$</b> bun install</span>
 <span class="t-l"><b>$</b> bun run dev:desktop:demo</span>
 <span class="t-l t-ok">✓ a made-up mailbox of 8,000 messages, no account needed</span></code></pre>
@@ -320,7 +321,7 @@
             <a class="btn" href="download.html" data-download>Download</a>
             <a class="link" href="https://github.com/milolabs/matters-app">GitHub <span aria-hidden="true">↗</span></a>
           </div>
-          <p class="version" data-version>No download yet. Today you build it from source.</p>
+          <p class="version" data-version>Releases are on GitHub. Until the first one, you build it from source.</p>
         </section>
       </main>
 
