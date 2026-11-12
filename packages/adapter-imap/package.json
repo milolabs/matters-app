@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@matters/core": "workspace:*",
-    "imapflow": "2.10.0"
+    "imapflow": "2.10.2"
   },
   "devDependencies": {
     "@matters/adapter-mime": "workspace:*",

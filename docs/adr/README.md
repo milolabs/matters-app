@@ -133,3 +133,5 @@ Format: copy [`template.md`](template.md).
 | [0123](0123-releases.md) | Releases (turns around 0107 rule 4 for a release build; builds on 0105, 0122) | Accepted |
 | [0124](0124-the-release-workflow-sets-the-version.md) | The release workflow sets the version (amends 0123) | Accepted |
 | [0125](0125-what-an-outsider-can-check.md) | What an outsider can check (builds on 0047, 0122; amends 0123) | Accepted |
+| [0126](0126-changes-reach-main-by-pull-request.md) | Changes reach main by pull request (amends 0124, 0125) | Accepted |
+| [0127](0127-the-site-lives-in-the-repository.md) | The site lives in the repository (builds on 0123, 0126) | Accepted |

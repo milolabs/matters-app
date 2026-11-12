@@ -82,6 +82,11 @@ plug into its ports; `apps/desktop` is the Electron app with a Solid renderer.
 [docs/architecture.md](docs/architecture.md) is the map, and every decision
 has a record in [docs/adr](docs/adr/README.md).
 
+The site is the folder `site/`: plain HTML and CSS with no build step,
+published with GitHub Pages
+([ADR 0127](docs/adr/0127-the-site-lives-in-the-repository.md)). To see it,
+serve the folder, for example with `python3 -m http.server --directory site`.
+
 ## Contributing
 
 Issues and pull requests are welcome. Contributors are asked to sign a
@@ -89,6 +94,10 @@ contributor license agreement that grants a license to the project and leaves
 the copyright with them ([ADR 0002](docs/adr/0002-license-agpl-and-cla.md)).
 The agreement is not set up yet; until it is, please open an issue before
 starting on a larger change.
+
+Every change reaches `main` through a pull request. The checks run on it, and an
+automatic reviewer reads it first
+([ADR 0126](docs/adr/0126-changes-reach-main-by-pull-request.md)).
 
 Please report security problems privately, not in a public issue:
 [SECURITY.md](SECURITY.md) says how, and what the app is meant to withstand.

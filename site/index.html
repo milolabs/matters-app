@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Matters: the mailbox with your LLMs built in</title>
+    <meta
+      name="description"
+      content="Matters is an open-source mail client with Claude, ChatGPT and local models built in. It runs on the plans you already have. Mail is stored on your computer, and with a local model nothing leaves it."
+    />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="theme-color" content="#141316" />
+    <link rel="canonical" href="https://getmatters.app/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://getmatters.app/" />
+    <meta property="og:image" content="https://getmatters.app/assets/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta property="og:title" content="Matters: the mailbox with your LLMs built in" />
+    <meta
+      property="og:description"
+      content="An open-source mail client with Claude, ChatGPT and local models built in, on the plans you already have. Mail is stored on your computer."
+    />
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="assets/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
+    <link rel="preload" href="assets/fonts/newsreader-normal-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="assets/fonts/rubik-normal-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip" href="#ask">Skip to content</a>
+
+    <div class="page" id="page">
+      <!-- The rope the ball runs on. Drawn by run.js from where the pieces below sit. -->
+      <svg class="track" aria-hidden="true">
+        <path id="track-wire" />
+        <path id="track-base" />
+        <path id="track-lit" />
+      </svg>
+
+      <header class="nav">
+        <a class="brand" href="./" aria-label="Matters, home">
+          <svg class="mark" viewBox="19.1 25 61.8 50" aria-hidden="true">
+            <use href="#mark-m" />
+            <circle cx="50" cy="39.62" r="11.78" />
+          </svg>
+          <span>Matters</span>
+        </a>
+        <nav class="nav-links" aria-label="Site">
+          <a href="download.html">Download</a>
+          <a href="extend.html">Extend</a>
+          <a class="gh" href="https://github.com/milolabs/matters-app">
+            GitHub <span class="stars" data-stars hidden></span>
+          </a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="hero">
+          <div class="hero-copy">
+            <p class="eyebrow rise" style="--d: 0">Open source · Local-first · macOS</p>
+            <h1 class="rise" style="--d: 1">The <strong>mailbox</strong> with <em>your LLMs built in.</em></h1>
+            <p class="pitch rise" style="--d: 2">
+              Ask your mail, sort it and draft replies with the models you already have. Fast, and stored on your computer.
+            </p>
+            <ul class="llms rise" style="--d: 3" aria-label="Models it runs on">
+              <li><i></i><strong>Claude</strong><span>your plan</span></li>
+              <li><i></i><strong>ChatGPT</strong><span>your plan</span></li>
+              <li><i></i><strong>Ollama</strong><span>local</span></li>
+              <li class="more"><strong>+ yours</strong></li>
+            </ul>
+            <div class="cta rise" style="--d: 4">
+              <a class="btn" href="download.html" data-download>Get Matters</a>
+              <a class="link" href="https://github.com/milolabs/matters-app">Source on GitHub <span aria-hidden="true">↗</span></a>
+            </div>
+          </div>
+          <div class="hero-mark">
+            <svg class="mark" viewBox="19.1 25 61.8 50" role="img" aria-label="The Matters mark: an M bent by one ball">
+              <use href="#mark-m" />
+              <circle id="hero-ball" class="rest" cx="50" cy="39.62" r="11.78" />
+            </svg>
+            <p class="motto">What matters weighs more.</p>
+            <p class="hint" aria-hidden="true"><span></span> Scroll to let it go</p>
+          </div>
+        </section>
+
+        <!-- 01 Ask -->
+        <section class="st flip" id="ask">
+          <div class="st-copy">
+            <p class="kicker"><b>01</b> Ask</p>
+            <h2>Type what you want.</h2>
+            <p>An agent reads your mail and shows what fits, with a reason on every row.</p>
+          </div>
+          <figure class="frag ask" aria-label="A piece of Matters, with invented mail: a prompt and the threads that fit it">
+            <div class="qbar" id="qbar">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>
+              <code>prompt:</code><span id="qtext">"invoices I still have to pay"</span><i class="caret"></i>
+              <kbd>⌘K</kbd>
+            </div>
+            <div class="res" id="res">
+              <p class="res-head" style="--i: 0"><span class="ring"></span> 3 of 212 fit <small>· read on this Mac</small></p>
+              <div class="row" style="--i: 1">
+                <span class="av" style="--c: #62b79f">JW</span>
+                <strong>Jonas Weber</strong><time>5 Nov</time>
+                <span class="sub">Invoice 2026/114</span>
+                <small class="why">Due on Friday. No payment in your mail.</small>
+              </div>
+              <div class="row" style="--i: 2">
+                <span class="av" style="--c: #7f9ee0">NS</span>
+                <strong>Northlight Studio</strong><time>3 Nov</time>
+                <span class="sub">October retainer</span>
+                <small class="why">Sent twice. You have not answered.</small>
+              </div>
+              <div class="row" style="--i: 3">
+                <span class="av" style="--c: #d98a62">TH</span>
+                <strong>Tide Hosting</strong><time>31 Oct</time>
+                <span class="sub">Renewal failed</span>
+                <small class="why">The card was declined. Service ends on 14 Nov.</small>
+              </div>
+            </div>
+          </figure>
+        </section>
+
+        <!-- 02 Keep -->
+        <section class="st" id="keep">
+          <div class="st-copy">
+            <p class="kicker"><b>02</b> Keep</p>
+            <h2>Save it as a tab.</h2>
+            <p>A saved prompt keeps reading new mail as it arrives.</p>
+          </div>
+          <figure class="frag views" aria-label="A piece of Matters: saved views as tabs">
+            <div class="tabs" id="tabs">
+              <span class="tab"><i class="pdot"></i>Needs you <b>3</b></span>
+              <span class="tab">Inbox <b>42</b></span>
+              <span class="tab"><i class="pdot"></i>Waiting on them <b>5</b></span>
+              <span class="tab">Receipts <b>48</b></span>
+              <span class="tab tab-save">
+                <span class="a">+ Save view</span>
+                <span class="b"><i class="pdot"></i>Unpaid invoices <b>3</b></span>
+              </span>
+            </div>
+            <p class="def"><code>has:attachment prompt:"invoices I still have to pay"</code></p>
+          </figure>
+        </section>
+
+        <!-- 03 Agents -->
+        <section class="st" id="agents">
+          <div class="st-copy">
+            <p class="kicker"><b>03</b> Agents</p>
+            <h2>Your agents. Your&nbsp;plans.</h2>
+            <p>It runs on the subscription you already pay for, or on a model on your Mac. With a plan, the mail the agent reads goes to that provider. With a local model, nothing leaves.</p>
+          </div>
+          <figure class="frag runtimes" id="runtimes" aria-label="A piece of Matters: where the agent runs">
+            <figcaption>The agent runs on</figcaption>
+            <ul>
+              <li>
+                <i class="sock"></i>
+                <strong>Claude Code</strong><span>your Claude plan</span>
+                <em><span class="meter"><i></i></span> 87% left</em>
+              </li>
+              <li>
+                <i class="sock"></i>
+                <strong>Codex</strong><span>your ChatGPT plan</span>
+                <em>signed in</em>
+              </li>
+              <li>
+                <i class="sock"></i>
+                <strong>Ollama</strong><span>on this Mac · mail never leaves it</span>
+                <em>llama3.2</em>
+              </li>
+              <li class="soon">
+                <i class="sock"></i>
+                <strong>API key</strong><span>soon</span>
+              </li>
+              <li class="soon yours">
+                <i class="sock"></i>
+                <strong>Your runtime</strong><span>one small interface</span>
+                <em><a href="extend.html">How →</a></em>
+              </li>
+            </ul>
+          </figure>
+        </section>
+
+        <!-- 04 Speed -->
+        <section class="st wide" id="speed">
+          <div class="st-copy">
+            <p class="kicker"><b>04</b> Speed</p>
+            <h2>Fast is the foundation.</h2>
+            <p>The screen reads only a local database. The network is never in the way.</p>
+          </div>
+          <div class="ramp" id="ramp" aria-hidden="true"></div>
+          <dl class="budgets">
+            <div class="budget">
+              <dt>&lt;&thinsp;500<small>ms</small></dt>
+              <dd>launch to inbox</dd>
+            </div>
+            <div class="budget">
+              <dt>&lt;&thinsp;50<small>ms</small></dt>
+              <dd>open a thread</dd>
+            </div>
+            <div class="budget">
+              <dt>&lt;&thinsp;16<small>ms</small></dt>
+              <dd>per search keystroke</dd>
+            </div>
+          </dl>
+          <p class="fine">Budgets, measured on mailboxes of 8,000, 100,000 and 500,000 messages.</p>
+        </section>
+
+        <!-- 05 Extend -->
+        <section class="st" id="extend">
+          <div class="st-copy">
+            <p class="kicker"><b>05</b> Extend</p>
+            <h2>One core. The rest plugs&nbsp;in.</h2>
+            <p>Mail, storage and models are adapters behind small interfaces. Add one and the core stays as it is.</p>
+            <a class="link" href="extend.html">Write an adapter <span aria-hidden="true">→</span></a>
+          </div>
+          <figure class="hive-wrap">
+            <svg class="hive" id="hive" viewBox="0 0 520 500" role="img" aria-labelledby="hive-t">
+              <title id="hive-t">
+                The core in the middle with adapters around it. Today: IMAP and SMTP for mail; Claude Code, Codex and Ollama as
+                agents; SQLite for storage; the macOS Keychain for secrets. Next: Gmail, JMAP and Microsoft Graph. One place is
+                left for your own adapter.
+              </title>
+              <g class="tile" style="--ox: -10px; --oy: -17px">
+                <polygon points="177.8,19.6 254.0,63.6 254.0,151.6 177.8,195.6 101.6,151.6 101.6,63.6" />
+                <text x="177.8" y="96">MAIL</text>
+                <text class="t2" x="177.8" y="120">IMAP · SMTP</text>
+              </g>
+              <g class="tile" style="--ox: 10px; --oy: -17px">
+                <polygon points="342.2,19.6 418.4,63.6 418.4,151.6 342.2,195.6 266.0,151.6 266.0,63.6" />
+                <text x="342.2" y="84">AGENTS</text>
+                <text class="t2" x="342.2" y="106">Claude Code</text>
+                <text class="t2" x="342.2" y="124">Codex</text>
+                <text class="t2" x="342.2" y="142">Ollama</text>
+              </g>
+              <g class="tile" style="--ox: -20px; --oy: 0px">
+                <polygon points="95.6,162.0 171.8,206.0 171.8,294.0 95.6,338.0 19.4,294.0 19.4,206.0" />
+                <text x="95.6" y="240">STORE</text>
+                <text class="t2" x="95.6" y="264">SQLite</text>
+              </g>
+              <g class="tile" style="--ox: 20px; --oy: 0px">
+                <polygon points="424.4,162.0 500.6,206.0 500.6,294.0 424.4,338.0 348.2,294.0 348.2,206.0" />
+                <text x="424.4" y="240">SECRETS</text>
+                <text class="t2" x="424.4" y="264">Keychain</text>
+              </g>
+              <g class="tile next" style="--ox: -10px; --oy: 17px">
+                <polygon points="177.8,304.4 254.0,348.4 254.0,436.4 177.8,480.4 101.6,436.4 101.6,348.4" />
+                <text x="177.8" y="372">NEXT</text>
+                <text class="t2" x="177.8" y="394">Gmail · JMAP</text>
+                <text class="t2" x="177.8" y="412">Graph</text>
+              </g>
+              <g class="tile yours" style="--ox: 10px; --oy: 17px">
+                <polygon points="342.2,304.4 418.4,348.4 418.4,436.4 342.2,480.4 266.0,436.4 266.0,348.4" />
+                <text x="342.2" y="382">YOURS</text>
+                <text class="t2" x="342.2" y="406">+ adapter</text>
+              </g>
+              <g class="core">
+                <polygon points="260.0,162.0 336.2,206.0 336.2,294.0 260.0,338.0 183.8,294.0 183.8,206.0" />
+                <g transform="translate(226 222.5) scale(1.1003) translate(-19.1 -25)">
+                  <use href="#mark-m" />
+                  <circle class="rest" cx="50" cy="39.62" r="11.78" />
+                </g>
+                <text x="260" y="306">CORE</text>
+              </g>
+            </svg>
+          </figure>
+        </section>
+
+        <!-- 06 Next -->
+        <section class="st wide" id="next">
+          <div class="st-copy">
+            <p class="kicker"><b>06</b> Next</p>
+            <h2>Yet to come.</h2>
+          </div>
+          <ul class="soons">
+            <li class="soon-tile"><strong>Downloads</strong><span>signed builds, updates</span></li>
+            <li class="soon-tile"><strong>Browser sign-in</strong><span>Gmail, Microsoft 365</span></li>
+            <li class="soon-tile"><strong>API keys</strong><span>any provider</span></li>
+            <li class="soon-tile"><strong>Linux · Windows</strong><span>builds and testers</span></li>
+            <li class="soon-tile yours">
+              <a href="https://github.com/milolabs/matters-app/issues"><strong>Yours</strong><span>open an issue ↗</span></a>
+            </li>
+          </ul>
+        </section>
+
+        <!-- 07 Open -->
+        <section class="st" id="open">
+          <div class="st-copy">
+            <p class="kicker"><b>07</b> Open source</p>
+            <h2>Open. All of it.</h2>
+            <p>Every decision is written down. Read it, run it, change it.</p>
+            <ul class="facts">
+              <li><b>AGPL-3.0</b> licence</li>
+              <li><b>120+</b> decision records</li>
+              <li><b>0</b> servers of ours</li>
+            </ul>
+            <div class="cta">
+              <a class="btn btn-ghost" href="https://github.com/milolabs/matters-app">Star on GitHub</a>
+              <a class="link" href="https://github.com/milolabs/matters-app/tree/main/docs/adr">Decision records <span aria-hidden="true">↗</span></a>
+            </div>
+          </div>
+          <figure class="frag term" id="term" aria-label="Run Matters from source">
+            <pre><code><span class="t-l"><b>$</b> git clone https://github.com/milolabs/matters-app</span>
+<span class="t-l"><b>$</b> cd matters-app</span>
+<span class="t-l"><b>$</b> bun install</span>
+<span class="t-l"><b>$</b> bun run dev:desktop:demo</span>
+<span class="t-l t-ok">✓ a made-up mailbox of 8,000 messages, no account needed</span></code></pre>
+          </figure>
+        </section>
+
+        <section class="get" id="get">
+          <svg class="mark" viewBox="19.1 25 61.8 50" aria-hidden="true">
+            <use href="#mark-m" />
+            <circle id="end-ball" class="rest" cx="50" cy="39.62" r="11.78" />
+          </svg>
+          <h2>Get Matters.</h2>
+          <div class="cta">
+            <a class="btn" href="download.html" data-download>Download</a>
+            <a class="link" href="https://github.com/milolabs/matters-app">GitHub <span aria-hidden="true">↗</span></a>
+          </div>
+          <p class="version" data-version>Releases are on GitHub. Until the first one, you build it from source.</p>
+        </section>
+      </main>
+
+      <footer class="foot">
+        <span>© 2026 Matters · AGPL-3.0</span>
+        <nav aria-label="Footer">
+          <a href="download.html">Download</a>
+          <a href="extend.html">Extend</a>
+          <a href="https://github.com/milolabs/matters-app/blob/main/SECURITY.md">Security</a>
+          <a href="https://github.com/milolabs/matters-app">GitHub</a>
+        </nav>
+      </footer>
+
+      <div class="ball" id="ball" aria-hidden="true"></div>
+    </div>
+
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <defs>
+        <path
+          id="mark-m"
+          fill="currentColor"
+          d="M19.1 73.5L19.15 73.89L19.3 74.25L19.54 74.56L19.85 74.8L20.21 74.95L20.6 75L26.6 75L26.99 74.95L27.35 74.8L27.66 74.56L27.9 74.25L28.05 73.89L28.1 73.5L28.1 49.2L28.15 48.83L28.29 48.47L28.52 48.17L28.82 47.93L29.16 47.77L29.54 47.71L29.92 47.74L30.28 47.87L30.59 48.08L30.85 48.37L33.25 51.92L33.77 52.59L34.84 53.83L35.47 54.48L36.73 55.61L38.03 56.61L39.46 57.53L40.25 57.97L41.72 58.68L42.57 59.02L44.17 59.57L45.82 59.98L47.43 60.24L49.12 60.38L50.03 60.4L51.66 60.33L53.35 60.13L54.24 59.96L55.89 59.55L57.49 59L58.99 58.35L59.8 57.94L61.21 57.12L61.97 56.61L63.27 55.61L64.57 54.44L65.69 53.25L66.75 51.92L69.15 48.37L69.41 48.08L69.72 47.87L70.08 47.74L70.46 47.71L70.84 47.77L71.18 47.93L71.48 48.17L71.71 48.47L71.85 48.83L71.9 49.2L71.9 73.5L71.95 73.89L72.1 74.25L72.34 74.56L72.65 74.8L73.01 74.95L73.4 75L79.4 75L79.79 74.95L80.15 74.8L80.46 74.56L80.7 74.25L80.85 73.89L80.9 73.5L80.9 26.5L80.85 26.11L80.7 25.75L80.46 25.44L80.15 25.2L79.79 25.05L79.4 25L74.8 25L74.44 25.04L74.09 25.18L73.79 25.39L73.56 25.66L59.82 46.13L59.23 46.94L58.6 47.66L57.87 48.38L56.79 49.24L55.93 49.79L54.7 50.42L53.75 50.79L52.42 51.15L51.41 51.31L50.03 51.4L49.01 51.36L47.64 51.16L46.65 50.91L45.35 50.44L44.43 50L43.21 49.24L42.13 48.38L41.4 47.66L40.77 46.94L40.18 46.13L26.44 25.66L26.21 25.39L25.91 25.18L25.56 25.04L25.2 25L20.6 25L20.21 25.05L19.85 25.2L19.54 25.44L19.3 25.75L19.15 26.11L19.1 26.5Z"
+        />
+      </defs>
+    </svg>
+
+    <script src="site.js" type="module"></script>
+    <script src="scene.js" type="module"></script>
+    <script src="run.js" type="module"></script>
+  </body>
+</html>

@@ -5,12 +5,14 @@
       "packages/**",
       "apps/**",
       "tools/**",
+      "site/**",
       "package.json",
       "tsconfig.json",
       "tsconfig.base.json",
       "biome.json",
       "!apps/desktop/out",
-      "!apps/desktop/build"
+      "!apps/desktop/build",
+      "!site/assets"
     ]
   },
   "formatter": {
@@ -24,6 +26,19 @@
     }
   },
   "overrides": [
+    {
+      "includes": ["site/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noDescendingSpecificity": "off"
+          },
+          "complexity": {
+            "noImportantStyles": "off"
+          }
+        }
+      }
+    },
     {
       "includes": ["packages/core/src/**", "packages/contracts/src/**"],
       "linter": {

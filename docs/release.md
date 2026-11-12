@@ -1,8 +1,8 @@
 # Releasing Matters
 
 How a version of Matters gets from `main` to a download. The decision and its reasons are in
-[ADR 0123](adr/0123-releases.md) and [ADR 0124](adr/0124-the-release-workflow-sets-the-version.md);
-this page is the plan and the steps.
+[ADR 0123](adr/0123-releases.md), [0124](adr/0124-the-release-workflow-sets-the-version.md) and
+[0126](adr/0126-changes-reach-main-by-pull-request.md); this page is the plan and the steps.
 
 ## Where we are
 
@@ -23,14 +23,12 @@ one-time setup below.
 **Making one**
 
 1. Open Actions → Release → Run workflow, on `main`. Leave the version empty and run it.
-2. The run does the checks, sets the next version (`0.1.0-alpha.1`, then `-alpha.2`, …), commits
-   it to `main`, tags it, builds the app and starts it.
+2. The run does the checks, sets the next version (`0.1.0-alpha.1`, then `-alpha.2`, …) in a
+   commit that only the tag points at, builds the app and starts it. Nothing is written to `main`.
 3. It leaves a **draft** pre-release with the disk image, the SBOM, the checksums and notes that
    say how to open it. Add what changed and what is known not to work, then publish, and send
    the link to the testers. A published pre-release is public: anyone can find it, and the notes
    say it is for invited testers.
-4. `git pull`, so your `main` has the version commit.
-
 **What a tester does**
 
 1. Checks the download: `gh attestation verify Matters-<version>-arm64.dmg --repo milolabs/matters-app`.
@@ -108,12 +106,12 @@ release build has no dev switches and opens your real data folder.
 ## Making a release
 
 1. Open Actions → Release → Run workflow, on `main`.
-2. The version: leave it empty to count on from the last one (`0.1.0-beta.1` → `0.1.0-beta.2`,
+2. The version: leave it empty to count on from the last tag (`0.1.0-beta.1` → `0.1.0-beta.2`,
    `0.1.0` → `0.1.1`), or type it when the step is a decision: the first beta (`0.1.0-beta.1`),
    leaving the suffix behind (`0.1.0`), a new minor or major version. A suffix makes it a
    pre-release.
-3. The run does the checks, commits the version to `main` and tags it. Then it waits: approve it
-   when GitHub asks (the `release` environment). `git pull` afterwards.
+3. The run does the checks and tags the version. Then it waits: approve it when GitHub asks (the
+   `release` environment).
 4. When it is done there is a **draft** release. Download the disk image on a Mac, open it, drag
    the app to Applications and start it. Then check it as a stranger would:
 
@@ -125,10 +123,13 @@ release build has no dev switches and opens your real data folder.
 
 5. Write the notes: what changed, what is known not to work, and any security fix with its
    advisory. Publish.
+6. Publishing starts the `Site` workflow: the site's download button, version and date now point
+   at this release ([ADR 0127](adr/0127-the-site-lives-in-the-repository.md)). A pre-release does
+   not change the site.
 
 ## If something is wrong
 
-- **The build failed after the version was committed:** fix nothing by hand. "Re-run failed jobs"
+- **The build failed after the version was tagged:** fix nothing by hand. "Re-run failed jobs"
   builds the same tag again; or fix the cause on `main` and run the workflow afresh, which makes
   the next number.
 - **Before publishing:** delete the draft, fix, and run the workflow again. The skipped number
@@ -144,8 +145,9 @@ release build has no dev switches and opens your real data folder.
 - The disk image opens without a warning: it is signed with the project's Developer ID and
   notarized by Apple. (An alpha is neither; see [Alpha](#alpha).)
 - `SHA256SUMS.txt` holds the checksums of the image and of the SBOM.
-- `gh attestation verify <file> --repo milolabs/matters-app` shows the workflow and the commit the
-  file was built from.
+- `gh attestation verify <file> --repo milolabs/matters-app` shows the workflow and the commit on
+  `main` the run started from. What was built is the tagged commit: that commit, with only the
+  version changed in `apps/desktop/package.json` and `bun.lock`.
 - The `.intoto.jsonl` file is that same record as a file: add `--bundle <file>.intoto.jsonl` to
   check it without asking GitHub.
 - The `.spdx.json` file lists every package inside the app.

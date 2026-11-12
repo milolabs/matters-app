@@ -1,7 +1,8 @@
-// ADR 0124: the version of the next release, and the two files that carry it.
-// Run: bun tools/next-version.ts [version] [--write]
+// ADR 0124, ADR 0126: the version of the next release, and the two files that carry it.
+// Run: bun tools/next-version.ts [version] [--from=<last version>] [--write]
 //
-// With no version it counts on from the one in apps/desktop/package.json:
+// With no version it counts on from the last release (--from; the release workflow passes the
+// newest v* tag), or without one from apps/desktop/package.json:
 // - 0.0.0, which no release has had, becomes 0.1.0-alpha.1;
 // - 0.1.0-alpha.1 becomes 0.1.0-alpha.2, and the same for any other suffix that ends in a number;
 // - 0.1.0 becomes 0.1.1.
@@ -64,7 +65,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const lockPath = join(root, "bun.lock");
   try {
     const packageText = readFileSync(packagePath, "utf8");
-    const current = (JSON.parse(packageText) as { version: string }).version;
+    const from = args.find((arg) => arg.startsWith("--from="))?.slice("--from=".length);
+    const last = from?.trim().replace(/^v/, "");
+    const current = last ? last : (JSON.parse(packageText) as { version: string }).version;
     const version = chooseVersion(current, named);
     if (write) {
       writeFileSync(packagePath, withVersion(packageText, '"name": "@matters/desktop"', version));
