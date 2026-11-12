@@ -9,7 +9,7 @@
   "dependencies": {
     "@matters/core": "workspace:*",
     "fflate": "0.8.3",
-    "pdfjs-dist": "5.4.394"
+    "pdfjs-dist": "6.5.438"
   },
   "devDependencies": {
     "@matters/testkit": "workspace:*"
