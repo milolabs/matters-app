@@ -23,7 +23,7 @@
     "@matters/contracts": "workspace:*",
     "@matters/core": "workspace:*",
     "@matters/testkit": "workspace:*",
-    "fflate": "0.8.2",
+    "fflate": "0.8.3",
     "imapflow": "2.10.0",
     "juice": "12.2.1",
     "markdown-it": "15.0.3",

@@ -132,3 +132,4 @@ Format: copy [`template.md`](template.md).
 | [0122](0122-security-policy-and-checks-on-every-change.md) | A security policy, and checks on every change (builds on 0012, 0013, 0047) | Accepted |
 | [0123](0123-releases.md) | Releases (turns around 0107 rule 4 for a release build; builds on 0105, 0122) | Accepted |
 | [0124](0124-the-release-workflow-sets-the-version.md) | The release workflow sets the version (amends 0123) | Accepted |
+| [0125](0125-what-an-outsider-can-check.md) | What an outsider can check (builds on 0047, 0122; amends 0123) | Accepted |

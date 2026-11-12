@@ -221,9 +221,17 @@ jobs:
 
       # With no Developer ID, this record is the only proof of where the file comes from.
       - name: Record where it was built
+        id: attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/release/Matters-*.dmg
+
+      # The same record as a file beside the download, so it can be checked without asking GitHub:
+      # gh attestation verify <dmg> --repo milolabs/matters-app --bundle <dmg>.intoto.jsonl
+      - name: Keep the record beside the image
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE" "dist/release/Matters-$VERSION-arm64.dmg.intoto.jsonl"
 
       - name: Draft the pre-release
         env:
@@ -247,7 +255,8 @@ jobs:
           EOF
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --prerelease \
             --title "Matters $VERSION (alpha)" --notes-file "$RUNNER_TEMP/notes.md" \
-            dist/release/Matters-*.dmg dist/release/Matters-*.spdx.json dist/release/SHA256SUMS.txt
+            dist/release/Matters-*.dmg dist/release/Matters-*.dmg.intoto.jsonl \
+            dist/release/Matters-*.spdx.json dist/release/SHA256SUMS.txt
 
   release:
     name: Sign, notarize, draft the release
@@ -377,9 +386,17 @@ jobs:
       # A signed, public record that this file was built by this workflow from this commit.
       # Anyone can check it: gh attestation verify <file> --repo milolabs/matters-app
       - name: Record where it was built
+        id: attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/release/Matters-*.dmg
+
+      # The same record as a file beside the download, so it can be checked without asking GitHub:
+      # gh attestation verify <dmg> --repo milolabs/matters-app --bundle <dmg>.intoto.jsonl
+      - name: Keep the record beside the image
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE" "dist/release/Matters-$VERSION-arm64.dmg.intoto.jsonl"
 
       # A draft: a person reads it, tries the download, and publishes.
       - name: Draft the release
@@ -390,4 +407,5 @@ jobs:
           case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --generate-notes \
             --title "Matters $VERSION" "${prerelease[@]}" \
-            dist/release/Matters-*.dmg dist/release/Matters-*.spdx.json dist/release/SHA256SUMS.txt
+            dist/release/Matters-*.dmg dist/release/Matters-*.dmg.intoto.jsonl \
+            dist/release/Matters-*.spdx.json dist/release/SHA256SUMS.txt

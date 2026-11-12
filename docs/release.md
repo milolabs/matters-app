@@ -146,4 +146,6 @@ release build has no dev switches and opens your real data folder.
 - `SHA256SUMS.txt` holds the checksums of the image and of the SBOM.
 - `gh attestation verify <file> --repo milolabs/matters-app` shows the workflow and the commit the
   file was built from.
+- The `.intoto.jsonl` file is that same record as a file: add `--bundle <file>.intoto.jsonl` to
+  check it without asking GitHub.
 - The `.spdx.json` file lists every package inside the app.

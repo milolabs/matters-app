@@ -22,3 +22,10 @@ updates:
     open-pull-requests-limit: 3
     cooldown:
       default-days: 7
+
+  # The image of the throw-away IMAP server for tests, pinned by digest.
+  - package-ecosystem: docker
+    directory: /tools/imap-test-server
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 1

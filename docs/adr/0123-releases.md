@@ -7,7 +7,8 @@
 - Builds on: [0105](0105-the-app-identity-moves-to-matters.md),
   [0122](0122-security-policy-and-checks-on-every-change.md)
 - Amended by: [0124](0124-the-release-workflow-sets-the-version.md) (the workflow is started by
-  hand, sets the version, and makes the commit and the tag itself)
+  hand, sets the version, and makes the commit and the tag itself); [0125](0125-what-an-outsider-can-check.md)
+  (a release also carries its build record as a file)
 
 ## Context
 

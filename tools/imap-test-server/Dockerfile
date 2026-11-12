@@ -1,7 +1,7 @@
 # Throw-away IMAP server for integration tests: Debian's own dovecot-imapd, one user, plaintext
 # auth, no TLS. Never expose this container to a network. Written for this repo; it does not
 # use the dovecot/docker project (CC BY-NC-SA 4.0).
-FROM debian:stable-slim
+FROM debian:stable-slim@sha256:fbfb4059d2127120aa05b6e6064523d2102552f0cf0026ddf0701c12f1f8f3e0
 
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dovecot-imapd \

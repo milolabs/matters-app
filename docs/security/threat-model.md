@@ -67,6 +67,9 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
   real code. A defence that stops working fails a test.
 - **Checks on every change**: tests, types, lint, the architecture's boundaries, dependency licenses,
   and static analysis ([ADR 0122](../adr/0122-security-policy-and-checks-on-every-change.md)).
+- **Property tests**: the reader of `Authentication-Results` is tried on thousands of made-up
+  headers on every change ([ADR 0125](../adr/0125-what-an-outsider-can-check.md)). Other parsers
+  are not covered this way yet.
 - **What is open is written down.** Every known gap has a severity and a case in
   [standards.md](standards.md). Nothing high or critical is open.
 
