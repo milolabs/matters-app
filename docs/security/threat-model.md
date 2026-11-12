@@ -77,9 +77,10 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
 
 - **Releases.** Nothing has been released. How a release is built, signed, notarized and recorded
   is decided ([ADR 0123](../adr/0123-releases.md), [the release plan](../release.md)) and can be
-  rehearsed, but the first one waits for the project's Developer ID. Before that, alphas for
-  invited testers are signed ad hoc and not notarized: macOS does not vouch for them, and the
-  build attestation is the only proof of where one comes from. There is no update channel:
+  rehearsed, but the first one waits for the project's Developer ID. Before that, alphas are
+  signed ad hoc and not notarized, and a published one is offered on the site
+  ([ADR 0129](../adr/0129-the-site-offers-pre-releases.md)): macOS does not vouch for them, and
+  the build attestation is the only proof of where one comes from. There is no update channel:
   a person with an old version is not told about a new one.
 - **An independent audit.** Nobody outside the project has reviewed the code yet.
 - **OAuth sign-in, PGP and S/MIME** are not built

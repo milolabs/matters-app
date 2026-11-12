@@ -1,5 +1,5 @@
 // Fills in what a release changes: the download link, the version line and the star count.
-// release.json is written by scripts/write-release.mjs in the release workflow. Until there is
+// release.json is written by scripts/write-release.mjs in the site workflow. Until there is
 // a release it says so. Without scripts the page keeps the words it was served with, which are
 // true before and after a release.
 
@@ -22,10 +22,19 @@ try {
     });
     for (const el of document.querySelectorAll("[data-download]")) {
       el.href = r.url;
-      el.textContent = "Download for macOS (Apple silicon)";
+      el.textContent = r.stage
+        ? `Download the ${r.stage} (Apple silicon)` // short enough for one line on a phone
+        : "Download for macOS (Apple silicon)";
     }
     for (const el of document.querySelectorAll("[data-version]")) {
       el.textContent = `${r.version} · ${day}`;
+      // A pre-release (ADR 0129) says so, and sends the reader to what its notes ask of them.
+      if (r.stage && r.notes) {
+        const notes = document.createElement("a");
+        notes.href = r.notes;
+        notes.textContent = "Read the release notes before you open it.";
+        el.append(` · ${r.stage}. `, notes);
+      }
     }
     for (const el of document.querySelectorAll("[data-released]")) el.hidden = false;
     for (const el of document.querySelectorAll("[data-unreleased]")) el.hidden = true;

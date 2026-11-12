@@ -5,7 +5,7 @@
 # - when a person publishes a release, so the download button, the version and the date follow it;
 # - by hand (Actions → Site → Run workflow).
 #
-# Nothing is built. The one generated file is release.json, written here from the latest published
+# Nothing is built. The one generated file is release.json, written here from the newest published
 # release; the copy in the repository says "no release" and is what a local preview shows.
 name: Site
 
@@ -42,8 +42,8 @@ jobs:
       - id: pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
-      # Alphas and drafts are not "latest", so the site never offers them.
-      - name: Write release.json from the latest release
+      # The newest stable release, or the newest pre-release while there is none (ADR 0129). No drafts.
+      - name: Write release.json from the newest published release
         run: node site/scripts/write-release.mjs
         env:
           GITHUB_TOKEN: ${{ github.token }}
