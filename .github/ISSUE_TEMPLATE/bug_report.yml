@@ -1,0 +1,77 @@
+name: Bug report
+description: Something in Matters does not work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. Please do not report a security problem here:
+        [SECURITY.md](https://github.com/milolabs/matters-app/blob/main/SECURITY.md) says how to
+        report it privately.
+
+        Take out anything private first: real mail, passwords, tokens, other people's addresses.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected to see.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest steps that show it. Say if it also happens on the made-up mailbox (`bun run dev:desktop:demo`).
+      placeholder: |
+        1. Open …
+        2. Type …
+        3. See …
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit or version
+      description: The commit you built (`git rev-parse --short HEAD`) or the version of the release.
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and chip
+      placeholder: macOS 26.1, Apple silicon
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Mail provider
+      options:
+        - Gmail
+        - iCloud
+        - Yahoo
+        - Fastmail
+        - Other IMAP server
+        - Not about an account
+    validations:
+      required: false
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Agent runtime
+      options:
+        - AI is off
+        - Claude Code
+        - Codex
+        - Ollama
+        - Not about the agent
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Anything the app or the terminal printed. Remove private data first.
+      render: text
+    validations:
+      required: false

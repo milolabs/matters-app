@@ -1,0 +1,36 @@
+name: Feature request
+description: Something Matters should do, or do differently
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the idea. The README lists
+        [what Matters does not do yet](https://github.com/milolabs/matters-app#what-it-does-not-do-yet);
+        please check it and the open issues first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and what stands in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: How it could work. A sketch or an example query helps.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other ways you considered
+    validations:
+      required: false
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Would you work on it?
+      options:
+        - label: I would like to open a pull request for this
