@@ -1,9 +1,10 @@
-# A release of Matters for macOS (ADR 0123, ADR 0124, docs/release.md).
+# A release of Matters for macOS (ADR 0123, 0124, 0126, docs/release.md).
 #
 # Started by hand, on main (Actions → Release → Run workflow). One run does all of it:
-# the checks of CI; then the version is set, committed to main and tagged; then the build.
+# the checks of CI; then the version is set in a commit that only the tag points at; then the
+# build of that tag. Nothing is written to main.
 #
-# - No version given: the next one is counted from apps/desktop/package.json
+# - No version given: the next one is counted from the newest v* tag
 #   (0.1.0-alpha.1 → 0.1.0-alpha.2, 0.1.0 → 0.1.1). A version given is taken as it is.
 # - A version with `-alpha.` makes an alpha, for a few invited testers before the project has a
 #   Developer ID: signed ad hoc, not notarized, on a draft pre-release whose notes say so and say
@@ -82,10 +83,10 @@ jobs:
           retention-days: 5
 
   # After the checks, and only then: the version goes into the two files that carry it, as one
-  # commit on main, and that commit gets the tag. The commit is made through GitHub's API with
-  # the checked commit as its parent, so it is refused if main has moved since the run began.
+  # commit on top of the checked commit, and that commit gets the tag. The commit is not on main:
+  # it is reachable from the tag only, so nothing here writes to a branch (ADR 0126).
   version:
-    name: Set the version, commit, tag
+    name: Set the version, tag
     if: ${{ !inputs.rehearsal }}
     needs: checks
     runs-on: ubuntu-latest
@@ -104,6 +105,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0 # the tags: the last one says where to count from
           persist-credentials: false
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -114,46 +116,35 @@ jobs:
         id: set
         env:
           NAMED: ${{ inputs.version }}
-          GH_TOKEN: ${{ github.token }}
         run: |
-          version="$(bun tools/next-version.ts --write "$NAMED")"
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$version" > /dev/null 2>&1; then
+          last="$(git tag --list 'v*' --sort=-creatordate | head -n 1)"
+          version="$(bun tools/next-version.ts --write "--from=$last" "$NAMED")"
+          if [ -n "$(git tag --list "v$version")" ]; then
             echo "::error::The tag v$version exists already."
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Version: $version" >> "$GITHUB_STEP_SUMMARY"
+          echo "Version: $version (the last was ${last:-none})" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Commit it to main and tag the commit
+      # Made through GitHub's API, so GitHub signs it. Its parent is the commit the checks ran on.
+      - name: Commit it and tag the commit
         id: commit
         env:
           VERSION: ${{ steps.set.outputs.version }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          repo="repos/$GITHUB_REPOSITORY"
           jq -n \
-            --arg repo "$GITHUB_REPOSITORY" \
-            --arg head "$GITHUB_SHA" \
-            --arg headline "Matters $VERSION" \
-            --arg package "$(base64 -w0 apps/desktop/package.json)" \
-            --arg lock "$(base64 -w0 bun.lock)" \
-            '{
-              query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
-              variables: { input: {
-                branch: { repositoryNameWithOwner: $repo, branchName: "main" },
-                expectedHeadOid: $head,
-                message: { headline: $headline },
-                fileChanges: { additions: [
-                  { path: "apps/desktop/package.json", contents: $package },
-                  { path: "bun.lock", contents: $lock }
-                ] }
-              } }
-            }' > "$RUNNER_TEMP/commit.json"
-          oid="$(gh api graphql --input "$RUNNER_TEMP/commit.json" --jq '.data.createCommitOnBranch.commit.oid')"
-          if [ -z "$oid" ] || [ "$oid" = "null" ]; then
-            echo "::error::The version commit was not made."
-            exit 1
-          fi
-          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$oid" > /dev/null
+            --arg base "$GITHUB_SHA" \
+            --rawfile package apps/desktop/package.json \
+            --rawfile lock bun.lock \
+            '{ base_tree: $base, tree: [
+                { path: "apps/desktop/package.json", mode: "100644", type: "blob", content: $package },
+                { path: "bun.lock", mode: "100644", type: "blob", content: $lock }
+              ] }' > "$RUNNER_TEMP/tree.json"
+          tree="$(gh api "$repo/git/trees" --input "$RUNNER_TEMP/tree.json" --jq .sha)"
+          commit="$(gh api "$repo/git/commits" -f message="Matters $VERSION" -f tree="$tree" -f "parents[]=$GITHUB_SHA" --jq .sha)"
+          gh api "$repo/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$commit" > /dev/null
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
   alpha:
