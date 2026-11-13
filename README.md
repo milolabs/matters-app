@@ -15,7 +15,8 @@ and shows you what is still on you: what you promised, who waits for an answer, 
 [Download](https://getmatters.app/download.html) ·
 [Architecture](docs/architecture.md) ·
 [Decisions](docs/adr/README.md) ·
-[Security](SECURITY.md)
+[Security](SECURITY.md) ·
+[X](https://x.com/getmattersapp)
 
 [![CI](https://github.com/milolabs/matters-app/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/milolabs/matters-app/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/milolabs/matters-app/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/milolabs/matters-app/actions/workflows/codeql.yml)
