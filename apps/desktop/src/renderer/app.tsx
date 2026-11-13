@@ -1,5 +1,6 @@
 import type { ThreadMessage } from "@matters/contracts";
 import type {
+  DraftFor,
   ImageChoice,
   Message,
   Participant,
@@ -97,7 +98,7 @@ import { addFilter, labelToken, senderToken } from "./queryEdits.ts";
 import { createReading } from "./reading.ts";
 import { ReadingFootSegment } from "./readingFoot.tsx";
 import { ReceivedStrip } from "./receivedStrip.tsx";
-import type { ReplyAgent } from "./replyAgent.ts";
+import type { ReplyAgent, ThreadHelp } from "./replyAgent.ts";
 import { replyPromptName } from "./replyPrompt.ts";
 import { createRowHits, type RowSegments } from "./rowHits.ts";
 import {
@@ -247,17 +248,29 @@ function Mail(props: Stores) {
       { defer: true },
     ),
   );
-  // The agent's help in the reply under the thread (ADR 0098); none while AI is off.
+  // The agent's help while writing (ADR 0098, 0132); none while AI is off.
   const replyAgent = (): ReplyAgent | null => {
-    // Any message that answers a thread, under it or in the full composer; a new message has none.
-    const threadId = compose.session()?.base.threadId;
-    if (threadId === undefined || !agent.enabled()) return null;
+    // Any message, under the thread or in the full composer. Only one that answers a thread gets
+    // the help that reads it; a new message and a forward go by the account they go out from.
+    const session = compose.session();
+    if (!session || !agent.enabled()) return null;
+    const threadId = session.base.threadId;
     const b = props.backend;
+    // Read when asked: the sender of a new message can change while it is written.
+    const about = (): DraftFor =>
+      threadId !== undefined ? { threadId } : { accountId: session.sender().accountId };
+    const thread: ThreadHelp | undefined =
+      threadId === undefined
+        ? undefined
+        : {
+            answer: (text, missing) => b.agentAnswerQuestions(threadId, text, missing),
+            check: (text) => b.agentCheckReply(threadId, text),
+            fill: (text) => b.agentFillGaps(threadId, text),
+          };
     return {
-      rewrite: (how, text) => b.agentRewriteDraft(threadId, text, how),
-      answer: (text, missing) => b.agentAnswerQuestions(threadId, text, missing),
-      check: (text) => b.agentCheckReply(threadId, text),
-      fill: (text) => b.agentFillGaps(threadId, text),
+      rewrite: (how, text) => b.agentRewriteDraft(about(), text, how),
+      write: (words, text) => b.agentWriteDraft(about(), session.subject(), text, words),
+      ...(thread === undefined ? {} : { thread }),
     };
   };
   const [showDetails, setShowDetails] = createSignal(false);

@@ -126,3 +126,65 @@ test("the background limit takes a preset, no limit or a number of the person's 
     await expect(limit).toHaveValue("25", { timeout: 2_000 });
   }).toPass();
 });
+
+test("the agent writes in a new message as the person asks", async ({ start }) => {
+  const { app, window } = await start(demo);
+  const list = window.getByRole("listbox", { name: "Messages" });
+  await expect(list.getByRole("option", { name: /PKP Intercity/ })).toBeVisible();
+  // AI is off until the person turns it on, for the demo runtime here.
+  const [settings] = await Promise.all([
+    app.waitForEvent("window"),
+    window.getByRole("button", { name: "Settings" }).click(),
+  ]);
+  await settings.getByRole("button", { name: "Agents" }).click();
+  await settings.getByRole("button", { name: "Check" }).click();
+  // The first choice puts every kind of work on the demo assistant, the only one a demo run lists.
+  const unset = settings
+    .locator("select")
+    .filter({ has: settings.locator("option", { hasText: "Choose…" }) });
+  await unset.first().selectOption({ index: 1 });
+  await expect(unset).toHaveCount(0);
+  await settings.getByRole("button", { name: "Turn AI on" }).click();
+  // "Shall I read your mail?": the person agrees for the demo account.
+  await settings.getByRole("button", { name: "Turn on", exact: true }).click();
+  await expect(settings.getByRole("button", { name: "Turn AI off" })).toBeVisible();
+  await settings.close();
+  await list.getByRole("option", { name: /PKP Intercity/ }).click();
+  await window.keyboard.press("c");
+
+  const composer = window.locator("[data-composer]");
+  await expect(composer).toBeVisible();
+  const text = composer.getByRole("textbox", { name: "Message" });
+  await text.click();
+
+  // ⌘J opens the menu with the field in focus; a new message has nothing "from the conversation".
+  // The window hears that AI is on a moment after Settings said so.
+  await expect(composer.getByRole("button", { name: /Agent/ })).toBeVisible();
+  await window.keyboard.press("ControlOrMeta+j");
+  const menu = composer.getByRole("menu", { name: "The agent" });
+  const field = menu.getByRole("textbox", { name: "Tell the agent what to write or change" });
+  await expect(field).toBeFocused();
+  await expect(menu.getByRole("menuitem", { name: "Shorter" })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "Fill in the placeholders" })).toHaveCount(0);
+
+  // Letters typed in the field are words, not the window's shortcuts ("c" opens no second composer).
+  await field.pressSequentially("write an invitation to the code review");
+  await expect(field).toHaveValue("write an invitation to the code review");
+  await field.press("Enter");
+
+  await expect(menu).toHaveCount(0);
+  await expect(text).toContainText("About an invitation to the code review: on [date], at [time].");
+  const note = composer.getByText("The agent wrote it as you asked.");
+  await expect(note).toBeVisible();
+
+  // Undo gives the text back as it was: empty.
+  await composer.getByRole("button", { name: "Undo" }).click();
+  await expect(text).not.toContainText("About an invitation");
+
+  // Esc in the menu closes the menu, not the composer.
+  await window.keyboard.press("ControlOrMeta+j");
+  await expect(menu).toBeVisible();
+  await window.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(composer).toBeVisible();
+});

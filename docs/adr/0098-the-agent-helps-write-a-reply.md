@@ -80,3 +80,8 @@ every question was answered. The ask was a newsletter's "stop promotional emails
 - The answer is given the check's open asks and answers each of them. When it still adds nothing,
   the note names what is open and says to answer it by hand; it never says all is answered.
 - After an answer the check runs again at once. A message that asks nothing gets no check line.
+
+## Addendum 3 (2026-11-13)
+
+The first addendum's "a new message has no thread, so no agent" is superseded by ADR 0132: a new
+message and a forward have the agent too, gated by the account they go out from.

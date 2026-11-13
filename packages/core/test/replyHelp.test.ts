@@ -1,16 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  ASKED_CLOSE,
+  ASKED_OPEN,
   acceptAnswers,
   acceptCheck,
   acceptFills,
   acceptRewrite,
+  acceptWrite,
   buildAnswerQuestionsRequest,
   buildCheckReplyRequest,
   buildFillGapsRequest,
   buildRewriteRequest,
+  buildWriteRequest,
   COMMON_RULES,
   DRAFT_CLOSE,
   DRAFT_OPEN,
+  draftFor,
   draftGaps,
   GAPS_OPEN,
   joinDraft,
@@ -18,10 +23,13 @@ import {
   LAST_OPEN,
   lastFromThem,
   MAX_ASKS,
+  MAX_WRITE_WORDS_CHARS,
   type PromptThread,
   REWRITE_HOW_TEXT,
+  SUBJECT_OPEN,
   sourceLabel,
   splitDraft,
+  WRITE_SCHEMA,
 } from "../src/index.ts";
 
 const NOW = Date.UTC(2026, 10, 9, 12);
@@ -147,6 +155,86 @@ describe("the requests", () => {
     const fills = buildFillGapsRequest(thread, "Price: [price]", ["[price]"], NOW);
     expect(fills.untrusted).toContain(`${GAPS_OPEN}\n[price]\n`);
     expect(fills.untrusted).toContain("[Message 2]");
+  });
+});
+
+describe("writing as the person asks (ADR 0132)", () => {
+  it("gives a new message the words, the subject and the lines, and no mail", () => {
+    const r = buildWriteRequest({
+      words: "  write an invitation to Friday's review,\n keep it short ",
+      subject: "Review",
+      own: "",
+    });
+    expect(r.schema).toBe(WRITE_SCHEMA);
+    expect(r.instructions).toContain(COMMON_RULES);
+    expect(r.instructions).toContain("there is no thread");
+    expect(r.instructions).not.toContain("[Message 3]");
+    expect(r.untrusted).toContain(
+      `${ASKED_OPEN}\nwrite an invitation to Friday's review, keep it short\n${ASKED_CLOSE}`,
+    );
+    expect(r.untrusted).toContain(`${SUBJECT_OPEN}\nReview\n`);
+    expect(r.untrusted).toContain(`${DRAFT_OPEN}\n\n${DRAFT_CLOSE}`);
+    expect(r.untrusted).not.toContain("[Message");
+  });
+
+  it("gives a reply its thread, keeps the words short, and carries the standing lines", () => {
+    const { own } = splitDraft(REPLY);
+    const r = buildWriteRequest(
+      {
+        words: "x".repeat(MAX_WRITE_WORDS_CHARS + 50),
+        subject: "Re: Pump",
+        own,
+        thread: { thread, nowMs: NOW },
+      },
+      {
+        list: [{ id: 1, scope: "write", text: "Sign as Milo", atMs: 1, actor: "person" }],
+        threadId: "t1",
+      },
+    );
+    expect(r.untrusted).toContain("[Message 2]");
+    expect(r.untrusted).toContain(`${"x".repeat(MAX_WRITE_WORDS_CHARS)}\n${ASKED_CLOSE}`);
+    expect(r.untrusted).not.toContain("x".repeat(MAX_WRITE_WORDS_CHARS + 1));
+    // The quote never goes as the person's lines.
+    expect(r.untrusted).not.toContain("Anna wrote");
+    // The person's words go with the data, under their own heading, never in the fixed text.
+    expect(r.instructions).not.toContain("xxxx");
+    expect(r.instructions).toContain("- Sign as Milo");
+  });
+
+  it("takes the thread or the account of a request, and nothing else", () => {
+    expect(draftFor({ threadId: "t1", text: "x" } as never)).toEqual({ threadId: "t1" });
+    expect(draftFor({ accountId: "a1", words: "x" } as never)).toEqual({ accountId: "a1" });
+  });
+
+  it("keeps every gap the person left, and allows new ones for what it was not told", () => {
+    const own = "Hi team,\n\nThe review is [room].";
+    expect(
+      acceptWrite({ written: " Hi team,\n\nThe review is [room], on [date] at [time]. \n" }, own),
+    ).toEqual({ ok: true, value: "Hi team,\n\nThe review is [room], on [date] at [time]." });
+    expect(acceptWrite({ written: "Hi team,\n\nThe review is on Friday." }, own)).toEqual({
+      ok: false,
+      reason: "gaps",
+    });
+  });
+
+  it("refuses a quoted line, an empty text, a subject line and a wrong shape", () => {
+    expect(acceptWrite({ written: "Hi\n> Anna wrote this" }, "")).toMatchObject({
+      reason: "quote",
+    });
+    for (const value of [{ written: "  \n " }, { written: "" }, { written: 4 }, {}, null, "Hi"]) {
+      expect(acceptWrite(value, ""), JSON.stringify(value)).toMatchObject({ reason: "shape" });
+    }
+    expect(acceptWrite({ written: "Hi", more: 1 }, "")).toMatchObject({ reason: "shape" });
+    expect(acceptWrite({ written: "Subject: Review\n\nHi team" }, "")).toMatchObject({
+      reason: "subject",
+    });
+    expect(
+      acceptWrite({ written: "Friday review\n\nHi team" }, "", "Friday  review"),
+    ).toMatchObject({ reason: "subject" });
+    expect(acceptWrite({ written: "Hi team" }, "", "Friday review")).toEqual({
+      ok: true,
+      value: "Hi team",
+    });
   });
 });
 

@@ -13,6 +13,7 @@ import type {
   DiscoveredServers,
   Draft,
   DraftContent,
+  DraftFor,
   FailureDetail,
   FileHit,
   GapSuggestion,
@@ -766,13 +767,25 @@ export interface AgentTalkRequest {
  * mail or changes a stored draft, and the result goes back to the composer only. `text` is the
  * whole Markdown body as the composer holds it: the quote below the person's lines is kept as it is.
  */
-export interface AgentRewriteDraftRequest {
+export type AgentRewriteDraftRequest = {
   readonly type: "agentRewriteDraft";
   readonly requestId: RequestId;
-  readonly threadId: string;
   readonly text: string;
   readonly how: RewriteHow;
-}
+} & DraftFor;
+
+/**
+ * The person tells the agent in their own words what to write or change (ADR 0132). Exactly one
+ * of `threadId` (a reply: the thread goes with the turn) and `accountId` (a new message: no mail
+ * goes). A rewrite takes either too. `words` are the person's, short and not blank.
+ */
+export type AgentWriteDraftRequest = {
+  readonly type: "agentWriteDraft";
+  readonly requestId: RequestId;
+  readonly subject: string;
+  readonly text: string;
+  readonly words: string;
+} & DraftFor;
 
 /** Adds short answers for what the other side's last message asked and the draft does not answer. */
 export interface AgentAnswerQuestionsRequest {
@@ -1010,6 +1023,7 @@ export type BackendRequest =
   | AgentPrepareRequest
   | AgentTalkRequest
   | AgentRewriteDraftRequest
+  | AgentWriteDraftRequest
   | AgentAnswerQuestionsRequest
   | AgentCheckReplyRequest
   | AgentFillGapsRequest
@@ -1773,6 +1787,14 @@ export interface AgentRewriteDraftResponse {
   readonly text: string;
 }
 
+export interface AgentWriteDraftResponse {
+  readonly type: "agentWriteDraft";
+  readonly requestId: RequestId;
+  readonly ok: true;
+  /** The whole body again: the person's lines as asked, the quote as it was. */
+  readonly text: string;
+}
+
 export interface AgentAnswerQuestionsResponse {
   readonly type: "agentAnswerQuestions";
   readonly requestId: RequestId;
@@ -1948,6 +1970,7 @@ export type BackendResponse =
   | AgentPrepareResponse
   | AgentTalkResponse
   | AgentRewriteDraftResponse
+  | AgentWriteDraftResponse
   | AgentAnswerQuestionsResponse
   | AgentCheckReplyResponse
   | AgentFillGapsResponse
