@@ -3,7 +3,7 @@ import type { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComposerSession } from "../src/renderer/compose.ts";
 import type { ReplyAgent, ThreadHelp } from "../src/renderer/replyAgent.ts";
-import { createAgentHelp } from "../src/renderer/writingHelp.ts";
+import { CHANGED_TEXT, createAgentHelp } from "../src/renderer/writingHelp.ts";
 
 /** Just enough of the editor: the text, and the changes the help makes to it. */
 function editor(start: string) {
@@ -127,5 +127,21 @@ describe("the agent's help for a reply", () => {
     h.help.bodyChanged(LONG);
     await vi.advanceTimersByTimeAsync(1500);
     expect(h.calls).toEqual(["fill", "check"]);
+  });
+
+  it("leaves the text alone when the writer typed while the agent worked", async () => {
+    const h = setup("Hi,", false);
+    h.write.mockImplementationOnce(async (words, text) => {
+      // The editor stays open during the turn: the writer goes on.
+      h.view.dispatch({ changes: { from: 0, to: 3, insert: "Hi, Anna," } });
+      return `${text}\n\nAbout ${words}: [date].`;
+    });
+    await h.help.run("write", "the price");
+    expect(h.text()).toBe("Hi, Anna,");
+    expect(h.help.note()).toBeNull();
+    expect(h.help.problem()).toBe(CHANGED_TEXT);
+    // The words are kept, so the same can be asked of the text as it is now.
+    expect(h.help.words()).toBe("the price");
+    expect(h.help.busy()).toBeNull();
   });
 });

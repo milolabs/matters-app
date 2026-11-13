@@ -55,6 +55,10 @@ Friday's review, keep it short") or what to change ("add a paragraph about the p
    the person's words with gaps for the date and the time, above the closing of the draft, or a
    short message around it when the draft is empty. So the checks above run for real.
 
+7. The text can be edited while the agent works. An answer for a text that has changed since it was
+   asked is not put in, for a rewrite, an answer or a write alike: the person's text stays, a line
+   says so, and the words they asked with are kept for another try.
+
 ## Consequences
 
 A person can start a new message from a sentence and then shape it with the agent, without a

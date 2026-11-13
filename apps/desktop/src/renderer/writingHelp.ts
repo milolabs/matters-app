@@ -59,6 +59,12 @@ export function createAgentHelp(opts: {
           : kind === "answer"
             ? ((await t?.answer(doc, open)) ?? doc)
             : await a.rewrite(kind, doc);
+      // The writer typed while the agent worked: the answer is for a text that is no longer
+      // there, and Undo would give back the older one. Their text stays, and so do their words.
+      if (v.state.doc.toString() !== doc) {
+        setProblem(CHANGED_TEXT);
+        return;
+      }
       if (kind === "write") setWords("");
       if (next === doc) {
         const text =
@@ -172,6 +178,9 @@ export function createAgentHelp(opts: {
 
 export type AgentHelp = ReturnType<typeof createAgentHelp>;
 
+/** Said when the text changed under a turn, so its answer was not put in. */
+export const CHANGED_TEXT =
+  "You changed the text while the agent was working, so its answer was not used. Ask again.";
 const BUSY_TEXT: Record<AgentAction, string> = {
   shorter: "Shortening…",
   formal: "Rewriting…",
