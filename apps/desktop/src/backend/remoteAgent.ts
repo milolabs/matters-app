@@ -8,6 +8,7 @@ import type {
   AgentRule,
   AgentStatus,
   AgentWorkKind,
+  DraftFor,
   GapSuggestion,
   JournalEntry,
   PreparedGuidance,
@@ -200,8 +201,17 @@ export class RemoteAgent implements AgentApi {
     });
   }
 
-  rewriteDraft(threadId: string, text: string, how: RewriteHow): Promise<{ text: string }> {
-    return this.host.command({ name: "agentRewriteDraft", threadId, text, how });
+  rewriteDraft(about: DraftFor, text: string, how: RewriteHow): Promise<{ text: string }> {
+    return this.host.command({ name: "agentRewriteDraft", ...about, text, how });
+  }
+
+  writeDraft(
+    about: DraftFor,
+    subject: string,
+    text: string,
+    words: string,
+  ): Promise<{ text: string }> {
+    return this.host.command({ name: "agentWriteDraft", ...about, subject, text, words });
   }
 
   answerQuestions(

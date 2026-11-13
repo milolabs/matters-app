@@ -139,3 +139,4 @@ Format: copy [`template.md`](template.md).
 | [0129](0129-the-site-offers-pre-releases.md) | The site offers pre-releases (amends 0127, 0123) | Accepted |
 | [0130](0130-the-app-is-tested-in-a-window.md) | The app is tested in a window, on every change (builds on 0018, 0122; amends 0128) | Accepted |
 | [0131](0131-the-person-sets-the-background-limit.md) | The person sets the background limit, and the log leaves Settings (amends 0051, 0054, 0121) | Accepted |
+| [0132](0132-the-agent-helps-write-a-new-message.md) | The agent helps write a new message, and writes as the person asks (amends 0098) | Accepted |

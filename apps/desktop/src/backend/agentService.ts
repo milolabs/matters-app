@@ -26,6 +26,7 @@ import type {
   ClockPort,
   Draft,
   DraftContent,
+  DraftFor,
   DraftStorePort,
   FileTextAnswer,
   GapSuggestion,
@@ -77,6 +78,7 @@ import {
   acceptTalkAll,
   acceptTalkQuotes,
   acceptVerdicts,
+  acceptWrite,
   actMatches,
   addNeedsYouView,
   buildAnswerQuestionsRequest,
@@ -91,6 +93,7 @@ import {
   buildTalkPlanRequest,
   buildTalkRequest,
   buildTalkTitleRequest,
+  buildWriteRequest,
   choicesOn,
   clean,
   countQuery,
@@ -117,6 +120,7 @@ import {
   MAX_INSTRUCTIONS,
   MAX_TALK_QUERY_CHARS,
   MAX_TALK_THREADS,
+  MAX_WRITE_WORDS_CHARS,
   matchQuery,
   mayRunOn,
   modelListed,
@@ -1761,18 +1765,46 @@ export class AgentService implements AgentApi {
    * the thread alone.
    */
   private async gateForAsk(threadId: string, kind: AgentWorkKind, runtime?: AgentRuntime) {
+    const { s, on } = await this.gateOn(kind, runtime);
+    const view = await this.deps.store.getThread(threadId, { visibleOnly: true });
+    if (view === null) throw new ThingNotFoundError();
+    const accountId = view.thread.accountId;
+    await this.gateAccount(accountId, on, s);
+    return { s, accountId, runtime: on };
+  }
+
+  /**
+   * The gates of a turn for a message with no thread (ADR 0132): the same as `gateForAsk`, by the
+   * account the message goes out from instead of a thread's account.
+   */
+  private async gateForAccount(accountId: string, kind: AgentWorkKind) {
+    const { s, on } = await this.gateOn(kind);
+    await this.gateAccount(accountId, on, s);
+    return { s, accountId, runtime: on };
+  }
+
+  /** The gates of help with a message: by its thread when it answers one, else by its account. */
+  private gateForDraft(about: DraftFor, kind: AgentWorkKind) {
+    return "threadId" in about
+      ? this.gateForAsk(about.threadId, kind)
+      : this.gateForAccount(about.accountId, kind);
+  }
+
+  /** The first gates of a turn the person asked for: AI on, and a runtime for the work. */
+  private async gateOn(kind: AgentWorkKind, runtime?: AgentRuntime) {
     const s = await this.currentSettings();
     const on = runtime ?? this.runtimeFor(kind, s);
     if (!s.enabled) throw new AgentUnavailableError(NOT_READY);
     if (on === NO_RUNTIME) throw new AgentUnavailableError(NOT_READY);
-    const view = await this.deps.store.getThread(threadId, { visibleOnly: true });
-    if (view === null) throw new ThingNotFoundError();
-    const accountId = view.thread.accountId;
+    return { s, on };
+  }
+
+  /** The account agreed to the runtime (ADR 0121, rule 4), then the runtime's own gates. */
+  private async gateAccount(accountId: string, on: AgentRuntime, s: AgentSettings) {
     if (!(await consentedAccounts(this.deps, on.id)).has(accountId)) {
       throw new AgentUnavailableError(noConsent(on));
     }
     await this.gateRuntime(on, s);
-    return { s, accountId, runtime: on };
   }
 
   /**
@@ -1937,13 +1969,16 @@ export class AgentService implements AgentApi {
     }
   }
 
-  async rewriteDraft(threadId: string, text: string, how: RewriteHow): Promise<{ text: string }> {
+  async rewriteDraft(about: DraftFor, text: string, how: RewriteHow): Promise<{ text: string }> {
     if (!REWRITE_HOWS.includes(how)) {
       throw new InvalidAgentSettingError("The draft can be made shorter, formal or English.");
     }
     const parts = this.ownLines(text, true);
-    const { s, accountId, runtime } = await this.gateForAsk(threadId, "write");
-    const standing = { list: await this.deps.insights.listInstructions(), threadId };
+    const { s, accountId, runtime } = await this.gateForDraft(about, "write");
+    const standing = {
+      list: await this.deps.insights.listInstructions(),
+      threadId: threadOf(about),
+    };
     const model = this.writeModel(s, runtime);
     const value = await this.helpTurn(
       runtime,
@@ -1959,6 +1994,56 @@ export class AgentService implements AgentApi {
     const got = acceptRewrite(value, parts.own);
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
     return { text: joinDraft(got.value, parts.quote) };
+  }
+
+  async writeDraft(
+    about: DraftFor,
+    subject: string,
+    text: string,
+    words: string,
+  ): Promise<{ text: string }> {
+    const asked = words.replace(/\s+/g, " ").trim();
+    if (asked === "") throw new InvalidAgentSettingError("Tell the agent what to write first.");
+    if (asked.length > MAX_WRITE_WORDS_CHARS) {
+      throw new InvalidAgentSettingError("That is too long to ask the agent. Say it shorter.");
+    }
+    const parts = this.ownLines(text, false);
+    const { s, accountId, runtime } = await this.gateForDraft(about, "write");
+    const threadId = threadOf(about);
+    const model = this.writeModel(s, runtime);
+    // Only a reply sends its thread with it; a new message sends no mail.
+    const room = this.roomFor(runtime, model);
+    const thread =
+      threadId === ""
+        ? undefined
+        : {
+            thread: await this.helpThread(threadId, runtime),
+            nowMs: this.now,
+            ...(room === undefined ? {} : { room }),
+          };
+    const standing = { list: await this.deps.insights.listInstructions(), threadId };
+    const value = await this.helpTurn(
+      runtime,
+      accountId,
+      thread === undefined ? 0 : 1,
+      {
+        model,
+        request: buildWriteRequest(
+          {
+            words: asked,
+            subject,
+            own: parts.own,
+            ...(thread === undefined ? {} : { thread }),
+          },
+          standing,
+        ),
+        effort: this.effortOn("write", s, runtime, model),
+      },
+      "The assistant could not write this. Try again.",
+    );
+    const got = acceptWrite(value, parts.own, subject);
+    if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
+    return { text: got.value === parts.own.trim() ? text : joinDraft(got.value, parts.quote) };
   }
 
   async answerQuestions(
@@ -3194,9 +3279,16 @@ function helpRefused(reason: HelpRefusal): string {
       return "The assistant's answer changed the quoted mail, so it was not used. Try again.";
     case "dropped":
       return "The assistant's answer left out part of your reply, so it was not used. Try again.";
+    case "subject":
+      return "The assistant's answer put the subject in the text, so it was not used. Try again.";
     case "shape":
       return "The assistant's answer could not be used. Try again.";
   }
+}
+
+/** The thread help is for; empty for a new message, which has none (ADR 0132). */
+function threadOf(about: DraftFor): string {
+  return "threadId" in about ? about.threadId : "";
 }
 
 /** The prepared work a draft or a question answer stands for. */

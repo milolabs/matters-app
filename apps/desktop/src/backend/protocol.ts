@@ -20,6 +20,7 @@ import type {
   DeleteForeverResult,
   Draft,
   DraftContent,
+  DraftFor,
   FetchOutcome,
   GapSuggestion,
   GeneralImages,
@@ -158,12 +159,17 @@ export type WorkerCommand =
       readonly choice?: TalkChoice;
     }
   | { readonly name: "agentTalkStop"; readonly threadId: string }
-  | {
+  | ({
       readonly name: "agentRewriteDraft";
-      readonly threadId: string;
       readonly text: string;
       readonly how: RewriteHow;
-    }
+    } & DraftFor)
+  | ({
+      readonly name: "agentWriteDraft";
+      readonly subject: string;
+      readonly text: string;
+      readonly words: string;
+    } & DraftFor)
   | {
       readonly name: "agentAnswerQuestions";
       readonly threadId: string;
@@ -281,6 +287,7 @@ export interface CommandResults {
   readonly agentTalk: TalkResult;
   readonly agentTalkStop: null;
   readonly agentRewriteDraft: { readonly text: string };
+  readonly agentWriteDraft: { readonly text: string };
   readonly agentAnswerQuestions: { readonly text: string };
   readonly agentCheckReply: ReplyCheck;
   readonly agentFillGaps: readonly GapSuggestion[];

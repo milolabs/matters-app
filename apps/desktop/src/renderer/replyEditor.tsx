@@ -1,7 +1,7 @@
 import type { EditorView } from "@codemirror/view";
 import { parseRecipients } from "@matters/core";
 import { createSignal, Index, type JSX, onCleanup, onMount, Show, untrack } from "solid-js";
-import { AgentButton, AgentNote, CheckLine, createAgentHelp } from "./agentHelp.tsx";
+import { AgentButton, AgentNote, CheckLine } from "./agentHelp.tsx";
 import { ChipView } from "./attachmentStrip.tsx";
 import type { ComposerSession } from "./compose.ts";
 import { type EditorApi, MarkdownEditor } from "./editor.tsx";
@@ -11,6 +11,7 @@ import { isAttachShortcut } from "./keys.ts";
 import { clearFormatting, insertLink, toggleInline, toggleLinePrefix } from "./liveMarkdown.ts";
 import type { ReplyAgent } from "./replyAgent.ts";
 import { pill, pillPrimary } from "./ui.ts";
+import { createAgentHelp } from "./writingHelp.ts";
 
 /**
  * A reply written under its thread (ADR 0100): one bordered box, because it is the one place to

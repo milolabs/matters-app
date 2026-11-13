@@ -29,6 +29,7 @@ import type {
   AgentTalkResponse,
   AgentTalksResponse,
   AgentThreadResponse,
+  AgentWriteDraftResponse,
   AttachmentInfo,
   BackendEvent,
   BackendMessage,
@@ -93,6 +94,7 @@ import type {
   DeleteForeverResult,
   Draft,
   DraftContent,
+  DraftFor,
   FailureDetail,
   FileHit,
   GapSuggestion,
@@ -351,8 +353,11 @@ export interface Backend {
   // `BackendError`: `agentUnavailable` (AI off or not ready, no consent, allowance used up, or an
   // answer that was not used), `notFound` (no such thread) or `invalidRequest` (nothing written
   // yet, too long); its message is a sentence to show as it is. May take a while.
+  // A new message has no thread: its help goes by the account it goes out from (ADR 0132).
   /** The person's lines rewritten: shorter, formal, or in English. */
-  agentRewriteDraft(threadId: string, text: string, how: RewriteHow): Promise<string>;
+  agentRewriteDraft(about: DraftFor, text: string, how: RewriteHow): Promise<string>;
+  /** The person's lines written or changed as their `words` ask; the thread goes when there is one. */
+  agentWriteDraft(about: DraftFor, subject: string, text: string, words: string): Promise<string>;
   /** Short answers added for what the other side asked; the same text when nothing was open. */
   agentAnswerQuestions(
     threadId: string,
@@ -707,9 +712,19 @@ export function createBackend(port: MessagePort): Backend {
     agentTalkStop: async (threadId) => {
       await request({ type: "agentTalkStop", threadId });
     },
-    agentRewriteDraft: async (threadId, text, how) =>
-      (await request<AgentRewriteDraftResponse>({ type: "agentRewriteDraft", threadId, text, how }))
+    agentRewriteDraft: async (about, text, how) =>
+      (await request<AgentRewriteDraftResponse>({ type: "agentRewriteDraft", ...about, text, how }))
         .text,
+    agentWriteDraft: async (about, subject, text, words) =>
+      (
+        await request<AgentWriteDraftResponse>({
+          type: "agentWriteDraft",
+          ...about,
+          subject,
+          text,
+          words,
+        })
+      ).text,
     agentAnswerQuestions: async (threadId, text, missing) =>
       (
         await request<AgentAnswerQuestionsResponse>({

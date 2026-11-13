@@ -29,6 +29,7 @@ import {
   CredentialsUnavailableError,
   countMatches,
   createFileReader,
+  draftFor,
   ReceivedDownloads,
   RejectedPasswords,
   receivedId,
@@ -665,7 +666,14 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
       case "agentTalk":
         return needAgent().talk(command.threadId, command.words, command.choice);
       case "agentRewriteDraft":
-        return needAgent().rewriteDraft(command.threadId, command.text, command.how);
+        return needAgent().rewriteDraft(draftFor(command), command.text, command.how);
+      case "agentWriteDraft":
+        return needAgent().writeDraft(
+          draftFor(command),
+          command.subject,
+          command.text,
+          command.words,
+        );
       case "agentAnswerQuestions":
         return needAgent().answerQuestions(command.threadId, command.text, command.missing ?? []);
       case "agentCheckReply":
