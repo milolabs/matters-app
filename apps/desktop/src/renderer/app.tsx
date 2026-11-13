@@ -55,11 +55,11 @@ import {
   ForwardIcon,
   ImageIcon,
   ImageOffIcon,
+  MattersMark,
   MoreIcon,
   PaperclipIcon,
   ReplyAllIcon,
   ReplyIcon,
-  Ring,
   SettingsIcon,
   ShieldCheckIcon,
   SpamIcon,
@@ -1996,7 +1996,7 @@ function ThreadView(props: {
       when={open()}
       fallback={
         <div class="flex h-full flex-col items-center justify-center gap-3 text-secondary">
-          <Ring size={28} />
+          <MattersMark size={28} mono />
           <p class="text-[13px]">Select a message to read it.</p>
         </div>
       }
