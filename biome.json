@@ -23,9 +23,20 @@
   "linter": {
     "rules": {
       "preset": "recommended"
+    },
+    "domains": {
+      "playwright": "none"
     }
   },
   "overrides": [
+    {
+      "includes": ["apps/desktop/e2e/**"],
+      "linter": {
+        "domains": {
+          "playwright": "recommended"
+        }
+      }
+    },
     {
       "includes": ["site/**"],
       "linter": {

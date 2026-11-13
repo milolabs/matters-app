@@ -137,3 +137,4 @@ Format: copy [`template.md`](template.md).
 | [0127](0127-the-site-lives-in-the-repository.md) | The site lives in the repository (builds on 0123, 0126) | Accepted |
 | [0128](0128-tests-are-not-scanned.md) | Tests are not scanned by CodeQL (amends 0122) | Accepted |
 | [0129](0129-the-site-offers-pre-releases.md) | The site offers pre-releases (amends 0127, 0123) | Accepted |
+| [0130](0130-the-app-is-tested-in-a-window.md) | The app is tested in a window, on every change (builds on 0018, 0122; amends 0128) | Accepted |

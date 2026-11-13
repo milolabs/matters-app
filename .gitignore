@@ -7,3 +7,6 @@ coverage/
 *.db-wal
 *.db-shm
 .bench/
+
+# What an end-to-end run leaves: report, videos, traces (ADR 0130).
+.e2e/
