@@ -285,6 +285,14 @@ function isMachO(file: string): boolean {
 }
 
 // V8 compiles code at run time; the hardened runtime allows that only with these.
+// The hardened runtime also loads only libraries signed by the same team. An ad-hoc signature has
+// no team, so the app's own frameworks would be refused at launch; library validation goes off for
+// ad-hoc builds only.
+const libraryValidation = adHoc
+  ? `  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+`
+  : "";
 const entitlements = join(tmpdir(), `matters-entitlements-${process.pid}.plist`);
 writeFileSync(
   entitlements,
@@ -296,7 +304,7 @@ writeFileSync(
   <true/>
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
   <true/>
-</dict>
+${libraryValidation}</dict>
 </plist>
 `,
 );
