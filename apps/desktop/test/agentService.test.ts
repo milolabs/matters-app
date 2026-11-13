@@ -20,6 +20,7 @@ import {
   MAX_INSTRUCTION_CHARS,
   MAX_INSTRUCTIONS,
   MAX_TALK_THREADS,
+  NO_WEEK_LIMIT_PERCENT,
   PREPARED_INSTRUCTIONS,
   PROMPT_INSTRUCTIONS,
   planUseOf,
@@ -1325,6 +1326,12 @@ describe("AgentService: settings", () => {
     await expect(h.service.setWeekShare(101)).rejects.toBeInstanceOf(InvalidAgentSettingError);
     await h.service.setWeekShare(25);
     expect(await h.settings.get()).toMatchObject({ weekSharePercent: 25 });
+    // Any whole percent the person types, and no limit (ADR 0131).
+    await h.service.setWeekShare(40);
+    expect(await h.settings.get()).toMatchObject({ weekSharePercent: 40 });
+    await h.service.setWeekShare(NO_WEEK_LIMIT_PERCENT);
+    expect(await h.settings.get()).toMatchObject({ weekSharePercent: 100 });
+    expect((await h.service.status()).settings.weekSharePercent).toBe(100);
     expect(await h.settings.get()).not.toHaveProperty("windowDays");
   });
   it("reports settings, the runtime, limits, progress and the last ledger entries", async () => {

@@ -138,7 +138,10 @@ export function levelsFor(
 export type AgentPriority = "P0" | "P1" | "P2" | "P3";
 
 export interface AgentBudget {
-  /** Share of the plan's week that background work (`P1` to `P3`) may use, in percent. */
+  /**
+   * Share of the plan's week that background work (`P1` to `P3`) may use, in percent. At
+   * `NO_WEEK_LIMIT_PERCENT` or above there is no share: background work runs until a window is full.
+   */
   readonly weekSharePercent: number;
   /** How much of the plan's week our own runs have used so far, in percent of the week. */
   readonly usedByUsPercent: number;
@@ -147,6 +150,9 @@ export interface AgentBudget {
 }
 
 export const DEFAULT_WEEK_SHARE_PERCENT = 10;
+
+/** The share that means no limit of ours (ADR 0131): background work stops only at the plan's. */
+export const NO_WEEK_LIMIT_PERCENT = 100;
 
 export const DEFAULT_AGENT_BUDGET: AgentBudget = {
   weekSharePercent: DEFAULT_WEEK_SHARE_PERCENT,
@@ -178,6 +184,9 @@ const CEILING: Record<AgentPriority, { readonly session: number; readonly week: 
  * - `P0` stops only when a window is full. Everything else stops while the runtime is billing
  *   overage, above its ceiling in either window, or when background work has used more than its
  *   even share of the week so far and the week has no spare (see `withinShare`).
+ * - With no limit (`weekSharePercent` at `NO_WEEK_LIMIT_PERCENT` or above; ADR 0131) background
+ *   work has no ceiling and no share: like `P0` it stops only when a window is full, and still
+ *   never while the runtime is billing overage.
  * - A window whose reset time has passed counts as empty: what we know is older than the reset.
  * - Unknown limits (nothing run yet) allow `P0` and `P1` only, so the first turns of background
  *   work learn the windows and later priorities wait for them.
@@ -192,19 +201,24 @@ export function mayRun(
   const background = priority !== "P0";
   if (limits === undefined) {
     if (priority === "P2" || priority === "P3") return { ok: false, reason: "sessionLimit" };
-    return background ? withinShare(budget, undefined, nowMs) : { ok: true };
+    if (background && budget.weekSharePercent < NO_WEEK_LIMIT_PERCENT) {
+      return withinShare(budget, undefined, nowMs);
+    }
+    return { ok: true };
   }
   if (background && limits.usingOverage) return { ok: false, reason: "overage" };
-  const ceiling = CEILING[priority];
+  const unlimited = background && budget.weekSharePercent >= NO_WEEK_LIMIT_PERCENT;
+  const ceiling = unlimited ? CEILING.P0 : CEILING[priority];
+  const full = priority === "P0" || unlimited;
   const session = effective(limits.session, nowMs);
   const week = effective(limits.week, nowMs);
-  if (priority === "P0" ? session >= ceiling.session : session > ceiling.session) {
+  if (full ? session >= ceiling.session : session > ceiling.session) {
     return refused("sessionLimit", limits.session?.resetsAtMs);
   }
-  if (priority === "P0" ? week >= ceiling.week : week > ceiling.week) {
+  if (full ? week >= ceiling.week : week > ceiling.week) {
     return refused("weekLimit", limits.week?.resetsAtMs);
   }
-  return background ? withinShare(budget, limits.week, nowMs) : { ok: true };
+  return background && !unlimited ? withinShare(budget, limits.week, nowMs) : { ok: true };
 }
 
 /** Every kind of file that can go whole (ADR 0090). */

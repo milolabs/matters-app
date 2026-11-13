@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { AgentBudget, PlanLimits } from "../src/index.ts";
-import { DEFAULT_AGENT_BUDGET, DEFAULT_WEEK_SHARE_PERCENT, mayRun } from "../src/index.ts";
+import {
+  DEFAULT_AGENT_BUDGET,
+  DEFAULT_WEEK_SHARE_PERCENT,
+  mayRun,
+  NO_WEEK_LIMIT_PERCENT,
+} from "../src/index.ts";
 
 const HOUR = 3_600_000;
 const WEEK = 7 * 24 * HOUR;
@@ -166,5 +171,76 @@ describe("mayRun: unknown limits", () => {
     expect(mayRun("P1", undefined, halfWeek, NOW)).toEqual({ ok: true });
     expect(mayRun("P2", undefined, halfWeek, NOW).ok).toBe(false);
     expect(mayRun("P3", undefined, halfWeek, NOW).ok).toBe(false);
+  });
+});
+
+describe("mayRun: no limit (ADR 0131)", () => {
+  // Far past any share: with no limit our own use of the week is not counted against it.
+  const none: AgentBudget = {
+    weekSharePercent: NO_WEEK_LIMIT_PERCENT,
+    usedByUsPercent: 90,
+    weekStartMs: NOW - WEEK / 10,
+  };
+
+  it("is 100 percent", () => {
+    expect(NO_WEEK_LIMIT_PERCENT).toBe(100);
+  });
+
+  it("runs background work above every ceiling and past every share", () => {
+    for (const p of ["P1", "P2", "P3"] as const) {
+      expect(mayRun(p, limits(90, 95), none, NOW)).toEqual({ ok: true });
+      expect(mayRun(p, limits(99, 99), none, NOW)).toEqual({ ok: true });
+    }
+  });
+
+  it("stops when a window is full, until its reset", () => {
+    for (const p of ["P1", "P2", "P3"] as const) {
+      expect(mayRun(p, limits(100, 40), none, NOW)).toEqual({
+        ok: false,
+        reason: "sessionLimit",
+        untilMs: NOW + 2 * HOUR,
+      });
+      expect(mayRun(p, limits(40, 100), none, NOW)).toEqual({
+        ok: false,
+        reason: "weekLimit",
+        untilMs: NOW + WEEK / 2,
+      });
+    }
+  });
+
+  it("counts a window whose reset has passed as empty", () => {
+    expect(mayRun("P3", limits(100, 100), none, NOW + WEEK)).toEqual({ ok: true });
+  });
+
+  it("never runs background work on paid credits", () => {
+    for (const p of ["P1", "P2", "P3"] as const) {
+      expect(mayRun(p, limits(10, 10, { usingOverage: true }), none, NOW)).toEqual({
+        ok: false,
+        reason: "overage",
+      });
+    }
+  });
+
+  it("keeps P2 and P3 waiting while the limits are unknown, and lets P1 learn them", () => {
+    expect(mayRun("P1", undefined, none, NOW)).toEqual({ ok: true });
+    expect(mayRun("P2", undefined, none, NOW).ok).toBe(false);
+    expect(mayRun("P3", undefined, none, NOW).ok).toBe(false);
+  });
+
+  it("leaves a share below 100 as it was", () => {
+    const share = { ...none, weekSharePercent: 99 };
+    expect(mayRun("P1", limits(90, 95), share, NOW)).toMatchObject({ ok: false });
+    expect(mayRun("P3", limits(30, 10), { ...share, usedByUsPercent: 0 }, NOW)).toMatchObject({
+      ok: false,
+      reason: "sessionLimit",
+    });
+    expect(mayRun("P1", limits(10, 60), { ...share, usedByUsPercent: 50 }, NOW)).toMatchObject({
+      ok: false,
+      reason: "budget",
+    });
+    expect(mayRun("P1", undefined, { ...share, usedByUsPercent: 100 }, NOW)).toMatchObject({
+      ok: false,
+      reason: "budget",
+    });
   });
 });

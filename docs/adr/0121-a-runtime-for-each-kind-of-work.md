@@ -6,6 +6,8 @@
   what "never a fallback" means with several), [0051](0051-agents-on-the-users-own-plans.md)
   (rule 7: windows, shares and limits are kept per runtime)
 - Builds on: [0118](0118-effort-is-set-per-kind-of-work.md), [0120](0120-codex-is-a-runtime.md)
+- Amended by: [0131](0131-the-person-sets-the-background-limit.md) (rule 6: the one share may be no
+  limit)
 
 ## Context
 

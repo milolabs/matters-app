@@ -1,22 +1,15 @@
-import type {
-  AgentRuntimeInfo,
-  AgentStatus,
-  FeedbackJournalEntry,
-  InstructionJournalEntry,
-  PlanLimits,
-  RuleJournalEntry,
-} from "@matters/core";
+import type { AgentRuntimeInfo, AgentStatus, PlanLimits } from "@matters/core";
 import { everyKindOn, kindInfo } from "@matters/core";
 import { describe, expect, it } from "vitest";
 import {
   answeredByLine,
   consentText,
+  customShare,
   EFFORT_WORDS,
   effortOptions,
   effortShown,
   hasNoPlan,
-  journalLine,
-  journalLines,
+  instructionScopeWords,
   kindsWords,
   kindWaits,
   ledgerEffort,
@@ -26,6 +19,9 @@ import {
   questionButtonText,
   ruleText,
   sentLine,
+  shareChoice,
+  shareHint,
+  shareOptions,
   signInCommand,
   splitYours,
   statusWords,
@@ -72,41 +68,6 @@ const status = (
   consents: [],
   progress: { state: "idle" },
   ledger: [],
-  ...over,
-});
-
-const journalEntry = (over: Partial<FeedbackJournalEntry> = {}): FeedbackJournalEntry => ({
-  id: 1,
-  atMs: NOW - 60_000,
-  action: "notImportant",
-  actor: "person",
-  threadId: "t1",
-  lastMessageKey: 10,
-  senderAddress: "anna@northwind.example",
-  ...over,
-});
-
-const ruleEntry = (over: Partial<RuleJournalEntry> = {}): RuleJournalEntry => ({
-  id: 1,
-  atMs: NOW - 60_000,
-  action: "ruleAdded",
-  actor: "person",
-  ruleId: 1,
-  scope: "sender",
-  subject: "alerts@x.com",
-  ...over,
-});
-
-const instructionEntry = (
-  over: Partial<InstructionJournalEntry> = {},
-): InstructionJournalEntry => ({
-  id: 1,
-  atMs: NOW - 60_000,
-  action: "instructionAdded",
-  actor: "person",
-  instructionId: 1,
-  scope: "write",
-  text: "Write briefly",
   ...over,
 });
 
@@ -169,19 +130,14 @@ describe("the person's words", () => {
 });
 
 describe("the words of a rule", () => {
-  it("titles who added it, and says what it does", () => {
-    const line = (over: Partial<RuleJournalEntry>) => journalLine(ruleEntry(over), NOW);
-    expect(line({}).title).toBe("Rule added by you");
-    expect(line({ actor: "agent" }).title).toBe("Rule added by the agent");
-    expect(line({}).detail).toBe("No reply needed from alerts@x.com");
-    expect(line({ scope: "domain", subject: "x.com" }).detail).toBe("No reply needed from x.com");
-    expect(line({ scope: "type", subject: "programLike" }).detail).toBe(
+  it("says what a rule does", () => {
+    expect(ruleText({ scope: "sender", subject: "alerts@x.com" })).toBe(
+      "No reply needed from alerts@x.com",
+    );
+    expect(ruleText({ scope: "domain", subject: "x.com" })).toBe("No reply needed from x.com");
+    expect(ruleText({ scope: "type", subject: "programLike" })).toBe(
       "No reply needed from addresses that look like programs (alerts@, updates@…)",
     );
-    expect(line({ words: "never from them" }).detail).toBe(
-      'No reply needed from alerts@x.com. You said: "never from them"',
-    );
-    expect(line({}).headline).toBe("");
   });
 
   it("describes a rule about a kind in the person's words (ADR 0068, rule 3)", () => {
@@ -193,146 +149,14 @@ describe("the words of a rule", () => {
       "No reply needed from a@b.example",
     );
   });
-
-  it("is undoable until undone, whatever else the journal holds", () => {
-    const lines = journalLines(
-      [
-        ruleEntry({ id: 6, ruleId: 3 }),
-        journalEntry({ id: 5, threadId: "t1", action: "notImportant" }),
-        ruleEntry({ id: 4, ruleId: 2, undoneAtMs: NOW - 1 }),
-        ruleEntry({ id: 3, ruleId: 1 }),
-      ],
-      NOW,
-    );
-    expect(lines.map((l) => [l.entry.id, l.undoable, l.undone])).toEqual([
-      [6, true, false],
-      [5, true, false],
-      [4, false, true],
-      [3, true, false],
-    ]);
-  });
 });
 
 describe("the words of an instruction", () => {
-  const line = (over: Partial<InstructionJournalEntry>) => journalLine(instructionEntry(over), NOW);
-
-  it("titles who added it, and says where it applies and what it says", () => {
-    expect(line({}).title).toBe("Instruction added by you");
-    expect(line({ actor: "agent" }).title).toBe("Remembered by the agent");
-    expect(line({}).detail).toBe("When writing: Write briefly.");
-    expect(line({ scope: "general", text: "Answer in Polish." }).detail).toBe(
-      "In general: Answer in Polish.",
-    );
-    expect(line({ scope: "understand" }).detail).toMatch(/^When reading: /);
-    expect(line({ scope: "thread" }).detail).toMatch(/^For this thread: /);
-    expect(line({}).headline).toBe("");
-  });
-
-  it("quotes the person's words only when they differ from the text", () => {
-    expect(line({ actor: "agent", words: "zawsze pisz krótko" }).detail).toBe(
-      'When writing: Write briefly. You said: "zawsze pisz krótko"',
-    );
-    expect(line({ actor: "agent", words: " Write briefly " }).detail).toBe(
-      "When writing: Write briefly.",
-    );
-    expect(line({ actor: "agent", words: "  " }).detail).toBe("When writing: Write briefly.");
-  });
-
-  it("is undoable until undone, by its own id, whatever else the journal holds", () => {
-    const lines = journalLines(
-      [
-        instructionEntry({ id: 6, instructionId: 3 }),
-        journalEntry({ id: 5, threadId: "t1", action: "notImportant" }),
-        instructionEntry({ id: 4, instructionId: 2, undoneAtMs: NOW - 1 }),
-        instructionEntry({ id: 3, instructionId: 1 }),
-      ],
-      NOW,
-    );
-    expect(lines.map((l) => [l.entry.id, l.undoable, l.undone])).toEqual([
-      [6, true, false],
-      [5, true, false],
-      [4, false, true],
-      [3, true, false],
-    ]);
-  });
-});
-
-describe("the journal's words", () => {
-  it("titles who did what", () => {
-    const title = (over: Partial<FeedbackJournalEntry>) =>
-      journalLine(journalEntry(over), NOW).title;
-    expect(title({ action: "closed", actor: "agent" })).toBe("Closed by the agent");
-    expect(title({ action: "closed", actor: "person" })).toBe("Closed by you");
-    expect(title({ action: "notImportant" })).toBe("Marked not important");
-    expect(title({ action: "later", untilMs: NOW + 1 })).toBe("Set aside");
-  });
-
-  it("says how many older mails a closing also hid, and says nothing when it is none", () => {
-    const title = (over: Partial<FeedbackJournalEntry>) =>
-      journalLine(journalEntry(over), NOW).title;
-    expect(title({ action: "closed", actor: "person", alsoCovers: 8 })).toBe(
-      "Closed by you · also 8 older mails",
-    );
-    expect(title({ action: "notImportant", alsoCovers: 1 })).toBe(
-      "Marked not important · also 1 older mail",
-    );
-    expect(title({ action: "closed", actor: "person" })).toBe("Closed by you");
-  });
-
-  it("gives the reason and the person's words, as plain text", () => {
-    const detail = (over: Partial<FeedbackJournalEntry>) =>
-      journalLine(journalEntry(over), NOW).detail;
-    expect(detail({ reason: "Nothing to answer", words: "nie odpisuj" })).toBe(
-      'Nothing to answer. You said: "nie odpisuj"',
-    );
-    expect(detail({ reason: "Nothing to answer." })).toBe("Nothing to answer.");
-    expect(detail({ words: "nie odpisuj" })).toBe('You said: "nie odpisuj"');
-    expect(detail({ reason: "<b>x</b>" })).toBe("<b>x</b>.");
-    expect(detail({})).toBe("");
-    expect(detail({ reason: "  ", words: " " })).toBe("");
-  });
-
-  it("offers Undo only on the newest line of a thread and action that is not undone", () => {
-    const lines = journalLines(
-      [
-        journalEntry({ id: 5, threadId: "t1", action: "notImportant" }),
-        journalEntry({ id: 4, threadId: "t2", action: "notImportant" }),
-        journalEntry({ id: 3, threadId: "t1", action: "closed" }),
-        journalEntry({ id: 2, threadId: "t1", action: "notImportant" }),
-      ],
-      NOW,
-    );
-    expect(lines.map((l) => [l.entry.id, l.undoable, l.undone])).toEqual([
-      [5, true, false],
-      [4, true, false],
-      [3, true, false],
-      [2, false, false],
-    ]);
-  });
-
-  it("passes over an undone line when it looks for the newest, and shows the line as undone", () => {
-    const lines = journalLines(
-      [
-        journalEntry({ id: 3, undoneAtMs: NOW - 1 }),
-        journalEntry({ id: 2 }),
-        journalEntry({ id: 1 }),
-      ],
-      NOW,
-    );
-    expect(lines.map((l) => [l.entry.id, l.undoable, l.undone])).toEqual([
-      [3, false, true],
-      [2, true, false],
-      [1, false, false],
-    ]);
-  });
-
-  it("does not offer Undo on a later that has already come back", () => {
-    const later = (untilMs: number) =>
-      journalLines([journalEntry({ action: "later", untilMs })], NOW)[0];
-    expect(later(NOW + 1000)?.undoable).toBe(true);
-    expect(later(NOW)?.undoable).toBe(false);
-    expect(later(NOW - 1000)?.undoable).toBe(false);
-    expect(later(NOW - 1000)?.undone).toBe(false);
+  it("says where it applies", () => {
+    expect(instructionScopeWords("general")).toBe("In general");
+    expect(instructionScopeWords("understand")).toBe("When reading");
+    expect(instructionScopeWords("write")).toBe("When writing");
+    expect(instructionScopeWords("thread")).toBe("For this thread");
   });
 });
 
@@ -582,5 +406,45 @@ describe("a runtime for each kind of work (ADR 0121)", () => {
     expect(talkRuntimeName(spread(), "all", null)).toBe("Claude Code");
     expect(talkRuntimeName(spread(), "thread", { runtimeId: "ollama" })).toBe("Ollama");
     expect(talkRuntimeName(null, "all", null)).toBe("The agent");
+  });
+});
+
+describe("the background limit (ADR 0131)", () => {
+  it("lists the shares, no limit and a custom one", () => {
+    expect(shareOptions()).toEqual([
+      ["5", "Up to 5% of my week"],
+      ["10", "Up to 10% of my week"],
+      ["25", "Up to 25% of my week"],
+      ["50", "Up to 50% of my week"],
+      ["none", "No limit"],
+      ["custom", "Custom…"],
+    ]);
+  });
+
+  it("shows a stored share as its preset, no limit or custom", () => {
+    expect(shareChoice(10)).toBe("10");
+    expect(shareChoice(50)).toBe("50");
+    expect(shareChoice(100)).toBe("none");
+    expect(shareChoice(40)).toBe("custom");
+    expect(shareChoice(0)).toBe("custom");
+  });
+
+  it("takes a typed share only as a whole number from 1 to 99", () => {
+    expect(customShare("40")).toBe(40);
+    expect(customShare(" 7 ")).toBe(7);
+    expect(customShare("99")).toBe(99);
+    for (const bad of ["", "0", "100", "-5", "12.5", "1e1", "abc", "40%"]) {
+      expect(customShare(bad)).toBeUndefined();
+    }
+  });
+
+  it("says what no limit means", () => {
+    expect(shareHint("none")).toBe(
+      "Runs until the plan's limit, then waits for the reset. Never on paid credits.",
+    );
+    expect(shareHint("10")).toBe(
+      "Of each plan that shows limits. It stops there, never on paid credits.",
+    );
+    expect(shareHint("custom")).toBe(shareHint("10"));
   });
 });

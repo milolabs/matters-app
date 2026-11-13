@@ -1044,6 +1044,9 @@ function choiceKeepsItsValue(): boolean {
       ["5", "Up to 5% of my week"],
       ["10", "Up to 10% of my week"],
       ["25", "Up to 25% of my week"],
+      ["50", "Up to 50% of my week"],
+      ["none", "No limit"],
+      ["custom", "Custom…"],
     ] as const;
   const [options, setOptions] = createSignal<ReturnType<typeof list>>(list());
   const host = document.createElement("div");

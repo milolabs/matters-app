@@ -3,6 +3,8 @@
 - Status: Superseded by [0117](0117-matters-is-a-view-with-a-prompt.md)
 - Date: 2026-11-05
 - Amends: 0052
+- Amended by: [0131](0131-the-person-sets-the-background-limit.md) (rule 6: the log is kept but no
+  longer shown in Settings > Agents, and its Undo there goes with it)
 
 ## Context
 

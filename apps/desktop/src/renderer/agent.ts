@@ -9,7 +9,6 @@ import type {
   AgentInstruction,
   AgentRule,
   AgentStatus,
-  JournalEntry,
   PrepareResult,
   RememberResult,
   RuleOffer,
@@ -18,7 +17,7 @@ import type {
 import { PROGRAM_LIKE } from "@matters/core";
 import { batch, createSignal } from "solid-js";
 import { readEnabledHint, writeEnabledHint } from "./agentPrefs.ts";
-import { type JournalLine, journalLines, rememberedText, ruleText } from "./agentText.ts";
+import { rememberedText, ruleText } from "./agentText.ts";
 import type { Backend } from "./client.ts";
 import { BackendError } from "./client.ts";
 import { createStatusOrder } from "./statusOrder.ts";
@@ -32,9 +31,6 @@ export const COALESCE_MS = 300;
 export const STATUS_AGE_MS = 5000;
 /** How long the line for "Closed" and "Remembered" offers Undo. */
 export const FEEDBACK_UNDO_MS = 8000;
-
-/** How many lines of the journal the page asks for and shows. */
-export const JOURNAL_SHOWN = 20;
 
 /**
  * `closed`: the agent found nothing to answer in a thread the person asked about (ADR 0054);
@@ -80,50 +76,6 @@ function messageOf(error: unknown, fallback: string): string {
 
 /** What `Send` did, for the view and for the tests: the path is only ever these two. */
 export type SendOutcome = "sent" | "openedExisting" | "failed";
-
-/**
- * What the agent did, as the page holds it (ADR 0054, rule 6): the newest lines of the local
- * journal, and Undo from them. The settings window uses it; it never waits for a model.
- */
-export function createJournal(backend: Backend, now: () => number = Date.now) {
-  const [entries, setEntries] = createSignal<readonly JournalEntry[]>([]);
-  const [loaded, setLoaded] = createSignal(false);
-
-  async function load(): Promise<void> {
-    try {
-      const next = await backend.agentJournal(JOURNAL_SHOWN);
-      batch(() => {
-        if (!same(entries(), next)) setEntries(next);
-        setLoaded(true);
-      });
-    } catch {
-      // The old lines stay: a failed read must not empty the list on screen.
-    }
-  }
-
-  /** Takes the entry's feedback back; false when the backend refused. The journal is read again. */
-  async function undo(entry: JournalEntry): Promise<boolean> {
-    try {
-      if (entry.action === "ruleAdded") await backend.agentRemoveRule(entry.ruleId);
-      else if (entry.action === "instructionAdded") {
-        await backend.agentRemoveInstruction(entry.instructionId);
-      } else await backend.agentUndoFeedback(entry.threadId, entry.action);
-    } catch {
-      return false;
-    }
-    await load();
-    return true;
-  }
-
-  return {
-    entries,
-    loaded,
-    /** The lines to draw, with Undo only where it can work. */
-    lines: (): JournalLine[] => journalLines(entries(), now()),
-    load,
-    undo,
-  };
-}
 
 /**
  * The rules the person keeps (ADR 0054, rule 7), as Settings > Agents holds them. A rule is added
@@ -572,7 +524,7 @@ export function createAgentStore(backend: Backend, options: AgentOptions) {
           if (item.kind === "rule") await backend.agentRemoveRule(item.rule.id);
           else await backend.agentRemoveInstruction(item.instruction.id);
         } catch {
-          // What could not be removed stays, and shows in Settings with its own Undo.
+          // What could not be removed stays, and Settings lists it with its own Remove.
         }
       }
       return;
@@ -580,7 +532,7 @@ export function createAgentStore(backend: Backend, options: AgentOptions) {
     try {
       await backend.agentUndoFeedback(current.threadId, current.kind);
     } catch {
-      // The closing stays; the journal in Settings has its own Undo.
+      // The closing stays; it is still in the journal.
     }
   }
 
