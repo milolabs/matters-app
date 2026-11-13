@@ -636,13 +636,15 @@ function BigMark(props: { busy: boolean }) {
       classList={{ "big-mark-busy": props.busy }}
     >
       <path class="big-mark-m" d={master.m} fill="var(--hairline)" />
-      <circle
-        class="big-mark-ball"
-        cx={master.ball.cx}
-        cy={master.ball.cy}
-        r={master.ball.r}
-        fill="var(--mark-ball)"
-      />
+      <g class="big-mark-weigh">
+        <circle
+          class="big-mark-ball"
+          cx={master.ball.cx}
+          cy={master.ball.cy}
+          r={master.ball.r}
+          fill="var(--mark-ball)"
+        />
+      </g>
     </svg>
   );
 }

@@ -226,7 +226,8 @@ fieldset {
   width: min(calc(100vw - var(--big-mark-left) - 48px), calc((100vh - 52px) * 0.8));
 }
 .big-mark-m,
-.big-mark-ball {
+.big-mark-ball,
+.big-mark-weigh {
   transform-box: fill-box;
 }
 .big-mark-m {
@@ -238,10 +239,13 @@ fieldset {
   transform-origin: 50% 100%;
   animation: mark-ball-drop 0.56s cubic-bezier(0.35, 0, 0.25, 1) 0.18s both;
 }
-.big-mark-busy .big-mark-ball {
-  animation:
-    mark-ball-drop 0.56s cubic-bezier(0.35, 0, 0.25, 1) 0.18s both,
-    mark-ball-weigh 1.6s ease-in-out infinite;
+/* The weighing moves a group around the ball, not the ball: a lookup that starts during the drop
+   then adds to it and does not take its place. */
+.big-mark-weigh {
+  transform-origin: 50% 100%;
+}
+.big-mark-busy .big-mark-weigh {
+  animation: mark-ball-weigh 1.6s ease-in-out infinite;
 }
 @keyframes mark-m-in {
   from {
@@ -338,7 +342,7 @@ fieldset {
   .settle,
   .big-mark-m,
   .big-mark-ball,
-  .big-mark-busy .big-mark-ball {
+  .big-mark-busy .big-mark-weigh {
     animation: none;
   }
   .dot-reading::after,
