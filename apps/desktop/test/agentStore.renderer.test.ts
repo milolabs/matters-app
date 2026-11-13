@@ -207,6 +207,7 @@ describe("the agent store", () => {
     const rememberCalls: string[] = [];
     let remembered: RememberResult = { items: [] };
     let rememberFails = false;
+    let undoFails = false;
     let rememberGate: Promise<void> = Promise.resolve();
     let statusGate: Promise<void> = Promise.resolve();
     const ruleCalls: string[] = [];
@@ -230,6 +231,7 @@ describe("the agent store", () => {
       },
       agentUndoFeedback: async (id: string, kind: string) => {
         calls.push(`undo:${id}:${kind}`);
+        if (undoFails) throw new BackendError("invalidRequest", "The mailbox is busy.");
       },
       agentRuleOffer: async (id: string) => {
         ruleCalls.push(`offer:${id}`);
@@ -295,6 +297,9 @@ describe("the agent store", () => {
       },
       failRemember: (v: boolean) => {
         rememberFails = v;
+      },
+      failUndo: (v: boolean) => {
+        undoFails = v;
       },
       /** Holds the answer of the turn that remembers until the returned function is called. */
       holdRemember: () => {
@@ -697,6 +702,28 @@ describe("the agent store", () => {
       expect(r.store.busy("t1")).toBe(false);
       await r.store.undoFeedback();
       expect(r.calls).toContain("undo:t1:closed");
+      expect(r.store.line()).toBeNull();
+      dispose();
+    }));
+
+  it("brings the line back when Undo fails, and Undo on it tries again", () =>
+    createRoot(async (dispose) => {
+      const r = rig();
+      await r.store.start();
+      r.setPrepared({ kind: "closed", reason: "Automatic" });
+      await r.store.prepare("t1", { answer: "no reply" }, "Headline t1");
+      r.failUndo(true);
+      await r.store.undoFeedback();
+      // The closing stands, so the line is back with why, for the same thread and kind.
+      expect(r.store.line()).toMatchObject({
+        kind: "closed",
+        threadId: "t1",
+        headline: "Headline t1",
+        text: "The mailbox is busy.",
+      });
+      r.failUndo(false);
+      await r.store.undoFeedback();
+      expect(r.calls.filter((c) => c === "undo:t1:closed")).toHaveLength(2);
       expect(r.store.line()).toBeNull();
       dispose();
     }));

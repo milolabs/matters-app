@@ -531,8 +531,15 @@ export function createAgentStore(backend: Backend, options: AgentOptions) {
     }
     try {
       await backend.agentUndoFeedback(current.threadId, current.kind);
-    } catch {
-      // The closing stays; it is still in the journal.
+    } catch (error) {
+      // The closing stays. Unless a newer line took its place, the line comes back and says so,
+      // and Undo on it tries again: nothing else offers it (ADR 0131).
+      if (lineSeq !== current.id) return;
+      const id = ++lineSeq;
+      setLine({ ...current, id, text: messageOf(error, "That could not be undone.") });
+      cancelLine = schedule(() => {
+        if (lineSeq === id) setLine(null);
+      }, FEEDBACK_UNDO_MS);
     }
   }
 

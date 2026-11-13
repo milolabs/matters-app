@@ -25,8 +25,9 @@ tray's Undo right after a closing, and Remove beside each rule and instruction i
    takes the feedback back, kept on this machine, never sent to a model, and its lines go with the
    thread. The request that reads it stays; the smoke run uses it.
 2. **Undo from Settings goes with the view.** The tray's Undo after a closing or after something
-   was remembered stays, with its eight seconds. A rule or an instruction is taken back with its
-   own Remove in Settings.
+   was remembered stays, with its eight seconds. When taking a closing back fails, the tray's line
+   comes back and says so, and Undo on it tries again. A rule or an instruction is taken back with
+   its own Remove in Settings.
 3. **The person sets the share.** The background limit lists `Up to 5%`, `10%`, `25%` and `50% of
    my week`, `No limit`, and `Custom…`. `Custom…` opens a field for a whole percent from 1 to 99,
    filled with the current share; nothing is sent until it holds a valid number, on Enter or when

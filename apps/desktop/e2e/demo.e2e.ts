@@ -99,15 +99,30 @@ test("the background limit takes a preset, no limit or a number of the person's 
   const own = settings.getByLabel("Percent of my week, 1 to 99");
   await own.fill("40");
   await own.press("Enter");
-  await expect(limit).toHaveValue("custom");
-  await expect(own).toHaveValue("40");
   await settings.screenshot({ path: testInfo.outputPath("limit.png") });
+  // What was stored, not what was typed: the page is read again from the backend.
+  const readAgain = async () => {
+    await settings.reload();
+    await settings.getByRole("button", { name: "Agents" }).click();
+  };
+  await expect(async () => {
+    await readAgain();
+    await expect(limit).toHaveValue("custom", { timeout: 2_000 });
+    await expect(own).toHaveValue("40", { timeout: 2_000 });
+  }).toPass();
 
   // A number out of range is not sent: the stored share stays.
   await own.fill("250");
   await own.press("Enter");
+  await readAgain();
+  await expect(limit).toHaveValue("custom");
+  await expect(own).toHaveValue("40");
+
+  // A preset closes the field and is stored too.
   await limit.selectOption({ label: "Up to 25% of my week" });
   await expect(own).toHaveCount(0);
-  await limit.selectOption({ label: "Custom…" });
-  await expect(settings.getByLabel("Percent of my week, 1 to 99")).toHaveValue("25");
+  await expect(async () => {
+    await readAgain();
+    await expect(limit).toHaveValue("25", { timeout: 2_000 });
+  }).toPass();
 });
