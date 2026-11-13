@@ -27,6 +27,10 @@
   --agent-edge: #b7aeeb;
   --agent-wash: #f9f8fe;
   --agent-line: color-mix(in srgb, var(--agent-edge) 40%, var(--hairline));
+  /* The app's mark (docs/brand): the M and its ball, the only colour in it. They mirror boot.css
+     and build/icons/icon.svg; change them together. */
+  --mark-m: var(--ink);
+  --mark-ball: #5b45c9;
   /* The words a search matched (ADR 0076): an amber wash and the ink on it. Not the agent's violet. */
   --hit: #fbe7a1;
   --hit-ink: #3d2c00;
@@ -61,6 +65,8 @@
     --agent-soft: #29273a;
     --agent-edge: #5d5799;
     --agent-wash: #262530;
+    --mark-m: #f5f1ea;
+    --mark-ball: #9a88f5;
     --hit: #6b5112;
     --hit-ink: #fff0c2;
     --pop: 0 1px 2px rgb(0 0 0 / 0.4), 0 18px 50px rgb(0 0 0 / 0.45);
@@ -207,15 +213,85 @@ fieldset {
   }
 }
 
-/* The large ring of the first-run screen: its arc follows the answers. */
-.ring-arc {
-  transition:
-    stroke-dashoffset 700ms cubic-bezier(0.22, 1, 0.36, 1),
-    stroke 500ms ease;
+/* The large mark of the first-run screen, where the loading screen leaves off (boot.css): the ball
+   drops into the valley and the M gives a little under it. While the app works on an answer the
+   ball lifts and settles, like something being weighed. The lengths are in the mark's own units,
+   so they scale with it; only `transform` and `opacity` move. */
+/* It starts 48 px after the form column (at most 500 px wide from max(32px, 11vw)) and fills what is
+   left up to 48 px from the right edge, whole, so it still reads as an M. A short window caps it by
+   its height (the box is 61.8 by 50). */
+.big-mark {
+  --big-mark-left: calc(max(32px, 11vw) + 548px);
+  left: var(--big-mark-left);
+  width: min(calc(100vw - var(--big-mark-left) - 48px), calc((100vh - 52px) * 0.8));
 }
-.ring-busy .ring-arc {
-  animation: ring-breathe 1400ms ease-in-out infinite;
+.big-mark-m,
+.big-mark-ball,
+.big-mark-weigh {
+  transform-box: fill-box;
 }
+.big-mark-m {
+  animation:
+    mark-m-in 0.28s ease-out both,
+    mark-m-bear 0.5s ease-out 0.5s;
+}
+.big-mark-ball {
+  transform-origin: 50% 100%;
+  animation: mark-ball-drop 0.56s cubic-bezier(0.35, 0, 0.25, 1) 0.18s both;
+}
+/* The weighing moves a group around the ball, not the ball: a lookup that starts during the drop
+   then adds to it and does not take its place. */
+.big-mark-weigh {
+  transform-origin: 50% 100%;
+}
+.big-mark-busy .big-mark-weigh {
+  animation: mark-ball-weigh 1.6s ease-in-out infinite;
+}
+@keyframes mark-m-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@keyframes mark-m-bear {
+  35% {
+    transform: translateY(1.6px);
+  }
+}
+@keyframes mark-ball-drop {
+  0% {
+    opacity: 0;
+    transform: translateY(-44px);
+  }
+  20% {
+    opacity: 1;
+  }
+  58% {
+    transform: translateY(0) scale(1.06, 0.9);
+  }
+  78% {
+    transform: translateY(-4px) scale(1, 1);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes mark-ball-weigh {
+  0%,
+  40%,
+  100% {
+    transform: none;
+  }
+  65% {
+    transform: translateY(-5px);
+  }
+  85% {
+    transform: translateY(0) scale(1.03, 0.95);
+  }
+}
+
+/* A dot that waits: it fades and comes back. */
 @keyframes ring-breathe {
   50% {
     opacity: 0.45;
@@ -260,12 +336,13 @@ fieldset {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .ring-arc,
   .list-divider::after {
     transition: none;
   }
   .settle,
-  .ring-busy .ring-arc {
+  .big-mark-m,
+  .big-mark-ball,
+  .big-mark-busy .big-mark-weigh {
     animation: none;
   }
   .dot-reading::after,

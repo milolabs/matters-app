@@ -15,22 +15,11 @@ import { readDeclined, writeDeclined } from "./agentPrefs.ts";
 import { ReadStep, RuntimeStep } from "./agentSetup.tsx";
 import type { Backend } from "./client.ts";
 import { explainFailure, type FailureContext, failureEvidence, passwordHint } from "./explain.ts";
-import { Ring } from "./icons.tsx";
+import { MattersMark, markMaster } from "./icons.tsx";
 import { describeStatus } from "./status.ts";
 import { field, pill, pillPrimary } from "./ui.ts";
 
 type Step = "address" | "finding" | "password" | "blocked" | "done" | "runtime" | "read";
-
-/** How far along the big ring is. It closes with the last answer: the mailbox, then who reads it. */
-const PROGRESS: Readonly<Record<Step, number>> = {
-  address: 0.14,
-  finding: 0.34,
-  password: 0.62,
-  blocked: 0.46,
-  done: 0.78,
-  runtime: 0.88,
-  read: 0.95,
-};
 
 const label = "mb-1 block text-[12px] text-secondary";
 const bigInput =
@@ -553,15 +542,12 @@ export function Setup(props: {
     <Show when={firstRun()} fallback={form}>
       <div class="relative flex h-full flex-col overflow-hidden bg-bg">
         <div class="drag h-[52px] shrink-0" />
-        <BigRing
-          progress={PROGRESS[step()]}
-          busy={step() === "finding" || checking() || agentBusy()}
-        />
+        <BigMark busy={step() === "finding" || checking() || agentBusy()} />
         <div class="relative min-h-0 flex-1 overflow-y-auto">
           <div class="flex min-h-full flex-col justify-center pr-8 pb-[9vh] pl-[max(32px,11vw)]">
             <div class="mb-9 flex items-center gap-2 text-[13px] font-semibold">
-              <Ring size={15} />
-              matters
+              <MattersMark size={16} />
+              Matters
             </div>
             {form}
           </div>
@@ -635,31 +621,30 @@ function Check(props: { children: unknown }) {
   );
 }
 
-/** The mark of the app, as large as the window: its arc grows with each answer. */
-function BigRing(props: { progress: number; busy: boolean }) {
-  const R = 300;
-  const circumference = 2 * Math.PI * R;
+/**
+ * The app's mark as large as the window, where the loading screen leaves off: the M is quiet, the
+ * ball is the one colour. Its place and size are in styles.css (`.big-mark`): whole, in the room
+ * after the form column. Under 1000 px there is no room, so it is not drawn.
+ */
+function BigMark(props: { busy: boolean }) {
+  const master = markMaster(48);
   return (
     <svg
       aria-hidden="true"
-      viewBox="0 0 720 720"
-      class="pointer-events-none absolute top-1/2 right-[-210px] size-[720px] -translate-y-1/2 max-[1000px]:hidden"
-      classList={{ "ring-busy": props.busy }}
+      viewBox={master.viewBox}
+      class="big-mark pointer-events-none absolute top-1/2 h-auto -translate-y-1/2 overflow-visible max-[1000px]:hidden"
+      classList={{ "big-mark-busy": props.busy }}
     >
-      <circle cx="360" cy="360" r={R} fill="none" stroke="var(--hairline)" stroke-width="30" />
-      <circle
-        class="ring-arc"
-        cx="360"
-        cy="360"
-        r={R}
-        fill="none"
-        stroke={props.progress === 1 ? "var(--good)" : "var(--ink)"}
-        stroke-width="30"
-        stroke-linecap="round"
-        stroke-dasharray={String(circumference)}
-        stroke-dashoffset={String(circumference * (1 - props.progress))}
-        transform="rotate(-90 360 360)"
-      />
+      <path class="big-mark-m" d={master.m} fill="var(--hairline)" />
+      <g class="big-mark-weigh">
+        <circle
+          class="big-mark-ball"
+          cx={master.ball.cx}
+          cy={master.ball.cy}
+          r={master.ball.r}
+          fill="var(--mark-ball)"
+        />
+      </g>
     </svg>
   );
 }

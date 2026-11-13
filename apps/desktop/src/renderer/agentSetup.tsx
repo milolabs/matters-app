@@ -18,7 +18,7 @@ export function RuntimeStep(props: {
   onContinue: (status: AgentStatus) => void;
   onDeclined: () => void;
   onStatus: (status: AgentStatus) => void;
-  /** The big ring breathes while the program is being checked. */
+  /** The big mark weighs its ball while the program is being checked. */
   onBusy?: (busy: boolean) => void;
 }) {
   const [status, setStatus] = createSignal<AgentStatus | null>(null);
