@@ -17,7 +17,7 @@
     },
     "apps/desktop": {
       "name": "@matters/desktop",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.3",
       "dependencies": {
         "@matters/adapter-autoconfig": "workspace:*",
         "@matters/adapter-claude-code": "workspace:*",
