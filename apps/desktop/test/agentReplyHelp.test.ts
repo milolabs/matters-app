@@ -30,8 +30,8 @@ const FROM = { name: "Agnieszka Wiśniewska", address: "agnieszka@example.pl" };
 const QUOTE = `${attribution({ from: FROM, dateMs: SENT })}\n${quoteLines(ASKED)}\n`;
 const reply = (own: string) => `${own}\n\n${QUOTE}`;
 
-/** Which answers the runtime spoils for the helpers: none, a broken shape, or a lost gap. */
-type Spoil = "none" | "junk" | "dropGap";
+/** Which answers the runtime spoils for the helpers: none, a broken shape, a lost gap or a quote. */
+type Spoil = "none" | "junk" | "dropGap" | "quote";
 
 async function build(spoil: Spoil = "none", automated = false) {
   const storage = createInMemoryStorage();
@@ -42,7 +42,7 @@ async function build(spoil: Spoil = "none", automated = false) {
   const calls: AgentRunRequest[] = [];
   const helper = (r: AgentRunRequest) => {
     const props = Object.keys((r.schema as { properties: object }).properties);
-    return ["rewritten", "withAnswers", "asks", "fills"].some((k) => props.includes(k));
+    return ["rewritten", "written", "withAnswers", "asks", "fills"].some((k) => props.includes(k));
   };
   const runtime: AgentRuntimePort = {
     id: demo.id,
@@ -54,6 +54,12 @@ async function build(spoil: Spoil = "none", automated = false) {
       const out = await demo.run(request, options);
       if (spoil === "dropGap" && "rewritten" in (out.value as object)) {
         return { value: { rewritten: "No gaps here." } };
+      }
+      if (spoil === "dropGap" && "written" in (out.value as object)) {
+        return { value: { written: "No gaps here." } };
+      }
+      if (spoil === "quote" && "written" in (out.value as object)) {
+        return { value: { written: "Hello,\n\n> Agnieszka wrote this" } };
       }
       return out;
     },
@@ -136,17 +142,18 @@ describe("help with a reply, over the demo assistant (ADR 0098)", () => {
     const h = await build();
     await h.enable();
     const own = "Dzień dobry,\n\ndziękuję za wiadomość. Będę [kiedy].\n\nPozdrawiam";
-    const text = (await h.service.rewriteDraft("t1", reply(own), "english")).text;
+    const text = (await h.service.rewriteDraft({ threadId: "t1" }, reply(own), "english")).text;
     expect(text).toBe(
       reply("Hello,\n\nthank you for your message. Będę [kiedy].\n\nBest regards,"),
     );
     // The quote never went to the model for a rewrite.
     expect(h.calls.at(-1)?.untrusted).not.toContain("Załączam");
-    const formal = (await h.service.rewriteDraft("t1", "Cześć,\n\ndzięki!\n\nPozdrawiam", "formal"))
-      .text;
+    const formal = (
+      await h.service.rewriteDraft({ threadId: "t1" }, "Cześć,\n\ndzięki!\n\nPozdrawiam", "formal")
+    ).text;
     expect(formal).toBe("Dzień dobry,\n\ndziękuję!\n\nZ wyrazami szacunku,");
     const shorter = (
-      await h.service.rewriteDraft("t1", "To jest naprawdę bardzo ważne.", "shorter")
+      await h.service.rewriteDraft({ threadId: "t1" }, "To jest naprawdę bardzo ważne.", "shorter")
     ).text;
     expect(shorter).toBe("To jest ważne.");
   });
@@ -172,7 +179,7 @@ describe("help with a reply, over the demo assistant (ADR 0098)", () => {
     const h = await build();
     await h.enable();
     await h.service.checkReply("t1", reply("Hi"));
-    await h.service.rewriteDraft("t1", reply("Hi"), "formal");
+    await h.service.rewriteDraft({ threadId: "t1" }, reply("Hi"), "formal");
     // Newest first: the rewrite sent no mail, the check sent the one thread.
     const ledger = (await h.insights.listLedger(2)).map((e) => [e.purpose, e.threads]);
     expect(ledger).toEqual([
@@ -201,12 +208,12 @@ describe("help with a reply: what is refused", () => {
     await expect(h.service.checkReply("t1", "Hi")).rejects.toBeInstanceOf(AgentUnavailableError);
     await h.enable();
     const turns = h.calls.length;
-    await expect(h.service.rewriteDraft("t1", reply("  "), "formal")).rejects.toBeInstanceOf(
-      InvalidAgentSettingError,
-    );
-    await expect(h.service.rewriteDraft("t1", "Hi", "poetic" as "formal")).rejects.toBeInstanceOf(
-      InvalidAgentSettingError,
-    );
+    await expect(
+      h.service.rewriteDraft({ threadId: "t1" }, reply("  "), "formal"),
+    ).rejects.toBeInstanceOf(InvalidAgentSettingError);
+    await expect(
+      h.service.rewriteDraft({ threadId: "t1" }, "Hi", "poetic" as "formal"),
+    ).rejects.toBeInstanceOf(InvalidAgentSettingError);
     expect(h.calls.length).toBe(turns);
   });
 
@@ -214,7 +221,9 @@ describe("help with a reply: what is refused", () => {
     const h = await build("junk");
     await h.enable();
     const sentence = "The assistant's answer could not be used. Try again.";
-    await expect(h.service.rewriteDraft("t1", "Hi", "formal")).rejects.toThrow(sentence);
+    await expect(h.service.rewriteDraft({ threadId: "t1" }, "Hi", "formal")).rejects.toThrow(
+      sentence,
+    );
     await expect(h.service.answerQuestions("t1", "Hi")).rejects.toThrow(sentence);
     await expect(h.service.checkReply("t1", "Hi")).rejects.toThrow(sentence);
     await expect(h.service.fillGaps("t1", "Hi [telefon]")).rejects.toThrow(sentence);
@@ -224,8 +233,99 @@ describe("help with a reply: what is refused", () => {
   it("does not use a rewrite that lost a gap", async () => {
     const h = await build("dropGap");
     await h.enable();
-    await expect(h.service.rewriteDraft("t1", "Będę [kiedy].", "formal")).rejects.toThrow(
-      "lost a gap in [brackets]",
+    await expect(
+      h.service.rewriteDraft({ threadId: "t1" }, "Będę [kiedy].", "formal"),
+    ).rejects.toThrow("lost a gap in [brackets]");
+  });
+});
+
+describe("help with a new message, by its account (ADR 0132)", () => {
+  const words = "write an invitation to Friday's review, keep it short";
+  const ledger = async (h: Awaited<ReturnType<typeof build>>) =>
+    (await h.insights.listLedger(1)).map((e) => [e.purpose, e.threads, e.accountId]);
+
+  it("writes a new message from the person's words, with gaps for what it was not told", async () => {
+    const h = await build();
+    await h.enable();
+    const text = (await h.service.writeDraft({ accountId: "acc1" }, "Review", "", words)).text;
+    expect(text).toBe(
+      "Hello,\n\nAbout an invitation to Friday's review, keep it short: on [date], at [time].\n\nBest regards,",
+    );
+    // No thread, so no mail went: only the words, the subject and the person's lines.
+    const call = h.calls.at(-1);
+    expect(call?.untrusted).not.toContain("[Message");
+    expect(call?.untrusted).not.toContain("Agnieszka");
+    expect(call?.untrusted).toContain(words);
+    expect(await ledger(h)).toEqual([["prepare", 0, "acc1"]]);
+    expect(await h.storage.drafts.list()).toEqual([]);
+  });
+
+  it("changes a reply as asked, with the thread, and keeps its gaps and its quote", async () => {
+    const h = await build();
+    await h.enable();
+    const own = "Dzień dobry,\n\nBędę [kiedy].\n\nPozdrawiam";
+    const text = (
+      await h.service.writeDraft({ threadId: "t1" }, "Re: Dokumenty", reply(own), "add the time")
+    ).text;
+    expect(text).toBe(
+      reply("Dzień dobry,\n\nBędę [kiedy].\n\nAbout the time: on [date], at [time].\n\nPozdrawiam"),
+    );
+    // The thread went as context; the quote did not go as the person's lines.
+    const call = h.calls.at(-1);
+    expect(call?.untrusted).toContain("[Message 1]");
+    expect(call?.untrusted.split("Załączam").length).toBe(2);
+    expect(await ledger(h)).toEqual([["prepare", 1, "acc1"]]);
+  });
+
+  it("rewrites a new message by its account, sending no mail", async () => {
+    const h = await build();
+    await h.enable();
+    const formal = await h.service.rewriteDraft(
+      { accountId: "acc1" },
+      "Cześć,\n\ndzięki!\n\nPozdrawiam",
+      "formal",
+    );
+    expect(formal.text).toBe("Dzień dobry,\n\ndziękuję!\n\nZ wyrazami szacunku,");
+    expect(await ledger(h)).toEqual([["prepare", 0, "acc1"]]);
+  });
+
+  it("refuses an account that did not agree, AI off, and blank or long words, with no turn", async () => {
+    const h = await build();
+    await expect(h.service.writeDraft({ accountId: "acc1" }, "", "", words)).rejects.toBeInstanceOf(
+      AgentUnavailableError,
+    );
+    await h.enable();
+    const turns = h.calls.length;
+    await expect(h.service.writeDraft({ accountId: "acc2" }, "", "", words)).rejects.toBeInstanceOf(
+      AgentUnavailableError,
+    );
+    await expect(
+      h.service.rewriteDraft({ accountId: "acc2" }, "Hi", "formal"),
+    ).rejects.toBeInstanceOf(AgentUnavailableError);
+    await expect(
+      h.service.writeDraft({ accountId: "acc1" }, "", "", " \n "),
+    ).rejects.toBeInstanceOf(InvalidAgentSettingError);
+    await expect(
+      h.service.writeDraft({ accountId: "acc1" }, "", "", "x".repeat(1001)),
+    ).rejects.toBeInstanceOf(InvalidAgentSettingError);
+    expect(h.calls.length).toBe(turns);
+  });
+
+  it("does not use a text that lost a gap, quotes mail, or is out of shape", async () => {
+    const lost = await build("dropGap");
+    await lost.enable();
+    await expect(
+      lost.service.writeDraft({ accountId: "acc1" }, "", "Będę [kiedy].", words),
+    ).rejects.toThrow("lost a gap in [brackets]");
+    const quoted = await build("quote");
+    await quoted.enable();
+    await expect(quoted.service.writeDraft({ accountId: "acc1" }, "", "", words)).rejects.toThrow(
+      "changed the quoted mail",
+    );
+    const junk = await build("junk");
+    await junk.enable();
+    await expect(junk.service.writeDraft({ accountId: "acc1" }, "", "", words)).rejects.toThrow(
+      "The assistant's answer could not be used. Try again.",
     );
   });
 });

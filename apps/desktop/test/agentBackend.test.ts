@@ -93,6 +93,7 @@ function stub(overrides: Partial<AgentApi> = {}) {
     talk: note("talk", { entries: [] }),
     talkStop: note("talkStop", undefined),
     rewriteDraft: note("rewriteDraft", { text: "Short." }),
+    writeDraft: note("writeDraft", { text: "Hello,\n\nSee you on [date]." }),
     answerQuestions: note("answerQuestions", { text: "Yes, Tuesday." }),
     checkReply: note("checkReply", { asked: 2, answered: 1, missing: ["who pays"] }),
     fillGaps: note("fillGaps", [
@@ -393,7 +394,7 @@ describe("agent requests", () => {
       suggestions: [{ token: "[date]", value: "Tuesday", source: "Anna's message, 6 Nov" }],
     });
     expect(calls).toEqual([
-      ["rewriteDraft", "t1", text, "shorter"],
+      ["rewriteDraft", { threadId: "t1" }, text, "shorter"],
       ["answerQuestions", "t1", text, []],
       ["checkReply", "t1", text],
       ["fillGaps", "t1", ""],
@@ -414,6 +415,54 @@ describe("agent requests", () => {
       });
     }
     expect(calls).toHaveLength(4);
+  });
+
+  it("carries help with a new message, by its account, and writing as asked (ADR 0132)", async () => {
+    const { ask, calls } = stub();
+    expect(
+      await ask({ type: "agentRewriteDraft", accountId: "acc1", text: "Hi", how: "formal" }),
+    ).toMatchObject({ type: "agentRewriteDraft", ok: true, text: "Short." });
+    const words = "write an invitation to Friday's review, keep it short";
+    expect(
+      await ask({ type: "agentWriteDraft", accountId: "acc1", subject: "Review", text: "", words }),
+    ).toMatchObject({ type: "agentWriteDraft", ok: true, text: "Hello,\n\nSee you on [date]." });
+    expect(
+      await ask({
+        type: "agentWriteDraft",
+        threadId: "t1",
+        subject: "Re: Pump",
+        text: "Hi",
+        words,
+      }),
+    ).toMatchObject({ type: "agentWriteDraft", ok: true });
+    expect(calls).toEqual([
+      ["rewriteDraft", { accountId: "acc1" }, "Hi", "formal"],
+      ["writeDraft", { accountId: "acc1" }, "Review", "", words],
+      ["writeDraft", { threadId: "t1" }, "Re: Pump", "Hi", words],
+    ]);
+    const write = { type: "agentWriteDraft", subject: "S", text: "", words };
+    const bad: object[] = [
+      // Exactly one of the thread and the account.
+      { ...write },
+      { ...write, threadId: "t1", accountId: "acc1" },
+      { type: "agentRewriteDraft", threadId: "t1", accountId: "acc1", text: "Hi", how: "formal" },
+      { type: "agentRewriteDraft", text: "Hi", how: "formal" },
+      { ...write, accountId: "" },
+      { ...write, accountId: 4 },
+      // The person's words: there, not blank, not too long.
+      { ...write, accountId: "acc1", words: undefined },
+      { ...write, accountId: "acc1", words: "   " },
+      { ...write, accountId: "acc1", words: "x".repeat(1001) },
+      { ...write, accountId: "acc1", subject: undefined },
+      { ...write, accountId: "acc1", text: 4 },
+    ];
+    for (const request of bad) {
+      expect(await ask(request), JSON.stringify(request).slice(0, 80)).toMatchObject({
+        type: "error",
+        code: "invalidRequest",
+      });
+    }
+    expect(calls).toHaveLength(3);
   });
 
   it("carries the talk across all mail to the service and back (ADR 0064, rule 7)", async () => {
@@ -849,7 +898,9 @@ describe("RemoteAgent", () => {
     await remote.talkStop("t1");
     await remote.talkAll("Who waits?");
     await remote.talkAllStop();
-    await remote.rewriteDraft("t1", "Hi", "formal");
+    await remote.rewriteDraft({ threadId: "t1" }, "Hi", "formal");
+    await remote.rewriteDraft({ accountId: "a" }, "Hi", "formal");
+    await remote.writeDraft({ accountId: "a" }, "Review", "", "invite them");
     await remote.answerQuestions("t1", "Hi");
     await remote.checkReply("t1", "Hi");
     await remote.fillGaps("t1", "Hi [date]");
@@ -881,6 +932,14 @@ describe("RemoteAgent", () => {
       { name: "agentTalkAll", words: "Who waits?" },
       { name: "agentTalkAllStop" },
       { name: "agentRewriteDraft", threadId: "t1", text: "Hi", how: "formal" },
+      { name: "agentRewriteDraft", accountId: "a", text: "Hi", how: "formal" },
+      {
+        name: "agentWriteDraft",
+        accountId: "a",
+        subject: "Review",
+        text: "",
+        words: "invite them",
+      },
       { name: "agentAnswerQuestions", threadId: "t1", text: "Hi" },
       { name: "agentCheckReply", threadId: "t1", text: "Hi" },
       { name: "agentFillGaps", threadId: "t1", text: "Hi [date]" },

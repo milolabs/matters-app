@@ -8,6 +8,7 @@ import type {
   AgentRule,
   AgentStatus,
   AgentWorkKind,
+  DraftFor,
   GapSuggestion,
   JournalEntry,
   PreparedGuidance,
@@ -143,12 +144,27 @@ export interface AgentApi {
   /**
    * The agent helps write a reply (ADR 0098). Each is one `P0` turn for the thread, with the gates
    * of `prepare`: AI on, the thread there, its account agreed, the runtime ready, room in the plan.
+   * A message with no thread is gated by its account instead (ADR 0132).
    * `text` is the composer's whole Markdown body; the quote below the person's lines never goes to
    * the model for a rewrite and comes back as it was. Every gap in square brackets is kept. None of
    * these sends mail or changes a stored draft. An answer the code does not accept is an
    * `AgentUnavailableError` with a sentence for the person, never a crash.
    */
-  rewriteDraft(threadId: string, text: string, how: RewriteHow): Promise<{ text: string }>;
+  rewriteDraft(about: DraftFor, text: string, how: RewriteHow): Promise<{ text: string }>;
+  /**
+   * The person tells the agent in their own words what to write or change (ADR 0132). `about` is
+   * the thread a reply answers, or the account a new message goes out from; the rewrite above
+   * takes either too. With a thread, the thread goes with the turn; without, no mail does. The
+   * whole text comes back with the person's lines written as asked, every gap they left kept and
+   * the quote as it was; a fact the agent was not given is left as a gap. Refused with a sentence
+   * and no turn when the words are blank or too long.
+   */
+  writeDraft(
+    about: DraftFor,
+    subject: string,
+    text: string,
+    words: string,
+  ): Promise<{ text: string }>;
   /** Short answers for what the other side's last message asked and the draft does not answer. */
   answerQuestions(
     threadId: string,

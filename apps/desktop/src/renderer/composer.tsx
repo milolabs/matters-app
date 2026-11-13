@@ -1,7 +1,7 @@
 import type { AccountInfo } from "@matters/contracts";
 import { describeLargeNotice } from "@matters/core";
 import { createEffect, createSignal, For, onCleanup, onMount, Show, untrack } from "solid-js";
-import { AgentButton, AgentNote, CheckLine, createAgentHelp } from "./agentHelp.tsx";
+import { AgentButton, AgentNote, CheckLine } from "./agentHelp.tsx";
 import type { ComposerSession } from "./compose.ts";
 import { type EditorApi, MarkdownEditor } from "./editor.tsx";
 import { fullDate } from "./format.ts";
@@ -13,6 +13,7 @@ import type { ReplyAgent } from "./replyAgent.ts";
 import { FilesButton, FormatBar } from "./replyEditor.tsx";
 import { type ReplyNotice, replyNotice } from "./replyNotice.ts";
 import { pill, pillPrimary } from "./ui.ts";
+import { createAgentHelp } from "./writingHelp.ts";
 
 const SAVE_TEXT = {
   idle: "",
@@ -32,7 +33,10 @@ export function Composer(props: {
   showDetails: boolean;
   /** How many files are being dragged over the window; 0 when the browser does not say. */
   dragCount: () => number;
-  /** The agent's help (ADR 0098); absent when AI is off or the message answers no thread. */
+  /**
+   * The agent's help (ADR 0098, 0132); absent when AI is off. A message that answers no thread
+   * gets the field and the rewrites, without the help that reads a thread.
+   */
   agent?: ReplyAgent | undefined;
   /** People the index knows, for To, Cc and Bcc (ADR 0101). */
   suggest?: (prefix: string) => Promise<readonly Suggestion[]>;
@@ -96,7 +100,7 @@ export function Composer(props: {
       void s().close();
     }
   }
-  // The same help as in the reply under a thread (ADR 0098).
+  // The same help as in the reply under a thread (ADR 0098), for a new message too (ADR 0132).
   const help = createAgentHelp({
     session: s,
     view: () => editorApi?.view,

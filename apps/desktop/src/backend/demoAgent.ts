@@ -13,6 +13,8 @@ import type {
 } from "@matters/core";
 import {
   AGENT_EFFORTS,
+  ASKED_CLOSE,
+  ASKED_OPEN,
   DRAFT_CLOSE,
   DRAFT_OPEN,
   draftGaps,
@@ -243,13 +245,15 @@ export class DemoAgentRuntime implements AgentRuntimePort {
         ? this.judged(request)
         : "rewritten" in props
           ? this.rewritten(request)
-          : "withAnswers" in props
-            ? this.withAnswers(request)
-            : "asks" in props
-              ? this.checked(request)
-              : "fills" in props
-                ? this.filled(request)
-                : this.other(request, props);
+          : "written" in props
+            ? this.written(request)
+            : "withAnswers" in props
+              ? this.withAnswers(request)
+              : "asks" in props
+                ? this.checked(request)
+                : "fills" in props
+                  ? this.filled(request)
+                  : this.other(request, props);
     return { value, limits: this.limits(), inputTokens: 1, outputTokens: 1 };
   }
 
@@ -351,6 +355,25 @@ export class DemoAgentRuntime implements AgentRuntimePort {
       .replace(/ +([,.!?])/g, "$1")
       .trim();
     return { rewritten: out === "" ? draft : out };
+  }
+
+  /**
+   * Writes as the person asked (ADR 0132): a line made from their words, with gaps for the date
+   * and the time it was not given, put above the closing of the draft, or a short message around
+   * it when the draft is empty. The draft's own lines and gaps are kept as they are.
+   */
+  private written(request: AgentRunRequest) {
+    const asked = between(request.untrusted, ASKED_OPEN, ASKED_CLOSE)
+      .replace(/^(please\s+)?(write|add|make|draft)\s+/i, "")
+      .replace(/[\s.!?]+$/, "");
+    const draft = this.draftOf(request).trim();
+    const line = `About ${asked}: on [date], at [time].`;
+    if (draft === "") return { written: `Hello,\n\n${line}\n\nBest regards,` };
+    const at = draft.search(/\n\n(Pozdrawiam|Z poważaniem|Dzięki|Best|Kind regards|Thanks)/i);
+    return {
+      written:
+        at < 0 ? `${draft}\n\n${line}` : `${draft.slice(0, at)}\n\n${line}${draft.slice(at)}`,
+    };
   }
 
   /** The demo's asks in the newest message from the other side, each with its answer. */

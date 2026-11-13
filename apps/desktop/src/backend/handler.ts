@@ -19,6 +19,7 @@ import type {
   Draft,
   DraftAttachment,
   DraftContent,
+  DraftFor,
   DraftStorePort,
   FetchOutcome,
   FilesPort,
@@ -51,12 +52,14 @@ import type {
 } from "@matters/core";
 import {
   chooseImages,
+  draftFor,
   failureDetailOf,
   isAgentEffortSetting,
   isMessageKey,
   isPartId,
   MAX_IMAGE_RULE_VALUE,
   MAX_IMPORTED_ADDRESSES,
+  MAX_WRITE_WORDS_CHARS,
   mailErrorKind,
   prepareForwardDraft,
   prepareNewMessage,
@@ -431,6 +434,8 @@ const SEND_ACTIONS: readonly string[] = [
 const MAX_AGENT_ACCOUNTS = 100;
 /** The person's direction or words for a draft: a few paragraphs at most. */
 const MAX_GUIDANCE_TEXT = 2000;
+/** The subject that goes with a request to write; the request cuts it shorter. */
+const MAX_SUBJECT_TEXT = 2000;
 const MAX_AGENT_REPLY = 20_000;
 /** A name the person types for a talk; the store cuts it to 60 characters (ADR 0086). */
 const MAX_TALK_TITLE_TEXT = 500;
@@ -450,6 +455,17 @@ const MODEL_KEYS = ["understand", "write", "answer", "titles"] as const;
 
 function shortString(v: unknown, max: number): v is string {
   return typeof v === "string" && v.length > 0 && v.length <= max;
+}
+
+/**
+ * The thread or the account a request for help with a message names (ADR 0132): exactly one, a
+ * short string that is not empty; `null` for both or neither.
+ */
+function draftForOf(raw: Record<string, unknown>): DraftFor | null {
+  const thread = raw.threadId !== undefined;
+  if (thread === (raw.accountId !== undefined)) return null;
+  if (thread) return shortString(raw.threadId, 1000) ? { threadId: raw.threadId } : null;
+  return shortString(raw.accountId, 200) ? { accountId: raw.accountId } : null;
 }
 
 /** The agent requests, checked field by field; the service checks the values that mean something. */
@@ -645,7 +661,31 @@ function parseAgentRequest(
           }
         : "threadId and short words are required";
     }
-    case "agentRewriteDraft":
+    case "agentWriteDraft": {
+      const about = draftForOf(raw);
+      if (about === null) return "exactly one of threadId and accountId is required";
+      if (typeof raw.text !== "string" || raw.text.length > MAX_DRAFT_TEXT) {
+        return "text must be the draft's text";
+      }
+      if (typeof raw.subject !== "string" || raw.subject.length > MAX_SUBJECT_TEXT) {
+        return "subject must be a short string";
+      }
+      return typeof raw.words === "string" &&
+        raw.words.trim() !== "" &&
+        raw.words.length <= MAX_WRITE_WORDS_CHARS
+        ? { type, requestId, ...about, subject: raw.subject, text: raw.text, words: raw.words }
+        : "words must say, briefly, what to write";
+    }
+    case "agentRewriteDraft": {
+      const about = draftForOf(raw);
+      if (about === null) return "exactly one of threadId and accountId is required";
+      if (typeof raw.text !== "string" || raw.text.length > MAX_DRAFT_TEXT) {
+        return "text must be the draft's text";
+      }
+      return REWRITE_HOWS.includes(raw.how as RewriteHow)
+        ? { type, requestId, ...about, text: raw.text, how: raw.how as RewriteHow }
+        : "how must be shorter, formal or english";
+    }
     case "agentAnswerQuestions":
     case "agentCheckReply":
     case "agentFillGaps": {
@@ -664,12 +704,7 @@ function parseAgentRequest(
         }
         return { type, requestId, threadId: raw.threadId, text: raw.text, missing };
       }
-      if (type !== "agentRewriteDraft") {
-        return { type, requestId, threadId: raw.threadId, text: raw.text };
-      }
-      return REWRITE_HOWS.includes(raw.how as RewriteHow)
-        ? { type, requestId, threadId: raw.threadId, text: raw.text, how: raw.how as RewriteHow }
-        : "how must be shorter, formal or english";
+      return { type, requestId, threadId: raw.threadId, text: raw.text };
     }
     case "agentTalkAll": {
       if (raw.talkId !== undefined && !isTalkId(raw.talkId)) {
@@ -1854,8 +1889,22 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           type: "agentRewriteDraft",
           requestId,
           ok: true,
-          text: (await needAgent(deps).rewriteDraft(request.threadId, request.text, request.how))
+          text: (await needAgent(deps).rewriteDraft(draftFor(request), request.text, request.how))
             .text,
+        };
+      case "agentWriteDraft":
+        return {
+          type: "agentWriteDraft",
+          requestId,
+          ok: true,
+          text: (
+            await needAgent(deps).writeDraft(
+              draftFor(request),
+              request.subject,
+              request.text,
+              request.words,
+            )
+          ).text,
         };
       case "agentAnswerQuestions":
         return {
