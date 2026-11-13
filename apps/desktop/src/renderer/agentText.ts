@@ -1,6 +1,6 @@
 // What the agent's parts of the window say, as pure functions, so the words are tested without a
-// page: the plans line, the runtime, a draft's pieces and who wrote it, rules, instructions and the
-// journal. Nothing here reads the DOM or talks to the backend.
+// page: the plans line, the runtime, a draft's pieces and who wrote it, rules and instructions.
+// Nothing here reads the DOM or talks to the backend.
 import type {
   AgentEffortSetting,
   AgentModels,
@@ -8,7 +8,6 @@ import type {
   AgentRuntimeInfo,
   AgentStatus,
   AgentWorkKind,
-  JournalEntry,
   PlanLimits,
   PlanWindow,
   PromptProgress,
@@ -25,6 +24,7 @@ import {
   kindsOn,
   levelsFor,
   modelUsesTools,
+  NO_WEEK_LIMIT_PERCENT,
   planUseOf,
   runtimeInfo,
   TITLES_OFF,
@@ -465,6 +465,41 @@ export function ourShare(status: AgentStatus, runtimeId: AgentRuntimeId | undefi
   return `Matters this week: ${about} of ${vendorName(runtimeInfo(status, runtimeId))}`;
 }
 
+// --- The background limit (ADR 0131) ---
+
+/** The shares of the week the list names; any other whole percent is `Custom…`. */
+export const WEEK_SHARES: readonly number[] = [5, 10, 25, 50];
+
+/** What the background limit's list shows for a stored share: a preset, `none` or `custom`. */
+export function shareChoice(percent: number): string {
+  if (percent >= NO_WEEK_LIMIT_PERCENT) return "none";
+  return WEEK_SHARES.includes(percent) ? String(percent) : "custom";
+}
+
+/** The options of the background limit, `[value, label]`. */
+export function shareOptions(): readonly (readonly [string, string])[] {
+  return [
+    ...WEEK_SHARES.map((n) => [String(n), `Up to ${n}% of my week`] as const),
+    ["none", "No limit"],
+    ["custom", "Custom…"],
+  ];
+}
+
+/** A typed share of the week: a whole number from 1 to 99, else undefined. */
+export function customShare(text: string): number | undefined {
+  const t = text.trim();
+  if (!/^\d{1,2}$/.test(t)) return undefined;
+  const n = Number(t);
+  return n >= 1 && n <= 99 ? n : undefined;
+}
+
+/** What the background limit says under its label, for what the list shows. */
+export function shareHint(choice: string): string {
+  return choice === "none"
+    ? "Runs until the plan's limit, then waits for the reset. Never on paid credits."
+    : "Of each plan that shows limits. It stops there, never on paid credits.";
+}
+
 // --- A runtime for each kind of work (ADR 0121) ---
 
 /** The kinds of work in the person's words, lower case, for a sentence. */
@@ -612,22 +647,6 @@ export function splitYours(body: string, given: readonly string[]): readonly Pie
 /** The command to run in Terminal for a runtime that is signed out (ADR 0051, rule 2). */
 export const SIGN_IN_COMMAND = "claude auth login";
 
-// --- The journal (ADR 0054, rule 6) ---
-
-/** One line of `What the agent did`: plain strings only, drawn as text. */
-export interface JournalLine {
-  readonly entry: JournalEntry;
-  /** Who did what: `Closed by the agent`. */
-  readonly title: string;
-  /** The ground: what the agent gave and what the person typed. Empty when there is none. */
-  readonly detail: string;
-  /** What the thing was about, from the reading of the mail; empty for a rule or an instruction. */
-  readonly headline: string;
-  /** Undo can be pressed on this line. */
-  readonly undoable: boolean;
-  readonly undone: boolean;
-}
-
 /** A kind of mail in the person's words, for "Don't show …" (ADR 0068, rule 3). */
 export const CATEGORY_WORDS: Record<ThreadCategory, string> = {
   personal: "personal mail",
@@ -684,92 +703,4 @@ export function rememberedText(
       },
 ): string {
   return item.kind === "instruction" ? item.instruction.text : ruleText(item.rule);
-}
-
-const sentence = (text: string) => (/[.!?…]$/.test(text) ? text : `${text}.`);
-
-/** The words added to a line when a closing hid older threads too (ADR 0065): empty when none. */
-export function alsoOlderMails(count: number | undefined): string {
-  if (count === undefined || count <= 0) return "";
-  return ` · also ${count} older ${count === 1 ? "mail" : "mails"}`;
-}
-
-/**
- * What a journal entry says. Undo is offered unless it was taken back already or a `later` has
- * come back by itself. Whether it is the newest of its kind for the thread is for `journalLines`.
- */
-export function journalLine(entry: JournalEntry, nowMs: number): JournalLine {
-  if (entry.action === "ruleAdded") {
-    const words = (entry.words ?? "").trim();
-    const undone = entry.undoneAtMs !== undefined;
-    return {
-      entry,
-      title: entry.actor === "agent" ? "Rule added by the agent" : "Rule added by you",
-      headline: "",
-      detail: words === "" ? ruleText(entry) : `${sentence(ruleText(entry))} You said: "${words}"`,
-      undoable: !undone,
-      undone,
-    };
-  }
-  if (entry.action === "instructionAdded") {
-    const words = (entry.words ?? "").trim();
-    const undone = entry.undoneAtMs !== undefined;
-    const said = words !== "" && words !== entry.text.trim() ? ` You said: "${words}"` : "";
-    return {
-      entry,
-      title: entry.actor === "agent" ? "Remembered by the agent" : "Instruction added by you",
-      headline: "",
-      detail: `${instructionScopeWords(entry.scope)}: ${sentence(entry.text.trim())}${said}`,
-      undoable: !undone,
-      undone,
-    };
-  }
-  const title =
-    entry.action === "closed"
-      ? entry.actor === "agent"
-        ? "Closed by the agent"
-        : "Closed by you"
-      : entry.action === "notImportant"
-        ? "Marked not important"
-        : "Set aside";
-  const reason = (entry.reason ?? "").trim();
-  const words = (entry.words ?? "").trim();
-  const detail = [
-    ...(reason === "" ? [] : [sentence(reason)]),
-    ...(words === "" ? [] : [`You said: "${words}"`]),
-  ].join(" ");
-  const undone = entry.undoneAtMs !== undefined;
-  const expired = entry.action === "later" && entry.untilMs !== undefined && entry.untilMs <= nowMs;
-  return {
-    entry,
-    title: `${title}${alsoOlderMails(entry.alsoCovers)}`,
-    detail,
-    headline: (entry.headline ?? "").trim(),
-    undoable: !undone && !expired,
-    undone,
-  };
-}
-
-/**
- * The lines of a list of entries, newest first as the backend gives them. Undo takes back the
- * newest feedback of a kind for a thread, so only the newest entry of a thread and action that is
- * not undone can be undone; an older one is shown without the button.
- */
-export function journalLines(entries: readonly JournalEntry[], nowMs: number): JournalLine[] {
-  const newest = new Map<string, number>();
-  for (const e of entries) {
-    if (e.action === "ruleAdded" || e.action === "instructionAdded" || e.undoneAtMs !== undefined) {
-      continue;
-    }
-    const key = `${e.threadId}\u0000${e.action}`;
-    const seen = newest.get(key);
-    if (seen === undefined || e.id > seen) newest.set(key, e.id);
-  }
-  return entries.map((e) => {
-    const line = journalLine(e, nowMs);
-    // A rule or instruction line is undone by its own id, so it has no newest-of-a-thread to wait for.
-    if (e.action === "ruleAdded" || e.action === "instructionAdded") return line;
-    const latest = newest.get(`${e.threadId}\u0000${e.action}`) === e.id;
-    return line.undoable && !latest ? { ...line, undoable: false } : line;
-  });
 }

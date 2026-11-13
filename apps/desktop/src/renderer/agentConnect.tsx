@@ -8,16 +8,26 @@ import type {
   AgentStatus,
   AgentWorkKind,
 } from "@matters/core";
-import { kindInfo, kindsOn, runtimeInfo, runtimesInUse } from "@matters/core";
+import {
+  kindInfo,
+  kindsOn,
+  NO_WEEK_LIMIT_PERCENT,
+  runtimeInfo,
+  runtimesInUse,
+} from "@matters/core";
 import { createSignal, For, Index, type JSX, Show } from "solid-js";
 import {
   consentText,
+  customShare,
   effortOptions,
   effortShown,
   hasNoPlan,
   kindsWords,
   kindWaits,
   modelName,
+  shareChoice,
+  shareHint,
+  shareOptions,
   signInCommand,
   statusWords,
   usedForLine,
@@ -41,8 +51,6 @@ export const WORK: readonly { key: AgentWorkKind; label: string; hint: string }[
     hint: "A short name for each talk across all mail, from your questions only.",
   },
 ];
-
-export const WEEK_SHARES: readonly number[] = [5, 10, 25];
 
 /** A sentence of ours with `commands` in backticks, the commands set as code. Text only. */
 function WithCode(props: { text: string }) {
@@ -702,7 +710,9 @@ export function WhatDoesWhat(props: {
 
 /**
  * The background limit, which both Settings and first run name: one share of the week, applied to
- * each plan by itself (ADR 0121, rule 6). Not shown while no runtime in use has a plan.
+ * each plan by itself (ADR 0121, rule 6), or no limit of ours (ADR 0131). `Custom…` opens a field
+ * for any whole percent from 1 to 99; nothing is sent until it holds one. Not shown while no
+ * runtime in use has a plan.
  */
 export function Limits(props: {
   status: AgentStatus;
@@ -714,16 +724,71 @@ export function Limits(props: {
     const inUse = runtimesInUse(props.status.settings);
     return inUse.length === 0 || inUse.some((id) => !hasNoPlan(runtimeInfo(props.status, id)));
   };
+  const stored = () => props.status.settings.weekSharePercent;
+  // The person chose `Custom…`, and what they typed: a status push changes neither.
+  const [customOpen, setCustomOpen] = createSignal(false);
+  const [draft, setDraft] = createSignal<string | null>(null);
+  const shown = () => (customOpen() ? "custom" : shareChoice(stored()));
+  const typed = () => draft() ?? (shareChoice(stored()) === "custom" ? String(stored()) : "");
+  // Enter and the blur after it are one commit.
+  let sent: number | undefined;
+  function choose(value: string) {
+    if (value === "custom") {
+      const now = stored();
+      setDraft(now >= 1 && now <= 99 ? String(now) : "");
+      setCustomOpen(true);
+      return;
+    }
+    setCustomOpen(false);
+    setDraft(null);
+    sent = undefined;
+    props.onWeekShare(value === "none" ? NO_WEEK_LIMIT_PERCENT : Number(value));
+  }
+  function commit(text: string) {
+    const percent = customShare(text);
+    if (percent === undefined || percent === stored() || percent === sent) return;
+    sent = percent;
+    props.onWeekShare(percent);
+  }
   return (
     <Show when={anyPlan()}>
       <Choice
         id={`${props.idPrefix}-share`}
         label="Background limit"
-        hint="Of each plan that shows limits. It stops there, never on paid credits."
-        value={String(props.status.settings.weekSharePercent)}
-        options={WEEK_SHARES.map((n) => [String(n), `Up to ${n}% of my week`] as const)}
-        onChange={(v) => props.onWeekShare(Number(v))}
+        hint={shareHint(shown())}
+        value={shown()}
+        options={shareOptions()}
+        onChange={choose}
       />
+      <Show when={shown() === "custom"}>
+        <div
+          class="mt-2 grid grid-cols-[minmax(0,1fr)_minmax(0,230px)] items-center gap-4"
+          data-share-custom-row
+        >
+          <label for={`${props.idPrefix}-share-custom`} class="min-w-0 text-[12px] text-secondary">
+            Percent of my week, 1 to 99
+          </label>
+          <div class="flex items-center gap-2">
+            <input
+              id={`${props.idPrefix}-share-custom`}
+              type="text"
+              inputMode="numeric"
+              class={`${field} w-full`}
+              data-share-custom
+              value={typed()}
+              onInput={(e) => {
+                sent = undefined;
+                setDraft(e.currentTarget.value);
+              }}
+              onChange={(e) => commit(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commit(e.currentTarget.value);
+              }}
+            />
+            <span class="text-[13px] text-secondary">%</span>
+          </div>
+        </div>
+      </Show>
     </Show>
   );
 }

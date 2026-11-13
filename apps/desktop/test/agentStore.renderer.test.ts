@@ -4,12 +4,8 @@ import type {
   AgentInstruction,
   AgentRule,
   AgentStatus,
-  FeedbackJournalEntry,
-  InstructionJournalEntry,
-  JournalEntry,
   PrepareResult,
   RememberResult,
-  RuleJournalEntry,
   RuleOffer,
 } from "@matters/core";
 import { everyKindOn } from "@matters/core";
@@ -19,10 +15,8 @@ import {
   COALESCE_MS,
   createAgentStore,
   createInstructions,
-  createJournal,
   createRules,
   FEEDBACK_UNDO_MS,
-  JOURNAL_SHOWN,
   STATUS_AGE_MS,
 } from "../src/renderer/agent.ts";
 import type { Backend } from "../src/renderer/client.ts";
@@ -65,41 +59,6 @@ const status = (over: Partial<AgentStatus> = {}): AgentStatus => ({
   consents: [],
   progress: { state: "idle" },
   ledger: [],
-  ...over,
-});
-
-const journalEntry = (over: Partial<FeedbackJournalEntry> = {}): FeedbackJournalEntry => ({
-  id: 1,
-  atMs: NOW - 60_000,
-  action: "notImportant",
-  actor: "person",
-  threadId: "t1",
-  lastMessageKey: 10,
-  senderAddress: "anna@northwind.example",
-  ...over,
-});
-
-const ruleEntry = (over: Partial<RuleJournalEntry> = {}): RuleJournalEntry => ({
-  id: 1,
-  atMs: NOW - 60_000,
-  action: "ruleAdded",
-  actor: "person",
-  ruleId: 1,
-  scope: "sender",
-  subject: "alerts@x.com",
-  ...over,
-});
-
-const instructionEntry = (
-  over: Partial<InstructionJournalEntry> = {},
-): InstructionJournalEntry => ({
-  id: 1,
-  atMs: NOW - 60_000,
-  action: "instructionAdded",
-  actor: "person",
-  instructionId: 1,
-  scope: "write",
-  text: "Write briefly",
   ...over,
 });
 
@@ -235,101 +194,6 @@ describe("the rules page", () => {
     }));
 });
 
-describe("the journal page (ADR 0054, rule 6)", () => {
-  it("undoes an instruction from the journal, by its own id", () =>
-    createRoot(async (dispose) => {
-      const entry = instructionEntry({ id: 4, instructionId: 7, actor: "agent" });
-      let entries: JournalEntry[] = [entry];
-      const calls: string[] = [];
-      const journal = createJournal(
-        {
-          agentJournal: async () => entries,
-          agentRemoveInstruction: async (id: number) => {
-            calls.push(`removeInstruction:${id}`);
-            entries = [{ ...entry, undoneAtMs: NOW }];
-          },
-        } as unknown as Backend,
-        () => NOW,
-      );
-      await journal.load();
-      expect(await journal.undo(entry)).toBe(true);
-      expect(calls).toEqual(["removeInstruction:7"]);
-      expect(journal.lines()[0]).toMatchObject({ undone: true, undoable: false });
-      dispose();
-    }));
-
-  it("undoes from the journal, and reads it again to show the line as undone", () =>
-    createRoot(async (dispose) => {
-      const entry = journalEntry({ id: 1, threadId: "t1", action: "closed", actor: "agent" });
-      let entries: JournalEntry[] = [entry];
-      const calls: string[] = [];
-      const journal = createJournal(
-        {
-          agentJournal: async (limit: number) => {
-            calls.push(`journal:${limit}`);
-            return entries;
-          },
-          agentUndoFeedback: async (threadId: string, kind: string) => {
-            calls.push(`undo:${threadId}:${kind}`);
-            entries = [{ ...entry, undoneAtMs: NOW }];
-          },
-        } as unknown as Backend,
-        () => NOW,
-      );
-      await journal.load();
-      expect(calls).toEqual([`journal:${JOURNAL_SHOWN}`]);
-      expect(journal.lines()[0]?.undoable).toBe(true);
-      expect(await journal.undo(entry)).toBe(true);
-      expect(calls).toContain("undo:t1:closed");
-      expect(journal.lines()[0]).toMatchObject({ undone: true, undoable: false });
-      dispose();
-    }));
-
-  it("undoes a rule line by removing the rule, and shows the line as undone", () =>
-    createRoot(async (dispose) => {
-      const entry: JournalEntry = ruleEntry({ id: 4, ruleId: 9 });
-      let entries: JournalEntry[] = [entry];
-      const calls: string[] = [];
-      const journal = createJournal(
-        {
-          agentJournal: async () => entries,
-          agentRemoveRule: async (id: number) => {
-            calls.push(`remove:${id}`);
-            entries = [{ ...entry, undoneAtMs: NOW }];
-          },
-          agentUndoFeedback: async () => {
-            calls.push("undoFeedback");
-          },
-        } as unknown as Backend,
-        () => NOW,
-      );
-      await journal.load();
-      expect(journal.lines()[0]?.undoable).toBe(true);
-      expect(await journal.undo(entry)).toBe(true);
-      expect(calls).toEqual(["remove:9"]);
-      expect(journal.lines()[0]).toMatchObject({ undone: true, undoable: false });
-      dispose();
-    }));
-
-  it("keeps the journal as it was when the backend refuses the undo", () =>
-    createRoot(async (dispose) => {
-      const entry = journalEntry({ id: 1 });
-      const journal = createJournal(
-        {
-          agentJournal: async () => [entry],
-          agentUndoFeedback: async () => {
-            throw new Error("no");
-          },
-        } as unknown as Backend,
-        () => NOW,
-      );
-      await journal.load();
-      expect(await journal.undo(entry)).toBe(false);
-      expect(journal.lines()[0]?.undoable).toBe(true);
-      dispose();
-    }));
-});
-
 describe("the agent store", () => {
   function rig() {
     const calls: string[] = [];
@@ -343,6 +207,7 @@ describe("the agent store", () => {
     const rememberCalls: string[] = [];
     let remembered: RememberResult = { items: [] };
     let rememberFails = false;
+    let undoFails = false;
     let rememberGate: Promise<void> = Promise.resolve();
     let statusGate: Promise<void> = Promise.resolve();
     const ruleCalls: string[] = [];
@@ -366,6 +231,7 @@ describe("the agent store", () => {
       },
       agentUndoFeedback: async (id: string, kind: string) => {
         calls.push(`undo:${id}:${kind}`);
+        if (undoFails) throw new BackendError("invalidRequest", "The mailbox is busy.");
       },
       agentRuleOffer: async (id: string) => {
         ruleCalls.push(`offer:${id}`);
@@ -431,6 +297,9 @@ describe("the agent store", () => {
       },
       failRemember: (v: boolean) => {
         rememberFails = v;
+      },
+      failUndo: (v: boolean) => {
+        undoFails = v;
       },
       /** Holds the answer of the turn that remembers until the returned function is called. */
       holdRemember: () => {
@@ -833,6 +702,28 @@ describe("the agent store", () => {
       expect(r.store.busy("t1")).toBe(false);
       await r.store.undoFeedback();
       expect(r.calls).toContain("undo:t1:closed");
+      expect(r.store.line()).toBeNull();
+      dispose();
+    }));
+
+  it("brings the line back when Undo fails, and Undo on it tries again", () =>
+    createRoot(async (dispose) => {
+      const r = rig();
+      await r.store.start();
+      r.setPrepared({ kind: "closed", reason: "Automatic" });
+      await r.store.prepare("t1", { answer: "no reply" }, "Headline t1");
+      r.failUndo(true);
+      await r.store.undoFeedback();
+      // The closing stands, so the line is back with why, for the same thread and kind.
+      expect(r.store.line()).toMatchObject({
+        kind: "closed",
+        threadId: "t1",
+        headline: "Headline t1",
+        text: "The mailbox is busy.",
+      });
+      r.failUndo(false);
+      await r.store.undoFeedback();
+      expect(r.calls.filter((c) => c === "undo:t1:closed")).toHaveLength(2);
       expect(r.store.line()).toBeNull();
       dispose();
     }));

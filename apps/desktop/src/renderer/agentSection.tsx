@@ -3,7 +3,7 @@ import type { AgentStatus, AgentWorkKind, LedgerEntry } from "@matters/core";
 import { AGENT_WORK_KINDS, choicesOn, kindInfo, runtimeInfo, runtimesInUse } from "@matters/core";
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { AccountsStore } from "./accounts.ts";
-import { createInstructions, createJournal, createRules } from "./agent.ts";
+import { createInstructions, createRules } from "./agent.ts";
 import {
   Choice,
   ConsentQuestion,
@@ -82,9 +82,8 @@ export function ledgerThreads(entry: LedgerEntry): string {
 export function AgentSection(props: { backend: Backend; accounts: AccountsStore }) {
   const [status, setStatus] = createSignal<AgentStatus | null>(null);
   const order = createStatusOrder();
-  // What the agent did (ADR 0054, rule 6): read when the section is shown, and again on a push.
-  const journal = createJournal(props.backend);
-  // The rules the person keeps (ADR 0054, rule 7), read the same way.
+  // The rules the person keeps (ADR 0054, rule 7): read when the section is shown, and again on a
+  // push.
   const rules = createRules(props.backend);
   // The rule for a type has its own switch below the list, so it is not listed a second time.
   const listed = () => rules.rules().filter((r) => r.scope !== "type");
@@ -93,7 +92,6 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
     const value = typed().trim();
     if (value === "") return;
     if (await rules.add(value)) setTyped("");
-    void journal.load();
   }
   // The instructions the person keeps for the model (ADR 0054, rule 7), read the same way.
   const instructions = createInstructions(props.backend);
@@ -105,7 +103,6 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
     const text = instructionText().trim();
     if (text === "") return;
     if (await instructions.add({ scope: instructionScope(), text })) setInstructionText("");
-    void journal.load();
   }
   const [looking, setLooking] = createSignal(true);
   // The runtime being checked, and the one whose check failed with its sentence.
@@ -160,7 +157,6 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
   onMount(() => {
     void look();
     void reading.start();
-    void journal.load();
     void rules.load();
     void instructions.load();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -169,7 +165,6 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
       timer = setTimeout(() => {
         timer = undefined;
         void order.settle(props.backend.agentStatus(), setStatus).catch(() => {});
-        void journal.load();
         void rules.load();
         void instructions.load();
       }, 500);
@@ -660,7 +655,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                             type="button"
                             class={pill}
                             onClick={() => {
-                              void instructions.remove(instruction).then(() => journal.load());
+                              void instructions.remove(instruction);
                             }}
                           >
                             Remove
@@ -740,7 +735,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                             type="button"
                             class={pill}
                             onClick={() => {
-                              void rules.remove(rule).then(() => journal.load());
+                              void rules.remove(rule);
                             }}
                           >
                             Remove
@@ -774,7 +769,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                     class={pill}
                     data-rule-program
                     onClick={() => {
-                      void rules.toggleProgramLike().then(() => journal.load());
+                      void rules.toggleProgramLike();
                     }}
                   >
                     {rules.programLike() ? "Remove" : "Add"}
@@ -788,70 +783,6 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                 <p class="mt-2 text-[12px] text-secondary">
                   A thread stays if anyone else writes in it. These rules run on this computer and
                   spend nothing.
-                </p>
-              </div>
-
-              <div class={row} data-journal>
-                <h3 class={heading}>What the agent did</h3>
-                <Show
-                  when={journal.lines().length > 0}
-                  fallback={<p class="text-[12.5px] text-secondary">Nothing yet.</p>}
-                >
-                  <ul class="m-0 flex list-none flex-col gap-1.5 p-0 text-[12.5px]">
-                    <For each={journal.lines()}>
-                      {(line) => (
-                        <li
-                          data-journal-entry
-                          class="grid grid-cols-[110px_minmax(0,1fr)_auto] items-baseline gap-3"
-                        >
-                          <span class="text-secondary tabular-nums">
-                            {letterDate(line.entry.atMs)}
-                          </span>
-                          {/* Mail, the person's words and a model's reason: text only, cut to one line. */}
-                          <span class="min-w-0">
-                            <span
-                              class="block truncate"
-                              title={
-                                line.headline === ""
-                                  ? line.title
-                                  : `${line.title} · ${line.headline}`
-                              }
-                            >
-                              {line.title}
-                              <Show when={line.headline !== ""}>
-                                <span class="text-secondary">
-                                  {" · "}
-                                  {line.headline}
-                                </span>
-                              </Show>
-                            </span>
-                            <Show when={line.detail !== ""}>
-                              <span class="block truncate text-secondary" title={line.detail}>
-                                {line.detail}
-                              </span>
-                            </Show>
-                          </span>
-                          <Show
-                            when={line.undoable}
-                            fallback={
-                              <span class="text-secondary">{line.undone ? "Undone" : ""}</span>
-                            }
-                          >
-                            <button
-                              type="button"
-                              class={pill}
-                              onClick={() => void journal.undo(line.entry)}
-                            >
-                              Undo
-                            </button>
-                          </Show>
-                        </li>
-                      )}
-                    </For>
-                  </ul>
-                </Show>
-                <p class="mt-2 text-[12px] text-secondary">
-                  Kept on this computer. It is never sent to an assistant.
                 </p>
               </div>
 

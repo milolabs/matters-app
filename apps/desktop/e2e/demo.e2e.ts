@@ -66,3 +66,63 @@ test("settings open in a window of their own", async ({ start }) => {
   await settings.getByRole("button", { name: "Storage" }).click();
   await expect(settings.getByRole("heading", { name: "Storage" })).toBeVisible();
 });
+
+test("the background limit takes a preset, no limit or a number of the person's own", async ({
+  start,
+}, testInfo) => {
+  const { app, window } = await start(demo);
+  await expect(window.getByRole("listbox", { name: "Messages" })).toBeVisible();
+  const [settings] = await Promise.all([
+    app.waitForEvent("window"),
+    window.getByRole("button", { name: "Settings" }).click(),
+  ]);
+  await settings.getByRole("button", { name: "Agents" }).click();
+  const limit = settings.getByLabel("Background limit");
+  await expect(limit.locator("option")).toHaveText([
+    "Up to 5% of my week",
+    "Up to 10% of my week",
+    "Up to 25% of my week",
+    "Up to 50% of my week",
+    "No limit",
+    "Custom…",
+  ]);
+  // The log of closings is kept, and no longer shown here (ADR 0131).
+  await expect(settings.getByText("What the agent did")).toHaveCount(0);
+
+  await limit.selectOption({ label: "No limit" });
+  await expect(
+    settings.getByText("Runs until the plan's limit, then waits for the reset."),
+  ).toBeVisible();
+  await expect(limit).toHaveValue("none");
+
+  await limit.selectOption({ label: "Custom…" });
+  const own = settings.getByLabel("Percent of my week, 1 to 99");
+  await own.fill("40");
+  await own.press("Enter");
+  await settings.screenshot({ path: testInfo.outputPath("limit.png") });
+  // What was stored, not what was typed: the page is read again from the backend.
+  const readAgain = async () => {
+    await settings.reload();
+    await settings.getByRole("button", { name: "Agents" }).click();
+  };
+  await expect(async () => {
+    await readAgain();
+    await expect(limit).toHaveValue("custom", { timeout: 2_000 });
+    await expect(own).toHaveValue("40", { timeout: 2_000 });
+  }).toPass();
+
+  // A number out of range is not sent: the stored share stays.
+  await own.fill("250");
+  await own.press("Enter");
+  await readAgain();
+  await expect(limit).toHaveValue("custom");
+  await expect(own).toHaveValue("40");
+
+  // A preset closes the field and is stored too.
+  await limit.selectOption({ label: "Up to 25% of my week" });
+  await expect(own).toHaveCount(0);
+  await expect(async () => {
+    await readAgain();
+    await expect(limit).toHaveValue("25", { timeout: 2_000 });
+  }).toPass();
+});

@@ -9,6 +9,8 @@
 - Amended by: [0120](0120-codex-is-a-runtime.md) (a second runtime on a plan: Codex, on the
   person's ChatGPT plan, each turn closed; its windows read apart from turns)
 - Amended by: [0121](0121-a-runtime-for-each-kind-of-work.md) (rule 7: windows, shares and limits per runtime)
+- Amended by: [0131](0131-the-person-sets-the-background-limit.md) (rule 7: the share of the week is
+  any whole percent the person sets, or no limit)
 
 ## Context
 
