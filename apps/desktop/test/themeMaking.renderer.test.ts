@@ -5,7 +5,12 @@ import type { AgentStatus, ThemeInput } from "@matters/core";
 import { DEFAULT_AGENT_SETTINGS, everyKindOn, patchAgentSettings } from "@matters/core";
 import { describe, expect, it } from "vitest";
 import { kindWaits } from "../src/renderer/agentText.ts";
-import { makeTheme, type ThemeMakingDeps, themeMaker } from "../src/renderer/themeMaking.ts";
+import {
+  appearanceWatch,
+  makeTheme,
+  type ThemeMakingDeps,
+  themeMaker,
+} from "../src/renderer/themeMaking.ts";
 
 const appearance: AppearanceInfo = {
   mode: "system",
@@ -125,6 +130,80 @@ describe("the one retry (ADR 0134, rule 15)", () => {
     const e = rig([new Error("Stopped.")], []);
     e.stopAt();
     expect(await makeTheme(e.deps, { description: "moss" })).toEqual({ kind: "stopped" });
+  });
+
+  it("asks for no turn when stopped before the first, as while the theme on was read", async () => {
+    const h = rig(["first"], [kept]);
+    h.stopAt();
+    expect(await makeTheme(h.deps, { description: "moss" })).toEqual({ kind: "stopped" });
+    expect(h.asked).toEqual([]);
+    expect(h.added).toEqual([]);
+  });
+
+  it("asks no second time when stopped while main checked the first answer", async () => {
+    const h = rig(["bad", "good"], [refused, kept]);
+    const add = h.deps.add;
+    h.deps.add = async (text) => {
+      const answer = await add(text);
+      h.stopAt();
+      return answer;
+    };
+    expect(await makeTheme(h.deps, { description: "moss" })).toEqual({ kind: "stopped" });
+    expect(h.asked).toHaveLength(1);
+    expect(h.added).toEqual(["bad"]);
+  });
+
+  it("says the list is full in main's words, and asks no second time", async () => {
+    const full = "Matters keeps up to 500 themes. Remove one you do not use, then add another.";
+    const h = rig(["first", "second"], [{ ok: false, full }]);
+    expect(await makeTheme(h.deps, { description: "moss" })).toEqual({
+      kind: "failed",
+      message: full,
+    });
+    expect(h.asked).toHaveLength(1);
+  });
+});
+
+describe("what the person does while a theme is made (ADR 0134, rule 11)", () => {
+  const at = (over: Partial<AppearanceInfo>): AppearanceInfo => ({
+    ...appearance,
+    fixedScheme: null,
+    ...over,
+  });
+  const moss = at({ mode: "dark", theme: "own-0123456789ab", themeChosen: true });
+  const paper = at({ mode: "dark", theme: "paper", themeChosen: true });
+  const atDefault = at({ mode: "system", theme: null, themeChosen: false });
+
+  it("stops the ask on the way back, from here, the menu or the keys", () => {
+    const w = appearanceWatch(moss);
+    expect(w.seen(moss)).toBe(false);
+    expect(w.seen(atDefault)).toBe(true);
+    // Said again, by the answer and the push: it was stopped once.
+    expect(w.seen(atDefault)).toBe(false);
+    // Another theme first, then the way back: still the way back.
+    const v = appearanceWatch(moss);
+    expect(v.seen(paper)).toBe(false);
+    expect(v.seen(atDefault)).toBe(true);
+    // Made from the default, another theme, then back to the default.
+    const d = appearanceWatch(atDefault);
+    expect(d.seen(atDefault)).toBe(false);
+    expect(d.seen(paper)).toBe(false);
+    expect(d.seen(atDefault)).toBe(true);
+  });
+
+  it("keeps the ask when another theme is chosen, and the made one is then only added", () => {
+    const w = appearanceWatch(moss);
+    expect(w.putOn()).toBe(true);
+    // A change of mode, or the list changing in another window, is not a choice of theme.
+    expect(w.seen({ ...moss, mode: "light" })).toBe(false);
+    expect(w.seen(moss)).toBe(false);
+    expect(w.putOn()).toBe(true);
+    expect(w.seen(paper)).toBe(false);
+    expect(w.putOn()).toBe(false);
+    // The default theme in a mode the person chose is a theme too, not the way back.
+    const d = appearanceWatch(moss);
+    expect(d.seen(at({ mode: "dark", theme: null, themeChosen: false }))).toBe(false);
+    expect(d.putOn()).toBe(false);
   });
 });
 

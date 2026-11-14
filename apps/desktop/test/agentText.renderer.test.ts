@@ -12,6 +12,7 @@ import {
   instructionScopeWords,
   kindsWords,
   kindWaits,
+  ledgerAccount,
   ledgerEffort,
   loopOffered,
   ourShare,
@@ -208,6 +209,13 @@ describe("the effort beside each model (ADR 0118)", () => {
     expect(ledgerEffort({ effort: "low" })).toBe("low effort");
     expect(ledgerEffort({})).toBe("");
     expect(EFFORT_WORDS.default).toBe("Default");
+  });
+
+  it("names the account of a line, none for a turn with no account, and one since removed (ADR 0134, rule 15)", () => {
+    const addressOf = (id: string) => (id === "acc1" ? "me@example.com" : undefined);
+    expect(ledgerAccount({ accountId: "acc1" }, addressOf)).toBe("me@example.com");
+    expect(ledgerAccount({ accountId: "acc2" }, addressOf)).toBe("an account that was removed");
+    expect(ledgerAccount({ accountId: "" }, addressOf)).toBe("");
   });
 });
 

@@ -96,6 +96,18 @@ export function ledgerEffort(entry: { readonly effort?: AgentEffortSetting }): s
   return `${EFFORT_WORDS[entry.effort].toLowerCase()} effort`;
 }
 
+/**
+ * The account a ledger line's turn went for, in words: none for a turn no account was asked for,
+ * as a theme's (ADR 0134, rule 15), and a plain phrase for one since removed.
+ */
+export function ledgerAccount(
+  entry: { readonly accountId: string },
+  addressOf: (id: string) => string | undefined,
+): string {
+  if (entry.accountId === "") return "";
+  return addressOf(entry.accountId) ?? "an account that was removed";
+}
+
 /** What the control shows: a stored level the runtime does not list goes as `Default` (rule 4). */
 export function effortShown(
   setting: AgentEffortSetting,

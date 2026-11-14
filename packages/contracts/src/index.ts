@@ -1329,6 +1329,16 @@ export const THEME_SCHEMES: readonly ThemeScheme[] = ["light", "dark"];
 /** A name is shown in a row of Appearance; longer than this is not a name. */
 export const THEME_NAME_LIMIT = 60;
 
+/**
+ * The most themes Appearance lists, built-in and own together (ADR 0134, rule 8). The bridge's
+ * reader takes no longer list, and main keeps no more than it can list: a theme past it is refused
+ * with `THEMES_FULL` before it is saved, and a folder that already holds more lists this many.
+ */
+export const MAX_THEMES = 500;
+
+/** Why a theme was not kept when the list is full, in words the person can act on. */
+export const THEMES_FULL = `Matters keeps up to ${MAX_THEMES} themes. Remove one you do not use, then add another.`;
+
 /** WCAG 2.1, AA for body text (ADR 0134, rule 6). */
 export const CONTRAST_NEEDED = 4.5;
 
@@ -1531,11 +1541,14 @@ export interface AppearanceInfo {
 
 /**
  * The answer to a theme handed in as text (ADR 0134, rule 12): the agent's, from the person's
- * description. Either it was kept and is on, or it was refused for these reasons.
+ * description. Either it was kept and is on, or it was refused for these reasons, or the list
+ * had no room for it.
  */
 export type ThemeAddAnswer =
   | { readonly ok: true; readonly theme: ThemeListing; readonly appearance: AppearanceInfo }
-  | { readonly ok: false; readonly problems: readonly ThemeProblem[] };
+  | { readonly ok: false; readonly problems: readonly ThemeProblem[] }
+  /** The list is full (`MAX_THEMES`): nothing was saved, and asking again would not help. */
+  | { readonly ok: false; readonly full: string };
 
 /** What main measures for Settings › Storage: sizes per kind of folder, never paths (ADR 0089). */
 export interface MainStorageInfo {

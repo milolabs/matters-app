@@ -384,4 +384,26 @@ describe("a runtime in use only for making themes (ADR 0134, rule 14; consequenc
       false,
     ]);
   });
+
+  it("does not run on the runtime the person moved the kind from while its gates waited (rule 15)", async () => {
+    const h = await build();
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+    await h.service.pauseReading();
+    await h.service.setKindRuntime(["appearance"], "local");
+    // The ask looks at the runtime first; that look waits until the test lets it go.
+    let release: (() => void) | undefined;
+    const inspect = h.local.inspect.bind(h.local);
+    h.local.inspect = () =>
+      new Promise((resolve) => {
+        release = () => resolve(inspect());
+      });
+    const making = h.service.makeTheme({ description: "moss" });
+    await settle();
+    expect(release).toBeDefined();
+    await h.service.setKindRuntime(["appearance"], "plan");
+    release?.();
+    await expect(making).rejects.toThrow("Stopped.");
+    expect(h.themeCalls(h.local)).toEqual([]);
+    expect(h.themeCalls(h.plan)).toEqual([]);
+  });
 });

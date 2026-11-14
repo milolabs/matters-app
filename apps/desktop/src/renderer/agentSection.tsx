@@ -23,6 +23,7 @@ import {
 import {
   hasNoPlan,
   instructionScopeWords,
+  ledgerAccount,
   ledgerEffort,
   loopOffered,
   ourShare,
@@ -816,10 +817,10 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                           <span class="min-w-0 truncate">
                             {ledgerWords(entry)}
                             <span class="text-secondary">
-                              {" · "}
-                              {addressOf(entry.accountId) ?? "an account that was removed"}
-                              {" · "}
-                              {nameOf(entry.runtimeId)}
+                              {[ledgerAccount(entry, addressOf), nameOf(entry.runtimeId)]
+                                .filter((part) => part !== "")
+                                .map((part) => ` · ${part}`)
+                                .join("")}
                             </span>
                           </span>
                           <span class="text-secondary tabular-nums">

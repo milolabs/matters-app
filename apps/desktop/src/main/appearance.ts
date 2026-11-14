@@ -2,17 +2,18 @@
 // person's themes in `themes/` beside it, and the state that follows from them. Pure, so it can be
 // tested without Electron: main reads the files, hands the text here, and applies and writes what
 // comes back.
-import type {
-  AppearanceInfo,
-  AppearanceMode,
-  ThemeAddAnswer,
-  ThemeColors,
-  ThemeListing,
-  ThemeProblem,
-  ThemeScheme,
-  ThemeSets,
-  ThemeSwatch,
-  ThemeToken,
+import {
+  type AppearanceInfo,
+  type AppearanceMode,
+  MAX_THEMES,
+  type ThemeAddAnswer,
+  type ThemeColors,
+  type ThemeListing,
+  type ThemeProblem,
+  type ThemeScheme,
+  type ThemeSets,
+  type ThemeSwatch,
+  type ThemeToken,
 } from "@matters/contracts";
 import type { BuiltInTheme } from "./builtInThemes.ts";
 import {
@@ -172,10 +173,19 @@ export function resolveChosenTheme(
   };
 }
 
-/** The person's themes from the files in `themes/`; files that fail the check are not listed. */
+const byName = (a: LoadedTheme, b: LoadedTheme) =>
+  a.theme.name.localeCompare(b.theme.name, "en", { sensitivity: "base" }) ||
+  a.id.localeCompare(b.id);
+
+/**
+ * The person's themes from the files in `themes/`; files that fail the check are not listed. At
+ * most `room` are, the first by name and id, so a folder that holds more than the list may carry
+ * still opens, the same ones each time, and the person can remove some (`MAX_THEMES`).
+ */
 export function ownThemes(
   files: readonly string[],
   readOwn: (file: string) => ThemeRead,
+  room = Number.POSITIVE_INFINITY,
 ): LoadedTheme[] {
   const out: LoadedTheme[] = [];
   for (const file of files) {
@@ -186,11 +196,17 @@ export function ownThemes(
     const result = parseTheme(read.text);
     if (result.ok) out.push({ id, source: "own", theme: result.theme });
   }
-  return out.sort(
-    (a, b) =>
-      a.theme.name.localeCompare(b.theme.name, "en", { sensitivity: "base" }) ||
-      a.id.localeCompare(b.id),
-  );
+  return out.sort(byName).slice(0, Math.max(0, room));
+}
+
+/** The list with a theme just saved in it, once, in the list's order. */
+export function withOwnTheme(list: readonly LoadedTheme[], added: LoadedTheme): LoadedTheme[] {
+  return [...list.filter((t) => t.id !== added.id), added].sort(byName);
+}
+
+/** How many own themes the list has room for beside the built-ins (`MAX_THEMES`). */
+export function ownThemeRoom(builtIns: number): number {
+  return Math.max(0, MAX_THEMES - builtIns);
 }
 
 /** A theme with one set fixes the scheme while it is on (ADR 0134, rule 7); both leave it free. */
@@ -341,7 +357,11 @@ export function readAppearanceInfo(v: unknown): AppearanceInfo | null {
   const theme = v.theme === null ? null : isThemeId(v.theme) ? v.theme : undefined;
   const fallback = v.fallback === null ? null : isText(v.fallback, 1000) ? v.fallback : undefined;
   if (fixedScheme === undefined || theme === undefined || fallback === undefined) return null;
-  if (typeof v.themeChosen !== "boolean" || !Array.isArray(v.themes) || v.themes.length > 500) {
+  if (
+    typeof v.themeChosen !== "boolean" ||
+    !Array.isArray(v.themes) ||
+    v.themes.length > MAX_THEMES
+  ) {
     return null;
   }
   const themes = v.themes.map(readListing);
@@ -394,6 +414,7 @@ export function readThemeAddAnswer(v: unknown): ThemeAddAnswer | null {
     const appearance = readAppearanceInfo(v.appearance);
     return theme && appearance ? { ok: true, theme, appearance } : null;
   }
+  if (v.ok === false && isText(v.full, 1000) && v.full !== "") return { ok: false, full: v.full };
   if (v.ok !== false || !Array.isArray(v.problems) || v.problems.length > 200) return null;
   const problems = v.problems.map(readProblem);
   if (problems.length === 0 || problems.some((p) => p === null)) return null;

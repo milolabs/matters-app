@@ -69,9 +69,9 @@ function argsOf(ask: Record<string, unknown>): unknown[] | null {
     case "text":
       return isThemeId(ask.id) ? [ask.action, ask.id] : null;
     case "add":
-      return typeof ask.text === "string" && ask.text.length <= TEXT_LIMIT
-        ? [ask.action, ask.text]
-        : null;
+      // `on: false` keeps it without putting it on: the person chose another theme meanwhile.
+      if (typeof ask.text !== "string" || ask.text.length > TEXT_LIMIT) return null;
+      return ask.on === false ? [ask.action, ask.text, false] : [ask.action, ask.text];
     default:
       return null;
   }

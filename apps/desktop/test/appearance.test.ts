@@ -1,3 +1,4 @@
+import { MAX_THEMES, THEMES_FULL } from "@matters/contracts";
 import { describe, expect, it } from "vitest";
 import {
   appearanceInfo,
@@ -13,6 +14,7 @@ import {
   ownThemeFile,
   ownThemeId,
   ownThemeIdOfFile,
+  ownThemeRoom,
   ownThemes,
   parseAppearance,
   RESET_APPEARANCE_ACCELERATOR,
@@ -22,6 +24,7 @@ import {
   themeSourceFor,
   windowColors,
   windowGround,
+  withOwnTheme,
 } from "../src/main/appearance.ts";
 import { BUILT_IN_THEMES } from "../src/main/builtInThemes.ts";
 import {
@@ -178,6 +181,32 @@ describe("the appearance bridge", () => {
     ask(no, { action: "add", text: "{}" });
     await flush();
     expect(no.posted).toEqual([{ mattersAppearanceAnswer: { requestId: "a", answer: refused } }]);
+
+    // A full list: main's sentence, and nothing else, reaches the page.
+    const full = rig({ ok: false, full: THEMES_FULL, path: "/Users/x" });
+    ask(full, { action: "add", text: "{}" });
+    await flush();
+    expect(full.posted).toEqual([
+      { mattersAppearanceAnswer: { requestId: "a", answer: { ok: false, full: THEMES_FULL } } },
+    ]);
+  });
+
+  it("asks main to keep a theme without putting it on, when the page says so", async () => {
+    const r = rig({ ok: true, theme: INFO.themes[0], appearance: INFO });
+    ask(r, { action: "add", text: "{}", on: false });
+    ask(r, { action: "add", text: "{}", on: "no" });
+    await flush();
+    expect(r.invoked).toEqual([
+      [CHANNEL_APPEARANCE, "add", "{}", false],
+      [CHANNEL_APPEARANCE, "add", "{}"],
+    ]);
+  });
+
+  it("takes a list as long as main keeps, and no longer (MAX_THEMES)", async () => {
+    const listing = INFO.themes[0];
+    const many = (n: number) => ({ ...INFO, themes: Array.from({ length: n }, () => listing) });
+    expect(readAppearanceInfo(many(MAX_THEMES))?.themes).toHaveLength(MAX_THEMES);
+    expect(readAppearanceInfo(many(MAX_THEMES + 1))).toBeNull();
   });
 
   it("refuses an ask that is not well formed without asking main", async () => {
@@ -380,6 +409,51 @@ describe("main's state", () => {
     expect(listed.map((t) => [t.id, t.theme.name])).toEqual([
       ["own-00000000000a", "Alpha"],
       ["own-00000000000b", "beta"],
+    ]);
+  });
+
+  it("lists no more own themes than the list has room for, the same ones each time (MAX_THEMES)", () => {
+    expect(ownThemeRoom(BUILT_IN_THEMES.length) + BUILT_IN_THEMES.length).toBe(MAX_THEMES);
+    expect(ownThemeRoom(MAX_THEMES + 1)).toBe(0);
+    // A folder with more than the list carries still opens, so some can be removed.
+    const room = ownThemeRoom(BUILT_IN_THEMES.length);
+    const files = Array.from(
+      { length: room + 3 },
+      (_, i) => `own-${(room + 3 - i).toString(16).padStart(12, "0")}.json`,
+    );
+    const read = () => ({
+      kind: "text" as const,
+      text: JSON.stringify({ name: "Same", dark: {} }),
+    });
+    const listed = ownThemes(files, read, room);
+    expect(listed).toHaveLength(room);
+    expect(ownThemes([...files].reverse(), read, room).map((t) => t.id)).toEqual(
+      listed.map((t) => t.id),
+    );
+    expect(listed[0]?.id).toBe("own-000000000001");
+  });
+
+  it("lists a theme just saved once, even when the folder was read after it was written", () => {
+    const files: Record<string, string> = {
+      "own-00000000000a.json": JSON.stringify({ name: "Alpha", dark: {} }),
+      "own-00000000000b.json": JSON.stringify({ name: "beta", light: {} }),
+    };
+    const scanned = ownThemes(Object.keys(files), (f) => ({ kind: "text", text: files[f] ?? "" }));
+    const added = scanned[1];
+    if (added === undefined) throw new Error("no theme");
+    expect(withOwnTheme(scanned, added).map((t) => t.id)).toEqual([
+      "own-00000000000a",
+      "own-00000000000b",
+    ]);
+    const aardvark = {
+      ...added,
+      id: "own-00000000000c",
+      theme: { ...added.theme, name: "Aardvark" },
+    };
+    expect(withOwnTheme(scanned, aardvark).map((t) => t.id)).toEqual([
+      "own-00000000000c",
+      "own-00000000000a",
+      "own-00000000000b",
     ]);
   });
 

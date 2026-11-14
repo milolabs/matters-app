@@ -2099,6 +2099,10 @@ export class AgentService implements AgentApi {
     // Taken before the first wait, so a second call cannot slip in during the gates.
     const mine = new AbortController();
     this.makingTheme = mine;
+    // The kind's stop, also taken before the gates: moving the kind to another runtime while they
+    // wait aborts this one and stores a new one, and the turn must not then run on the runtime the
+    // person moved it from (rule 15).
+    const stop = AbortSignal.any([this.signalOf("appearance"), mine.signal]);
     let runtimeId = "";
     try {
       const { s, on } = await this.gateOn("appearance");
@@ -2115,14 +2119,11 @@ export class AgentService implements AgentApi {
         THEME_FORMAT,
       );
       // Stopped before anything left: no turn, so no line in the ledger.
-      if (mine.signal.aborted) throw new AgentUnavailableError("Stopped.");
+      if (stop.aborted) throw new AgentUnavailableError("Stopped.");
       const before = this.limitsOf(on.id, await this.deps.settings.get());
       let value: unknown;
       try {
-        const run = await on.run(
-          { model, ...request, ...withEffort(effort) },
-          { signal: AbortSignal.any([this.signalOf("appearance"), mine.signal]) },
-        );
+        const run = await on.run({ model, ...request, ...withEffort(effort) }, { signal: stop });
         await this.noteRun(on.id, run.limits, before);
         value = run.value;
       } finally {
@@ -2138,12 +2139,12 @@ export class AgentService implements AgentApi {
           },
         ]);
       }
-      if (mine.signal.aborted) throw new AgentUnavailableError("Stopped.");
+      if (stop.aborted) throw new AgentUnavailableError("Stopped.");
       const text = themeTextOf(value, THEME_FORMAT);
       if (text === null) throw new AgentUnavailableError(NOT_A_THEME);
       return { text };
     } catch (error) {
-      if (mine.signal.aborted) throw new AgentUnavailableError("Stopped.");
+      if (stop.aborted) throw new AgentUnavailableError("Stopped.");
       throw this.askFailure(error, THEME_FAILED, runtimeId);
     } finally {
       this.makingTheme = null;

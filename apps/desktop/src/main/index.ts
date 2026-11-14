@@ -20,11 +20,13 @@ import {
   type RpcPort,
   serveCredentials,
 } from "@matters/adapter-secrets";
-import type {
-  AppearanceInfo,
-  AppearanceMode,
-  ReceivedAnswer,
-  ThemeAddAnswer,
+import {
+  type AppearanceInfo,
+  type AppearanceMode,
+  MAX_THEMES,
+  type ReceivedAnswer,
+  THEMES_FULL,
+  type ThemeAddAnswer,
 } from "@matters/contracts";
 import {
   app,
@@ -72,6 +74,7 @@ import {
   type LoadedTheme,
   ownThemeFile,
   ownThemeId,
+  ownThemeRoom,
   ownThemes,
   parseAppearance,
   RESET_APPEARANCE_ACCELERATOR,
@@ -84,6 +87,7 @@ import {
   themeSourceFor,
   windowColors,
   windowGround,
+  withOwnTheme,
 } from "./appearance.ts";
 import { BackendLink } from "./backendLink.ts";
 import { BUILT_IN_THEMES } from "./builtInThemes.ts";
@@ -451,7 +455,7 @@ function themeList(): LoadedTheme[] {
     } catch {
       // No folder yet: no own themes.
     }
-    ownList = ownThemes(files, readOwnTheme);
+    ownList = ownThemes(files, readOwnTheme, ownThemeRoom(BUILT_IN_THEMES.length));
   }
   const builtIns = BUILT_IN_THEMES.map((t) => builtInTheme(BUILT_IN_THEMES, t.id)).filter(
     (t): t is LoadedTheme => t !== null,
@@ -518,9 +522,14 @@ function chooseTheme(id: string | null): AppearanceInfo | null {
 /**
  * A theme handed in as text (ADR 0134, rule 12): the agent's answer to the person's description,
  * which the page passes on as something from outside. It passes the check or is refused with
- * every reason; one that passes is written to `themes/` under an id main makes, listed, and put on.
+ * every reason; one that passes is written to `themes/` under an id main makes, listed, and put on
+ * unless `putOn` is false.
  */
-function addTheme(text: string): ThemeAddAnswer | null {
+function addTheme(text: string, putOn: boolean): ThemeAddAnswer | null {
+  // A full list keeps no more than it can show (`MAX_THEMES`), whatever the text, so no second
+  // turn is asked for. Read before the file is written, so the scan cannot already hold the new
+  // theme when it is added below.
+  if (themeList().length >= MAX_THEMES) return { ok: false, full: THEMES_FULL };
   const result = parseTheme(text);
   if (!result.ok) return { ok: false, problems: result.problems };
   const id = ownThemeId(randomBytes(6).toString("hex"));
@@ -534,13 +543,11 @@ function addTheme(text: string): ThemeAddAnswer | null {
     return null;
   }
   const loaded: LoadedTheme = { id, source: "own", theme: result.theme };
-  themeList();
-  ownList = [...(ownList ?? []), loaded].sort(
-    (a, b) =>
-      a.theme.name.localeCompare(b.theme.name, "en", { sensitivity: "base" }) ||
-      a.id.localeCompare(b.id),
-  );
-  const appearance = applyAppearance({ ...stored, theme: id }, { theme: loaded, fallback: null });
+  ownList = withOwnTheme(ownList ?? [], loaded);
+  // The person chose another theme while this one was made: it is listed, and theirs stays on.
+  const appearance = putOn
+    ? applyAppearance({ ...stored, theme: id }, { theme: loaded, fallback: null })
+    : applyAppearance(stored, chosen);
   return { ok: true, theme: themeListing(loaded), appearance };
 }
 
@@ -566,7 +573,8 @@ function removeTheme(id: string): AppearanceInfo | null {
       return null;
     }
   }
-  ownList = (ownList ?? []).filter((t) => t.id !== id);
+  // Read again when next asked: a folder that held more than the list carries shows the next one.
+  ownList = null;
   if (stored.theme !== id) {
     // Nothing on screen changes; the list does, in every window that shows it.
     return applyAppearance(stored, chosen);
@@ -1311,7 +1319,7 @@ if (!identityHelper)
     // Settings › Appearance (ADR 0134): either window may read the appearance; only the settings
     // window may change it, and only to a mode, a theme main knows, or a theme it has just checked.
     // Every window hears the result.
-    ipcMain.handle(CHANNEL_APPEARANCE, (event, action: unknown, arg: unknown) => {
+    ipcMain.handle(CHANNEL_APPEARANCE, (event, action: unknown, arg: unknown, more: unknown) => {
       const fromSettings = !!settings && event.sender === settings.webContents;
       if (!fromSettings && event.sender !== win.webContents) return null;
       if (action === "get") return currentAppearance();
@@ -1320,7 +1328,7 @@ if (!identityHelper)
       if (action === "set" && isAppearanceMode(arg)) return setMode(arg);
       if (action === "theme" && (arg === null || isThemeId(arg))) return chooseTheme(arg);
       if (action === "remove" && isThemeId(arg)) return removeTheme(arg);
-      if (action === "add" && typeof arg === "string") return addTheme(arg);
+      if (action === "add" && typeof arg === "string") return addTheme(arg, more !== false);
       if (action === "text" && isThemeId(arg)) return themeText(arg);
       return null;
     });

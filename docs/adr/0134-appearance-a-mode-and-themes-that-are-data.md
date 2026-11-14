@@ -145,3 +145,9 @@
 - A runtime in use for this kind is tested by itself once AI is on, also when it shares the
   runtime with kinds that take mail and no account agreed to it yet: the test is the made-up
   message only, as before.
+- Matters keeps at most 500 themes, the built-in ones included. At the limit a new theme is not
+  made or added, and Appearance says to remove one first. A folder that holds more lists the
+  first 500 by name, so some can be removed.
+- A theme that is being made when the person goes back to the default is stopped and is not
+  added. One that is being made when the person chooses another theme is added to the list and
+  is not put on over that choice.

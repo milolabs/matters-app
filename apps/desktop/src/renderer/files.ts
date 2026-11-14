@@ -132,10 +132,11 @@ export async function askAppearance(ask: AppearanceAsk): Promise<AppearanceInfo 
  * A theme's text, as the agent wrote it from the person's description (ADR 0134, rule 12): main
  * checks it and keeps it, or says every reason it was refused. The page hands text, never a path.
  */
-export async function addTheme(text: string): Promise<ThemeAddAnswer | null> {
+export async function addTheme(text: string, putOn = true): Promise<ThemeAddAnswer | null> {
   const requestId = nextRequestId();
   const reply = answer<{ answer: ThemeAddAnswer | null }>("mattersAppearanceAnswer", requestId);
-  window.postMessage({ mattersAppearance: { requestId, action: "add", text } }, "*");
+  const ask = putOn ? { action: "add", text } : { action: "add", text, on: false };
+  window.postMessage({ mattersAppearance: { requestId, ...ask } }, "*");
   return (await reply).answer;
 }
 

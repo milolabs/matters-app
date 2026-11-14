@@ -6,6 +6,7 @@ import type {
   ThemeScheme,
   ThemeSwatch,
 } from "@matters/contracts";
+import { MAX_THEMES, THEMES_FULL } from "@matters/contracts";
 import type { AgentStatus } from "@matters/core";
 import { MAX_THEME_DESCRIPTION_CHARS } from "@matters/core";
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
@@ -18,7 +19,7 @@ import {
   onAppearanceChanged,
   themeText,
 } from "./files.ts";
-import { makeTheme, themeMaker } from "./themeMaking.ts";
+import { appearanceWatch, makeTheme, themeMaker } from "./themeMaking.ts";
 
 const small =
   "h-[26px] cursor-default rounded-[7px] bg-button px-2.5 text-[12px] font-medium text-ink disabled:opacity-40";
@@ -86,6 +87,14 @@ export function AppearanceSection(props: {
   const [madeProblem, setMadeProblem] = createSignal("");
   const [made, setMade] = createSignal("");
   let stop = false;
+  /** What the person does to the appearance while a theme is made (ADR 0134, rule 11). */
+  let watch = appearanceWatch(null);
+
+  /** What main says now. The way back while a theme is made stops it; see `appearanceWatch`. */
+  function seen(a: AppearanceInfo) {
+    if (making() && watch.seen(a)) cancel();
+    setInfo(a);
+  }
 
   async function readAgent() {
     try {
@@ -97,7 +106,7 @@ export function AppearanceSection(props: {
   }
 
   onMount(() => {
-    const off = onAppearanceChanged((a) => setInfo(a));
+    const off = onAppearanceChanged(seen);
     onCleanup(off);
     void askAppearance({ action: "get" }).then((a) => {
       if (a) setInfo(a);
@@ -140,18 +149,25 @@ export function AppearanceSection(props: {
 
   async function make() {
     if (making() || !maker().ready || asked() === "") return;
-    setMaking(true);
     setMadeRefused([]);
     setMadeProblem("");
     setMade("");
+    // A full list keeps no more (`MAX_THEMES`): say so before a turn is spent on it.
+    if ((info()?.themes.length ?? 0) >= MAX_THEMES) {
+      setMadeProblem(THEMES_FULL);
+      return;
+    }
+    setMaking(true);
     stop = false;
+    watch = appearanceWatch(info());
     try {
       const on = fromCurrent() ? current() : null;
+      // Cancel while this is read is honoured before the first turn: `makeTheme` asks `stopped`.
       const currentText = on === null ? null : await themeText(on.id);
       const result = await makeTheme(
         {
           make: (input) => props.backend.agentMakeTheme(input),
-          add: addTheme,
+          add: (text) => addTheme(text, watch.putOn()),
           stopped: () => stop,
         },
         { description: asked(), ...(currentText === null ? {} : { current: currentText }) },
@@ -160,10 +176,14 @@ export function AppearanceSection(props: {
         setInfo(result.answer.appearance);
         setDescription("");
         setFromCurrent(false);
+        const added =
+          result.answer.appearance.theme === result.answer.theme.id
+            ? `${result.answer.theme.name} was added and is on.`
+            : `${result.answer.theme.name} was added. The theme you chose meanwhile stays on.`;
         setMade(
           result.tries === 2
-            ? `${result.answer.theme.name} was added and is on. The agent's first theme did not pass the check, so it was asked once more.`
-            : `${result.answer.theme.name} was added and is on.`,
+            ? `${added} The agent's first theme did not pass the check, so it was asked once more.`
+            : added,
         );
       } else if (result.kind === "refused") {
         setMadeRefused(problemLines(result.problems));
@@ -183,7 +203,7 @@ export function AppearanceSection(props: {
   async function change(ask: AppearanceAsk) {
     setProblem("");
     const a = await askAppearance(ask);
-    if (a) setInfo(a);
+    if (a) seen(a);
     else setProblem("That could not be kept. Try again.");
   }
 
@@ -245,7 +265,11 @@ export function AppearanceSection(props: {
           type="button"
           class={small}
           disabled={!differs()}
-          onClick={() => void change({ action: "reset" })}
+          onClick={() => {
+            // The way back also stops a theme being made, so its late answer cannot undo it.
+            if (making()) cancel();
+            void change({ action: "reset" });
+          }}
         >
           Use default
         </button>
@@ -395,7 +419,8 @@ export function AppearanceSection(props: {
                 ? "Your words and the colours of the theme that is on go to the agent; no mail."
                 : "Only your words go to the agent; no mail."}{" "}
               Its theme is checked so its text stays readable, and asked for once more if it does
-              not pass. The new theme is added beside the others.
+              not pass. The new theme is added beside the others and put on, unless you choose
+              another theme meanwhile; Use default stops it.
             </p>
           </Show>
           <Show when={made() !== ""}>

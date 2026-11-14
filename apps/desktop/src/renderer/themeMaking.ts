@@ -2,7 +2,7 @@
 // it can be made now, and the one retry. The backend runs the turn and hands back text; main is
 // the only judge of that text, through `addTheme` and the check every theme passes (rule 12). Kept
 // apart from the section so the loop can be tested without a window.
-import type { ThemeAddAnswer, ThemeProblem } from "@matters/contracts";
+import type { AppearanceInfo, ThemeAddAnswer, ThemeProblem } from "@matters/contracts";
 import type { AgentStatus, ThemeInput } from "@matters/core";
 import { kindInfo, MAX_THEME_PROBLEM_CHARS, MAX_THEME_PROBLEMS } from "@matters/core";
 import { answeredByLine, statusWords } from "./agentText.ts";
@@ -91,6 +91,8 @@ function problemWords(problems: readonly ThemeProblem[]): string[] {
 export async function makeTheme(deps: ThemeMakingDeps, input: ThemeInput): Promise<ThemeMade> {
   let retry: ThemeInput["retry"];
   for (const tries of [1, 2] as const) {
+    // Cancel while main checked the first answer: no second turn.
+    if (deps.stopped()) return { kind: "stopped" };
     let text: string;
     try {
       text = await deps.make({ ...input, ...(retry === undefined ? {} : { retry }) });
@@ -102,8 +104,37 @@ export async function makeTheme(deps: ThemeMakingDeps, input: ThemeInput): Promi
     const answer = await deps.add(text);
     if (answer === null) return { kind: "failed", message: KEEP_FAILED };
     if (answer.ok) return { kind: "added", answer, tries };
+    // No room for another theme: asking again would be refused the same way.
+    if ("full" in answer) return { kind: "failed", message: answer.full };
     if (tries === 2) return { kind: "refused", problems: answer.problems };
     retry = { previous: text, problems: problemWords(answer.problems) };
   }
   return { kind: "failed", message: FAILED };
+}
+
+/** The default (ADR 0134, rule 11): mode System and no theme chosen. */
+const atDefault = (a: AppearanceInfo) => a.mode === "system" && !a.themeChosen;
+
+/**
+ * What the person did to the appearance while a theme was being made, from what main says, here
+ * or from another window, the menu or the keys. Going back to the default stops the ask, so a late
+ * answer neither adds nor puts on a theme over the way back (rule 11). Choosing another theme
+ * keeps the ask, but the theme made is then only added beside the others, not put on over that
+ * choice. A change of mode alone is neither.
+ */
+export function appearanceWatch(start: AppearanceInfo | null) {
+  const theme = start?.theme ?? null;
+  let wasDefault = start === null || atDefault(start);
+  let chosenOther = false;
+  return {
+    /** Main says this now; true when it is the way back, and the ask is to stop. */
+    seen(a: AppearanceInfo): boolean {
+      const back = atDefault(a) && !wasDefault;
+      wasDefault = atDefault(a);
+      if (!back && a.theme !== theme) chosenOther = true;
+      return back;
+    },
+    /** Whether a theme main keeps is put on, or only added. */
+    putOn: () => !chosenOther,
+  };
 }
