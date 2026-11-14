@@ -1553,3 +1553,42 @@ mark.hit[data-now] {
 .storage-free {
   background: repeating-linear-gradient(135deg, var(--edge) 0 3px, transparent 3px 6px);
 }
+
+/* A pull makes the edge above the list sag under a ball, as the M of the mark does (docs/brand).
+   The ball is a ring until letting go checks for mail; then it is the mark's ball, and the edge
+   throws it up. */
+.pull-string {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 1;
+  margin-left: -116px;
+  pointer-events: none;
+}
+.pull-dip {
+  fill: var(--chrome);
+}
+.pull-edge {
+  fill: none;
+  stroke: var(--edge);
+  stroke-width: 1;
+}
+.pull-ball circle {
+  fill: transparent;
+  stroke: var(--secondary);
+  stroke-width: 1.5;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    fill 140ms,
+    stroke 140ms;
+}
+.pull-string-armed .pull-ball circle {
+  fill: var(--mark-ball);
+  stroke: var(--mark-ball);
+}
+.pull-string-thrown .pull-ball circle {
+  transform: translateY(-96px);
+  /* Fastest as it leaves the edge, which is flat again in a few frames. */
+  transition: transform 200ms cubic-bezier(0.1, 0.8, 0.3, 1);
+}

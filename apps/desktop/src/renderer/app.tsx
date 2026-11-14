@@ -93,6 +93,17 @@ import { createMenuAnchor, menuPoint, PopMenu } from "./popMenu.tsx";
 import { PromptLine } from "./promptLine.tsx";
 import { createPromptRun } from "./promptRun.ts";
 import { NOTHING_FITS, promptOff } from "./promptView.ts";
+import {
+  createPull,
+  PULL_MAX,
+  PULL_QUIET_MS,
+  PULL_SNAP_MS,
+  PULL_WIDTH,
+  pullBall,
+  pullCurve,
+  pullShown,
+  pullSnap,
+} from "./pullRefresh.ts";
 import { createQueryModel, QueryBar, type QueryBarHandle } from "./queryBar.tsx";
 import { addFilter, labelToken, senderToken } from "./queryEdits.ts";
 import { createReading } from "./reading.ts";
@@ -680,6 +691,11 @@ function Mail(props: Stores) {
   };
   let moreButton: HTMLButtonElement | undefined;
 
+  /** Every account looks for new mail now; one already syncing runs once more after. */
+  function checkMail() {
+    for (const account of accounts.accounts()) void accounts.syncNow(account.id);
+  }
+
   function archive() {
     void store.moveThread("archive");
   }
@@ -891,6 +907,10 @@ function Mail(props: Stores) {
         const widen = !(beside() && paneWidth.wide());
         paneWidth.setWide(widen);
         if (widen) openAgentPrompt(talk);
+      } else if (key === "n" && e.shiftKey && !compose.isOpen()) {
+        // ⇧⌘N checks every account for new mail, as pulling the list down does.
+        e.preventDefault();
+        if (!e.repeat) checkMail();
       } else if (key === "i") {
         // The composer has details of its own; outside it they describe the sends.
         e.preventDefault();
@@ -1224,6 +1244,7 @@ function Mail(props: Stores) {
               words={hitWords}
               own={own()}
               syncing={accounts.summary().tone === "busy"}
+              onRefresh={checkMail}
               markOf={(m) => (showMarks() ? accounts.marks().get(m.accountId) : undefined)}
               ref={(el) => (listEl = el)}
             />
@@ -1609,6 +1630,8 @@ function MessageList(props: {
   /** What an empty list says while it holds a prompt's rows. */
   orderedEmpty: () => string;
   syncing: boolean;
+  /** The list was pulled down past its top and let go: check for new mail. */
+  onRefresh: () => void;
   /** The account mark of a message; undefined when the view does not show marks. */
   markOf: (message: Message) => AccountMark | undefined;
   /** The words of the search to mark in the rows (ADR 0077). */
@@ -1727,6 +1750,80 @@ function MessageList(props: {
     if (last && last.index >= layout().items.length - 40) void store.loadMore();
   });
 
+  // Pulling the list down past its top makes the edge above it sag under a ball, as the mark's M
+  // does; let go far enough, the edge throws the ball up and the app checks for new mail. The
+  // listeners are passive, so scrolling never waits for this code.
+  const pull = createPull();
+  const [drawn, setDrawn] = createSignal(0);
+  const [armed, setArmed] = createSignal(false);
+  // The depth the ball was thrown from, while it flies; null otherwise.
+  const [thrown, setThrown] = createSignal<number | null>(null);
+  let quiet: ReturnType<typeof setTimeout> | undefined;
+  let swing = 0;
+  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function letGo() {
+    quiet = undefined;
+    const from = drawn();
+    const fire = pull.release();
+    if (fire) props.onRefresh();
+    if (still) {
+      setArmed(false);
+      setDrawn(0);
+      return;
+    }
+    // The ball keeps its colour while it flies.
+    if (fire) setThrown(from);
+    else setArmed(false);
+    const start = performance.now();
+    const step = (now: number) => {
+      const ms = now - start;
+      const over = ms >= PULL_SNAP_MS;
+      setDrawn(pullSnap(from, ms));
+      if (over) {
+        setThrown(null);
+        setArmed(false);
+      }
+      swing = over ? 0 : requestAnimationFrame(step);
+    };
+    swing = requestAnimationFrame(step);
+  }
+  function onWheel(e: WheelEvent) {
+    // With Ctrl it is a pinch, which zooms.
+    if (e.ctrlKey) return;
+    const was = pull.pulling();
+    const raw = pull.wheel(e.deltaY, scroller.scrollTop <= 0, e.timeStamp);
+    if (!pull.pulling()) {
+      if (!was) return;
+      // Pushed back to where it started: nothing to let go.
+      clearTimeout(quiet);
+      quiet = undefined;
+      setDrawn(0);
+      setArmed(false);
+      return;
+    }
+    cancelAnimationFrame(swing);
+    swing = 0;
+    setThrown(null);
+    setDrawn(pullShown(raw));
+    setArmed(pull.armed());
+    clearTimeout(quiet);
+    // The fingers are up: the string goes now, not when the system's fading run ends.
+    if (pull.coasting()) letGo();
+    else quiet = setTimeout(letGo, PULL_QUIET_MS);
+  }
+  // Pushing a pull back would scroll the list under it: it stays at its top until let go.
+  function onScroll() {
+    if (pull.pulling() && scroller.scrollTop > 0) scroller.scrollTop = 0;
+  }
+  onMount(() => {
+    scroller.addEventListener("wheel", onWheel, { passive: true });
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+  });
+  onCleanup(() => {
+    clearTimeout(quiet);
+    cancelAnimationFrame(swing);
+  });
+
   return (
     <div
       ref={(el) => {
@@ -1739,6 +1836,31 @@ function MessageList(props: {
       aria-multiselectable="true"
       class="relative h-full overflow-y-auto outline-none focus-visible:outline-none"
     >
+      <Show when={drawn() !== 0 || thrown() !== null}>
+        <svg
+          aria-hidden="true"
+          data-pull-string
+          class="pull-string"
+          classList={{ "pull-string-armed": armed(), "pull-string-thrown": thrown() !== null }}
+          width={PULL_WIDTH}
+          height={PULL_MAX + 8}
+          viewBox={`0 0 ${PULL_WIDTH} ${PULL_MAX + 8}`}
+        >
+          <path class="pull-dip" d={`${pullCurve(Math.max(0, drawn()))}Z`} />
+          <path class="pull-edge" d={pullCurve(Math.max(0, drawn()))} />
+          {(() => {
+            const ball = () => pullBall(thrown() ?? drawn());
+            return (
+              <g
+                class="pull-ball"
+                style={{ opacity: Math.min(1, Math.max(0, (ball().cy - 2) / 8)) }}
+              >
+                <circle cx={PULL_WIDTH / 2} cy={ball().cy} r={ball().r} />
+              </g>
+            );
+          })()}
+        </svg>
+      </Show>
       <Show
         when={store.messages().length > 0}
         fallback={
@@ -1755,7 +1877,14 @@ function MessageList(props: {
           </Show>
         }
       >
-        <div class="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+        <div
+          class="relative w-full"
+          style={{
+            height: `${virtualizer.getTotalSize()}px`,
+            // The list gives way less than the edge sags: the dip comes down over it.
+            transform: drawn() > 0 ? `translateY(${drawn() * 0.45}px)` : undefined,
+          }}
+        >
           <For each={virtualizer.getVirtualItems()}>
             {(v) => {
               const item = () => layout().items[v.index];
