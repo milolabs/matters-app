@@ -136,6 +136,20 @@ describe("removing an account (ADR 0138, rule 5)", () => {
            VALUES (NULL, 2, 'agent', 'found', 'Zebraquokka wrote', ?, ?)`,
         )
         .run(JSON.stringify([{ threadId: "t-gone" }]), talk);
+      // Facts from the removed mail (senders, not threads), in an answer that cites no thread,
+      // and an answer citing only the kept thread: across all mail, every answer goes.
+      raw
+        .prepare(
+          `INSERT INTO agent_talk (thread_id, at_ms, role, kind, text, facts_json, talk_id)
+           VALUES (NULL, 3, 'agent', 'found', 'Two senders wrote', ?, ?)`,
+        )
+        .run(JSON.stringify([{ kind: "sender", text: "quentin@zebraquokka.example" }]), talk);
+      raw
+        .prepare(
+          `INSERT INTO agent_talk (thread_id, at_ms, role, kind, text, hits_json, talk_id)
+           VALUES (NULL, 4, 'agent', 'found', 'Lena wrote', ?, ?)`,
+        )
+        .run(JSON.stringify([{ threadId: "t-kept" }]), talk);
       raw
         .prepare(
           "INSERT INTO agent_bundle_reads (signature, edges_json, read_at_ms) VALUES ('s', '[]', 1)",
@@ -174,6 +188,12 @@ describe("removing an account (ADR 0138, rule 5)", () => {
       expect(n("SELECT COUNT(*) AS n FROM people_words WHERE word LIKE 'zebra%'")).toBe(0);
       expect(n("SELECT COUNT(*) AS n FROM message_terms WHERE term LIKE 'zebra%'")).toBe(0);
       expect(n("SELECT COUNT(*) AS n FROM agent_talk WHERE text LIKE '%Zebraquokka%'")).toBe(0);
+      expect(n("SELECT COUNT(*) AS n FROM agent_talk WHERE facts_json LIKE '%zebraquokka%'")).toBe(
+        0,
+      );
+      expect(
+        n("SELECT COUNT(*) AS n FROM agent_talk WHERE thread_id IS NULL AND role = 'agent'"),
+      ).toBe(0);
       expect(n("SELECT COUNT(*) AS n FROM agent_bundle_reads")).toBe(0);
       // The question the person typed stays, and so does its talk.
       expect(n("SELECT COUNT(*) AS n FROM agent_talk WHERE text = 'who wrote?'")).toBe(1);
@@ -181,6 +201,7 @@ describe("removing an account (ADR 0138, rule 5)", () => {
       // The other account is whole.
       expect(n("SELECT COUNT(*) AS n FROM messages WHERE account_id = 'a2'")).toBe(1);
       expect(n("SELECT COUNT(*) AS n FROM agent_analyses WHERE thread_id = 't-kept'")).toBe(1);
+      expect(n("SELECT COUNT(*) AS n FROM agent_talk WHERE thread_id = 't-kept'")).toBe(1);
       expect(n("SELECT COUNT(*) AS n FROM agent_ledger WHERE account_id = 'a2'")).toBe(1);
       expect(n("SELECT COUNT(*) AS n FROM location_items WHERE account_id = 'a2'")).toBe(1);
       expect(n("SELECT COUNT(*) AS n FROM people WHERE address = 'lena@lighthouse.example'")).toBe(

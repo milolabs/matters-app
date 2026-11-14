@@ -175,7 +175,7 @@ every freed page.
 | Account, by cascade | `message_labels`, `message_attachments`, `attachment_text` | foreign key on `messages`, `ON DELETE CASCADE` |
 | Derived, by the stores | `body_blocks`, `body_index`, `html_blocks`, `html_index`, `html_kinds`, `message_fts` (and its `_data`, `_docsize`, `_idx`), `file_fts` (and its shadow tables), `file_starts` | `removeBodies`, `removeMessages`, the trigger `file_index_gone`; then both indexes are merged (`optimize`) so removed words leave their segments |
 | Derived, pruned | `agent_analyses`, `agent_prepared`, `agent_feedback`, `agent_journal`, `agent_instructions` (a thread's), `agent_talk`, `agent_prompt_verdicts` | rows of a thread with no message left |
-| Derived, pruned | `agent_talk` across all mail, `agent_talks` | an answer citing a thread with no mail goes whole (its text may quote it); the person's question stays; an empty talk goes |
+| Derived, pruned | `agent_talk` across all mail, `agent_talks` | every agent answer across all mail goes, whatever it cites (see the notes); the person's question stays; an empty talk goes |
 | Derived, pruned | `agent_prompt_searches` | a kept search naming a thread with no mail goes; the next run makes it again |
 | Derived, cleared | `agent_bundle_reads` | a cache of what a model said; read again when needed |
 | Derived, rebuilt | `people`, `people_words` | built again from the mail that stays |
@@ -204,12 +204,53 @@ The account's colour in localStorage goes with it too.
   provider links of rule 8 are now live: whether an account signs in through Microsoft is read
   from what the account already records, its transport and its server
   (`browserSignInProvider`, the same answer the Accounts pane uses), by `signInKind` and
-  `accountPermissionPage` in `providerPermission.ts`. `AccountInfo` gains no field for it. A
+  `accountPermissionPages` in `providerPermission.ts`. `AccountInfo` gains no field for it. A
   Graph account, or one on Microsoft's IMAP servers, gets the link in the account confirmation,
   the erase review and the result screen; any other gets none.
+- Rewritten after review (2026-11-15): the account kind is not read from the address any more.
+  A personal Microsoft account may use any address (a Gmail one, say), and nothing the account
+  records says which kind it is: the sign-in's token is not kept past setup, and setup records no
+  tenant. So `accountPermissionPages` gives the personal page alone only for an address on
+  Microsoft's own personal domains (outlook, hotmail, live, msn), which no organisation can claim,
+  and both pages, each named for whom it is, for any other address.
 - What Microsoft sign-in keeps was traced: its tokens live in the vault (`credentials.json`,
   already the holding `secrets.vault`); the sign-in and Graph adapters write no file, folder or
   temp folder of their own. Migration 57 added the column `accounts.transport` and the table
   `location_items` (a Graph copy's handle), declared with scope account and discarded by
   `account_id`; `removeAccountMessages` clears it as well. The removal test seeds it for both
   accounts.
+
+## Notes after review (2026-11-15)
+
+The principle: the erase order goes only when every final outcome is known and nothing is left,
+and an error is never read as "gone" or "absent".
+
+- **An order that cannot be read is an order.** Only ENOENT (or ENOTDIR) means none; an order
+  that is there but fails to read (EACCES, EIO) erases with the safe defaults, like one that
+  cannot be parsed.
+- **A look that fails is a thing left.** `EraseFs.entry` and `list` throw on anything but "not
+  there"; the holding is then reported left with the reason, and the order stays.
+- **Keys are checked as they are erased,** not after the order went: a key the store says it
+  deleted but still lists is left before the order is decided.
+- **When anything is left, the sweep of undeclared entries does not run:** it would take what was
+  left, a database another run owns included. It runs on the try that finds nothing left.
+- **`runErase` does not throw.** A marker that cannot be written is reported left and the order
+  stays; a run that breaks off anyway is shown as one thing left, with *Try again*.
+- **Rule 4 holds on every path.** *Leave them and start again* writes the "done" marker first
+  whenever the earlier copy (or part of it) is still there; when the marker cannot be written,
+  or the order cannot be removed, the order stays and the next start erases again.
+- **A database a live run owns is not erased (ADR 0110).** `MATTERS_DB_PATH` can share one
+  database between two data folders, whose locks differ. Before deleting the database's files the
+  erase takes its owner file with the same claim a normal start takes; when another live run
+  holds it, each of its files is left with the reason "another copy of Matters has this mailbox
+  open". The erase's own owner file goes last, by releasing the claim.
+- **Rule 7's words on a refused key are not on the screens.** The key protects nothing only once
+  `credentials.json` is gone, and that file can be left in the same run; the result names the
+  key and where to delete it, and promises nothing about it.
+- **Compaction asks for twice the database (rule 6),** with its log: VACUUM writes a temporary
+  copy and then the log of the rewrite. A checkpoint a reader kept from truncating the log (the
+  log still holds removed pages) makes the compaction `failed`; the removal itself holds.
+- **Answers across all mail go whole on any removal (rule 5).** An answer can carry mail in
+  facts (senders) that name no thread, and in text the agent wrote from what it searched; which
+  account a fact came from is not kept. Deleting answers too many is preferred to keeping one
+  that may quote removed mail. The person's questions stay, and so do the talks of a thread.

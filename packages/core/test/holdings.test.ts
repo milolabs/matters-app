@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  accountPermissionPage,
+  accountPermissionPages,
   ERASE_STEPS,
   erasePlan,
   type Holding,
   holdingForDataEntry,
   holdingsOf,
   MICROSOFT_PERMISSION_PAGES,
-  permissionPage,
+  permissionPages,
   signInKind,
   undeclaredEntries,
   undeclaredTables,
@@ -98,29 +98,41 @@ describe("nothing undeclared (ADR 0138, rule 2)", () => {
 
 describe("the provider's page (ADR 0138, rule 8)", () => {
   it("is none for a password account", () => {
-    expect(permissionPage("password", "a@outlook.com")).toBeNull();
+    expect(permissionPages("password", "a@outlook.com")).toEqual([]);
   });
 
-  it("is Microsoft's personal page for a personal address and My Apps for work or school", () => {
-    expect(permissionPage("microsoft", "a@hotmail.co.uk")?.url).toBe(
+  it("is Microsoft's personal page on Microsoft's own personal domains", () => {
+    expect(permissionPages("microsoft", "a@hotmail.co.uk").map((p) => p.url)).toEqual([
       MICROSOFT_PERMISSION_PAGES.personal,
-    );
-    expect(permissionPage("microsoft", "a@outlook.com")?.id).toBe("microsoftPersonal");
-    expect(permissionPage("microsoft", "anna@studio.example")?.url).toBe(
-      "https://myapplications.microsoft.com/",
-    );
+    ]);
+    expect(permissionPages("microsoft", "a@outlook.com").map((p) => p.id)).toEqual([
+      "microsoftPersonal",
+    ]);
+  });
+
+  it("offers both pages for any other address: a personal account may use a Gmail address", () => {
+    for (const address of ["person@gmail.com", "anna@studio.example"]) {
+      expect(permissionPages("microsoft", address).map((p) => [p.id, p.url])).toEqual([
+        ["microsoftWork", "https://myapplications.microsoft.com/"],
+        ["microsoftPersonal", MICROSOFT_PERMISSION_PAGES.personal],
+      ]);
+    }
   });
 
   it("follows how the account signs in: Graph or a Microsoft server, never a password host", () => {
     expect(
-      accountPermissionPage({ transport: "graph", host: "", address: "anna@studio.example" })?.id,
-    ).toBe("microsoftWork");
+      accountPermissionPages({ transport: "graph", host: "", address: "anna@studio.example" }).map(
+        (p) => p.id,
+      ),
+    ).toEqual(["microsoftWork", "microsoftPersonal"]);
     expect(
-      accountPermissionPage({ host: "outlook.office365.com", address: "a@outlook.com" })?.id,
-    ).toBe("microsoftPersonal");
+      accountPermissionPages({ host: "outlook.office365.com", address: "a@outlook.com" }).map(
+        (p) => p.id,
+      ),
+    ).toEqual(["microsoftPersonal"]);
     expect(
-      accountPermissionPage({ host: "imap.fastmail.com", address: "a@fastmail.com" }),
-    ).toBeNull();
+      accountPermissionPages({ host: "imap.fastmail.com", address: "a@fastmail.com" }),
+    ).toEqual([]);
     expect(signInKind({ transport: "imap", host: "imap.example.org" })).toBe("password");
   });
 });

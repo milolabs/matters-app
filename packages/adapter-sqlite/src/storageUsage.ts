@@ -198,14 +198,26 @@ export class SqliteStorageSamples {
    * Rewrites the database without its free pages (`VACUUM`), on the writer. It waits for any
    * write in flight and holds every other write until it ends. Returns the bytes given back.
    */
-  compact(): Promise<{ readonly freedBytes: number; readonly ms: number }> {
+  compact(options?: {
+    /**
+     * Throws when a reader kept the log from being truncated (ADR 0138, rule 6): the log then
+     * still holds the pages that were removed. SQLite says so in the checkpoint's `busy`, not
+     * with an error.
+     */
+    readonly requireCheckpoint?: boolean;
+  }): Promise<{ readonly freedBytes: number; readonly ms: number }> {
     // VACUUM cannot run inside a transaction: an exclusive step of its own, not `write`.
     return exclusive(this.db, () => {
       const pageSize = pragma(this.db, "page_size");
       const before = pragma(this.db, "page_count");
       const started = performance.now();
       this.db.exec("VACUUM");
-      this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      const checkpoint = this.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as
+        | { busy: number }
+        | undefined;
+      if (options?.requireCheckpoint && (checkpoint?.busy ?? 0) !== 0) {
+        throw new Error("a reader kept the log from being truncated; it still holds removed pages");
+      }
       return {
         freedBytes: (before - pragma(this.db, "page_count")) * pageSize,
         ms: Math.round(performance.now() - started),

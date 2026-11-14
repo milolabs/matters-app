@@ -58,34 +58,14 @@ function threadIdsIn(json: string | null, field: string | null): string[] {
 }
 
 /**
- * An answer across all mail that cites a thread with no mail left goes whole: its text may quote
- * that mail. The question the person typed stays (their own words), and so does a talk with
- * anything left in it; an empty talk goes.
+ * Every answer across all mail goes when an account is removed: such an answer may carry the
+ * removed mail in its text, its quotes, its hits or its facts, and not every part names the
+ * thread it came from (facts carry senders, not threads). Deleting a few answers too many is the
+ * price of leaving none that quotes removed mail. The questions the person typed stay (their own
+ * words), and so does a talk with anything left in it; an empty talk goes. Run by a removal only.
  */
 function pruneTalkAll(db: Database): void {
-  const hasThread = db.prepare("SELECT 1 FROM messages WHERE thread_id = ? LIMIT 1");
-  const supported = (id: string) => hasThread.get(id) !== undefined;
-  const rows = db
-    .prepare(
-      `SELECT id, quotes_json, hits_json, carry_json FROM agent_talk
-        WHERE thread_id IS NULL
-          AND (quotes_json IS NOT NULL OR hits_json IS NOT NULL OR carry_json IS NOT NULL)`,
-    )
-    .all() as unknown as {
-    id: number;
-    quotes_json: string | null;
-    hits_json: string | null;
-    carry_json: string | null;
-  }[];
-  const drop = db.prepare("DELETE FROM agent_talk WHERE id = ?");
-  for (const row of rows) {
-    const cited = [
-      ...threadIdsIn(row.quotes_json, null),
-      ...threadIdsIn(row.hits_json, null),
-      ...threadIdsIn(row.carry_json, "threadIds"),
-    ];
-    if (cited.some((t) => !supported(t))) drop.run(row.id);
-  }
+  db.prepare("DELETE FROM agent_talk WHERE thread_id IS NULL AND role = 'agent'").run();
   db.prepare(
     "DELETE FROM agent_talks WHERE NOT EXISTS (SELECT 1 FROM agent_talk e WHERE e.talk_id = agent_talks.id)",
   ).run();

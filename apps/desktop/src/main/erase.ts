@@ -29,6 +29,13 @@ import {
   type PermissionPageId,
 } from "@matters/core";
 import { ERASE_ORDER_FILE } from "./holdings.ts";
+import { OWNER_SUFFIX } from "./instanceLock.ts";
+
+/** Nothing is there: the only errors a look may read as "absent". Any other is a doubt. */
+const missing = (error: unknown) => {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+};
 
 // ---------------------------------------------------------------------------------------------
 // The order
@@ -61,15 +68,17 @@ export function parseEraseOrder(text: string): EraseOrder | null {
 
 /**
  * The one look a normal start pays for (ADR 0138, Consequences): a read that fails with ENOENT. An
- * order that cannot be parsed still counts: the person confirmed something, and the erase goes on
- * without the earlier copy, the safe default.
+ * order that cannot be parsed still counts, and so does one that is there but cannot be read
+ * (EACCES, EIO): the person confirmed something, and the erase goes on without the earlier copy,
+ * the safe default. Only "nothing there" is no order.
  */
 export function readEraseOrder(dataDir: string): EraseOrder | null {
   let text: string;
   try {
     text = readFileSync(join(dataDir, ERASE_ORDER_FILE), "utf8");
-  } catch {
-    return null;
+  } catch (error) {
+    if (missing(error)) return null;
+    text = "";
   }
   return (
     parseEraseOrder(text) ?? {
@@ -164,11 +173,14 @@ export function eraseGuard(
 // The ports
 
 export interface EraseFs {
-  /** Kind and size of an entry, links not followed; null when nothing is there. */
+  /**
+   * Kind and size of an entry, links not followed; null when nothing is there. Throws when it
+   * cannot be looked at (EACCES, EIO): that is never "nothing there".
+   */
   entry(
     path: string,
   ): { readonly kind: "file" | "dir" | "link" | "other"; readonly size: number } | null;
-  /** Names in a folder; [] when it cannot be read. */
+  /** Names in a folder; [] when there is no folder. Throws when it cannot be read. */
   list(dir: string): readonly string[];
   /** Bytes under a path, links not followed. */
   size(path: string): number;
@@ -205,15 +217,17 @@ export const nodeEraseFs: EraseFs = {
         kind: s.isFile() ? "file" : s.isDirectory() ? "dir" : s.isSymbolicLink() ? "link" : "other",
         size: s.size,
       };
-    } catch {
-      return null;
+    } catch (error) {
+      if (missing(error)) return null;
+      throw error;
     }
   },
   list(dir) {
     try {
       return readdirSync(dir);
-    } catch {
-      return [];
+    } catch (error) {
+      if (missing(error)) return [];
+      throw error;
     }
   },
   size: sizeOfSync,
@@ -295,11 +309,22 @@ export interface EraseTargets {
   readonly ownFolder?: string;
 }
 
+/** The database's claim (ADR 0110), taken by the erase before it deletes the database's files. */
+export type DatabaseClaim =
+  | { readonly kind: "claimed"; release(): void }
+  | { readonly kind: "held"; readonly why: string };
+
 export interface EraseDeps {
   readonly fs: EraseFs;
   readonly keychain: KeychainPort;
   readonly guard: (path: string) => boolean;
   readonly now: () => number;
+  /**
+   * Claims the database through its owner file (ADR 0110). `MATTERS_DB_PATH` can share one
+   * database between two data folders, and the other run's lock is not this folder's: a database
+   * a live run owns is never deleted under it. Throws ENOENT when its folder is not there.
+   */
+  readonly claimDatabase?: () => DatabaseClaim;
   /** Told before each holding and after it, for the window (rule 11). */
   readonly progress?: (event: EraseProgress) => void;
   /** The "done" marker the identity move reads (ADR 0105), when the earlier copy stays (rule 4). */
@@ -363,14 +388,25 @@ async function eraseKey(h: Holding, t: EraseTargets, deps: EraseDeps): Promise<H
   } catch {
     answer = "refused";
   }
-  if (answer === "deleted") return { kind: "gone", bytes: 0 };
-  if (answer === "absent") return { kind: "absent" };
-  return {
+  const left = (reason: LeftReason): HoldingOutcome => ({
     kind: "left",
-    reason: answer === "unsupported" ? "keychainUnsupported" : "keychainRefused",
+    reason,
     bytes: 0,
     where: service,
-  };
+  });
+  if (answer === "absent") return { kind: "absent" };
+  if (answer !== "deleted") {
+    return left(answer === "unsupported" ? "keychainUnsupported" : "keychainRefused");
+  }
+  // The check (rule 11), here and not at the end: the order is decided on what was found. A key
+  // reported gone that is still there is left; when the store cannot be asked, its own yes stands.
+  let still: boolean | null;
+  try {
+    still = await deps.keychain.exists(service);
+  } catch {
+    still = null;
+  }
+  return still === true ? left("keychainRefused") : { kind: "gone", bytes: 0 };
 }
 
 function erasePaths(paths: readonly string[], deps: EraseDeps): HoldingOutcome {
@@ -383,7 +419,15 @@ function erasePaths(paths: readonly string[], deps: EraseDeps): HoldingOutcome {
     leftBytes += bytes;
   };
   for (const path of paths) {
-    const entry = deps.fs.entry(path);
+    let entry: ReturnType<EraseFs["entry"]>;
+    try {
+      entry = deps.fs.entry(path);
+    } catch (error) {
+      // It could not be looked at: maybe there, never "absent".
+      any = true;
+      leave(reasonOf(error), path, 0);
+      continue;
+    }
     if (entry === null) continue;
     any = true;
     const bytes =
@@ -399,7 +443,13 @@ function erasePaths(paths: readonly string[], deps: EraseDeps): HoldingOutcome {
       continue;
     }
     // Looked for again: a delete that said yes and left the file is not "gone".
-    if (deps.fs.entry(path) !== null) leave("busy", path, bytes);
+    let still: boolean;
+    try {
+      still = deps.fs.entry(path) !== null;
+    } catch {
+      still = true;
+    }
+    if (still) leave("busy", path, bytes);
     else gone += bytes;
   }
   const kept = left as { reason: LeftReason; where: string } | null;
@@ -408,12 +458,141 @@ function erasePaths(paths: readonly string[], deps: EraseDeps): HoldingOutcome {
   return any ? { kind: "gone", bytes: gone } : { kind: "absent" };
 }
 
+/** A holding's paths, erased; a folder that could not be listed is left, never "absent". */
+function eraseHolding(h: Holding, t: EraseTargets, deps: EraseDeps): HoldingOutcome {
+  let paths: readonly string[];
+  try {
+    paths = pathsOf(h, t, deps.fs);
+  } catch (error) {
+    const where = h.place.kind === "temp" ? t.tempDir : t.dataDir;
+    return { kind: "left", reason: reasonOf(error), bytes: 0, where };
+  }
+  return erasePaths(paths, deps);
+}
+
+/**
+ * The database's files, under the database's own claim (ADR 0110): when a live run owns the
+ * database, none of them is touched and each is left. Its own owner file goes last, by releasing
+ * the claim; one a later start wrote meanwhile is that start's, and is left.
+ */
+function eraseDatabase(
+  inStep: readonly Holding[],
+  t: EraseTargets,
+  deps: EraseDeps,
+  note: (h: Holding, o: HoldingOutcome) => void,
+): void {
+  let claim: { release(): void } | null = null;
+  let refused: LeftReason | null = null;
+  if (deps.claimDatabase) {
+    try {
+      const c = deps.claimDatabase();
+      if (c.kind === "held") refused = "inUse";
+      else claim = c;
+    } catch (error) {
+      // No folder to claim in: no database in it either, which the deletes below confirm.
+      if (!missing(error)) refused = reasonOf(error);
+    }
+  }
+  const isOwner = (h: Holding) => h.place.kind === "database" && h.place.suffix === OWNER_SUFFIX;
+  try {
+    for (const h of [...inStep.filter((h) => !isOwner(h)), ...inStep.filter(isOwner)]) {
+      if (refused !== null) {
+        const paths = h.place.kind === "database" ? [t.databasePath + h.place.suffix] : [];
+        note(h, leaveAll(paths, refused, deps));
+        continue;
+      }
+      if (claim !== null && isOwner(h)) {
+        const path = t.databasePath + OWNER_SUFFIX;
+        claim.release();
+        claim = null;
+        let after: ReturnType<EraseFs["entry"]> | undefined;
+        try {
+          after = deps.fs.entry(path);
+        } catch {
+          after = undefined;
+        }
+        note(
+          h,
+          after === null
+            ? { kind: "gone", bytes: 0 }
+            : { kind: "left", reason: "inUse", bytes: after?.size ?? 0, where: path },
+        );
+        continue;
+      }
+      note(h, eraseHolding(h, t, deps));
+    }
+  } finally {
+    claim?.release();
+  }
+}
+
+/** Paths not touched, each left with `reason` when it is (or may be) there. */
+function leaveAll(paths: readonly string[], reason: LeftReason, deps: EraseDeps): HoldingOutcome {
+  let bytes = 0;
+  let where: string | null = null;
+  for (const path of paths) {
+    let entry: ReturnType<EraseFs["entry"]> | undefined;
+    try {
+      entry = deps.fs.entry(path);
+    } catch {
+      entry = undefined;
+    }
+    if (entry === null) continue;
+    where = path;
+    bytes += entry?.kind === "file" ? entry.size : 0;
+  }
+  return where === null ? { kind: "absent" } : { kind: "left", reason, bytes, where };
+}
+
+/** Whether the earlier identity's folder is (or may be) still there. */
+function earlierThere(t: Pick<EraseTargets, "earlierDir">, fs: EraseFs): boolean {
+  if (t.earlierDir === null) return false;
+  try {
+    return fs.entry(t.earlierDir) !== null;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Writes the identity move's "done" marker while the earlier copy is there, so that the move never
+ * brings it back (rule 4). Throws when it cannot be written.
+ */
+function keepEarlierOut(
+  t: Pick<EraseTargets, "dataDir" | "earlierDir">,
+  deps: Pick<EraseDeps, "fs" | "now" | "doneMarker">,
+): void {
+  if (t.earlierDir === null || !deps.doneMarker || !earlierThere(t, deps.fs)) return;
+  const marker = deps.doneMarker(t.earlierDir, deps.now());
+  deps.fs.writeAtomic(join(t.dataDir, marker.name), marker.text);
+}
+
+/**
+ * "Leave them and start again" (rule 11): the order goes, and with it every retry. The marker that
+ * keeps the earlier copy out goes in first, on this path too; when it cannot be written, or the
+ * order cannot be removed, the order stays and the next start erases again. True when it went.
+ */
+export function leaveErase(
+  t: Pick<EraseTargets, "dataDir" | "earlierDir">,
+  deps: Pick<EraseDeps, "fs" | "now" | "doneMarker">,
+): boolean {
+  try {
+    keepEarlierOut(t, deps);
+    dropEraseOrder(t.dataDir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Runs the erase, in the order of the plan (rule 3), and checks what it did (rule 11): every path
- * and key is looked for again. Entries of the data folder that no holding claimed go before the
- * order, so the folder ends empty; the order goes last, and only when nothing was left: a start
- * after a partial erase tries again. When the earlier copy stays, the identity move's "done"
- * marker is written before the order goes, so that the move never brings it back (rule 4).
+ * and key is looked for again as it goes. Entries of the data folder that no holding claimed go
+ * before the order, so the folder ends empty; the order goes last, and only when every outcome is
+ * known and nothing was left: a start after a partial erase tries again. A look that fails is a
+ * thing left, never one gone. When the earlier copy stays, the identity move's "done" marker is
+ * written before the order goes, so that the move never brings it back (rule 4). It does not
+ * throw: what it could not do is in the result.
  */
 export async function runErase(
   order: EraseOrder,
@@ -431,55 +610,59 @@ export async function runErase(
   for (const { step, holdings: inStep } of erasePlan(holdings, { earlierCopy })) {
     deps.progress?.({ kind: "step", step });
     if (step === "order") {
+      // Something left: the sweep below would take it too, a database another run owns included.
+      if (outcomes.some((o) => o.outcome.kind === "left")) break;
       // What no holding claimed: the folder is removed whole, not file by file (rule 3).
-      const stray = deps.fs
-        .list(t.dataDir)
-        .filter((n) => n !== ERASE_ORDER_FILE)
-        .map((n) => join(t.dataDir, n));
-      if (stray.length > 0) {
+      const undeclared: Holding = {
+        id: "desktop.undeclared",
+        group: "caches",
+        step: "order",
+        place: { kind: "data", name: "", match: "prefix" },
+      };
+      let stray: string[] = [];
+      try {
+        stray = deps.fs
+          .list(t.dataDir)
+          .filter((n) => n !== ERASE_ORDER_FILE)
+          .map((n) => join(t.dataDir, n));
+      } catch (error) {
+        note(undeclared, { kind: "left", reason: reasonOf(error), bytes: 0, where: t.dataDir });
+      }
+      if (stray.length > 0) note(undeclared, erasePaths(stray, deps));
+      const left = outcomes.some((o) => o.outcome.kind === "left");
+      if (left) break;
+      try {
+        keepEarlierOut(t, deps);
+      } catch (error) {
+        // Without the marker the move would bring the earlier copy back: the order stays.
         note(
           {
-            id: "desktop.undeclared",
-            group: "caches",
+            id: "desktop.doneMarker",
+            group: "settings",
             step: "order",
             place: { kind: "data", name: "", match: "prefix" },
           },
-          erasePaths(stray, deps),
+          { kind: "left", reason: reasonOf(error), bytes: 0, where: t.dataDir },
         );
+        break;
       }
-      const left = outcomes.some((o) => o.outcome.kind === "left");
-      if (left) break;
-      if (
-        !earlierCopy &&
-        t.earlierDir !== null &&
-        deps.fs.entry(t.earlierDir) !== null &&
-        deps.doneMarker
-      ) {
-        const marker = deps.doneMarker(t.earlierDir, deps.now());
-        deps.fs.writeAtomic(join(t.dataDir, marker.name), marker.text);
-      }
-      for (const h of inStep) note(h, erasePaths(pathsOf(h, t, deps.fs), deps));
+      for (const h of inStep) note(h, eraseHolding(h, t, deps));
       // Empty now: the folder itself goes too (it stays with the marker in it).
-      if (deps.fs.list(t.dataDir).length === 0 && deps.guard(t.dataDir)) {
-        try {
+      try {
+        if (deps.fs.list(t.dataDir).length === 0 && deps.guard(t.dataDir))
           deps.fs.remove(t.dataDir);
-        } catch {
-          // An empty folder left behind holds nothing.
-        }
+      } catch {
+        // An empty folder left behind holds nothing.
       }
+      continue;
+    }
+    if (step === "database") {
+      eraseDatabase(inStep, t, deps, note);
       continue;
     }
     for (const h of inStep) {
       if (h.place.kind === "keychain") note(h, await eraseKey(h, t, deps));
-      else note(h, erasePaths(pathsOf(h, t, deps.fs), deps));
-    }
-  }
-  // The check (rule 11): keys asked again; a key reported gone that is still there is left.
-  for (const o of outcomes) {
-    if (o.holding.place.kind !== "keychain" || o.outcome.kind !== "gone") continue;
-    const service = o.holding.place.which === "current" ? t.keychain.current : t.keychain.earlier;
-    if (service !== null && (await deps.keychain.exists(service)) === true) {
-      o.outcome = { kind: "left", reason: "keychainRefused", bytes: 0, where: service };
+      else note(h, eraseHolding(h, t, deps));
     }
   }
   return { startedAtMs, endedAtMs: deps.now(), earlierCopy, outcomes };

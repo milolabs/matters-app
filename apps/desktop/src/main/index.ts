@@ -131,6 +131,7 @@ import {
 } from "./identityMigration.ts";
 import {
   bringForward,
+  type Claim,
   claimDatabase,
   nodeOwnerFs,
   nodeProcessFacts,
@@ -245,13 +246,15 @@ const erasing = eraseOrder !== null;
 if (eraseOrder) {
   if (process.platform === "win32") claimDataFolder();
   const dataDir = app.getPath("userData");
+  // Read now: the erase points userData at a throwaway folder before it claims anything.
+  const erasedDatabase = databasePath();
   // Only the person's own run touches the Keychain: a dev, test or smoke run never does, whatever
   // its folders (a dev build shares the real key's name).
   const ownRun = app.isPackaged && !process.env.MATTERS_USER_DATA && !process.env.MATTERS_DB_PATH;
   enterEraseMode({
     order: eraseOrder,
     dataDir,
-    databasePath: databasePath(),
+    databasePath: erasedDatabase,
     earlierDir: earlierCopyDir(),
     keychain: ownRun
       ? { current: `${app.getName()} Safe Storage`, earlier: `${OLD_APP_NAME} Safe Storage` }
@@ -263,6 +266,8 @@ if (eraseOrder) {
     ...(devBuild && process.env.MATTERS_ERASE_TEMP_DIR
       ? { tempDir: process.env.MATTERS_ERASE_TEMP_DIR }
       : {}),
+    // A database another run owns (a shared `MATTERS_DB_PATH`) is left, never deleted under it.
+    claimDatabase: () => databaseClaim(erasedDatabase, dataDir),
     background: () => background(),
     titleBar: () => titleBar,
     lockDown: (win) => lockDown(win),
@@ -369,28 +374,7 @@ if (!identityHelper && !erasing && process.platform === "win32") claimDataFolder
 function claimDatabaseFile(): void {
   const path = databasePath();
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const facts = () =>
-    nodeProcessFacts({
-      pid: process.pid,
-      host: hostname(),
-      nowMs: Date.now(),
-      uptimeS: uptime(),
-      platform: process.platform,
-    });
-  const me: Owner = {
-    pid: process.pid,
-    startedAtMs: process.getCreationTime() ?? processStartEpochMs,
-    host: hostname(),
-    token: randomUUID(),
-    userData: app.getPath("userData"),
-  };
-  const claim = claimDatabase({
-    path: ownerPath(path),
-    me,
-    fs: nodeOwnerFs,
-    judge: (owner, ageMs) => ownerVerdict(owner, ageMs, facts()),
-    nowMs: () => Date.now(),
-  });
+  const claim = databaseClaim(path, app.getPath("userData"));
   if (claim.kind === "claimed") {
     app.on("will-quit", () => claim.release());
     // `app.exit` (smoke runs, a refused start) skips will-quit.
@@ -411,6 +395,35 @@ function claimDatabaseFile(): void {
   process.exit(1);
 }
 if (!identityHelper && !erasing) claimDatabaseFile();
+
+/**
+ * Takes the database's owner file for this process, or says who has it (ADR 0110). Shared by a
+ * normal start and by the erase, which claims the database before it deletes its files.
+ */
+function databaseClaim(path: string, userData: string): Claim {
+  const facts = () =>
+    nodeProcessFacts({
+      pid: process.pid,
+      host: hostname(),
+      nowMs: Date.now(),
+      uptimeS: uptime(),
+      platform: process.platform,
+    });
+  const me: Owner = {
+    pid: process.pid,
+    startedAtMs: process.getCreationTime() ?? processStartEpochMs,
+    host: hostname(),
+    token: randomUUID(),
+    userData,
+  };
+  return claimDatabase({
+    path: ownerPath(path),
+    me,
+    fs: nodeOwnerFs,
+    judge: (owner, ageMs) => ownerVerdict(owner, ageMs, facts()),
+    nowMs: () => Date.now(),
+  });
+}
 
 const credentialsPending =
   (identity?.kind === "copied" || identity?.kind === "settled") &&

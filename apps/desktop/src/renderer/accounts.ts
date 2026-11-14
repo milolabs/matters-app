@@ -68,7 +68,10 @@ export function createAccountsStore(backend: Backend) {
         setChosenColors(rest);
         writeAccountColors(rest);
       }
-      await refresh();
+      // The removal is done: a list that fails to load now must not hide what became of it.
+      await refresh().catch((error: unknown) =>
+        console.error("the accounts could not be listed after a removal", error),
+      );
       return compaction;
     },
   };

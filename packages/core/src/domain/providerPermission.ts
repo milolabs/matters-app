@@ -24,7 +24,11 @@ export const MICROSOFT_PERMISSION_PAGES = {
 /** How an account signs in: with a password, or through a provider that granted the app access. */
 export type SignInKind = "password" | "microsoft";
 
-/** Microsoft's personal domains (outlook.com, hotmail.co.uk, ...); any other is work or school. */
+/**
+ * Microsoft's own personal domains (outlook.com, hotmail.co.uk, ...): no organisation can claim
+ * them, so an address there is a personal account. Any other address can be either: a personal
+ * Microsoft account may use a Gmail address, and nothing the account records says which.
+ */
 const MICROSOFT_PERSONAL = /^(outlook|hotmail|live|msn)\.[a-z.]+$/;
 
 /** Which of the provider's pages: main opens it by this name, never by an address from a page. */
@@ -33,8 +37,23 @@ export type PermissionPageId = "microsoftWork" | "microsoftPersonal";
 export interface PermissionPage {
   readonly id: PermissionPageId;
   readonly provider: "Microsoft";
+  /** Whose page it is, for when both are shown: "work or school accounts", "personal accounts". */
+  readonly audience: string;
   readonly url: string;
 }
+
+/** Whose page each is, in the words the screens use. */
+export const PERMISSION_PAGE_AUDIENCE: Readonly<Record<PermissionPageId, string>> = {
+  microsoftWork: "work or school accounts",
+  microsoftPersonal: "personal accounts",
+};
+
+const page = (id: PermissionPageId): PermissionPage => ({
+  id,
+  provider: "Microsoft",
+  audience: PERMISSION_PAGE_AUDIENCE[id],
+  url: permissionPageUrl(id),
+});
 
 /** The address of a page by its id, for main to open. */
 export function permissionPageUrl(id: PermissionPageId): string {
@@ -47,15 +66,16 @@ export const isPermissionPageId = (v: unknown): v is PermissionPageId =>
   v === "microsoftWork" || v === "microsoftPersonal";
 
 /**
- * The page where the person takes back the app's permission, or null when the account signs in
- * with a password (there is nothing to take back).
+ * The pages where the person takes back the app's permission; none when the account signs in with
+ * a password (there is nothing to take back). An address on Microsoft's own personal domains gets
+ * the personal page; for any other the kind of account is not known, so both are offered rather
+ * than a guess.
  */
-export function permissionPage(signIn: SignInKind, address: string): PermissionPage | null {
-  if (signIn !== "microsoft") return null;
+export function permissionPages(signIn: SignInKind, address: string): readonly PermissionPage[] {
+  if (signIn !== "microsoft") return [];
   const domain = address.slice(address.lastIndexOf("@") + 1).toLowerCase();
-  const personal = MICROSOFT_PERSONAL.test(domain);
-  const id: PermissionPageId = personal ? "microsoftPersonal" : "microsoftWork";
-  return { id, provider: "Microsoft", url: permissionPageUrl(id) };
+  if (MICROSOFT_PERSONAL.test(domain)) return [page("microsoftPersonal")];
+  return [page("microsoftWork"), page("microsoftPersonal")];
 }
 
 /**
@@ -72,11 +92,11 @@ export function signInKind(account: {
     : "microsoft";
 }
 
-/** The provider's page for an account as the screens show it, or null for a password account. */
-export function accountPermissionPage(account: {
+/** The provider's pages for an account as the screens show them; none for a password account. */
+export function accountPermissionPages(account: {
   readonly transport?: MailTransport;
   readonly host: string;
   readonly address: string;
-}): PermissionPage | null {
-  return permissionPage(signInKind(account), account.address);
+}): readonly PermissionPage[] {
+  return permissionPages(signInKind(account), account.address);
 }

@@ -10,12 +10,14 @@ import { type EraseResult, permissionPageUrl } from "@matters/core";
 import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { CHANNEL_ERASE, CHANNEL_ERASE_PROGRESS } from "../preload/eraseBridge.ts";
 import {
-  dropEraseOrder,
+  type DatabaseClaim,
+  type EraseDeps,
   type EraseOrder,
   type EraseProgress,
   type EraseTargets,
   eraseGuard,
   type KeychainPort,
+  leaveErase,
   macKeychain,
   nodeEraseFs,
   otherKeychain,
@@ -39,6 +41,8 @@ export interface EraseModeOptions {
   readonly keychainPort?: KeychainPort;
   /** The temp directory whose `matters-*` folders go (a smoke run passes its own). */
   readonly tempDir?: string;
+  /** The database's claim (ADR 0110), taken before its files are deleted. */
+  readonly claimDatabase?: () => DatabaseClaim;
   readonly background: () => string;
   /** Read when the window is made: the caller declares it after this mode is chosen. */
   readonly titleBar: () => Partial<Electron.BrowserWindowConstructorOptions>;
@@ -94,8 +98,44 @@ export function enterEraseMode(options: EraseModeOptions): void {
       homedir(),
     );
 
-  const markerLeft = (r: EraseResult) =>
-    !r.earlierCopy && options.earlierDir !== null && nodeEraseFs.entry(options.earlierDir) !== null;
+  const markerLeft = (r: EraseResult) => {
+    if (r.earlierCopy || options.earlierDir === null) return false;
+    try {
+      return nodeEraseFs.entry(options.earlierDir) !== null;
+    } catch {
+      return true;
+    }
+  };
+  const doneMarker: NonNullable<EraseDeps["doneMarker"]> = (earlierDir, atMs) => ({
+    name: MARKER,
+    text: JSON.stringify({
+      version: 1,
+      state: "done",
+      from: earlierDir,
+      at: new Date(atMs).toISOString(),
+    }),
+  });
+  /** A run that broke off: the order stays, and the window offers Try again (rule 11). */
+  const brokeOff = (error: unknown): EraseResult => {
+    console.error("matters-erase: the erase broke off", error);
+    const at = Date.now();
+    return {
+      startedAtMs: at,
+      endedAtMs: at,
+      earlierCopy: options.order.earlierCopy && options.earlierDir !== null,
+      outcomes: [
+        {
+          holding: {
+            id: "desktop.erase",
+            group: "mail",
+            step: "order",
+            place: { kind: "data", name: "", match: "prefix" },
+          },
+          outcome: { kind: "left", reason: "failed", bytes: 0, where: options.dataDir },
+        },
+      ],
+    };
+  };
   let win: BrowserWindow | null = null;
   let result: EraseResult | null = null;
   let running: Promise<EraseResult> | null = null;
@@ -126,21 +166,16 @@ export function enterEraseMode(options: EraseModeOptions): void {
                 bytes: event.outcome.kind === "absent" ? 0 : event.outcome.bytes,
               },
         ),
-      doneMarker: (earlierDir, atMs) => ({
-        name: MARKER,
-        text: JSON.stringify({
-          version: 1,
-          state: "done",
-          from: earlierDir,
-          at: new Date(atMs).toISOString(),
-        }),
-      }),
-    }).then((r) => {
-      result = r;
-      running = null;
-      send({ kind: "result", report: eraseReport(r, markerLeft(r)) });
-      return r;
-    });
+      doneMarker,
+      ...(options.claimDatabase ? { claimDatabase: options.claimDatabase } : {}),
+    })
+      .catch(brokeOff)
+      .then((r) => {
+        result = r;
+        running = null;
+        send({ kind: "result", report: eraseReport(r, markerLeft(r)) });
+        return r;
+      });
     return running;
   };
 
@@ -172,7 +207,13 @@ export function enterEraseMode(options: EraseModeOptions): void {
         case "startAgain":
         case "leave":
           // "Leave them" removes the order: the next start opens empty with those things on disk.
-          if (action === "leave") dropEraseOrder(options.dataDir);
+          // The marker that keeps the earlier copy out goes first; when it cannot, the order stays.
+          if (action === "leave") {
+            leaveErase(
+              { dataDir: options.dataDir, earlierDir: options.earlierDir },
+              { fs: nodeEraseFs, now: () => Date.now(), doneMarker },
+            );
+          }
           app.relaunch();
           app.exit(0);
           return { ok: true };

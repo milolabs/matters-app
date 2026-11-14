@@ -155,6 +155,8 @@ export type HoldingOutcome =
 export type LeftReason =
   /** Another program has it open, or the system said it is busy. */
   | "busy"
+  /** Another copy of Matters owns the database (its owner file, ADR 0110); it was not touched. */
+  | "inUse"
   /** The system refused (permissions, a locked file). */
   | "refused"
   /** The key store refused to delete the key. */

@@ -103,12 +103,15 @@ export function leftReason(reason: string, kind: "key" | "path"): string {
   switch (reason) {
     case "busy":
       return "Another program has it open. Close it, then try again.";
+    case "inUse":
+      return "Another copy of Matters has this mailbox open, so it was not touched. Quit that copy, then try again.";
     case "refused":
       return "The system did not allow it to be deleted. Check its permissions, then try again.";
+    // Nothing here says the key protects nothing: the saved passwords it locks may be left too.
     case "keychainRefused":
-      return "The Keychain refused. It protects nothing now; you can delete it in Keychain Access.";
+      return "The Keychain refused to delete this key. You can delete it in Keychain Access.";
     case "keychainUnsupported":
-      return "Matters cannot delete it from here. It protects nothing now; it is in your system's keyring, under the app's name.";
+      return "Matters cannot delete this key from here. It is in your system's keyring, under the app's name.";
     case "outsideReach":
       return "It lies outside the folders Matters may erase, so it was not touched.";
     default:

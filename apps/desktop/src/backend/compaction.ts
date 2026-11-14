@@ -35,21 +35,30 @@ async function sizeWithLog(path: string): Promise<number> {
   return total;
 }
 
-/** VACUUM writes a full copy before it drops the old one; the merge rewrites the index too. */
+/**
+ * VACUUM writes a full copy to a temporary file, then writes it back through the log before the
+ * old pages are dropped: up to twice the database (SQLite's own guidance), with the log it has
+ * now on top. The merge rewrites the index too, inside that budget.
+ */
+export const compactionBudget = (databaseBytes: number) => 2 * databaseBytes;
+
 export function databaseCompaction(deps: CompactionDeps): CompactionPort {
   const free = deps.freeBytes ?? freeOnDisk;
   const size = deps.databaseBytes ?? sizeWithLog;
   return {
     async compactAfterRemoval() {
       if (deps.dbPath === ":memory:") return { kind: "compacted", freedBytes: 0 };
-      const neededBytes = await size(deps.dbPath);
+      const neededBytes = compactionBudget(await size(deps.dbPath));
       const freeBytes = await free(deps.dbPath);
       if (freeBytes !== null && freeBytes < neededBytes) {
         return { kind: "lowDisk", neededBytes, freeBytes };
       }
       try {
         await deps.storage.accountData.mergeIndexes();
-        const { freedBytes } = await deps.storage.storageSamples.compact();
+        // A log a reader kept from truncating still holds the removed pages: not compacted.
+        const { freedBytes } = await deps.storage.storageSamples.compact({
+          requireCheckpoint: true,
+        });
         return { kind: "compacted", freedBytes };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

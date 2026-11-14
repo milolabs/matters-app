@@ -1,7 +1,7 @@
 // ADR 0138, rules 6, 9 and 10: the words of the review and of a removal, the confirmation, and the
 // low-disk path of the compaction after a removal.
 import { describe, expect, it } from "vitest";
-import { databaseCompaction } from "../src/backend/compaction.ts";
+import { compactionBudget, databaseCompaction } from "../src/backend/compaction.ts";
 import { createEraseBridge } from "../src/preload/eraseBridge.ts";
 import { createStorageBridge } from "../src/preload/storageBridge.ts";
 import {
@@ -85,11 +85,56 @@ describe("after a removal (rule 6)", () => {
       databaseBytes: async () => 2_000_000_000,
     });
     const outcome = await port.compactAfterRemoval();
-    expect(outcome).toEqual({ kind: "lowDisk", neededBytes: 2_000_000_000, freeBytes: 1_000 });
+    expect(outcome).toEqual({ kind: "lowDisk", neededBytes: 4_000_000_000, freeBytes: 1_000 });
     expect(compacted).toBe(false);
     expect(removalNotice("a@b.c", outcome)).toMatch(
       /^a@b\.c is removed\. The disk has too little free space .* traces of the removed mail, stay/,
     );
+  });
+
+  it("asks room for the temporary copy and the log, twice the database", async () => {
+    let compacted = false;
+    const port = databaseCompaction({
+      storage: {
+        accountData: { mergeIndexes: async () => {} } as never,
+        storageSamples: {
+          compact: async () => {
+            compacted = true;
+            return { freedBytes: 1, ms: 1 };
+          },
+        } as never,
+      },
+      dbPath: "/nowhere/matters.db",
+      // More than the database, less than the rewrite needs.
+      freeBytes: async () => 15_000,
+      databaseBytes: async () => 10_000,
+    });
+    expect(await port.compactAfterRemoval()).toEqual({
+      kind: "lowDisk",
+      neededBytes: compactionBudget(10_000),
+      freeBytes: 15_000,
+    });
+    expect(compacted).toBe(false);
+  });
+
+  it("is not compacted while a reader keeps the log from being truncated", async () => {
+    const asked: unknown[] = [];
+    const port = databaseCompaction({
+      storage: {
+        accountData: { mergeIndexes: async () => {} } as never,
+        storageSamples: {
+          compact: async (options: unknown) => {
+            asked.push(options);
+            throw new Error("a reader kept the log from being truncated");
+          },
+        } as never,
+      },
+      dbPath: "/nowhere/matters.db",
+      freeBytes: async () => 10_000_000_000,
+      databaseBytes: async () => 1_000,
+    });
+    expect((await port.compactAfterRemoval()).kind).toBe("failed");
+    expect(asked).toEqual([{ requireCheckpoint: true }]);
   });
 
   it("compacts when there is room", async () => {

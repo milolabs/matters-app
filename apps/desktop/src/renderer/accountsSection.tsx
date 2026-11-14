@@ -1,6 +1,6 @@
 import type { AccountInfo, StorageReport } from "@matters/contracts";
 import type { AgentStatus, OAuthProvider } from "@matters/core";
-import { accountPermissionPage, browserSignInProvider, mailRuntimesInUse } from "@matters/core";
+import { accountPermissionPages, browserSignInProvider, mailRuntimesInUse } from "@matters/core";
 import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { AccountColor } from "./accountMarks.ts";
 import type { AccountsStore } from "./accounts.ts";
@@ -416,19 +416,26 @@ export function AccountsSection(props: {
                                 ? `About ${storageSize(share(account.id)?.bytes ?? 0)} comes back`
                                 : "The space comes back"}{" "}
                               once the database is compacted, which Matters does right after.
-                              <Show when={accountPermissionPage(account)}>
-                                {(page) => (
+                              <Show when={accountPermissionPages(account)[0]}>
+                                {(first) => (
                                   <>
                                     {" "}
-                                    {page().provider} keeps listing Matters as allowed until you
-                                    take that back on{" "}
-                                    <button
-                                      type="button"
-                                      class="cursor-default text-mid underline underline-offset-2 hover:text-ink"
-                                      onClick={() => void askPermissionPage(page().id)}
-                                    >
-                                      {page().provider}'s page
-                                    </button>
+                                    {first().provider} keeps listing Matters as allowed until you
+                                    take that back on its page for{" "}
+                                    <For each={accountPermissionPages(account)}>
+                                      {(page, i) => (
+                                        <>
+                                          {i() > 0 ? " or " : ""}
+                                          <button
+                                            type="button"
+                                            class="cursor-default text-mid underline underline-offset-2 hover:text-ink"
+                                            onClick={() => void askPermissionPage(page.id)}
+                                          >
+                                            {page.audience}
+                                          </button>
+                                        </>
+                                      )}
+                                    </For>
                                     .
                                   </>
                                 )}

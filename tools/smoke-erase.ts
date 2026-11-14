@@ -78,6 +78,9 @@ const report: Record<string, unknown> = {};
 const check = (ok: boolean, what: string) => {
   if (!ok) failures.push(what);
 };
+/** A run that did not end on its own with 0 failed, whatever it printed before. */
+const exited = (run: Run, what: string) =>
+  check(run.exitCode === 0, `${what} failed (exit ${run.exitCode}): ${run.log.slice(-400)}`);
 const order = (earlierCopy: boolean) =>
   writeFileSync(
     join(userData, ORDER),
@@ -147,6 +150,8 @@ try {
   // 4. The next start: an empty mailbox, and the earlier copy not brought back in.
   const next = await runApp({ ...eraseEnv, MATTERS_SMOKE_TIMEOUT_MS: "12000" }, 40_000);
   report.nextExit = next.exitCode;
+  // Its smoke scenarios need mail, so on the empty mailbox it ends with 1; it must end on its own.
+  check(next.exitCode !== null, `the next start did not end on its own: ${next.log.slice(-400)}`);
   check(!/matters-identity: copied/.test(next.log), "the next start copied the earlier copy in");
   check(!existsSync(join(userData, ORDER)), "the order came back");
   const dbPath = join(userData, "matters.db");
@@ -167,6 +172,7 @@ try {
   order(true);
   const all = await runApp(eraseEnv);
   report.eraseAll = all.result;
+  exited(all, "the full erase run");
   check(all.result?.ok === true, `the full erase left things: ${JSON.stringify(all.result?.left)}`);
   check(all.result?.earlierCopy === true, "the full erase did not take the earlier copy");
   check(!existsSync(userData), "the data folder stayed");

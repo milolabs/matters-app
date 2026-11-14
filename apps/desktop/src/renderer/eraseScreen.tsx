@@ -1,5 +1,5 @@
 import type { EraseReport } from "@matters/contracts";
-import type { PermissionPageId } from "@matters/core";
+import { PERMISSION_PAGE_AUDIENCE, type PermissionPageId } from "@matters/core";
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import {
   checkedLine,
@@ -117,7 +117,7 @@ export function EraseScreen() {
               class="cursor-default text-mid underline underline-offset-2 hover:text-ink"
               onClick={() => void askEraseWindow(page)}
             >
-              Open {PROVIDER[page]}'s page
+              Open {PROVIDER[page]}'s page for {PERMISSION_PAGE_AUDIENCE[page]}
             </button>{" "}
             to take it back.
           </li>

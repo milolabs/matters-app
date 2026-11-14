@@ -343,6 +343,25 @@ describe("accounts store colours", () => {
     expect(marksOf(store).get("a")?.dot).toBe("#aabbcc");
   });
 
+  it("says what became of a removal even when the list then fails to load (ADR 0138)", async () => {
+    const compaction = { kind: "lowDisk", neededBytes: 4, freeBytes: 1 };
+    let removed = false;
+    const backend = {
+      listAccounts: async () => {
+        if (removed) throw new Error("backend went away");
+        return { accounts: [info("a")] };
+      },
+      removeAccount: async () => {
+        removed = true;
+        return compaction;
+      },
+      onEvent: () => () => {},
+    } as unknown as Backend;
+    const store = createRoot(() => createAccountsStore(backend));
+    await store.refresh();
+    await expect(store.remove("a")).resolves.toEqual(compaction);
+  });
+
   it("does not shift the other colours when an account is removed", async () => {
     const store = rig(["a", "b", "c"]);
     await store.refresh();

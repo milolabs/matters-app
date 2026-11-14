@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { makeMessage } from "@matters/testkit";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -26,7 +27,7 @@ function storage() {
   dirs.push(dir);
   const s = createSqliteStorage(join(dir, "mail.db"));
   open.push(s);
-  return s;
+  return Object.assign(s, { path: join(dir, "mail.db") });
 }
 
 const sample = (atMs: number, messages = 1): StorageSample => ({
@@ -144,6 +145,21 @@ describe("storage usage", () => {
     expect(freedBytes).toBeGreaterThan(0);
     expect(s.read.storageUsage.overview().freeBytes).toBe(0);
   });
+
+  it("says when a reader kept the log from being truncated, if asked (ADR 0138, rule 6)", async () => {
+    const s = storage();
+    await s.storageSamples.record(sample(DAY));
+    // A reader holding a snapshot from before the rewrite: the checkpoint answers busy.
+    const reader = new DatabaseSync(s.path, { readOnly: true });
+    open.push(reader);
+    reader.exec("BEGIN");
+    reader.prepare("SELECT COUNT(*) AS n FROM storage_samples").get();
+    await expect(s.storageSamples.compact({ requireCheckpoint: true })).rejects.toThrow(
+      /log from being truncated/,
+    );
+    reader.exec("COMMIT");
+    await expect(s.storageSamples.compact({ requireCheckpoint: true })).resolves.toBeDefined();
+  }, 20_000);
 
   it("reads on its own connection too", () => {
     const s = storage();

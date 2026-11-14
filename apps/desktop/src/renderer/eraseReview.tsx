@@ -1,5 +1,5 @@
 import type { EraseReviewInfo, MainEraseOverview } from "@matters/contracts";
-import { accountPermissionPage, type PermissionPage } from "@matters/core";
+import { accountPermissionPages, type PermissionPage } from "@matters/core";
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { AccountsStore } from "./accounts.ts";
 import type { Backend } from "./client.ts";
@@ -20,14 +20,17 @@ const small =
 const hint = "text-[12px] leading-[1.5] text-secondary";
 const link = "cursor-default text-mid underline underline-offset-2 hover:text-ink";
 
-/** The accounts whose provider keeps a permission the person takes back on its page (rule 8). */
+/**
+ * The accounts whose provider keeps a permission the person takes back on its page (rule 8), each
+ * with its pages: both of Microsoft's when the kind of account is not known.
+ */
 export function providerPages(accounts: AccountsStore): readonly {
   readonly address: string;
-  readonly page: PermissionPage;
+  readonly pages: readonly PermissionPage[];
 }[] {
   return accounts.accounts().flatMap((a) => {
-    const page = accountPermissionPage(a);
-    return page ? [{ address: a.address, page }] : [];
+    const pages = accountPermissionPages(a);
+    return pages.length > 0 ? [{ address: a.address, pages }] : [];
   });
 }
 
@@ -53,6 +56,9 @@ export function EraseReview(props: {
   onMount(() => {
     void Promise.all([props.backend.eraseReview(), askEraseOverview()])
       .then(([d, m]) => {
+        // Without main's part the review would hide the folders and the earlier copy: no erase.
+        if (m === null)
+          throw new Error("Matters could not measure its folders, so it cannot erase.");
         setDb(d);
         setMain(m);
       })
@@ -72,7 +78,9 @@ export function EraseReview(props: {
     if (!confirms(typed()) || confirming()) return;
     setConfirming(true);
     setFailure("");
-    const ok = await askErase(earlier(), [...new Set(pages().map((p) => p.page.id))]);
+    const ok = await askErase(earlier(), [
+      ...new Set(pages().flatMap((p) => p.pages.map((page) => page.id))),
+    ]);
     if (!ok) {
       setConfirming(false);
       setFailure("Matters could not start the erase. Nothing was erased.");
@@ -170,17 +178,25 @@ export function EraseReview(props: {
                     {(p) => (
                       <li>
                         <span class="text-ink">
-                          {p.page.provider}'s permission for {p.address}.
+                          {p.pages[0]?.provider}'s permission for {p.address}.
                         </span>{" "}
-                        Matters throws its sign-in away, but {p.page.provider} keeps listing it as
-                        allowed until you take that back.{" "}
-                        <button
-                          type="button"
-                          class={link}
-                          onClick={() => void askPermissionPage(p.page.id)}
-                        >
-                          Open {p.page.provider}'s page
-                        </button>
+                        Matters throws its sign-in away, but {p.pages[0]?.provider} keeps listing it
+                        as allowed until you take that back on its page for{" "}
+                        <For each={p.pages}>
+                          {(page, i) => (
+                            <>
+                              {i() > 0 ? " or " : ""}
+                              <button
+                                type="button"
+                                class={link}
+                                onClick={() => void askPermissionPage(page.id)}
+                              >
+                                {page.audience}
+                              </button>
+                            </>
+                          )}
+                        </For>
+                        .
                       </li>
                     )}
                   </For>
