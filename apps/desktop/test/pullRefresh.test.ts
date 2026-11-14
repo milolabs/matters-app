@@ -106,6 +106,25 @@ describe("createPull", () => {
     expect(pull.armed()).toBe(true);
   });
 
+  it("keeps a pull in even steps when the steps begin to shrink", () => {
+    const pull = createPull();
+    for (let i = 0; i < 12; i++) pull.wheel(-20, true, 1000 + i * 30);
+    pull.wheel(-19, true, 1000 + 12 * 30);
+    expect(pull.coasting()).toBe(true);
+    expect(pull.release()).toBe(true);
+  });
+
+  it("does not count what was pushed back when a fading run follows", () => {
+    const pull = createPull();
+    let at = 1000;
+    for (const d of [-PULL_ARM, 190, -5, -4, -3, -2, -1]) {
+      pull.wheel(d, true, at);
+      at += 16;
+    }
+    expect(pull.armed()).toBe(false);
+    expect(pull.release()).toBe(false);
+  });
+
   it("is taken back by pushing the list up again", () => {
     const pull = createPull();
     pull.wheel(-PULL_ARM, true, 1000);

@@ -93,14 +93,18 @@ export function createPull(): Pull {
         runLast = 0;
       }
       const size = Math.abs(deltaY);
-      if (deltaY < 0 && size <= runLast) run += 1;
+      const up = deltaY < 0;
+      if (up && size <= runLast) run += 1;
       else {
         run = 0;
-        runFirst = size;
-        runFrom = raw;
+        runFirst = up ? size : 0;
       }
-      runLast = size;
+      // Pushing back ends the run: the next event up starts another.
+      runLast = up ? size : 0;
       raw = Math.max(0, raw - deltaY);
+      // Events as large as the run's first are still the fingers', and what was pushed back is
+      // no longer pulled: the run counts from here.
+      if (!up || size === runFirst) runFrom = raw;
       // Pushed all the way back: the gesture scrolls the list again.
       if (raw === 0) pulling = false;
       return raw;
