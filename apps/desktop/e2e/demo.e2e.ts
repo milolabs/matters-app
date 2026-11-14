@@ -625,3 +625,163 @@ test("a theme being made is stopped by a way back at the default and by leaving,
   await expect(section.getByRole("radio", { name: /^Harbour/ })).toHaveCount(0);
   await expect(section.getByRole("radio", { name: /^Matters/ })).toBeChecked();
 });
+
+test("a way back whose news reaches the page only after it handed in the theme still keeps nothing", async ({
+  start,
+  dataDir,
+}) => {
+  const running = await start(demo);
+  await expect(running.window.getByRole("listbox", { name: "Messages" })).toBeVisible();
+  const [settings] = await Promise.all([
+    running.app.waitForEvent("window"),
+    running.window.getByRole("button", { name: "Settings" }).click(),
+  ]);
+  await turnAiOn(settings);
+  await settings.getByRole("button", { name: "Appearance", exact: true }).click();
+  const section = settings.getByRole("region", { name: "Appearance" });
+  const field = section.getByRole("textbox", { name: "Describe a theme" });
+  const makeButton = section.getByRole("button", { name: "Make theme" });
+  const useDefault = section.getByRole("button", { name: "Use default" });
+  const themes = join(dataDir, "userData", "themes");
+  const ownFiles = () => {
+    try {
+      return readdirSync(themes).length;
+    } catch {
+      return 0;
+    }
+  };
+  const clickMake = () =>
+    settings.evaluate(() => {
+      const button = [...document.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Make theme",
+      );
+      button?.click();
+    });
+
+  // Main's news of the appearance to the Settings page is held back in main, as a busy or slow
+  // page would leave it unread, so the page cannot stop the making on its own: whatever keeps the
+  // theme out is main's own check of the revision the making started at (ADR 0134, rule 11). The
+  // page's own messages to main are not touched.
+  const key = "heldAppearanceNews";
+  const hold = () =>
+    running.app.evaluate(({ BrowserWindow }, key) => {
+      const contents = BrowserWindow.getAllWindows().find(
+        (w) => w.getTitle() === "Settings",
+      )?.webContents;
+      if (!contents) throw new Error("no Settings window");
+      const send = contents.send;
+      const held: unknown[][] = [];
+      contents.send = (channel: string, ...args: unknown[]) => {
+        if (channel === "matters:appearance-changed") held.push(args);
+        else send.call(contents, channel, ...args);
+      };
+      (globalThis as Record<string, unknown>)[key] = {
+        held,
+        release: () => {
+          contents.send = send;
+          for (const args of held) send.call(contents, "matters:appearance-changed", ...args);
+        },
+      };
+    }, key);
+  interface Held {
+    held: { appearance: { revision: number; resetRevision: number } }[][];
+    release(): void;
+  }
+  /** The revisions of what main said while held, in order. */
+  const heldNews = () =>
+    running.app.evaluate(
+      (_electron, key) =>
+        ((globalThis as Record<string, unknown>)[key] as Held).held.map(([news]) => ({
+          revision: news?.appearance.revision,
+          resetRevision: news?.appearance.resetRevision,
+        })),
+      key,
+    );
+  const release = () =>
+    running.app.evaluate((_electron, key) => {
+      ((globalThis as Record<string, unknown>)[key] as Held).release();
+    }, key);
+  // The reset keys of the Settings window, through main as a key press is, while the making runs.
+  // Main had said nothing new before them, so the theme was not handed in yet; and the keys are
+  // done once main has said it, so the way back came before the theme reached main.
+  const resetWhileMaking = () =>
+    running.app.evaluate(
+      async ({ BrowserWindow }, { key, mac }) => {
+        const { held } = (globalThis as Record<string, unknown>)[key] as Held;
+        const before = held.length;
+        const target = BrowserWindow.getAllWindows().find((w) => w.getTitle() === "Settings");
+        const modifiers = [mac ? "meta" : "control", "alt", "shift"] as const;
+        target?.webContents.sendInputEvent({
+          type: "keyDown",
+          keyCode: "0",
+          modifiers: [...modifiers],
+        });
+        target?.webContents.sendInputEvent({
+          type: "keyUp",
+          keyCode: "0",
+          modifiers: [...modifiers],
+        });
+        for (let i = 0; i < 100 && held.length === before; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        return before;
+      },
+      { key, mac: process.platform === "darwin" },
+    );
+
+  // With the default already on, and with a theme of the list on: the way back comes after the
+  // making started, the page hands the theme in without having heard of it, and main keeps
+  // nothing and says nothing more.
+  for (const [asked, on] of [
+    ["a slow glacier", null],
+    ["a cold tundra", "Paper"],
+  ] as const) {
+    if (on !== null) {
+      await section.getByRole("radio", { name: new RegExp(`^${on}`) }).check();
+      await expect(useDefault).toBeEnabled();
+    }
+    await hold();
+    await field.fill(asked);
+    await clickMake();
+    expect(await resetWhileMaking()).toBe(0);
+    // The making ends with the page still unaware of the way back.
+    await expect(makeButton).toBeVisible();
+    const news = await heldNews();
+    expect(news).toHaveLength(1);
+    expect(news[0]?.resetRevision).toBe(news[0]?.revision);
+    expect(ownFiles()).toBe(0);
+    await release();
+    await expect(section.getByRole("radio", { name: /^Matters/ })).toBeChecked();
+    await expect(useDefault).toBeDisabled();
+    await expect(section.getByRole("radio", { name: /^(Glacier|Tundra)/ })).toHaveCount(0);
+    await expect(section.getByRole("alert")).toHaveCount(0);
+    await expect(section.getByRole("status").filter({ hasText: "was added" })).toHaveCount(0);
+    await expect(field).toBeEnabled();
+    expect(
+      await settings.evaluate(() => document.documentElement.style.getPropertyValue("--bg")),
+    ).toBe("");
+    expect(ownFiles()).toBe(0);
+  }
+
+  // The other side: another theme chosen while the making runs, with main's news held back too.
+  // The theme is added and the choice stays on.
+  await hold();
+  await field.fill("a red canyon");
+  await settings.evaluate(() => {
+    [...document.querySelectorAll("button")]
+      .find((b) => b.textContent?.trim() === "Make theme")
+      ?.click();
+    document
+      .querySelector<HTMLInputElement>('input[name="appearance-theme"][value="paper"]')
+      ?.click();
+  });
+  await expect(section.getByRole("radio", { name: /^Canyon/ })).toBeVisible();
+  await expect(section.getByRole("radio", { name: /^Paper/ })).toBeChecked();
+  await expect(
+    section.getByRole("status").filter({ hasText: "The theme you chose meanwhile stays on." }),
+  ).toBeVisible();
+  expect(ownFiles()).toBe(1);
+  await release();
+  await expect(section.getByRole("radio", { name: /^Paper/ })).toBeChecked();
+  await expect(section.getByRole("radio", { name: /^Canyon/ })).not.toBeChecked();
+});
