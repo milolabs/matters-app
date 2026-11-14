@@ -498,7 +498,7 @@ describe("removing with the account (ADR 0043, rule 8)", () => {
     await done;
     expect(existsSync(join(rt.cacheDir, String(key)))).toBe(true);
 
-    expect(await rt.call({ name: "removeAccount", accountId: ACCOUNT })).toBe(true);
+    expect(await rt.call({ name: "removeAccount", accountId: ACCOUNT })).toEqual({ removed: true });
     expect(existsSync(join(rt.cacheDir, String(key)))).toBe(false);
   });
 });

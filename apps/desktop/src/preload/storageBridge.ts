@@ -4,8 +4,25 @@
 
 export const CHANNEL_STORAGE = "matters:storage";
 
-export type StorageAction = "overview" | "clearCaches";
-const ACTIONS: readonly string[] = ["overview", "clearCaches"] satisfies StorageAction[];
+/**
+ * `eraseOverview`: what Erase everything would take, as main measures it (ADR 0138, rule 9).
+ * `erase`: writes the erase order and restarts (rule 3); it carries one boolean, the earlier copy.
+ */
+export type StorageAction =
+  | "overview"
+  | "clearCaches"
+  | "eraseOverview"
+  | "erase"
+  | "permissionPage";
+const ACTIONS: readonly string[] = [
+  "overview",
+  "clearCaches",
+  "eraseOverview",
+  "erase",
+  "permissionPage",
+] satisfies StorageAction[];
+/** The provider pages main may open (ADR 0138, rule 8), by name: the page never sends an address. */
+const PAGES: readonly string[] = ["microsoftWork", "microsoftPersonal"];
 
 export interface StorageBridgeDeps {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>;
@@ -33,8 +50,18 @@ export function createStorageBridge(deps: StorageBridgeDeps, pageWindow: unknown
         deps.post({ mattersStorageAnswer: { requestId, answer: null } });
         return;
       }
+      // Only a boolean and page names pass with the order; anything else is dropped.
+      const pages = Array.isArray(ask.pages)
+        ? ask.pages.filter((p): p is string => typeof p === "string" && PAGES.includes(p))
+        : [];
+      const args =
+        ask.action === "erase"
+          ? [ask.earlierCopy === true, [...new Set(pages)]]
+          : ask.action === "permissionPage"
+            ? [typeof ask.page === "string" && PAGES.includes(ask.page) ? ask.page : null]
+            : [];
       deps
-        .invoke(CHANNEL_STORAGE, ask.action)
+        .invoke(CHANNEL_STORAGE, ask.action, ...args)
         .then(
           (answer) => (isRecord(answer) ? answer : null),
           () => null,

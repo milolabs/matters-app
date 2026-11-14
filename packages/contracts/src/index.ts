@@ -411,6 +411,12 @@ export interface MeasureStorageRequest {
   readonly requestId: RequestId;
 }
 
+/** What Erase everything would take out of the database, measured now (ADR 0138, rule 9). */
+export interface EraseReviewRequest {
+  readonly type: "eraseReview";
+  readonly requestId: RequestId;
+}
+
 /** `VACUUM` on the sync worker: seconds, and sync waits for it. */
 export interface CompactStorageRequest {
   readonly type: "compactStorage";
@@ -1109,6 +1115,7 @@ export type BackendRequest =
   | GetImageChoiceRequest
   | GetStorageRequest
   | MeasureStorageRequest
+  | EraseReviewRequest
   | CompactStorageRequest
   | ClearFileTextRequest
   | ListImageRulesRequest
@@ -1610,6 +1617,59 @@ export interface MainStorageInfo {
   readonly processes: readonly ProcessUsageInfo[];
 }
 
+/** The groups of the erase review (ADR 0138, rule 2), with bytes. */
+export type HoldingBytes = Readonly<
+  Record<"signIns" | "mail" | "files" | "agents" | "settings" | "caches", number>
+>;
+
+/**
+ * What main measures for Erase everything (ADR 0138, rule 9): the folders and files outside the
+ * database's pages by group, and the earlier copy (ADR 0105) when it exists. Sizes, never paths.
+ */
+export interface MainEraseOverview {
+  readonly groups: HoldingBytes;
+  readonly earlier: { readonly bytes: number; readonly sinceMs: number | null } | null;
+}
+
+/** The database's part of the erase review, measured on the read thread (ADR 0138, rule 9). */
+export interface EraseReviewInfo {
+  readonly groups: HoldingBytes;
+  readonly accounts: number;
+  readonly messages: number;
+  /** Messages waiting to be sent, which the erase drops (rule 10). */
+  readonly unsent: number;
+}
+
+/** The result of an erase, shown once in its window (ADR 0138, rule 11). */
+export interface EraseReportLeft {
+  readonly group: "signIns" | "mail" | "files" | "agents" | "settings" | "caches";
+  readonly kind: "key" | "path";
+  readonly reason: string;
+  readonly bytes: number;
+  /** The path, or the key's service name. */
+  readonly where: string | null;
+}
+
+export interface EraseReport {
+  readonly ok: boolean;
+  readonly bytes: number;
+  readonly ms: number;
+  readonly earlierCopy: boolean;
+  /** Bytes erased by group; a group with nothing in it is absent. */
+  readonly groups: readonly {
+    readonly group: "signIns" | "mail" | "files" | "agents" | "settings" | "caches";
+    readonly bytes: number;
+  }[];
+  readonly left: readonly EraseReportLeft[];
+  /** How many keys were deleted and looked for again. */
+  readonly keys: number;
+  /**
+   * The earlier copy stayed, so one marker is left in the data folder, holding no personal data,
+   * so that it is never brought back in (rule 4). The result says so.
+   */
+  readonly markerLeft: boolean;
+}
+
 export type ProcessKind = "backend" | "mail" | "settings" | "app" | "gpu" | "network" | "other";
 
 export interface ProcessUsageInfo {
@@ -1631,6 +1691,13 @@ export interface MeasureStorageResponse {
   readonly requestId: RequestId;
   readonly ok: true;
   readonly storage: StorageReport;
+}
+
+export interface EraseReviewResponse {
+  readonly type: "eraseReview";
+  readonly requestId: RequestId;
+  readonly ok: true;
+  readonly review: EraseReviewInfo;
 }
 
 export interface CompactStorageResponse {
@@ -1740,10 +1807,22 @@ export interface AddAccountResponse {
   readonly folderCount: number;
 }
 
+/**
+ * What became of the database's free pages after an account's removal (ADR 0138, rule 6). On
+ * `lowDisk` the removal holds; the space, and traces of the removed text, stay in the file until
+ * it is compacted.
+ */
+export type RemovalCompaction =
+  | { readonly kind: "compacted"; readonly freedBytes: number }
+  | { readonly kind: "lowDisk"; readonly neededBytes: number; readonly freeBytes: number }
+  | { readonly kind: "failed"; readonly message: string };
+
 export interface RemoveAccountResponse {
   readonly type: "removeAccount";
   readonly requestId: RequestId;
   readonly ok: true;
+  /** Absent where nothing compacts. */
+  readonly compaction?: RemovalCompaction;
 }
 
 export interface SyncNowResponse {
@@ -2413,6 +2492,7 @@ export type BackendResponse =
   | GetImageChoiceResponse
   | GetStorageResponse
   | MeasureStorageResponse
+  | EraseReviewResponse
   | CompactStorageResponse
   | ClearFileTextResponse
   | ListImageRulesResponse

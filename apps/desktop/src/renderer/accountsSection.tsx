@@ -1,18 +1,21 @@
-import type { AccountInfo } from "@matters/contracts";
+import type { AccountInfo, StorageReport } from "@matters/contracts";
 import type { AgentStatus, OAuthProvider } from "@matters/core";
-import { browserSignInProvider, mailRuntimesInUse } from "@matters/core";
-import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { accountPermissionPage, browserSignInProvider, mailRuntimesInUse } from "@matters/core";
+import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { AccountColor } from "./accountMarks.ts";
 import type { AccountsStore } from "./accounts.ts";
 import { ConsentQuestion } from "./agentConnect.tsx";
 import type { Backend } from "./client.ts";
 import { signInTrouble } from "./explain.ts";
+import { askPermissionPage } from "./files.ts";
 import { Ring } from "./icons.tsx";
 import { passwordRejected, signInEnded } from "./newPassword.ts";
 import { NewPasswordForm, SignInAgainForm } from "./newPasswordForm.tsx";
+import { accountShare, removalNotice } from "./removal.ts";
 import { Setup } from "./setup.tsx";
 import { mainSignIn, type SignInClient } from "./signIn.ts";
 import { describeStatus } from "./status.ts";
+import { count, storageSize } from "./storageView.ts";
 
 const small =
   "h-[28px] cursor-default rounded-[8px] bg-button px-3 text-[12px] font-semibold disabled:opacity-40";
@@ -52,6 +55,17 @@ export function AccountsSection(props: {
   const [confirming, setConfirming] = createSignal<string | null>(null);
   const [removing, setRemoving] = createSignal<string | null>(null);
   const [failure, setFailure] = createSignal("");
+  const [notice, setNotice] = createSignal("");
+  // The size of the account's mail, for the confirmation: its share of the last measurement.
+  const [sizes, setSizes] = createSignal<StorageReport | null>(null);
+  const share = (id: string) => accountShare(sizes(), id);
+  createEffect(() => {
+    if (confirming() === null) return;
+    void props.backend
+      .getStorage()
+      .then(setSizes)
+      .catch(() => setSizes(null));
+  });
   // Password forms the person opened, the refused ones they closed, and what a saved one said.
   const [asked, setAsked] = createSignal<ReadonlySet<string>>(new Set());
   const [dismissed, setDismissed] = createSignal<ReadonlySet<string>>(new Set());
@@ -106,10 +120,12 @@ export function AccountsSection(props: {
   async function remove(account: AccountInfo) {
     if (removing() !== null) return;
     setFailure("");
+    setNotice("");
     setRemoving(account.id);
     try {
-      await props.accounts.remove(account.id);
+      const compaction = await props.accounts.remove(account.id);
       setConfirming(null);
+      setNotice(removalNotice(account.address, compaction));
     } catch (e) {
       setFailure(e instanceof Error ? e.message : "Removing the account failed.");
     } finally {
@@ -198,6 +214,11 @@ export function AccountsSection(props: {
         <Show when={failure() !== ""}>
           <p role="alert" class="px-5 pt-3 text-[13px] text-late">
             {failure()}
+          </p>
+        </Show>
+        <Show when={notice() !== ""}>
+          <p role="status" class="px-5 pt-3 text-[13px] text-secondary">
+            {notice()}
           </p>
         </Show>
         <div class="min-h-0 flex-1 overflow-y-auto">
@@ -380,10 +401,38 @@ export function AccountsSection(props: {
                         when={removing() === account.id}
                         fallback={
                           <>
-                            <p class="mb-2 text-[13px]">
-                              Remove {account.address}? Its messages, search index and saved{" "}
-                              {providerOf(account) ? "sign-in" : "password"} are deleted from this
-                              computer. Mail on the server stays.
+                            <p class="mb-1.5 text-[13px]">
+                              Remove {account.address}? Its{" "}
+                              {share(account.id)
+                                ? `${count(share(account.id)?.messages ?? 0)} messages`
+                                : "messages"}
+                              , their attachments, its part of the search index, its saved{" "}
+                              {providerOf(account) ? "sign-in" : "password"} and what agents wrote
+                              about its mail are deleted from this computer. Mail on the server
+                              stays.
+                            </p>
+                            <p class="mb-2.5 text-[12px] leading-[1.5] text-secondary">
+                              {share(account.id)?.bytes
+                                ? `About ${storageSize(share(account.id)?.bytes ?? 0)} comes back`
+                                : "The space comes back"}{" "}
+                              once the database is compacted, which Matters does right after.
+                              <Show when={accountPermissionPage(account)}>
+                                {(page) => (
+                                  <>
+                                    {" "}
+                                    {page().provider} keeps listing Matters as allowed until you
+                                    take that back on{" "}
+                                    <button
+                                      type="button"
+                                      class="cursor-default text-mid underline underline-offset-2 hover:text-ink"
+                                      onClick={() => void askPermissionPage(page().id)}
+                                    >
+                                      {page().provider}'s page
+                                    </button>
+                                    .
+                                  </>
+                                )}
+                              </Show>
                             </p>
                             <div class="flex gap-2">
                               <button
@@ -416,7 +465,8 @@ export function AccountsSection(props: {
                           Removing {account.address} from this computer…
                         </p>
                         <p class="mt-1 pl-[24px] text-[12px] text-secondary">
-                          A large mailbox can take a moment. Mail on the server stays.
+                          A large mailbox can take a moment, and compacting the database after it
+                          another. Mail on the server stays.
                         </p>
                       </Show>
                     </div>
@@ -425,6 +475,12 @@ export function AccountsSection(props: {
               );
             }}
           </For>
+          <Show when={props.accounts.accounts().length > 0}>
+            <p class="px-5 py-3 text-[12px] leading-[1.5] text-secondary">
+              To take everything off this Mac at once, settings included, use Erase everything in
+              Storage.
+            </p>
+          </Show>
         </div>
       </Show>
     </section>

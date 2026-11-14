@@ -20,6 +20,7 @@ import { NodemailerComposer, NodemailerSubmit } from "@matters/adapter-smtp";
 import { createSqliteStorage } from "@matters/adapter-sqlite";
 import type { StoredAccount, TransportSecurity } from "@matters/core";
 import { agentEnv } from "./agentEnv.ts";
+import { databaseCompaction } from "./compaction.ts";
 import { DemoAgentRuntime } from "./demoAgent.ts";
 import { DemoMail } from "./demoMail.ts";
 import type { FromWorker, ToWorker, WorkerChannel, WorkerConfig } from "./protocol.ts";
@@ -121,6 +122,8 @@ await startSyncRuntime({
   seed: config.seed,
   seedImages: config.seedImages,
   testAccount: testAccount(config.testAccount),
+  // After an account's removal the freed pages are given back (ADR 0138, rule 6).
+  compaction: databaseCompaction({ storage, dbPath: config.dbPath }),
 });
 
 process.on("unhandledRejection", (reason) => {

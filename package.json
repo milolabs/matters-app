@@ -28,6 +28,7 @@
     "smoke:desktop": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/smoke-desktop.ts",
     "smoke:desktop:sync": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/smoke-desktop-sync.ts",
     "smoke:identity": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/smoke-identity.ts",
+    "smoke:erase": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/smoke-erase.ts",
     "smoke:instance": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/smoke-instance.ts",
     "bundle:macos": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && ELECTRON_RUN_AS_NODE=1 electron tools/bundle-macos.ts",
     "release:macos": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && MATTERS_RELEASE=1 ELECTRON_RUN_AS_NODE=1 electron tools/bundle-macos.ts && ELECTRON_RUN_AS_NODE=1 electron tools/release-macos.ts",

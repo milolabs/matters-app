@@ -4,6 +4,7 @@ import type { Account } from "../domain/entities.ts";
 import { CredentialsUnavailableError, SignInEndedError, scrubSecrets } from "../domain/errors.ts";
 import type { FailureDetail } from "../domain/signIn.ts";
 import type {
+  AccountDataPort,
   AccountStorePort,
   AttachmentStorePort,
   Credential,
@@ -320,6 +321,11 @@ export interface RemoveAccountDeps {
   readonly files?: Pick<FileWorkPort, "removeAttachments" | "removeSpool">;
   /** With it, the account's downloaded copies of received files go too (ADR 0043, rule 8). */
   readonly received?: Pick<ReceivedFilesPort, "removeMessages">;
+  /**
+   * The account's rows in every other table, and what its mail alone supported, through the
+   * holdings list (ADR 0138, rule 5). Without it only the stores above are cleared.
+   */
+  readonly accountData?: AccountDataPort;
   readonly uow: UnitOfWorkPort;
   readonly credentials: CredentialPort;
 }
@@ -379,6 +385,8 @@ export async function removeAccount(deps: RemoveAccountDeps, accountId: string):
     await deps.drafts?.discardAccount(accountId);
     await deps.attachments?.discardAccount(accountId);
     await deps.accounts.remove(accountId);
+    // Last: it prunes what the rows removed above leave without support.
+    await deps.accountData?.discardAccount(accountId);
     return found !== null;
   });
   if (deps.received) await deps.received.removeMessages(messageKeys).catch(() => {});

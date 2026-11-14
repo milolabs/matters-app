@@ -4,12 +4,14 @@
 import type {
   AppearanceInfo,
   AppearanceMode,
+  MainEraseOverview,
   MainStorageInfo,
   NoticeSystem,
   PickedFile,
   ReceivedAnswer,
   ThemeAddAnswer,
 } from "@matters/contracts";
+import type { PermissionPageId } from "@matters/core";
 import type { ReceivedAsk } from "./received.ts";
 
 let counter = 0;
@@ -94,6 +96,58 @@ export async function askMainStorage(
   const reply = answer<{ answer: MainStorageInfo | null }>("mattersStorageAnswer", requestId);
   window.postMessage({ mattersStorage: { requestId, action } }, "*");
   return (await reply).answer;
+}
+
+/** Erase everything (ADR 0138, rule 9): what main measures for the review. Null when not answered. */
+export async function askEraseOverview(): Promise<MainEraseOverview | null> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: MainEraseOverview | null }>("mattersStorageAnswer", requestId);
+  window.postMessage({ mattersStorage: { requestId, action: "eraseOverview" } }, "*");
+  return (await reply).answer;
+}
+
+/**
+ * Confirms Erase everything (ADR 0138, rule 3): main writes the order and the app restarts into
+ * the erase. False when main did not take it.
+ */
+export async function askErase(
+  earlierCopy: boolean,
+  pages: readonly PermissionPageId[],
+): Promise<boolean> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: { ok?: unknown } | null }>("mattersStorageAnswer", requestId);
+  window.postMessage(
+    { mattersStorage: { requestId, action: "erase", earlierCopy, pages: [...pages] } },
+    "*",
+  );
+  return (await reply).answer?.ok === true;
+}
+
+/** A provider's page where the person takes back the app's permission (ADR 0138, rule 8). */
+export async function askPermissionPage(page: PermissionPageId): Promise<boolean> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: { ok?: unknown } | null }>("mattersStorageAnswer", requestId);
+  window.postMessage({ mattersStorage: { requestId, action: "permissionPage", page } }, "*");
+  return (await reply).answer?.ok === true;
+}
+
+/** The erase window's questions to main (ADR 0138, rule 11). */
+export async function askEraseWindow(action: string): Promise<Record<string, unknown> | null> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: Record<string, unknown> | null }>("mattersEraseAnswer", requestId);
+  window.postMessage({ mattersErase: { requestId, action } }, "*");
+  return (await reply).answer;
+}
+
+/** Each step of the erase as main tells it; returns the way to stop listening. */
+export function onEraseProgress(handler: (data: Record<string, unknown>) => void): () => void {
+  const onMessage = (event: MessageEvent) => {
+    const data: unknown = event.data;
+    if (event.source !== window || !isRecord(data) || !isRecord(data.mattersEraseProgress)) return;
+    handler(data.mattersEraseProgress);
+  };
+  window.addEventListener("message", onMessage);
+  return () => window.removeEventListener("message", onMessage);
 }
 
 /**

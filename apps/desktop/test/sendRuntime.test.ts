@@ -352,7 +352,7 @@ describe("attachments through the worker's commands", () => {
     const rt = await open();
     const draft = await draftWithFile(rt, "Gone", "g", new Uint8Array(100));
     expect(rt.files.stored.has("g")).toBe(true);
-    expect(await rt.call({ name: "removeAccount", accountId: ACCOUNT })).toBe(true);
+    expect(await rt.call({ name: "removeAccount", accountId: ACCOUNT })).toEqual({ removed: true });
     expect(await rt.storage.attachments.get("g")).toBeNull();
     expect(rt.files.stored.has("g")).toBe(false);
     expect(await rt.storage.drafts.get(draft.id)).toBeNull();

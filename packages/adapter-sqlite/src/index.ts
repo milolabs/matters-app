@@ -37,6 +37,7 @@ import {
 import { SqliteDraftStore } from "./draftStore.ts";
 import { SqliteFileText } from "./fileTextStore.ts";
 import { SqliteFlagOutbox } from "./flagOutbox.ts";
+import { SqliteAccountData } from "./holdings.ts";
 import { SqliteImageRuleStore } from "./imageRuleStore.ts";
 import { SqliteMessageStore } from "./messageStore.ts";
 import { SqliteMoveOutbox } from "./moveOutbox.ts";
@@ -54,8 +55,10 @@ export * from "./bodyStore.ts";
 export * from "./cursorStore.ts";
 export * from "./database.ts";
 export * from "./draftStore.ts";
+export * from "./fileHoldings.ts";
 export * from "./fileTextStore.ts";
 export * from "./flagOutbox.ts";
+export * from "./holdings.ts";
 export * from "./imageRuleStore.ts";
 export * from "./messageStore.ts";
 export * from "./moveOutbox.ts";
@@ -135,6 +138,8 @@ export interface SqliteStorage {
   readonly agentSettings: AgentSettingsPort;
   /** What the agent read from attached files (ADR 0087). */
   readonly fileText: FileTextPort;
+  /** One account's rows in every table, through the holdings list (ADR 0138, rule 5). */
+  readonly accountData: SqliteAccountData;
   readonly uow: UnitOfWorkPort;
   /**
    * Read ports on a separate read-only connection: they see committed data only. A
@@ -241,6 +246,7 @@ export function createSqliteStorage(
     agent: new SqliteAgentInsightStore(db),
     agentSettings: new SqliteAgentSettings(db),
     fileText: new SqliteFileText(db),
+    accountData: new SqliteAccountData(db),
     uow: new SqliteUnitOfWork(db),
     read: readPorts(readDb),
     bodyStats: () => bodies.stats(),

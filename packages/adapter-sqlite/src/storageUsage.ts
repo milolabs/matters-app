@@ -1,4 +1,15 @@
+import type { HoldingGroup } from "@matters/core";
 import { type Database, exclusive, write } from "./database.ts";
+import { measureTableGroups } from "./holdings.ts";
+
+/** The database's part of the erase review (ADR 0138, rule 9). */
+export interface EraseMeasure {
+  readonly groups: Readonly<Record<HoldingGroup, number>>;
+  readonly accounts: number;
+  readonly messages: number;
+  /** Messages waiting to be sent, which an erase drops (rule 10). */
+  readonly unsent: number;
+}
 
 /** What the database's pages hold, grouped the way Settings shows them (ADR 0089). */
 export interface DatabaseParts {
@@ -111,6 +122,23 @@ export class SqliteStorageUsage {
       fileBytes: pragma(this.db, "page_count") * pageSize,
       freeBytes: pragma(this.db, "freelist_count") * pageSize,
       ...parts,
+    };
+  }
+
+  /**
+   * What erasing everything would take out of the database, by the review's groups, measured now
+   * (ADR 0138, rule 9); reads every page once, like `measure`. With the accounts and the mail
+   * still waiting to be sent, which the review names (rule 10).
+   */
+  eraseMeasure(): EraseMeasure {
+    const count = (sql: string) => (this.db.prepare(sql).get() as { n: number }).n;
+    return {
+      groups: measureTableGroups(this.db),
+      accounts: count("SELECT COUNT(*) AS n FROM accounts"),
+      messages: count("SELECT COUNT(*) AS n FROM messages"),
+      unsent: count(
+        "SELECT COUNT(*) AS n FROM send_operations WHERE state IN ('pending', 'held', 'running')",
+      ),
     };
   }
 

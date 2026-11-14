@@ -212,7 +212,9 @@ describe("sync worker thread", () => {
     await until(() => state.synced > 0, "the first sync");
     expect(await host.command({ name: "syncNow", accountId: ACCOUNT })).toBe(true);
     expect(await host.command({ name: "syncNow", accountId: "nobody" })).toBe(false);
-    expect(await host.command({ name: "removeAccount", accountId: "nobody" })).toBe(false);
+    expect(await host.command({ name: "removeAccount", accountId: "nobody" })).toEqual({
+      removed: false,
+    });
     expect(inspect(dbPath).messages).toBe(TOTAL);
 
     // A failing command keeps its name and kind, so the router can classify it again.
@@ -400,7 +402,7 @@ describe("RemoteAccounts", () => {
   it("announces added and removed accounts and forgets the status of a removed one", async () => {
     const t = accountsOver(async (c) =>
       (c as { name: string }).name === "removeAccount"
-        ? true
+        ? { removed: true }
         : { account: { id: "a2", status: { state: "idle" } }, folderCount: 1 },
     );
     await t.accounts.add({ address: "x@y.z", displayName: "", password: "p", imap: stored.imap });

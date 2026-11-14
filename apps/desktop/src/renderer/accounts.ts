@@ -60,9 +60,16 @@ export function createAccountsStore(backend: Backend) {
     summary: createMemo(() => summarize(accounts(), statuses())),
     statusOf: (id: string): SyncStatus => statuses()[id] ?? { state: "idle" },
     syncNow: (id: string) => backend.syncNow(id),
+    /** What became of the freed pages comes back (ADR 0138, rule 6); the colour goes too. */
     async remove(id: string) {
-      await backend.removeAccount(id);
+      const compaction = await backend.removeAccount(id);
+      if (id in chosenColors()) {
+        const { [id]: _gone, ...rest } = chosenColors();
+        setChosenColors(rest);
+        writeAccountColors(rest);
+      }
       await refresh();
+      return compaction;
     },
   };
 }

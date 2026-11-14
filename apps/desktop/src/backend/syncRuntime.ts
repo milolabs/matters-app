@@ -7,6 +7,7 @@ import { RemoteCredentialPort } from "@matters/adapter-secrets";
 import type { SqliteStorage } from "@matters/adapter-sqlite";
 import type {
   ClockPort,
+  CompactionPort,
   ComposeRendererPort,
   DownloadConnection,
   FetchOutcome,
@@ -52,6 +53,7 @@ import { ProgressThrottle } from "./progressThrottle.ts";
 import type {
   CommandResults,
   FromWorker,
+  RemovedAccount,
   WireError,
   WorkerChannel,
   WorkerCommand,
@@ -139,6 +141,8 @@ export interface SyncRuntimeOptions {
   readonly seedImages?: boolean;
   /** An account to start with besides the stored ones (smoke runs). */
   readonly testAccount?: StoredAccount | null;
+  /** Compacts after an account's removal (ADR 0138, rule 6); without it nothing is compacted. */
+  readonly compaction?: CompactionPort;
 }
 
 export interface SyncRuntime {
@@ -245,6 +249,8 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
       attachments: storage.attachments,
       files: options.files,
       ...(options.received ? { received: options.received } : {}),
+      // Every other table, through the holdings list (ADR 0138, rule 5).
+      accountData: storage.accountData,
       credentials,
     },
     discovery,
@@ -532,18 +538,25 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
     return agent;
   };
 
-  /** Removing an account takes its consent and what agents kept about its threads with it. */
-  const removeAccount = async (accountId: string): Promise<boolean> => {
+  /**
+   * Removing an account takes its consent and what agents kept about its threads with it, then
+   * gives the freed pages back so that its text is not left in them (ADR 0138, rules 5 and 6).
+   */
+  const removeAccount = async (accountId: string): Promise<RemovedAccount> => {
     const threadIds = (await storage.store.listThreadsSince(0, 1_000_000))
       .filter((t) => t.accountId === accountId)
       .map((t) => t.threadId);
     const removed = await accounts.remove(accountId);
-    if (removed) {
-      await storage.agentSettings.revokeConsent(accountId);
-      await storage.agent.removeForThreads(threadIds);
-      post({ type: "agent" });
+    if (!removed) return { removed: false };
+    await storage.agentSettings.revokeConsent(accountId);
+    await storage.agent.removeForThreads(threadIds);
+    post({ type: "agent" });
+    if (!options.compaction) return { removed: true };
+    const compaction = await options.compaction.compactAfterRemoval();
+    if (compaction.kind === "failed") {
+      console.error(`matters-sync: compacting after a removal failed: ${compaction.message}`);
     }
-    return removed;
+    return { removed: true, compaction };
   };
 
   const execute = async (

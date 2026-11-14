@@ -17,6 +17,7 @@ import type {
   WholeMediaType,
 } from "@matters/core";
 import { AGENT_EFFORTS, AGENT_WORK_KINDS, AgentRunError, wholeFilesProblem } from "@matters/core";
+import { CODEX_TEMP_PREFIX } from "./holdings.ts";
 import { parseRateLimits, readRateLimits } from "./limits.ts";
 import {
   classifyFailure,
@@ -144,7 +145,7 @@ const MAX_MODELS = 64;
 const KILL_GRACE_MS = 2000;
 /** Directories of turns older than this are left over from a crash of the app: removed. */
 const STALE_TURN_MS = 2 * MAX_TOOL_TIMEOUT_MS;
-const TURN_PREFIX = "matters-codex-";
+const TURN_PREFIX = CODEX_TEMP_PREFIX;
 
 /** Models are plain ids; anything that could pass for a flag or reach TOML is refused. */
 const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;

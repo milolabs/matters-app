@@ -144,3 +144,4 @@ Format: copy [`template.md`](template.md).
 | [0134](0134-appearance-a-mode-and-themes-that-are-data.md) | Appearance: a mode the person chooses, and themes that are data (amends 0085, 0103, 0118, 0121; builds on 0036) | Accepted |
 | [0135](0135-setup-finds-who-runs-the-mail-and-the-person-can-say.md) | Setup finds who runs the mail, and the person can say (amends 0023, 0114) | Accepted |
 | [0136](0136-microsoft-mail-moves-over-microsoft-graph.md) | Microsoft mail moves over Microsoft Graph (amends 0008, 0016, 0133) | Accepted |
+| [0138](0138-erasing-what-matters-keeps.md) | Erasing what Matters keeps: one account, or everything (amends 0089, 0105, 0110) | Accepted |

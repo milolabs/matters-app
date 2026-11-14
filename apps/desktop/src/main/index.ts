@@ -33,6 +33,7 @@ import {
   type ThemeAddAnswer,
 } from "@matters/contracts";
 import type { CredentialPort } from "@matters/core";
+import { isPermissionPageId, permissionPageUrl } from "@matters/core";
 import {
   app,
   BrowserWindow,
@@ -108,6 +109,9 @@ import {
   testBrowser,
 } from "./browserSignIn.ts";
 import { BUILT_IN_THEMES } from "./builtInThemes.ts";
+import { readEraseOrder, writeEraseOrder } from "./erase.ts";
+import { enterEraseMode } from "./eraseMode.ts";
+import { eraseOverview } from "./eraseOverview.ts";
 import { type GrantMessage, GrantMint } from "./grants.ts";
 import {
   isIdentityHelper,
@@ -123,6 +127,7 @@ import {
   moveIdentityCredentials,
   moveIdentityData,
   nodeFs,
+  OLD_APP_NAME,
 } from "./identityMigration.ts";
 import {
   bringForward,
@@ -148,6 +153,7 @@ import {
   type SmokeReport,
   type SyncSmokeReport,
 } from "./smoke.ts";
+import { SMOKE_EARLIER_KEY_SERVICE, SMOKE_KEY_SERVICE, smokeKeychain } from "./smokeKeychain.ts";
 import { folderUsage, type MainStorage, processUsage } from "./storageUsage.ts";
 import { parseTheme, serializeTheme } from "./themes.ts";
 import {
@@ -230,6 +236,54 @@ function claimDataFolder(): void {
 if (!identityHelper && process.platform !== "win32") claimDataFolder();
 
 /**
+ * Erase everything (ADR 0138, rule 3): an order in the data folder makes this start erase, before
+ * the identity move, the database's claim, the Keychain and the backend, none of which runs. A
+ * normal start pays for one read that finds nothing.
+ */
+const eraseOrder = identityHelper ? null : readEraseOrder(app.getPath("userData"));
+const erasing = eraseOrder !== null;
+if (eraseOrder) {
+  if (process.platform === "win32") claimDataFolder();
+  const dataDir = app.getPath("userData");
+  // Only the person's own run touches the Keychain: a dev, test or smoke run never does, whatever
+  // its folders (a dev build shares the real key's name).
+  const ownRun = app.isPackaged && !process.env.MATTERS_USER_DATA && !process.env.MATTERS_DB_PATH;
+  enterEraseMode({
+    order: eraseOrder,
+    dataDir,
+    databasePath: databasePath(),
+    earlierDir: earlierCopyDir(),
+    keychain: ownRun
+      ? { current: `${app.getName()} Safe Storage`, earlier: `${OLD_APP_NAME} Safe Storage` }
+      : smoke
+        ? { current: SMOKE_KEY_SERVICE, earlier: SMOKE_EARLIER_KEY_SERVICE }
+        : { current: null, earlier: null },
+    smoke,
+    ...(smoke ? { keychainPort: smokeKeychain(process.env.MATTERS_ERASE_KEYCHAIN_LOG) } : {}),
+    ...(devBuild && process.env.MATTERS_ERASE_TEMP_DIR
+      ? { tempDir: process.env.MATTERS_ERASE_TEMP_DIR }
+      : {}),
+    background: () => background(),
+    titleBar: () => titleBar,
+    lockDown: (win) => lockDown(win),
+  });
+}
+
+/**
+ * The earlier identity's folder (ADR 0105) as this run sees it: the real one only for a run on the
+ * real folders, a dev build's own with `MATTERS_OLD_USER_DATA`, none for a test run of its own.
+ */
+function earlierCopyDir(): string | null {
+  const plan = identityPlan({
+    devBuild,
+    env: process.env,
+    appData: app.getPath("appData"),
+    userData: app.getPath("userData"),
+  });
+  return plan?.oldDir ?? null;
+}
+
+/**
  * Says why the app cannot start and leaves. A smoke run has nobody to read a dialog: the line on
  * stderr is what its driver checks.
  */
@@ -304,8 +358,8 @@ function moveData(): DataOutcome | null {
       return outcome;
   }
 }
-const identity = identityHelper ? null : moveData();
-if (!identityHelper && process.platform === "win32") claimDataFolder();
+const identity = identityHelper || erasing ? null : moveData();
+if (!identityHelper && !erasing && process.platform === "win32") claimDataFolder();
 
 /**
  * The database's own claim (ADR 0110): `MATTERS_DB_PATH` can point two data folders at one
@@ -356,7 +410,7 @@ function claimDatabaseFile(): void {
   app.exit(1);
   process.exit(1);
 }
-if (!identityHelper) claimDatabaseFile();
+if (!identityHelper && !erasing) claimDatabaseFile();
 
 const credentialsPending =
   (identity?.kind === "copied" || identity?.kind === "settled") &&
@@ -1227,8 +1281,9 @@ function stopBackend(backend: Electron.UtilityProcess): Promise<void> {
   });
 }
 
-// The helper has its own `whenReady` (identityHelper.ts) and never gets as far as the app.
-if (!identityHelper)
+// The helper has its own `whenReady` (identityHelper.ts) and never gets as far as the app; nor
+// does an erase (eraseMode.ts).
+if (!identityHelper && !erasing)
   app.whenReady().then(async () => {
     trace("main-ready");
     // Before the window exists: its dom-ready must not fire before the port handoff is armed.
@@ -1424,8 +1479,38 @@ if (!identityHelper)
         ...(settings ? { settings: settings.webContents.getOSProcessId() } : {}),
       }),
     });
-    ipcMain.handle(CHANNEL_STORAGE, async (event, action: unknown) => {
+    ipcMain.handle(CHANNEL_STORAGE, async (event, action: unknown, arg: unknown, more: unknown) => {
       if (!settings || event.sender !== settings.webContents) return null;
+      // A provider's page where the person takes back the app's permission (ADR 0138, rule 8):
+      // by name only, at a fixed address.
+      if (action === "permissionPage") {
+        if (!isPermissionPageId(arg)) return null;
+        const href = permissionPageUrl(arg);
+        if (securityRun) securityEvent("open-external", { href });
+        else await shell.openExternal(href);
+        return { ok: true };
+      }
+      // Erase everything (ADR 0138): what goes, measured now, and the order with a restart.
+      if (action === "eraseOverview") {
+        return eraseOverview({
+          dataDir: app.getPath("userData"),
+          databasePath: databasePath(),
+          earlierDir: earlierCopyDir(),
+        });
+      }
+      if (action === "erase") {
+        if (smoke) return null;
+        writeEraseOrder(app.getPath("userData"), {
+          version: 1,
+          at: new Date().toISOString(),
+          earlierCopy: arg === true && earlierCopyDir() !== null,
+          permissionPages: Array.isArray(more) ? more.filter(isPermissionPageId) : [],
+        });
+        // The next start erases; this one closes the backend on its way out (before-quit).
+        app.relaunch();
+        setImmediate(() => app.quit());
+        return { ok: true };
+      }
       if (action === "clearCaches") {
         await win.webContents.session.clearCache();
         await win.webContents.session.clearCodeCaches({});
