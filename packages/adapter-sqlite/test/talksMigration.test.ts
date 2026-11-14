@@ -102,6 +102,7 @@ describe("migration 40: talks across all mail", () => {
       write: "c",
       answer: "d",
       titles: DEFAULT_AGENT_MODELS.titles,
+      appearance: "c",
     });
     db.close();
   });

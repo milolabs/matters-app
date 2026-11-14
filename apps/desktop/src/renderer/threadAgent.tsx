@@ -10,6 +10,15 @@ import { replyPromptName } from "./replyPrompt.ts";
 import type { ThreadAgentStore } from "./threadAgent.ts";
 import { pill, toolButton } from "./ui.ts";
 
+/** No status yet: no model to name. */
+const NO_MODELS = {
+  understand: "",
+  write: "",
+  answer: "",
+  titles: "",
+  appearance: "",
+} as const;
+
 /** The runtime drafts are written on (ADR 0121, rule 1). */
 const writingRuntime = (status: AgentStatus | null) =>
   status === null ? null : kindInfo(status, "write");
@@ -157,10 +166,7 @@ function Draft(props: {
   const { ta, agent } = props;
   const pieces = createMemo(() => splitYours(props.body, agent.givenFor(props.threadId)));
   const by = () =>
-    writtenByLine(
-      writingRuntime(agent.status()),
-      agent.status()?.settings.models ?? { understand: "", write: "", answer: "", titles: "" },
-    );
+    writtenByLine(writingRuntime(agent.status()), agent.status()?.settings.models ?? NO_MODELS);
   return (
     <DraftFrame
       to={replyPromptName(props.messages, props.own)}
@@ -183,10 +189,7 @@ function Question(props: {
 }) {
   const { ta, agent } = props;
   const by = () =>
-    writtenByLine(
-      writingRuntime(agent.status()),
-      agent.status()?.settings.models ?? { understand: "", write: "", answer: "", titles: "" },
-    );
+    writtenByLine(writingRuntime(agent.status()), agent.status()?.settings.models ?? NO_MODELS);
   return (
     <QuestionFrame
       work={props.work}

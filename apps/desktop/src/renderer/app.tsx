@@ -36,7 +36,7 @@ import {
   registerAgentOpener,
 } from "./agentTalk.tsx";
 import { talkRuntimeName } from "./agentText.ts";
-import { appDark } from "./appTheme.ts";
+import { appDark, mailGround } from "./appTheme.ts";
 import { DWELL_MS } from "./autoRead.ts";
 import { linkify, SHORT_SIGNATURE_LINES, splitBody, splitSignature } from "./body.ts";
 import { releaseBoot } from "./bootScreen.ts";
@@ -2870,11 +2870,11 @@ function Original(props: {
   onUnavailable: () => void;
 }) {
   const [clean, setClean] = createSignal<CleanMail | null>(null);
-  // The sender's theme first, recolored only when it says nothing (ADR 0085). Recoloring runs
-  // once per message and theme, only in dark.
+  // The sender's theme first, recolored only when it says nothing (ADR 0085), onto the theme's
+  // ground (ADR 0134, rule 10). Recoloring runs once per message and theme, only in dark.
   const view = createMemo(() => {
     const c = clean();
-    return c === null ? null : mailView(c, appDark());
+    return c === null ? null : mailView(c, appDark(), undefined, mailGround());
   });
   // What the rules decide (ADR 0037). Until the backend answers, images stay off.
   const [choice, setChoice] = createSignal<ImageChoice | null>(null);

@@ -12,6 +12,7 @@ import {
   instructionScopeWords,
   kindsWords,
   kindWaits,
+  ledgerAccount,
   ledgerEffort,
   loopOffered,
   ourShare,
@@ -34,7 +35,13 @@ import {
 } from "../src/renderer/agentText.ts";
 
 const NOW = Date.UTC(2026, 10, 5, 10, 42);
-const models = { understand: "haiku", write: "sonnet", answer: "sonnet", titles: "haiku" };
+const models = {
+  understand: "haiku",
+  write: "sonnet",
+  answer: "sonnet",
+  titles: "haiku",
+  appearance: "sonnet",
+};
 const LIMITS: PlanLimits = {
   session: { usedPercent: 39, resetsAtMs: NOW + 3_600_000 },
   week: { usedPercent: 22, resetsAtMs: NOW + 3 * 86_400_000 },
@@ -57,7 +64,13 @@ const status = (
     enabled: true,
     kindRuntime: everyKindOn(runtime.id),
     models,
-    efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
+    efforts: {
+      understand: "low",
+      write: "default",
+      answer: "default",
+      titles: "low",
+      appearance: "default",
+    },
     weekSharePercent: 10,
     plans: {
       [runtime.id]: { usedByUsPercent: 4.2, ...(limits === null ? {} : { limits }) },
@@ -196,6 +209,13 @@ describe("the effort beside each model (ADR 0118)", () => {
     expect(ledgerEffort({ effort: "low" })).toBe("low effort");
     expect(ledgerEffort({})).toBe("");
     expect(EFFORT_WORDS.default).toBe("Default");
+  });
+
+  it("names the account of a line, none for a turn with no account, and one since removed (ADR 0134, rule 15)", () => {
+    const addressOf = (id: string) => (id === "acc1" ? "me@example.com" : undefined);
+    expect(ledgerAccount({ accountId: "acc1" }, addressOf)).toBe("me@example.com");
+    expect(ledgerAccount({ accountId: "acc2" }, addressOf)).toBe("an account that was removed");
+    expect(ledgerAccount({ accountId: "" }, addressOf)).toBe("");
   });
 });
 

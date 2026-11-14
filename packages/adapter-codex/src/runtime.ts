@@ -16,7 +16,7 @@ import type {
   PlanLimits,
   WholeMediaType,
 } from "@matters/core";
-import { AGENT_EFFORTS, AgentRunError, wholeFilesProblem } from "@matters/core";
+import { AGENT_EFFORTS, AGENT_WORK_KINDS, AgentRunError, wholeFilesProblem } from "@matters/core";
 import { parseRateLimits, readRateLimits } from "./limits.ts";
 import {
   classifyFailure,
@@ -86,6 +86,8 @@ export const STARTING_MODELS: Readonly<Record<AgentWorkKind, readonly string[]>>
   titles: ["gpt-6-luna", "gpt-5.6-luna"],
   write: ["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol"],
   answer: ["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol"],
+  // Where writing starts (ADR 0134, rule 13).
+  appearance: ["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol"],
 };
 
 /** What `-i` takes whole (rule 7): images. Codex takes no PDF. */
@@ -346,7 +348,7 @@ export class CodexRuntime implements AgentRuntimePort {
     const names = models.map((m) => m.slug);
     const first = (kind: AgentWorkKind) => STARTING_MODELS[kind].find((n) => names.includes(n));
     const defaultModels: Partial<Record<AgentWorkKind, string>> = {};
-    for (const kind of ["understand", "write", "answer", "titles"] as const) {
+    for (const kind of AGENT_WORK_KINDS) {
       const pick = first(kind);
       if (pick !== undefined) defaultModels[kind] = pick;
     }

@@ -1,8 +1,15 @@
 // Thin main process (ADR 0005): window, backend supervision, port handoff. It never
 // sees data messages; the renderer talks to the backend over a direct MessagePort.
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { constants, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes, randomUUID } from "node:crypto";
+import {
+  constants,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { chmod, copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, uptime } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,7 +20,14 @@ import {
   type RpcPort,
   serveCredentials,
 } from "@matters/adapter-secrets";
-import type { ReceivedAnswer } from "@matters/contracts";
+import {
+  type AppearanceInfo,
+  type AppearanceMode,
+  MAX_THEMES,
+  type ReceivedAnswer,
+  THEMES_FULL,
+  type ThemeAddAnswer,
+} from "@matters/contracts";
 import {
   app,
   BrowserWindow,
@@ -38,11 +52,45 @@ import backendPath from "../backend/main.ts?modulePath";
 import readWorkerPath from "../backend/readWorker.ts?modulePath";
 import syncWorkerPath from "../backend/syncWorker.ts?modulePath";
 import { mark } from "../backend/trace.ts";
+import {
+  CHANNEL_APPEARANCE,
+  CHANNEL_APPEARANCE_CHANGED,
+  CHANNEL_APPEARANCE_COLORS,
+} from "../preload/appearanceBridge.ts";
 import { CHANNEL_DROP, CHANNEL_PASTE, CHANNEL_PICK } from "../preload/fileBridge.ts";
 import { CHANNEL_NOTICE_SYSTEM } from "../preload/noticeBridge.ts";
 import { CHANNEL_RECEIVED } from "../preload/receivedBridge.ts";
 import { CHANNEL_STORAGE } from "../preload/storageBridge.ts";
+import {
+  APPEARANCE_FILE,
+  appearanceInfo,
+  builtInTheme,
+  type ChosenTheme,
+  DEFAULT_APPEARANCE,
+  differsFromDefault,
+  isAppearanceMode,
+  isResetAppearanceChord,
+  isThemeId,
+  type LoadedTheme,
+  ownThemeFile,
+  ownThemeId,
+  ownThemeRoom,
+  ownThemes,
+  parseAppearance,
+  RESET_APPEARANCE_ACCELERATOR,
+  resolveChosenTheme,
+  type StoredAppearance,
+  serializeAppearance,
+  THEMES_FOLDER,
+  type ThemeRead,
+  themeListing,
+  themeSourceFor,
+  windowColors,
+  windowGround,
+  withOwnTheme,
+} from "./appearance.ts";
 import { BackendLink } from "./backendLink.ts";
+import { BUILT_IN_THEMES } from "./builtInThemes.ts";
 import { type GrantMessage, GrantMint } from "./grants.ts";
 import {
   isIdentityHelper,
@@ -84,6 +132,7 @@ import {
   type SyncSmokeReport,
 } from "./smoke.ts";
 import { folderUsage, type MainStorage, processUsage } from "./storageUsage.ts";
+import { parseTheme, serializeTheme } from "./themes.ts";
 import {
   DEFAULT_PLACEMENT,
   restorePlacement,
@@ -302,7 +351,11 @@ const titleBar =
     ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 20, y: 19 } }
     : {};
 
-const background = () => (nativeTheme.shouldUseDarkColors ? "#1e1e20" : "#ffffff");
+/**
+ * A window's colour before its page paints (ADR 0134, rule 9). `shouldUseDarkColors` follows
+ * `themeSource`, which the appearance sets before the first window is made.
+ */
+const background = () => windowGround(chosen.theme, nativeTheme.shouldUseDarkColors);
 
 // The app icon (docs/brand). macOS takes it from the bundle; Windows and Linux take it per window.
 const iconDir = join(app.getAppPath(), "build/icons");
@@ -347,12 +400,190 @@ function savePlacement(win: BrowserWindow): void {
 
 /** Dev-only knobs of the launch benchmark (tools/bench-launch.ts); a packaged app never traces. */
 const neverReady = tracing && process.env.MATTERS_TRACE_NEVER_READY === "1";
-if (
+/** The benchmark's theme wins over the person's and is never written to their file. */
+const traceTheme: AppearanceMode | null =
   tracing &&
   (process.env.MATTERS_TRACE_THEME === "dark" || process.env.MATTERS_TRACE_THEME === "light")
-) {
-  nativeTheme.themeSource = process.env.MATTERS_TRACE_THEME;
+    ? process.env.MATTERS_TRACE_THEME
+    : null;
+
+const appearancePath = () => join(app.getPath("userData"), APPEARANCE_FILE);
+const themesPath = () => join(app.getPath("userData"), THEMES_FOLDER);
+
+/** One file of `themes/`, by a name `appearance.ts` made (never one from a page). */
+function readOwnTheme(file: string): ThemeRead {
+  try {
+    return { kind: "text", text: readFileSync(join(themesPath(), file), "utf8") };
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT"
+      ? { kind: "missing" }
+      : { kind: "unreadable" };
+  }
 }
+
+/**
+ * The appearance in force (ADR 0134, rule 8), read once userData is final and the identity move is
+ * done, before any window is made, so the first one already has its colours. Only the chosen theme
+ * is read now; the list waits until Appearance asks. A smoke run measures the default, whatever an
+ * earlier run left, as it does for the window's place; so does the benchmark, in its own mode.
+ */
+function readStoredAppearance(): StoredAppearance {
+  if (traceTheme) return { mode: traceTheme, theme: null };
+  if (smoke) return parseAppearance(null);
+  let text: string | null = null;
+  try {
+    text = readFileSync(appearancePath(), "utf8");
+  } catch {
+    // No file yet, or one that cannot be read: the default (ADR 0134, rule 11).
+  }
+  return parseAppearance(text);
+}
+let stored: StoredAppearance = identityHelper ? parseAppearance(null) : readStoredAppearance();
+let chosen: ChosenTheme = identityHelper
+  ? { theme: null, fallback: null }
+  : resolveChosenTheme(stored.theme, BUILT_IN_THEMES, readOwnTheme);
+if (chosen.fallback) console.error(`appearance: ${chosen.fallback}`);
+if (!identityHelper) nativeTheme.themeSource = themeSourceFor(stored.mode, chosen.theme);
+/** The person's own themes, read when Appearance first asks and kept in step after. */
+let ownList: LoadedTheme[] | null = null;
+
+function themeList(): LoadedTheme[] {
+  if (ownList === null) {
+    let files: string[] = [];
+    try {
+      files = readdirSync(themesPath());
+    } catch {
+      // No folder yet: no own themes.
+    }
+    ownList = ownThemes(files, readOwnTheme, ownThemeRoom(BUILT_IN_THEMES.length));
+  }
+  const builtIns = BUILT_IN_THEMES.map((t) => builtInTheme(BUILT_IN_THEMES, t.id)).filter(
+    (t): t is LoadedTheme => t !== null,
+  );
+  return [...builtIns, ...ownList];
+}
+
+const currentAppearance = (): AppearanceInfo =>
+  appearanceInfo(stored, chosen.theme, chosen.fallback, themeList());
+
+// A new window asks for the colours as its preload starts (ADR 0134, rule 9): main answers from
+// memory, at once. Every window of the app may ask; it gets only checked values.
+if (!identityHelper) {
+  ipcMain.on(CHANNEL_APPEARANCE_COLORS, (event) => {
+    event.returnValue = windowColors(chosen.theme);
+  });
+}
+
+/**
+ * Applies what the person chose, keeps it, and tells every open window, so a Settings window and
+ * the mail window agree whichever of them (or the menu, or the shortcut) changed it. Under the
+ * benchmark's theme nothing changes.
+ */
+function applyAppearance(next: StoredAppearance, theme: ChosenTheme): AppearanceInfo {
+  if (traceTheme) return currentAppearance();
+  stored = next;
+  chosen = theme;
+  nativeTheme.themeSource = themeSourceFor(stored.mode, chosen.theme);
+  if (!smoke) {
+    try {
+      writeFileSync(appearancePath(), serializeAppearance(stored));
+    } catch (error) {
+      // It holds for this run; the next start opens in what was written before.
+      console.error("could not save the appearance", error);
+    }
+  }
+  const info = currentAppearance();
+  const colors = windowColors(chosen.theme);
+  const ground = background();
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    // A theme can change the ground without the mode changing, so `updated` may not come.
+    win.setBackgroundColor(ground);
+    win.webContents.send(CHANNEL_APPEARANCE_CHANGED, { appearance: info, colors });
+  }
+  appearanceChanged();
+  return info;
+}
+
+const setMode = (mode: AppearanceMode) => applyAppearance({ ...stored, mode }, chosen);
+
+/** The way back (ADR 0134, rule 11): mode System and no theme; the themes stay in the list. */
+const resetAppearance = () => applyAppearance(DEFAULT_APPEARANCE, { theme: null, fallback: null });
+
+/** A theme of the list, or the default (null). An id main does not know changes nothing. */
+function chooseTheme(id: string | null): AppearanceInfo | null {
+  if (id === null)
+    return applyAppearance({ ...stored, theme: null }, { theme: null, fallback: null });
+  const theme = themeList().find((t) => t.id === id);
+  if (!theme) return null;
+  return applyAppearance({ ...stored, theme: id }, { theme, fallback: null });
+}
+
+/**
+ * A theme handed in as text (ADR 0134, rule 12): the agent's answer to the person's description,
+ * which the page passes on as something from outside. It passes the check or is refused with
+ * every reason; one that passes is written to `themes/` under an id main makes, listed, and put on
+ * unless `putOn` is false.
+ */
+function addTheme(text: string, putOn: boolean): ThemeAddAnswer | null {
+  // A full list keeps no more than it can show (`MAX_THEMES`), whatever the text, so no second
+  // turn is asked for. Read before the file is written, so the scan cannot already hold the new
+  // theme when it is added below.
+  if (themeList().length >= MAX_THEMES) return { ok: false, full: THEMES_FULL };
+  const result = parseTheme(text);
+  if (!result.ok) return { ok: false, problems: result.problems };
+  const id = ownThemeId(randomBytes(6).toString("hex"));
+  const file = ownThemeFile(id);
+  if (file === null) return null;
+  try {
+    mkdirSync(themesPath(), { recursive: true, mode: 0o700 });
+    writeFileSync(join(themesPath(), file), serializeTheme(result.theme), { mode: 0o600 });
+  } catch (error) {
+    console.error("could not save the theme", error);
+    return null;
+  }
+  const loaded: LoadedTheme = { id, source: "own", theme: result.theme };
+  ownList = withOwnTheme(ownList ?? [], loaded);
+  // The person chose another theme while this one was made: it is listed, and theirs stays on.
+  const appearance = putOn
+    ? applyAppearance({ ...stored, theme: id }, { theme: loaded, fallback: null })
+    : applyAppearance(stored, chosen);
+  return { ok: true, theme: themeListing(loaded), appearance };
+}
+
+/**
+ * The text of a theme of the list, as its file holds it, for the agent to change it (ADR 0134,
+ * rule 14): only when the person asks, and only a theme main already checked. Null for an id main
+ * does not know.
+ */
+function themeText(id: string): { text: string } | null {
+  const theme = themeList().find((t) => t.id === id);
+  return theme ? { text: serializeTheme(theme.theme) } : null;
+}
+
+/** Removes an own theme; built-ins cannot be. Removing the one on returns to the default. */
+function removeTheme(id: string): AppearanceInfo | null {
+  const file = ownThemeFile(id);
+  if (file === null) return null;
+  try {
+    unlinkSync(join(themesPath(), file));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.error("could not remove the theme", error);
+      return null;
+    }
+  }
+  // Read again when next asked: a folder that held more than the list carries shows the next one.
+  ownList = null;
+  if (stored.theme !== id) {
+    // Nothing on screen changes; the list does, in every window that shows it.
+    return applyAppearance(stored, chosen);
+  }
+  return applyAppearance({ ...stored, theme: null }, { theme: null, fallback: null });
+}
+
+/** The menu follows the appearance (its Reset Appearance is off at the default). */
+let appearanceChanged = () => {};
 
 /**
  * The window's side of startup (ADR 0103): the backend's stage, which the preload puts on the page
@@ -1085,6 +1316,43 @@ if (!identityHelper)
       await shell.openExternal(NOTIFICATION_SETTINGS_URL);
       return { opened: true };
     });
+    // Settings › Appearance (ADR 0134): either window may read the appearance; only the settings
+    // window may change it, and only to a mode, a theme main knows, or a theme it has just checked.
+    // Every window hears the result.
+    ipcMain.handle(CHANNEL_APPEARANCE, (event, action: unknown, arg: unknown, more: unknown) => {
+      const fromSettings = !!settings && event.sender === settings.webContents;
+      if (!fromSettings && event.sender !== win.webContents) return null;
+      if (action === "get") return currentAppearance();
+      if (!fromSettings) return null;
+      if (action === "reset") return resetAppearance();
+      if (action === "set" && isAppearanceMode(arg)) return setMode(arg);
+      if (action === "theme" && (arg === null || isThemeId(arg))) return chooseTheme(arg);
+      if (action === "remove" && isThemeId(arg)) return removeTheme(arg);
+      if (action === "add" && typeof arg === "string") return addTheme(arg, more !== false);
+      if (action === "text" && isThemeId(arg)) return themeText(arg);
+      return null;
+    });
+    // The way back from any window, for a person who cannot read Settings any more (ADR 0134,
+    // rule 11). Main handles it before the page, so it works whatever the page shows or binds, and
+    // on Windows and Linux too, where there is no app menu (the page binds Ctrl+, there itself).
+    const watchResetChord = (target: BrowserWindow) =>
+      target.webContents.on("before-input-event", (event, input) => {
+        if (!isResetAppearanceChord(input, process.platform)) return;
+        event.preventDefault();
+        resetAppearance();
+      });
+    watchResetChord(win);
+    app.on("browser-window-created", (_event, created) => {
+      if (created !== win) watchResetChord(created);
+    });
+    // Open windows take the new ground too, for the edge a resize shows before the page repaints
+    // (ADR 0134, rule 9); the system's own switch comes through here as well.
+    nativeTheme.on("updated", () => {
+      for (const open of BrowserWindow.getAllWindows()) {
+        if (!open.isDestroyed()) open.setBackgroundColor(background());
+      }
+    });
+    appearanceChanged = () => rebuildMenu();
     const zone = (ms: number) => -new Date(ms).getTimezoneOffset();
     const notificationItems = (): Electron.MenuItemConstructorOptions[] =>
       pauseMenu(pause, Date.now(), zone).map((item) => {
@@ -1123,7 +1391,32 @@ if (!identityHelper)
           },
           { role: "fileMenu" },
           { role: "editMenu" },
-          { role: "viewMenu" },
+          // The role's own items, with Reset Appearance among them: the way back for a person who
+          // cannot read Settings any more (ADR 0134, rule 11).
+          {
+            label: "View",
+            submenu: [
+              { role: "reload" },
+              { role: "forceReload" },
+              { role: "toggleDevTools" },
+              { type: "separator" },
+              { role: "resetZoom" },
+              { role: "zoomIn" },
+              { role: "zoomOut" },
+              { type: "separator" },
+              {
+                id: "reset-appearance",
+                label: "Reset Appearance",
+                // Shown here; `before-input-event` above handles the keys in every window.
+                accelerator: RESET_APPEARANCE_ACCELERATOR,
+                registerAccelerator: false,
+                enabled: differsFromDefault(stored),
+                click: () => resetAppearance(),
+              },
+              { type: "separator" },
+              { role: "togglefullscreen" },
+            ],
+          },
           { role: "windowMenu" },
         ]),
       );

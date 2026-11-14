@@ -797,9 +797,18 @@ export interface LedgerEntry {
    * record the person's choice, with `threads` 0 (lines of earlier versions may count the threads
    * the screen named). `prompt` is one batch of a prompt (ADR 0116, rule 9): the threads of that
    * account that went. `analysis` is a reading of an earlier version (ADR 0117), kept in the
-   * ledger as it was.
+   * ledger as it was. `appearance` is a turn that made a theme from the person's description (ADR
+   * 0134, rule 15): no mail and no account went, so `accountId` is "" and `threads` 0.
    */
-  readonly purpose: "analysis" | "prepare" | "remember" | "talk" | "prompt" | "consent" | "revoke";
+  readonly purpose:
+    | "analysis"
+    | "prepare"
+    | "remember"
+    | "talk"
+    | "prompt"
+    | "consent"
+    | "revoke"
+    | "appearance";
   readonly threads: number;
   /**
    * The effort sent with the turn (ADR 0118, rule 7). Absent when none was sent, and on every line
@@ -828,6 +837,11 @@ export interface AgentModels {
   readonly answer: string;
   /** Naming a talk across all mail (`P3`, ADR 0086, rule 8). `titles: "off"` names none. */
   readonly titles: string;
+  /**
+   * Making a theme from the person's description (`P0`, ADR 0134, rule 13). No mail goes with it,
+   * so it asks no account for consent (rule 14).
+   */
+  readonly appearance: string;
 }
 
 export const DEFAULT_AGENT_MODELS: AgentModels = {
@@ -835,6 +849,8 @@ export const DEFAULT_AGENT_MODELS: AgentModels = {
   write: "sonnet",
   answer: "sonnet",
   titles: "haiku",
+  // As writing: the kind starts where writing is (ADR 0134, rule 13).
+  appearance: "sonnet",
 };
 
 /** The value of `models.titles` that turns the naming of talks off (ADR 0086, rule 8). */
@@ -848,7 +864,32 @@ export const AGENT_WORK_KINDS: readonly AgentWorkKind[] = [
   "write",
   "answer",
   "titles",
+  "appearance",
 ];
+
+/**
+ * Whether a turn of this kind takes the person's mail, and so works only with the accounts that
+ * agreed to its runtime (ADR 0121, rule 4). Making a theme takes none (ADR 0134, rule 14): its
+ * runtime needs only to be ready, and moving it asks no account.
+ */
+export function kindTakesMail(kind: AgentWorkKind): boolean {
+  return kind !== "appearance";
+}
+
+/**
+ * The runtimes a kind that takes mail names, each once, in the order of the kinds: the ones the
+ * consent of ADR 0121, rule 4 is about. A runtime in use only for making themes is not one.
+ */
+export function mailRuntimesInUse(
+  settings: Pick<AgentSettings, "kindRuntime">,
+): readonly AgentRuntimeId[] {
+  const out: AgentRuntimeId[] = [];
+  for (const kind of AGENT_WORK_KINDS) {
+    const id = settings.kindRuntime[kind];
+    if (kindTakesMail(kind) && id !== undefined && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
 
 /** How hard a runtime is asked to think, lowest first (ADR 0118, rule 2). */
 export const AGENT_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -869,6 +910,8 @@ export const DEFAULT_AGENT_EFFORTS: AgentEfforts = {
   write: "default",
   answer: "default",
   titles: "low",
+  // ADR 0134, rule 13.
+  appearance: "default",
 };
 
 export function isAgentEffort(value: unknown): value is AgentEffort {
@@ -920,6 +963,7 @@ export function readEfforts(raw: unknown): AgentEfforts {
     write: pick("write"),
     answer: pick("answer"),
     titles: pick("titles"),
+    appearance: pick("appearance"),
   };
 }
 
@@ -1070,17 +1114,22 @@ export function planUseOf(
 /** Models read back from stored settings: a kind missing or not a short string keeps its start. */
 function readModels(raw: unknown): AgentModels {
   const stored = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
-  const pick = (kind: AgentWorkKind): string => {
+  const named = (kind: AgentWorkKind): string | undefined => {
     const value = stored[kind];
     return typeof value === "string" && value.length > 0 && value.length <= MAX_MODEL_NAME
       ? value
-      : DEFAULT_AGENT_MODELS[kind];
+      : undefined;
   };
+  const pick = (kind: AgentWorkKind): string => named(kind) ?? DEFAULT_AGENT_MODELS[kind];
   return {
     understand: pick("understand"),
     write: pick("write"),
     answer: pick("answer"),
     titles: pick("titles"),
+    // Choices stored before the kind existed (ADR 0134, rule 13): it starts on the model this
+    // runtime keeps for writing, which is one the runtime takes. The app's own starting model
+    // could be one this runtime does not list.
+    appearance: named("appearance") ?? pick("write"),
   };
 }
 
@@ -1102,6 +1151,10 @@ function readKindRuntime(raw: unknown): Partial<Record<AgentWorkKind, AgentRunti
   for (const kind of AGENT_WORK_KINDS) {
     const id = stored[kind];
     if (isRuntimeId(id)) out[kind] = id;
+  }
+  // Stored before the kind existed: it starts on the runtime of writing (ADR 0134, rule 13).
+  if (!Object.hasOwn(stored, "appearance") && out.write !== undefined) {
+    out.appearance = out.write;
   }
   return out;
 }
@@ -1149,12 +1202,14 @@ function withKindChoices(
       write: pick("write").models.write,
       answer: pick("answer").models.answer,
       titles: pick("titles").models.titles,
+      appearance: pick("appearance").models.appearance,
     },
     efforts: {
       understand: pick("understand").efforts.understand,
       write: pick("write").efforts.write,
       answer: pick("answer").efforts.answer,
       titles: pick("titles").efforts.titles,
+      appearance: pick("appearance").efforts.appearance,
     },
   };
 }
@@ -1276,6 +1331,11 @@ export function patchAgentSettings(
       const id = kindRuntime[kind];
       if (id !== undefined) kinds[kind] = id;
     }
+    // A kind first placed by its runtime of writing, as stored settings read (ADR 0134, rule 13),
+    // so what a store writes reads back the same.
+    if (kinds.appearance === undefined && kinds.write !== undefined) {
+      kinds.appearance = kinds.write;
+    }
     next.kindRuntime = kinds;
   }
   // Both are always written, so every store reads back what it was given.
@@ -1329,16 +1389,20 @@ export function startingChoices(
       ? runtime.defaultModel
       : (names[0] as string);
   // A model the runtime suggests for a kind, when it lists it (ADR 0120); else the one above.
-  const pick = (kind: AgentWorkKind): string => {
+  const suggested = (kind: AgentWorkKind): string | undefined => {
     const named = runtime.defaultModels?.[kind];
-    return named !== undefined && names.includes(named) ? named : one;
+    return named !== undefined && names.includes(named) ? named : undefined;
   };
+  const pick = (kind: AgentWorkKind): string => suggested(kind) ?? one;
   return {
     models: {
       understand: pick("understand"),
       write: pick("write"),
       answer: pick("answer"),
       titles: pick("titles"),
+      // A runtime that suggests nothing for making themes starts it where it starts writing (ADR
+      // 0134, rule 13).
+      appearance: suggested("appearance") ?? pick("write"),
     },
     efforts: DEFAULT_AGENT_EFFORTS,
   };

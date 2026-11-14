@@ -25,8 +25,8 @@ afterEach(() => {
 
 describe("upgrade from schema 22 (ADR 0051, 0052)", () => {
   it("is the latest, after the forward migration", () => {
-    expect(MIGRATIONS.map((m) => m.version).slice(-5)).toEqual([51, 52, 53, 54, 55]);
-    expect(LATEST_SCHEMA_VERSION).toBe(55);
+    expect(MIGRATIONS.map((m) => m.version).slice(-5)).toEqual([52, 53, 54, 55, 56]);
+    expect(LATEST_SCHEMA_VERSION).toBe(56);
   });
 
   it("keeps the mail with the flag not known, adds the agent tables empty, and learns the flag on a later upsert", async () => {
@@ -854,6 +854,84 @@ describe("rows of the reading of an earlier version (ADR 0117, rule 8)", () => {
         { thread_id: "t2" },
       ]);
       expect(db.prepare("SELECT count(*) AS n FROM agent_prepared").get()).toEqual({ n: 0 });
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("migration 56: the ledger names a theme turn (ADR 0134, rule 15)", () => {
+  it("keeps every line with its id, effort and counter, takes `appearance`, and refuses others", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "matters-v55-ledger-"));
+    dirs.push(dir);
+    const path = join(dir, "mail.db");
+    const old = new DatabaseSync(path);
+    old.exec(
+      "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at_ms INTEGER NOT NULL)",
+    );
+    for (const m of MIGRATIONS.filter((x) => x.version <= 55)) {
+      old.exec(m.sql);
+      m.run?.(old);
+      old.prepare("INSERT INTO schema_version VALUES (?, 0)").run(m.version);
+    }
+    const line = old.prepare(
+      "INSERT INTO agent_ledger (at_ms, runtime_id, account_id, purpose, threads, effort) VALUES (?, 'r', 'a', ?, ?, ?)",
+    );
+    line.run(1, "prompt", 4, "low");
+    line.run(2, "prepare", 1, null);
+    line.run(3, "talk", 1, "high");
+    old.prepare("DELETE FROM agent_ledger WHERE id = 3").run();
+    expect(() => line.run(4, "appearance", 0, null)).toThrow();
+    old.close();
+
+    const db = openDatabase(path);
+    try {
+      expect(schemaVersion(db)).toBe(LATEST_SCHEMA_VERSION);
+      expect(
+        db.prepare("SELECT id, purpose, threads, effort FROM agent_ledger ORDER BY id").all(),
+      ).toEqual([
+        { id: 1, purpose: "prompt", threads: 4, effort: "low" },
+        { id: 2, purpose: "prepare", threads: 1, effort: null },
+      ]);
+      // Through the store, as the service writes it: no account and no thread went.
+      const store = new SqliteAgentInsightStore(db);
+      await store.appendLedger([
+        {
+          atMs: 5,
+          runtimeId: "codex",
+          accountId: "",
+          purpose: "appearance",
+          threads: 0,
+          effort: "high",
+        },
+      ]);
+      expect((await store.listLedger(1))[0]).toEqual({
+        atMs: 5,
+        runtimeId: "codex",
+        accountId: "",
+        purpose: "appearance",
+        threads: 0,
+        effort: "high",
+      });
+      // The counter of the deleted third line is not reused.
+      expect(db.prepare("SELECT max(id) AS id FROM agent_ledger").get()).toEqual({ id: 4 });
+      expect(() =>
+        db
+          .prepare(
+            "INSERT INTO agent_ledger (at_ms, runtime_id, account_id, purpose, threads) VALUES (6, 'r', 'a', 'other', 0)",
+          )
+          .run(),
+      ).toThrow();
+      const plan = (
+        db
+          .prepare(
+            "EXPLAIN QUERY PLAN SELECT * FROM agent_ledger ORDER BY at_ms DESC, id DESC LIMIT 5",
+          )
+          .all() as { detail: string }[]
+      )
+        .map((r) => r.detail)
+        .join("\n");
+      expect(plan).toContain("agent_ledger_recent");
     } finally {
       db.close();
     }

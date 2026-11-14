@@ -358,9 +358,25 @@ describe("AgentService: nothing happens without a yes", () => {
     await h.addMail(offerThread());
     await h.settings.update({ enabled: true, kindRuntime: everyKindOn("fake") });
     await h.pass();
-    expect(h.runtime.calls).toEqual([]);
+    // Making themes is on it too and needs no account (ADR 0134, rule 14), so the runtime gets
+    // its test, with the made-up message only. No mail goes, and nothing is read.
+    expect(h.runtime.calls).toHaveLength(1);
+    expect(h.runtime.calls[0]?.untrusted).not.toContain(OFFER);
+    expect(h.runtime.calls[0]?.untrusted).toContain(TEST_PROMPT_QUOTE);
+    expect(await h.insights.listLedger(50)).toEqual([]);
     expect(h.background.reads).toBe(0);
     expect((await h.service.status()).progress).toEqual({ state: "off", reason: "consent" });
+  });
+
+  it("sends nothing at all when no kind on the runtime can work without an account", async () => {
+    const h = await build();
+    await h.addMail(offerThread());
+    const { appearance: _a, ...mailKinds } = everyKindOn("fake");
+    await h.settings.update({ enabled: true, kindRuntime: mailKinds });
+    await h.settings.update({ kindRuntime: { appearance: "other" } });
+    await h.pass();
+    expect(h.runtime.calls).toEqual([]);
+    expect(h.background.reads).toBe(0);
   });
 
   it("sends nothing of an account that was not agreed to", async () => {
@@ -1228,6 +1244,7 @@ describe("AgentService: the effort of each kind of work (ADR 0118)", () => {
       understand: "low",
       write: "default",
       answer: "default",
+      appearance: "default",
       titles: "low",
     });
     expect(last(h, isTest)?.effort).toBe("low");
@@ -1318,6 +1335,7 @@ describe("AgentService: settings", () => {
     await h.service.setModels({ draftAhead: "off" } as never);
     expect(Object.keys((await h.settings.get()).models).sort()).toEqual([
       "answer",
+      "appearance",
       "titles",
       "understand",
       "write",

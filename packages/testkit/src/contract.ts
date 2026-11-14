@@ -5532,13 +5532,21 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
           write: "sonnet",
           answer: "sonnet",
           titles: "haiku",
+          appearance: "sonnet",
         },
-        efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
+        efforts: {
+          understand: "low",
+          write: "default",
+          answer: "default",
+          titles: "low",
+          appearance: "default",
+        },
         weekSharePercent: 10,
       });
     });
 
-    const allOn = (id: string) => ({ understand: id, write: id, answer: id, titles: id }) as const;
+    const allOn = (id: string) =>
+      ({ understand: id, write: id, answer: id, titles: id, appearance: id }) as const;
 
     it("keeps the efforts of a runtime as a whole (ADR 0118)", async () => {
       const efforts = {
@@ -5546,6 +5554,7 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
         write: "max",
         answer: "default",
         titles: "xhigh",
+        appearance: "high",
       } as const;
       await settings().update({ kindRuntime: allOn("claude-code") });
       await settings().update({ choices: { "claude-code": { efforts } } });
@@ -5597,12 +5606,20 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
         write: "opus",
         answer: "sonnet",
         titles: "off",
+        // Left out of the patch: it keeps what the runtime held (ADR 0134, rule 13).
+        appearance: "sonnet",
       });
     });
 
     it("keeps models and efforts per runtime, and moving a kind back loses nothing (ADR 0121, rule 5)", async () => {
-      const local = { understand: "m1", write: "m1", answer: "m1", titles: "m1" };
-      const low = { understand: "low", write: "low", answer: "low", titles: "low" } as const;
+      const local = { understand: "m1", write: "m1", answer: "m1", titles: "m1", appearance: "m1" };
+      const low = {
+        understand: "low",
+        write: "low",
+        answer: "low",
+        titles: "low",
+        appearance: "low",
+      } as const;
       await settings().update({
         kindRuntime: allOn("claude-code"),
         choices: { "claude-code": { models: { write: "opus" } } },
@@ -5623,6 +5640,8 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
         write: "m1",
         answer: "sonnet",
         titles: "haiku",
+        // It stayed on Claude Code when writing moved: a kind of its own (ADR 0134, rule 13).
+        appearance: "sonnet",
       });
       expect(back.efforts.write).toBe("low");
       expect(Object.keys(back.choices ?? {}).sort()).toEqual(["claude-code", "ollama"]);

@@ -36,8 +36,15 @@ const status: AgentStatus = {
       write: "sonnet",
       answer: "sonnet",
       titles: "haiku",
+      appearance: "sonnet",
     },
-    efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
+    efforts: {
+      understand: "low",
+      write: "default",
+      answer: "default",
+      titles: "low",
+      appearance: "default",
+    },
     weekSharePercent: 10,
   },
   runtimes: [],
@@ -92,6 +99,8 @@ function stub(overrides: Partial<AgentApi> = {}) {
     remember: note("remember", { items: [] }),
     talk: note("talk", { entries: [] }),
     talkStop: note("talkStop", undefined),
+    makeTheme: note("makeTheme", { text: '{"name":"Moss","dark":{"bg":"#18201a"}}' }),
+    makeThemeStop: note("makeThemeStop", undefined),
     rewriteDraft: note("rewriteDraft", { text: "Short." }),
     writeDraft: note("writeDraft", { text: "Hello,\n\nSee you on [date]." }),
     answerQuestions: note("answerQuestions", { text: "Yes, Tuesday." }),
@@ -735,7 +744,7 @@ describe("agent requests", () => {
     expect(calls).toEqual([]);
     // The models are named in the refusal, with no model for drafts ahead (ADR 0117, rule 1).
     expect(await ask({ type: "agentSetModels", models: { draftAhead: "haiku" } })).toMatchObject({
-      message: "models holds understand, write, answer and titles, as short strings",
+      message: "models holds understand, write, answer, titles, appearance, as short strings",
     });
   });
 

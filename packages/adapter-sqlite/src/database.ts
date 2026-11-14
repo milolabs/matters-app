@@ -1392,6 +1392,31 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 56,
+    // ADR 0134, rule 15: the ledger names a turn that made a theme, `appearance`, with no account
+    // ("") and no thread. The CHECK on `purpose` has to allow it; the table is rebuilt as in 50,
+    // keeping every line, its id, its effort (54) and the sequence.
+    sql: `
+      CREATE TABLE agent_ledger_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at_ms INTEGER NOT NULL,
+        runtime_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        purpose TEXT NOT NULL CHECK (purpose IN ('analysis', 'prepare', 'remember', 'talk', 'prompt', 'consent', 'revoke', 'appearance')),
+        threads INTEGER NOT NULL,
+        effort TEXT
+      );
+      INSERT INTO agent_ledger_new (id, at_ms, runtime_id, account_id, purpose, threads, effort)
+        SELECT id, at_ms, runtime_id, account_id, purpose, threads, effort FROM agent_ledger;
+      DELETE FROM sqlite_sequence WHERE name = 'agent_ledger_new';
+      INSERT INTO sqlite_sequence (name, seq)
+        SELECT 'agent_ledger_new', seq FROM sqlite_sequence WHERE name = 'agent_ledger';
+      DROP TABLE agent_ledger;
+      ALTER TABLE agent_ledger_new RENAME TO agent_ledger;
+      CREATE INDEX agent_ledger_recent ON agent_ledger (at_ms DESC, id DESC);
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
