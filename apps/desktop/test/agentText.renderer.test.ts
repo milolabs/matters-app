@@ -34,7 +34,13 @@ import {
 } from "../src/renderer/agentText.ts";
 
 const NOW = Date.UTC(2026, 10, 5, 10, 42);
-const models = { understand: "haiku", write: "sonnet", answer: "sonnet", titles: "haiku" };
+const models = {
+  understand: "haiku",
+  write: "sonnet",
+  answer: "sonnet",
+  titles: "haiku",
+  appearance: "sonnet",
+};
 const LIMITS: PlanLimits = {
   session: { usedPercent: 39, resetsAtMs: NOW + 3_600_000 },
   week: { usedPercent: 22, resetsAtMs: NOW + 3 * 86_400_000 },
@@ -57,7 +63,13 @@ const status = (
     enabled: true,
     kindRuntime: everyKindOn(runtime.id),
     models,
-    efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
+    efforts: {
+      understand: "low",
+      write: "default",
+      answer: "default",
+      titles: "low",
+      appearance: "default",
+    },
     weekSharePercent: 10,
     plans: {
       [runtime.id]: { usedByUsPercent: 4.2, ...(limits === null ? {} : { limits }) },

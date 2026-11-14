@@ -1,6 +1,15 @@
 // Forwards the backend MessagePort from main to the page and exposes nothing else.
+
+import type { ThemeSets } from "@matters/contracts";
 import { ipcRenderer, webUtils } from "electron";
 import { readBootReport } from "../backend/bootStage.ts";
+import { readThemeSets } from "../main/appearance.ts";
+import {
+  applyThemeColors,
+  CHANNEL_APPEARANCE_CHANGED,
+  CHANNEL_APPEARANCE_COLORS,
+  createAppearanceBridge,
+} from "./appearanceBridge.ts";
 import { createFileBridge } from "./fileBridge.ts";
 import { createNoticeBridge } from "./noticeBridge.ts";
 import { createReceivedBridge } from "./receivedBridge.ts";
@@ -103,6 +112,53 @@ const noticeSystem = createNoticeBridge(
   window,
 );
 window.addEventListener("message", (event) => noticeSystem.message(event));
+
+// The theme's colours before the first paint (ADR 0134, rule 9). Main answers at once from what it
+// read before the window was made; the values are on the root element before any script of the
+// page runs, and the loading screen and styles.css read them from there. The window's own
+// background colour, which main also took from the theme, covers anything earlier.
+const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+let themeColors: ThemeSets | null = readThemeSets(ipcRenderer.sendSync(CHANNEL_APPEARANCE_COLORS));
+let rootWatch: MutationObserver | null = null;
+function paintTheme(): void {
+  const root = document.documentElement;
+  if (!root) {
+    // Measured in a window: the preload runs before the document has an element (readyState
+    // "loading"), so the values go on as the root appears. The observer runs at the microtask
+    // after the parser inserts it, measured at under 2 ms later with the head parsed and no body
+    // yet, so before anything is drawn and before any script of the page (ADR 0134,
+    // consequences).
+    if (rootWatch) return;
+    rootWatch = new MutationObserver(() => {
+      if (!document.documentElement) return;
+      rootWatch?.disconnect();
+      rootWatch = null;
+      paintTheme();
+    });
+    rootWatch.observe(document, { childList: true });
+    return;
+  }
+  applyThemeColors(root.style, themeColors, darkQuery.matches ? "dark" : "light");
+}
+paintTheme();
+// A theme with both sets follows the mode, and the system can change the mode under it.
+darkQuery.addEventListener("change", () => paintTheme());
+
+// Settings › Appearance (ADR 0134): kept by main; every window hears when it changed.
+const appearance = createAppearanceBridge(
+  {
+    invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+    post: (message) => window.postMessage(message, "*"),
+  },
+  window,
+);
+window.addEventListener("message", (event) => appearance.message(event));
+ipcRenderer.on(CHANNEL_APPEARANCE_CHANGED, (_event, data: unknown) =>
+  appearance.changed(data, (colors) => {
+    themeColors = colors;
+    paintTheme();
+  }),
+);
 
 // Smoke mode only: let the page hand its timings to main.
 if (process.argv.includes("--matters-smoke")) {

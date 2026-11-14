@@ -9,6 +9,7 @@ import type {
   ServerInput,
   StorageReport,
 } from "@matters/contracts";
+import { THEME_FILE_LIMIT } from "@matters/contracts";
 import type {
   AccountStorePort,
   AgentEffortSetting,
@@ -51,6 +52,7 @@ import type {
   UndoResult,
 } from "@matters/core";
 import {
+  AGENT_WORK_KINDS,
   chooseImages,
   draftFor,
   failureDetailOf,
@@ -59,6 +61,8 @@ import {
   isPartId,
   MAX_IMAGE_RULE_VALUE,
   MAX_IMPORTED_ADDRESSES,
+  MAX_THEME_PROBLEM_CHARS,
+  MAX_THEME_PROBLEMS,
   MAX_WRITE_WORDS_CHARS,
   mailErrorKind,
   prepareForwardDraft,
@@ -434,6 +438,8 @@ const SEND_ACTIONS: readonly string[] = [
 const MAX_AGENT_ACCOUNTS = 100;
 /** The person's direction or words for a draft: a few paragraphs at most. */
 const MAX_GUIDANCE_TEXT = 2000;
+/** A theme's text, the one that is on or a refused answer: the file limit, with room for words. */
+const MAX_THEME_TEXT = THEME_FILE_LIMIT * 2;
 /** The subject that goes with a request to write; the request cuts it shorter. */
 const MAX_SUBJECT_TEXT = 2000;
 const MAX_AGENT_REPLY = 20_000;
@@ -451,7 +457,7 @@ function isTalkId(v: unknown): v is number {
   return typeof v === "number" && Number.isSafeInteger(v) && v > 0;
 }
 
-const MODEL_KEYS = ["understand", "write", "answer", "titles"] as const;
+const MODEL_KEYS = AGENT_WORK_KINDS;
 
 function shortString(v: unknown, max: number): v is string {
   return typeof v === "string" && v.length > 0 && v.length <= max;
@@ -584,7 +590,7 @@ function parseAgentRequest(
       const models: Partial<Record<(typeof MODEL_KEYS)[number], string>> = {};
       for (const [key, value] of Object.entries(raw.models)) {
         if (!(MODEL_KEYS as readonly string[]).includes(key) || !shortString(value, 64)) {
-          return "models holds understand, write, answer and titles, as short strings";
+          return `models holds ${MODEL_KEYS.join(", ")}, as short strings`;
         }
         models[key as (typeof MODEL_KEYS)[number]] = value;
       }
@@ -593,7 +599,7 @@ function parseAgentRequest(
       const efforts: Partial<Record<(typeof MODEL_KEYS)[number], AgentEffortSetting>> = {};
       for (const [key, value] of Object.entries(raw.efforts)) {
         if (!(MODEL_KEYS as readonly string[]).includes(key) || !isAgentEffortSetting(value)) {
-          return "efforts holds understand, write, answer and titles, as levels of effort";
+          return `efforts holds ${MODEL_KEYS.join(", ")}, as levels of effort`;
         }
         efforts[key as (typeof MODEL_KEYS)[number]] = value;
       }
@@ -612,7 +618,7 @@ function parseAgentRequest(
         kinds.length > MODEL_KEYS.length ||
         !kinds.every((k) => (MODEL_KEYS as readonly unknown[]).includes(k))
       ) {
-        return "kinds holds understand, write, answer or titles";
+        return `kinds holds ${MODEL_KEYS.join(", ")}`;
       }
       return shortString(raw.runtimeId, 100)
         ? {
@@ -722,6 +728,44 @@ function parseAgentRequest(
           }
         : "short words are required";
     }
+    case "agentMakeTheme": {
+      // The service says in words when the description is blank or too long; here only the shape
+      // and an outer bound are checked (ADR 0134, rule 15).
+      if (typeof raw.description !== "string" || raw.description.length > MAX_THEME_TEXT) {
+        return "description must be a short string";
+      }
+      if (
+        raw.current !== undefined &&
+        (typeof raw.current !== "string" || raw.current.length > MAX_THEME_TEXT)
+      ) {
+        return "current must be a theme's text";
+      }
+      let retry: { previous: string; problems: string[] } | undefined;
+      if (raw.retry !== undefined) {
+        const r = raw.retry;
+        if (
+          !isRecord(r) ||
+          typeof r.previous !== "string" ||
+          r.previous.length > MAX_THEME_TEXT ||
+          !Array.isArray(r.problems) ||
+          r.problems.length === 0 ||
+          r.problems.length > MAX_THEME_PROBLEMS ||
+          !r.problems.every((p) => shortString(p, MAX_THEME_PROBLEM_CHARS))
+        ) {
+          return "retry holds the previous answer and its problems";
+        }
+        retry = { previous: r.previous, problems: r.problems as string[] };
+      }
+      return {
+        type,
+        requestId,
+        description: raw.description,
+        ...(raw.current === undefined ? {} : { current: raw.current as string }),
+        ...(retry === undefined ? {} : { retry }),
+      };
+    }
+    case "agentMakeThemeStop":
+      return { type, requestId };
     case "agentTalkStop":
     case "agentTalkEntries":
       return shortString(raw.threadId, 1000)
@@ -1936,6 +1980,22 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
       case "agentTalkStop":
         await needAgent(deps).talkStop(request.threadId);
         return { type: "agentTalkStop", requestId, ok: true };
+      case "agentMakeTheme":
+        return {
+          type: "agentMakeTheme",
+          requestId,
+          ok: true,
+          text: (
+            await needAgent(deps).makeTheme({
+              description: request.description,
+              ...(request.current === undefined ? {} : { current: request.current }),
+              ...(request.retry === undefined ? {} : { retry: request.retry }),
+            })
+          ).text,
+        };
+      case "agentMakeThemeStop":
+        await needAgent(deps).makeThemeStop();
+        return { type: "agentMakeThemeStop", requestId, ok: true };
       case "agentTalkEntries":
         return {
           type: "agentTalkEntries",

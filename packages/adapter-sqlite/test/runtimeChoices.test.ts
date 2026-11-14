@@ -40,7 +40,10 @@ const old = {
   usedByUsPercent: 0,
 };
 
-const all = (id: string) => ({ understand: id, write: id, answer: id, titles: id });
+const all = (id: string) => ({ understand: id, write: id, answer: id, titles: id, appearance: id });
+/** What `old` reads as: making themes on writing's model, at the default (ADR 0134, rule 13). */
+const oldModels = { ...old.models, appearance: old.models.write };
+const oldEfforts = { ...old.efforts, appearance: "default" };
 
 describe("choices per runtime in stored settings (ADR 0119, rule 4; ADR 0121, rule 12)", () => {
   it("reads one chosen runtime from before as every kind on it, and writes the new shape", async () => {
@@ -50,7 +53,7 @@ describe("choices per runtime in stored settings (ADR 0119, rule 4; ADR 0121, ru
       await s.update({ choices: { ollama: { models: all("q") } } });
     });
     expect(read.kindRuntime).toEqual({ ...all("claude-code"), understand: "ollama" });
-    expect(read.models).toEqual({ ...old.models, understand: "q" });
+    expect(read.models).toEqual({ ...oldModels, understand: "q" });
     expect(read.plans).toEqual({ "claude-code": { limits, usedByUsPercent: 2 } });
     expect(
       (raw.choices as Record<string, { models: { write: string } }>)["claude-code"]?.models.write,
@@ -59,8 +62,8 @@ describe("choices per runtime in stored settings (ADR 0119, rule 4; ADR 0121, ru
     const back = await stored(raw, async (s) => {
       await s.update({ kindRuntime: { understand: "claude-code" } });
     });
-    expect(back.read.models).toEqual(old.models);
-    expect(back.read.efforts).toEqual(old.efforts);
+    expect(back.read.models).toEqual(oldModels);
+    expect(back.read.efforts).toEqual(oldEfforts);
     expect(back.read.plans?.["claude-code"]?.limits).toEqual(limits);
   });
 
@@ -70,7 +73,7 @@ describe("choices per runtime in stored settings (ADR 0119, rule 4; ADR 0121, ru
     expect(read.kindRuntime).toEqual({});
     // No kind is on a runtime: the start shows until one is, and Claude Code's are kept for it.
     expect(read.models).toEqual(DEFAULT_AGENT_MODELS);
-    expect(read.choices?.["claude-code"]?.models).toEqual(old.models);
+    expect(read.choices?.["claude-code"]?.models).toEqual(oldModels);
   });
 });
 

@@ -393,6 +393,7 @@ describe("models and efforts are kept per runtime (ADR 0119, rule 4; ADR 0121, r
       write: "sonnet",
       answer: "sonnet",
       titles: "haiku",
+      appearance: "sonnet",
     });
     await h.service.setModels({ write: "opus" }, { write: "high" });
     const local = await h.service.setKindRuntime(["write", "understand"], "local");
@@ -402,6 +403,7 @@ describe("models and efforts are kept per runtime (ADR 0119, rule 4; ADR 0121, r
       write: "m-large",
       answer: "sonnet",
       titles: "haiku",
+      appearance: "sonnet",
     });
     await h.service.setModels({ understand: "m-small" });
     // A model is checked against the runtime of its kind.
@@ -603,6 +605,7 @@ describe("Codex is a runtime (ADR 0120)", () => {
       write: "sol",
       answer: "sol",
       titles: "luna",
+      appearance: "sol",
     });
   });
 

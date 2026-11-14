@@ -48,6 +48,7 @@ import type {
   SyncStatus,
   TalkChoice,
   TalkResult,
+  ThemeInput,
   UndoMoveResult,
   UndoResult,
 } from "@matters/core";
@@ -159,6 +160,8 @@ export type WorkerCommand =
       readonly choice?: TalkChoice;
     }
   | { readonly name: "agentTalkStop"; readonly threadId: string }
+  | { readonly name: "agentMakeTheme"; readonly input: ThemeInput }
+  | { readonly name: "agentMakeThemeStop" }
   | ({
       readonly name: "agentRewriteDraft";
       readonly text: string;
@@ -286,6 +289,8 @@ export interface CommandResults {
   readonly agentPrepare: PrepareResult;
   readonly agentTalk: TalkResult;
   readonly agentTalkStop: null;
+  readonly agentMakeTheme: { readonly text: string };
+  readonly agentMakeThemeStop: null;
   readonly agentRewriteDraft: { readonly text: string };
   readonly agentWriteDraft: { readonly text: string };
   readonly agentAnswerQuestions: { readonly text: string };

@@ -1,5 +1,5 @@
 import DOMPurify from "dompurify";
-import { type MailTheme, mailTheme } from "./mailTheme.ts";
+import { type MailTheme, mailBaseStyle, mailTheme } from "./mailTheme.ts";
 
 // Everything a page could use to act, ask or fetch beyond images. The frame's sandbox and policy
 // stop these again (ADR 0024); this is the first of the two walls.
@@ -33,12 +33,8 @@ const FORBID_TAGS = [
 const REMOTE =
   /(?:\b(?:src|srcset|background|poster)\s*=\s*["']?\s*(?:https?:)?\/\/)|(?:url\(\s*["']?\s*(?:https?:)?\/\/)/i;
 
-/**
- * Page basics; the sender's own styles come after and can override them. The dark ground and ink
- * are the app's (`--bg`, `--ink`): they apply when the frame shows a message in dark (ADR 0085).
- */
-const BASE_STYLE =
-  "<style>html{background:#fff;color:#1d1d1f}body{margin:0;padding:16px;font:14px/1.5 -apple-system,system-ui,sans-serif;overflow-wrap:break-word}img{max-width:100%;height:auto}a{color:#1a56c4}pre{white-space:pre-wrap}@media (prefers-color-scheme:dark){html{background:#1e1e20;color:#f5f5f7}a{color:#8ab4f8}}</style>";
+/** Page basics, before the sender's own styles (ADR 0085; the dark ground is set in `mailView`). */
+const BASE_STYLE = mailBaseStyle();
 
 export interface CleanMail {
   readonly html: string;

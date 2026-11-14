@@ -813,6 +813,26 @@ export interface AgentFillGapsRequest {
   readonly text: string;
 }
 
+/**
+ * A theme from the person's description (ADR 0134, rules 12 to 15): one turn of the kind
+ * `appearance`, with no mail. `current` is the text of the theme that is on, when the person asks
+ * to change it; `retry` is the one second ask, with the answer main refused and its problems in
+ * words. The answer is the theme's text, unchecked: the page hands it to main (`addTheme`).
+ */
+export interface AgentMakeThemeRequest {
+  readonly type: "agentMakeTheme";
+  readonly requestId: RequestId;
+  readonly description: string;
+  readonly current?: string;
+  readonly retry?: { readonly previous: string; readonly problems: readonly string[] };
+}
+
+/** Cuts the running theme turn short. */
+export interface AgentMakeThemeStopRequest {
+  readonly type: "agentMakeThemeStop";
+  readonly requestId: RequestId;
+}
+
 /** Cuts the running talk turn of a thread short. */
 export interface AgentTalkStopRequest {
   readonly type: "agentTalkStop";
@@ -1028,6 +1048,8 @@ export type BackendRequest =
   | AgentCheckReplyRequest
   | AgentFillGapsRequest
   | AgentTalkStopRequest
+  | AgentMakeThemeRequest
+  | AgentMakeThemeStopRequest
   | AgentTalkEntriesRequest
   | AgentTalkAllRequest
   | AgentTalkAllStopRequest
@@ -1229,6 +1251,291 @@ export interface NoticeSystem {
   readonly platform: "macos" | "windows" | "other";
   readonly app: "own" | "runtime" | "unknown";
 }
+
+/**
+ * How the app's colours are chosen (ADR 0134, rule 2): with the system, or kept light or dark
+ * whatever the system does. Main keeps it and sets every window's `prefers-color-scheme` from it.
+ */
+export type AppearanceMode = "system" | "light" | "dark";
+
+/** One of the two sets a theme may have (ADR 0134, rule 4). */
+export type ThemeScheme = "light" | "dark";
+
+/** The tokens a theme may set (ADR 0134, rule 5), by the name of their custom property. */
+export type ThemeToken =
+  | "bg"
+  | "chrome"
+  | "fill"
+  | "soft"
+  | "selected"
+  | "button"
+  | "pill"
+  | "hairline"
+  | "edge"
+  | "ink"
+  | "mid"
+  | "secondary"
+  | "agent"
+  | "agent-soft"
+  | "agent-edge"
+  | "agent-wash"
+  | "late"
+  | "good"
+  | "hit"
+  | "hit-ink";
+
+/** Checked values of one set: known tokens only, each a normalised hex colour. */
+export type ThemeColors = Readonly<Partial<Record<ThemeToken, string>>>;
+
+/** A theme's checked sets; at least one is there. */
+export interface ThemeSets {
+  readonly light?: ThemeColors;
+  readonly dark?: ThemeColors;
+}
+
+/** A theme file is refused above this many bytes (ADR 0134, rule 4). */
+export const THEME_FILE_LIMIT = 16 * 1024;
+
+// What a theme is, as data (ADR 0134, rules 4 to 6). Main's check (`src/main/themes.ts`) reads these
+// tables, and so does the description of the format a turn that makes a theme is given (rule 14),
+// so what the agent is told and what main checks cannot drift apart.
+
+/** The tokens a theme may set (ADR 0134, rule 5), in the order of `styles.css`. */
+export const THEME_TOKENS: readonly ThemeToken[] = [
+  "bg",
+  "chrome",
+  "fill",
+  "soft",
+  "selected",
+  "button",
+  "pill",
+  "hairline",
+  "edge",
+  "ink",
+  "mid",
+  "secondary",
+  "agent",
+  "agent-soft",
+  "agent-edge",
+  "agent-wash",
+  "late",
+  "good",
+  "hit",
+  "hit-ink",
+];
+
+export const THEME_SCHEMES: readonly ThemeScheme[] = ["light", "dark"];
+
+/** A name is shown in a row of Appearance; longer than this is not a name. */
+export const THEME_NAME_LIMIT = 60;
+
+/** WCAG 2.1, AA for body text (ADR 0134, rule 6). */
+export const CONTRAST_NEEDED = 4.5;
+
+/**
+ * The default theme's values (ADR 0134, rule 3: the CSS). A token a theme leaves out keeps these,
+ * so the check needs them. They are the `:root` values of `styles.css` and of its dark block;
+ * `apps/desktop/test/themes.test.ts` reads the CSS and fails when the two drift apart.
+ */
+export const DEFAULT_THEME_COLORS: Readonly<
+  Record<ThemeScheme, Readonly<Record<ThemeToken, string>>>
+> = {
+  light: {
+    bg: "#ffffff",
+    chrome: "#fafaf9",
+    fill: "#f3f3f1",
+    soft: "#f7f7f5",
+    selected: "#f0f0ee",
+    button: "#eaeae7",
+    pill: "#e9e9e5",
+    hairline: "#ededeb",
+    edge: "#c9c9c4",
+    ink: "#1d1d1f",
+    mid: "#55555a",
+    secondary: "#6e6e73",
+    agent: "#5b45c9",
+    "agent-soft": "#f4f2fd",
+    "agent-edge": "#b7aeeb",
+    "agent-wash": "#f9f8fe",
+    late: "#c4401a",
+    good: "#1f6b40",
+    hit: "#fbe7a1",
+    "hit-ink": "#3d2c00",
+  },
+  dark: {
+    bg: "#1e1e20",
+    chrome: "#242426",
+    fill: "#2c2c30",
+    soft: "#252528",
+    selected: "#323236",
+    button: "#3a3a3f",
+    pill: "#3c3c42",
+    hairline: "#34343a",
+    edge: "#4c4c52",
+    ink: "#f5f5f7",
+    mid: "#c3c3c8",
+    secondary: "#98989f",
+    agent: "#b9aef7",
+    "agent-soft": "#29273a",
+    "agent-edge": "#5d5799",
+    "agent-wash": "#262530",
+    late: "#ff7e57",
+    good: "#6bcb93",
+    hit: "#6b5112",
+    "hit-ink": "#fff0c2",
+  },
+};
+
+/**
+ * Which ink is drawn as text on which surface (ADR 0134, rule 6), read from the components and
+ * `styles.css`:
+ * - `ink` is the text of everything: the list and reading pane (`bg`), the bars and query strip
+ *   (`chrome`), hovered and selected rows (`fill`, `selected`), buttons (`button`), query pills
+ *   (`pill`), the soft panels (`soft`) and the agent's column and pills (`agent-wash`,
+ *   `agent-soft`).
+ * - `mid` labels buttons (`.btn`: `button`), hovered rows (`fill`) and lines in panes and bars.
+ * - `secondary` is dates, counts and hints: on `bg`, `chrome`, `fill`, `soft` and the agent's
+ *   column (`agent-wash`).
+ * - `agent` is the agent's words and marks: on `bg`, `chrome`, its pills (`agent-soft`) and its
+ *   column (`agent-wash`).
+ * - `late` is a late date and an error line, on `bg` and `chrome`; `good` is a query keyword and a
+ *   done mark, on `bg` and `chrome`.
+ * - `hit-ink` is the matched words, on `hit` only.
+ * Some pairs are drawn too although the default itself falls under 4.5:1 there; main names them
+ * (`SHORT_IN_DEFAULT`) and leaves them out of the check, so they are not in this table.
+ */
+export const CONTRAST_PAIRS: Readonly<Partial<Record<ThemeToken, readonly ThemeToken[]>>> = {
+  ink: ["bg", "chrome", "fill", "soft", "selected", "button", "pill", "agent-soft", "agent-wash"],
+  mid: ["bg", "chrome", "fill", "soft", "selected", "button"],
+  secondary: ["bg", "chrome", "fill", "soft", "agent-wash"],
+  agent: ["bg", "chrome", "agent-soft", "agent-wash"],
+  late: ["bg", "chrome"],
+  good: ["bg", "chrome"],
+  "hit-ink": ["hit"],
+};
+
+/** The words a person reads for a token, in a problem's message. */
+export const THEME_TOKEN_LABELS: Readonly<Record<ThemeToken, string>> = {
+  bg: "the ground (bg)",
+  chrome: "the bars (chrome)",
+  fill: "a hovered row (fill)",
+  soft: "a soft panel (soft)",
+  selected: "a selected row (selected)",
+  button: "a button (button)",
+  pill: "a query pill (pill)",
+  hairline: "a line (hairline)",
+  edge: "an edge (edge)",
+  ink: "the text (ink)",
+  mid: "the second text (mid)",
+  secondary: "dates and hints (secondary)",
+  agent: "the agent's text (agent)",
+  "agent-soft": "the agent's pill (agent-soft)",
+  "agent-edge": "the agent's edge (agent-edge)",
+  "agent-wash": "the agent's column (agent-wash)",
+  late: "late dates and errors (late)",
+  good: "done marks (good)",
+  hit: "a search match (hit)",
+  "hit-ink": "the text of a search match (hit-ink)",
+};
+
+/**
+ * What each token is used for in the app, for the turn that makes a theme (ADR 0134, rule 14). The
+ * same surfaces as `CONTRAST_PAIRS` says, in words a model can design with.
+ */
+export const THEME_TOKEN_USES: Readonly<Record<ThemeToken, string>> = {
+  bg: "the ground of the message list and the reading pane; the window's own colour",
+  chrome: "the bars at the top and the query strip",
+  fill: "a hovered row",
+  soft: "soft panels, a step off the ground",
+  selected: "the selected row",
+  button: "buttons",
+  pill: "the pills in the query bar",
+  hairline: "thin lines between rows and panes (no text is drawn on it)",
+  edge: "edges of fields and cards (no text is drawn on it)",
+  ink: "the main text, on every surface",
+  mid: "the second text: button labels, lines in panes and bars",
+  secondary: "dates, counts and hints",
+  agent: "the accent: the agent's words and marks",
+  "agent-soft": "the agent's pills",
+  "agent-edge": "the edge of the agent's pills and panels (no text is drawn on it)",
+  "agent-wash": "the ground of the agent's column",
+  late: "a late date and an error line",
+  good: "a query keyword and a done mark",
+  hit: "the ground of a search match in the text",
+  "hit-ink": "the text of a search match",
+};
+
+/**
+ * Why a theme was refused (ADR 0134, rules 4 and 6), precise enough for Appearance to say what to
+ * change and for the agent to be asked again with it. `message` is the same in plain words.
+ */
+export type ThemeProblem =
+  | {
+      readonly kind: "contrast";
+      readonly mode: ThemeScheme;
+      readonly ink: ThemeToken;
+      readonly surface: ThemeToken;
+      /** Rounded down to two decimals, so a value shown as 4.50 always passes. */
+      readonly ratio: number;
+      readonly needed: number;
+      readonly message: string;
+    }
+  | {
+      readonly kind: "format";
+      readonly reason:
+        | "too-big"
+        | "not-json"
+        | "not-object"
+        | "name"
+        | "no-set"
+        | "unknown-key"
+        | "not-hex"
+        | "alpha";
+      /** The key or `light.bg`-style path the problem is at, when it is at one. */
+      readonly at?: string;
+      readonly message: string;
+    };
+
+/** A small strip that shows a theme in the list: its ground, its ink and its accent. */
+export interface ThemeSwatch {
+  readonly ground: string;
+  readonly ink: string;
+  readonly accent: string;
+}
+
+/** A theme as Appearance lists it. Built-in ones cannot be removed. */
+export interface ThemeListing {
+  readonly id: string;
+  readonly name: string;
+  readonly source: "built-in" | "own";
+  readonly schemes: readonly ThemeScheme[];
+  /** One per set it has, in the order of `schemes`. */
+  readonly swatches: readonly ThemeSwatch[];
+}
+
+/** What main says about the appearance in force, to Settings › Appearance and every window. */
+export interface AppearanceInfo {
+  /** The mode the person chose; kept while a theme fixes another one (ADR 0134, rule 7). */
+  readonly mode: AppearanceMode;
+  /** The scheme a theme with one set fixes while it is on, or null when the mode decides. */
+  readonly fixedScheme: ThemeScheme | null;
+  /** The theme in force; null is the default (the CSS, ADR 0134, rule 3). */
+  readonly theme: string | null;
+  /** A theme was chosen, so *Use default* has something to undo even when it could not be applied. */
+  readonly themeChosen: boolean;
+  /** The default theme first is implied; then the built-ins and the person's own. */
+  readonly themes: readonly ThemeListing[];
+  /** Why the default is on although a theme was chosen (ADR 0134, rule 11), or null. */
+  readonly fallback: string | null;
+}
+
+/**
+ * The answer to a theme handed in as text (ADR 0134, rule 12): the agent's, from the person's
+ * description. Either it was kept and is on, or it was refused for these reasons.
+ */
+export type ThemeAddAnswer =
+  | { readonly ok: true; readonly theme: ThemeListing; readonly appearance: AppearanceInfo }
+  | { readonly ok: false; readonly problems: readonly ThemeProblem[] };
 
 /** What main measures for Settings › Storage: sizes per kind of folder, never paths (ADR 0089). */
 export interface MainStorageInfo {
@@ -1830,6 +2137,20 @@ export interface AgentTalkStopResponse {
   readonly ok: true;
 }
 
+export interface AgentMakeThemeResponse {
+  readonly type: "agentMakeTheme";
+  readonly requestId: RequestId;
+  readonly ok: true;
+  /** The theme's text as the agent wrote it: one JSON object, not yet checked (ADR 0134, rule 12). */
+  readonly text: string;
+}
+
+export interface AgentMakeThemeStopResponse {
+  readonly type: "agentMakeThemeStop";
+  readonly requestId: RequestId;
+  readonly ok: true;
+}
+
 export interface AgentTalkEntriesResponse {
   readonly type: "agentTalkEntries";
   readonly requestId: RequestId;
@@ -1975,6 +2296,8 @@ export type BackendResponse =
   | AgentCheckReplyResponse
   | AgentFillGapsResponse
   | AgentTalkStopResponse
+  | AgentMakeThemeResponse
+  | AgentMakeThemeStopResponse
   | AgentTalkEntriesResponse
   | AgentTalkAllResponse
   | AgentTalkAllStopResponse

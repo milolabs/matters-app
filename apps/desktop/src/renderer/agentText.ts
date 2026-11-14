@@ -22,6 +22,7 @@ import {
   AGENT_EFFORTS,
   AGENT_WORK_KINDS,
   kindsOn,
+  kindTakesMail,
   levelsFor,
   modelUsesTools,
   NO_WEEK_LIMIT_PERCENT,
@@ -508,6 +509,7 @@ export const KIND_WORDS: Readonly<Record<AgentWorkKind, string>> = {
   write: "writing",
   answer: "questions",
   titles: "talk titles",
+  appearance: "making themes",
 };
 
 /** `understanding mail and writing`, or `understanding mail, writing and questions`. */
@@ -538,7 +540,12 @@ export function kindWaits(status: AgentStatus, kind: AgentWorkKind): string {
   if (runtime !== null && runtime.status !== "ready") {
     return `Waits: ${name} is ${statusWords(runtime).toLowerCase()}.`;
   }
-  if (status.settings.enabled && !status.consents.some((c) => c.runtimeId === id)) {
+  // Making a theme takes no mail, so it waits on no account (ADR 0134, rule 14).
+  if (
+    kindTakesMail(kind) &&
+    status.settings.enabled &&
+    !status.consents.some((c) => c.runtimeId === id)
+  ) {
     return `Waits: you have not let ${name} read any account yet.`;
   }
   return "";

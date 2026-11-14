@@ -1,6 +1,14 @@
 import type { AccountInfo } from "@matters/contracts";
 import type { AgentStatus, AgentWorkKind, LedgerEntry } from "@matters/core";
-import { AGENT_WORK_KINDS, choicesOn, kindInfo, runtimeInfo, runtimesInUse } from "@matters/core";
+import {
+  AGENT_WORK_KINDS,
+  choicesOn,
+  kindInfo,
+  kindTakesMail,
+  mailRuntimesInUse,
+  runtimeInfo,
+  runtimesInUse,
+} from "@matters/core";
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { AccountsStore } from "./accounts.ts";
 import { createInstructions, createRules } from "./agent.ts";
@@ -62,6 +70,8 @@ export function ledgerWords(entry: LedgerEntry): string {
       return "You agreed";
     case "revoke":
       return "You took it back";
+    case "appearance":
+      return "Made a theme from your description";
   }
 }
 
@@ -70,6 +80,7 @@ export function ledgerThreads(entry: LedgerEntry): string {
   // The choices of the person and the turn on typed words name no thread: no mail went with them.
   // A consent of an earlier version named the threads its screen counted.
   if (entry.purpose === "revoke" || entry.purpose === "remember") return "";
+  if (entry.purpose === "appearance") return "";
   if (entry.purpose === "consent" && entry.threads === 0) return "";
   return entry.threads === 1 ? "1 thread" : `${entry.threads} threads`;
 }
@@ -204,6 +215,9 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
 
   const enabled = () => status()?.settings.enabled === true;
   const inUse = () => runtimesInUse(status()?.settings ?? { kindRuntime: {} });
+  // The runtimes mail goes to: consent is asked for these only. One in use only for making themes
+  // gets no mail and asks no account (ADR 0134, rule 14).
+  const mailInUse = () => mailRuntimesInUse(status()?.settings ?? { kindRuntime: {} });
   const nameOf = (runtimeId: string | undefined) =>
     status()?.runtimes.find((r) => r.id === runtimeId)?.name ?? runtimeId ?? "";
   const agreed = (accountId: string, runtimeId: string) =>
@@ -245,9 +259,11 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
     // those of the runtime the kind is on now would move it in silence when that one has none,
     // and the kind would then wait with nobody asked.
     const works = (id: string) => s.consents.some((c) => c.accountId === id);
-    const asked = s.settings.enabled
-      ? props.accounts.accounts().filter((a) => works(a.id) && !agreed(a.id, runtimeId))
-      : [];
+    // Making a theme takes no mail: moving it asks no account (ADR 0134, rule 14).
+    const asked =
+      s.settings.enabled && kinds.some(kindTakesMail)
+        ? props.accounts.accounts().filter((a) => works(a.id) && !agreed(a.id, runtimeId))
+        : [];
     if (asked.length > 0) {
       // The same runtime again: one question moves every kind that waits for it.
       const before = waiting !== null && waiting.runtimeId === runtimeId ? waiting.kinds : [];
@@ -322,7 +338,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                   />
                   <Show when={enabled() && moving() === null}>
                     <For
-                      each={inUse().filter(
+                      each={mailInUse().filter(
                         (id) => canAgree(id) && !s().consents.some((c) => c.runtimeId === id),
                       )}
                     >
@@ -524,7 +540,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                         backend={props.backend}
                         status={s()}
                         accounts={selection()}
-                        runtimeIds={inUse().filter((id) => canAgree(id))}
+                        runtimeIds={mailInUse().filter((id) => canAgree(id))}
                         declineLabel="Leave AI off"
                         onStatus={setStatus}
                         onStarted={(next) => {
@@ -545,7 +561,7 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                         <li class="flex flex-col gap-3" data-consent-account={a.id}>
                           <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px]">
                             <span class="min-w-0 flex-1 truncate">{a.address}</span>
-                            <For each={inUse()}>
+                            <For each={mailInUse()}>
                               {(id) => (
                                 <label
                                   class="flex cursor-default items-center gap-1.5 text-[12.5px]"

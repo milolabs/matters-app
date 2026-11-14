@@ -172,7 +172,8 @@ export function MailFrame(props: {
         sandbox={MAIL_FRAME_SANDBOX}
         src={props.images ? "./mail-images.html" : "./mail.html"}
         style={{ "color-scheme": props.scheme }}
-        class={`block h-60 w-full border-0 ${props.scheme === "dark" ? "bg-[#1e1e20]" : "bg-white"}`}
+        // In dark the frame's own ground is the theme's (ADR 0134, rule 10), as is its page's.
+        class={`block h-60 w-full border-0 ${props.scheme === "dark" ? "bg-bg" : "bg-white"}`}
         data-mail-frame
       />
       <For each={hits()}>
