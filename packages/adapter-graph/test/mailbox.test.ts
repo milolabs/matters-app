@@ -77,8 +77,11 @@ describe("read state, moves and deleting over Graph (ADR 0136, rule 7)", () => {
     expect(results.map((r) => r.outcome)).toEqual(["rejected", "done"]);
     expect(h.server.messages.has(a)).toBe(true);
     expect(h.server.messages.has(t)).toBe(false);
-    const deletes = h.server.requests.slice(sent).filter((r) => r.method === "DELETE");
-    expect(deletes.map((r) => r.path)).toEqual([`/me/messages/${t}`]);
+    // For good: `permanentDelete`, never the `DELETE` that leaves the message recoverable.
+    const asked = h.server.requests.slice(sent).filter((r) => r.method !== "GET");
+    expect(asked.map((r) => `${r.method} ${r.path}`)).toEqual([
+      `POST /me/messages/${t}/permanentDelete`,
+    ]);
   });
 
   it("does not delete a message restored from Deleted Items since the last sync: stale", async () => {
@@ -92,7 +95,7 @@ describe("read state, moves and deleting over Graph (ADR 0136, rule 7)", () => {
     const results = await connection.moves.expunge([stored]);
     expect(results.map((r) => r.outcome)).toEqual(["stale"]);
     expect(h.server.messages.has(t)).toBe(true);
-    expect(h.server.requests.filter((r) => r.method === "DELETE")).toEqual([]);
+    expect(h.server.requests.filter((r) => r.path.includes("permanentDelete"))).toEqual([]);
   });
 
   it("finds the Sent copy by Message-ID, quotes escaped; never appends", async () => {

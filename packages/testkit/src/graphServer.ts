@@ -615,7 +615,13 @@ export async function startStandInGraphServer(
         json(response, 201, row(m, null));
         return;
       }
-      if (segments.length === 2 && method === "DELETE") {
+      // The real service keeps answering for a deleted message by its id for a while (it moves
+      // to the recoverable items, or with `permanentDelete` beyond the person's reach); here both
+      // take it out of the mailbox, and `requests` tells a test which one was asked.
+      if (
+        (segments.length === 2 && method === "DELETE") ||
+        (segments[2] === "permanentDelete" && method === "POST")
+      ) {
         self.remove(m.id);
         response.writeHead(204);
         response.end();

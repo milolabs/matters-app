@@ -85,9 +85,10 @@
    copy by number keeps working. No row of an IMAP account changes.
 7. **Read state and moves are single requests.** `PATCH /me/messages/{id}` sets read;
    `POST /me/messages/{id}/move` moves, to a well-known folder for Archive, Trash and Junk.
-   Deleting for good is `DELETE`, and only for a message Graph says is in Deleted Items when
-   asked just before: the id stays the same when a message moves, so one restored meanwhile
-   would be reached; it is *stale*, as one that is gone (ADR 0044, rule 16). A `404` is
+   Deleting for good is `POST /me/messages/{id}/permanentDelete`, not `DELETE`, which only
+   moves the message to where the person can recover it. It is asked only for a message Graph
+   says is in Deleted Items just before: the id stays the same when a message moves, so one
+   restored meanwhile would be reached; it is *stale*, as one that is gone (ADR 0044, rule 16). A `404` is
    *stale*, a `403` is *rejected*, as the port already says.
 8. **A file is cut out of the message's MIME.** The part ids are the parser's, so a download
    fetches `$value` again and streams the one part. Graph's own attachment ids are not used.
@@ -141,16 +142,19 @@
   - that `Bcc` recipients in the MIME are delivered and the header is not shown to others;
   - how delta query orders and pages a large personal mailbox;
   - how often a normal day's use meets `429`.
-- Tried against a personal mailbox on 2026-11-14, about deleting for good:
-  - `DELETE` does not destroy the message. It leaves its folder and still answers when asked
-    for by its immutable id; a second `DELETE` of it is refused (`ErrorCannotDeleteObject`).
-    Where it went was not read: by what Outlook shows, the mailbox's recoverable items, from
-    which the person can get it back. So "delete forever" over Graph is weaker than IMAP's
-    expunge.
-  - `DELETE /me/mailFolders/{id}/messages/{id}` does not refuse a message that has left that
-    folder: it deleted one that had been restored to Drafts. The folder in the path closes
-    nothing, so the gap of rule 7 stays: a message restored between the question and the
-    `DELETE` is deleted, and can be recovered as above.
+- Tried against a personal mailbox on 2026-11-14, on drafts made for it:
+  - `DELETE` does not destroy a message: it moves it to the mailbox's recoverable items
+    (`recoverableitemsdeletions`), from which the person can get it back.
+  - `permanentDelete` answers 204, for a message in Deleted Items and for one already deleted
+    the plain way. The message still answers when asked for by its immutable id right after,
+    so "it is gone" cannot be told by asking for it.
+  - A folder in the path refuses nothing: both `DELETE` and `permanentDelete` under
+    `/me/mailFolders/{Deleted Items}/messages/{id}` took a message that had been restored to
+    Drafts. So the gap of rule 7 stays: a message restored between the question and the request
+    is deleted for good. It takes another app restoring, within that moment, a message the
+    person has just asked Matters to delete forever.
+  - A delta row for a message whose read state changed carried only `id` and `isRead`; one
+    whose flag changed carried everything selected. The completing request of rule 5 is needed.
   - A move keeps the immutable id, and the account has an Archive folder.
 - Not covered: Exchange on a company's own servers (IMAP), shared mailboxes, archive
   mailboxes, national clouds, calendars and contacts, categories and the Focused inbox.

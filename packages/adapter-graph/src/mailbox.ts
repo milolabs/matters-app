@@ -87,7 +87,8 @@ const ROLE_DESTINATION = {
 
 /**
  * Moves over Graph (ADR 0136, rule 7; ADR 0044, rules 13 to 16): `POST .../move` to a well-known
- * folder for Archive, Trash and Junk, and `DELETE` only for a copy in Deleted Items. The moved
+ * folder for Archive, Trash and Junk, and `permanentDelete` only for a copy in Deleted Items. A
+ * plain `DELETE` would only move the message to where the person can still recover it. The moved
  * copy's number is the store's to give, so `moved` comes without a location and the next sync
  * finds the copy as a known message.
  */
@@ -140,8 +141,8 @@ export class GraphMoves implements MailMovePort {
         continue;
       }
       try {
-        // The id stays the same when the message moves (immutable ids), so `DELETE` would reach
-        // it wherever it is now: it is asked where the message is first, and one restored from
+        // The id stays the same when the message moves (immutable ids), so the request would
+        // reach it wherever it is now, and a folder in its path refuses nothing (tried): it is asked where the message is first, and one restored from
         // Deleted Items meanwhile is stale here, as an expunged UID is in IMAP (rule 16).
         const where = await this.client.json(
           `${messagePath(location.itemId)}?$select=parentFolderId`,
@@ -152,8 +153,10 @@ export class GraphMoves implements MailMovePort {
           out.push({ location, outcome: where.status === 403 ? "rejected" : "stale" });
           continue;
         }
-        const answer = await this.client.json(messagePath(location.itemId), {
-          method: "DELETE",
+        // `DELETE` leaves the message among the recoverable items; this is the one that takes
+        // it where the person cannot bring it back, which is what was asked (ADR 0044, rule 16).
+        const answer = await this.client.json(`${messagePath(location.itemId)}/permanentDelete`, {
+          method: "POST",
           allow404: true,
           allow403: true,
         });
