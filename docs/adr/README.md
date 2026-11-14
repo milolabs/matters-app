@@ -140,4 +140,7 @@ Format: copy [`template.md`](template.md).
 | [0130](0130-the-app-is-tested-in-a-window.md) | The app is tested in a window, on every change (builds on 0018, 0122; amends 0128) | Accepted |
 | [0131](0131-the-person-sets-the-background-limit.md) | The person sets the background limit, and the log leaves Settings (amends 0051, 0054, 0121) | Accepted |
 | [0132](0132-the-agent-helps-write-a-new-message.md) | The agent helps write a new message, and writes as the person asks (amends 0098) | Accepted |
+| [0133](0133-microsoft-mail-signs-in-through-the-browser.md) | Microsoft mail signs in through the browser (amends 0018, 0113, 0114) | Accepted |
 | [0134](0134-appearance-a-mode-and-themes-that-are-data.md) | Appearance: a mode the person chooses, and themes that are data (amends 0085, 0103, 0118, 0121; builds on 0036) | Accepted |
+| [0135](0135-setup-finds-who-runs-the-mail-and-the-person-can-say.md) | Setup finds who runs the mail, and the person can say (amends 0023, 0114) | Accepted |
+| [0136](0136-microsoft-mail-moves-over-microsoft-graph.md) | Microsoft mail moves over Microsoft Graph (amends 0008, 0016, 0133) | Accepted |

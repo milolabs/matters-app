@@ -25,8 +25,10 @@
         "@matters/adapter-compose": "workspace:*",
         "@matters/adapter-files": "workspace:*",
         "@matters/adapter-filetext": "workspace:*",
+        "@matters/adapter-graph": "workspace:*",
         "@matters/adapter-imap": "workspace:*",
         "@matters/adapter-mime": "workspace:*",
+        "@matters/adapter-oauth": "workspace:*",
         "@matters/adapter-ollama": "workspace:*",
         "@matters/adapter-publicsuffix": "workspace:*",
         "@matters/adapter-secrets": "workspace:*",
@@ -116,6 +118,18 @@
         "@matters/testkit": "workspace:*",
       },
     },
+    "packages/adapter-graph": {
+      "name": "@matters/adapter-graph",
+      "version": "0.0.0",
+      "dependencies": {
+        "@matters/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@matters/adapter-mime": "workspace:*",
+        "@matters/adapter-sqlite": "workspace:*",
+        "@matters/testkit": "workspace:*",
+      },
+    },
     "packages/adapter-imap": {
       "name": "@matters/adapter-imap",
       "version": "0.0.0",
@@ -140,6 +154,16 @@
       },
       "devDependencies": {
         "@matters/adapter-publicsuffix": "workspace:*",
+      },
+    },
+    "packages/adapter-oauth": {
+      "name": "@matters/adapter-oauth",
+      "version": "0.0.0",
+      "dependencies": {
+        "@matters/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@matters/testkit": "workspace:*",
       },
     },
     "packages/adapter-ollama": {
@@ -342,9 +366,13 @@
 
     "@matters/adapter-filetext": ["@matters/adapter-filetext@workspace:packages/adapter-filetext"],
 
+    "@matters/adapter-graph": ["@matters/adapter-graph@workspace:packages/adapter-graph"],
+
     "@matters/adapter-imap": ["@matters/adapter-imap@workspace:packages/adapter-imap"],
 
     "@matters/adapter-mime": ["@matters/adapter-mime@workspace:packages/adapter-mime"],
+
+    "@matters/adapter-oauth": ["@matters/adapter-oauth@workspace:packages/adapter-oauth"],
 
     "@matters/adapter-ollama": ["@matters/adapter-ollama@workspace:packages/adapter-ollama"],
 

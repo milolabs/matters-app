@@ -407,6 +407,12 @@ export class SqliteMessageStore implements MessageStorePort {
   private readonly deleteAccountMessages;
   private readonly insertTombstone;
   private readonly upsertLocation;
+  private readonly insertItem;
+  private readonly selectItem;
+  private readonly selectItemUid;
+  private readonly selectLastItemUid;
+  private readonly selectItemsOfUids;
+  private readonly deleteAccountItems;
   private readonly selectLocationKey;
   private readonly deleteLocation;
   private readonly selectFolderKeys;
@@ -571,10 +577,31 @@ export class SqliteMessageStore implements MessageStorePort {
       `SELECT uid FROM message_locations
         WHERE account_id = ? AND folder_id = ? AND uid_validity = ? ORDER BY uid`,
     );
+    // ADR 0136, rule 6: a Graph copy's item id is kept under its number in its folder.
     this.selectKeyLocations = db.prepare(
-      `SELECT account_id, folder_id, uid_validity, uid FROM message_locations
-        WHERE message_key = ? ORDER BY folder_id, uid_validity, uid`,
+      `SELECT l.account_id, l.folder_id, l.uid_validity, l.uid, i.item_id
+         FROM message_locations l
+         LEFT JOIN location_items i
+           ON i.account_id = l.account_id AND i.folder_id = l.folder_id AND i.uid = l.uid
+        WHERE l.message_key = ? ORDER BY l.folder_id, l.uid_validity, l.uid`,
     );
+    this.insertItem = db.prepare(
+      "INSERT OR IGNORE INTO location_items (account_id, folder_id, item_id, uid) VALUES (?, ?, ?, ?)",
+    );
+    this.selectItem = db.prepare(
+      "SELECT uid FROM location_items WHERE account_id = ? AND folder_id = ? AND item_id = ?",
+    );
+    this.selectItemUid = db.prepare(
+      "SELECT 1 AS x FROM location_items WHERE account_id = ? AND folder_id = ? AND uid = ?",
+    );
+    this.selectLastItemUid = db.prepare(
+      "SELECT MAX(uid) AS last FROM location_items WHERE account_id = ? AND folder_id = ?",
+    );
+    this.selectItemsOfUids = db.prepare(
+      `SELECT uid, item_id FROM location_items
+        WHERE account_id = ? AND folder_id = ? AND uid IN (SELECT value FROM json_each(?))`,
+    );
+    this.deleteAccountItems = db.prepare("DELETE FROM location_items WHERE account_id = ?");
     this.selectKeyFolders = db.prepare(
       "SELECT DISTINCT folder_id FROM message_locations WHERE message_key = ? ORDER BY folder_id",
     );
@@ -845,6 +872,7 @@ export class SqliteMessageStore implements MessageStorePort {
   async removeAccountMessages(accountId: string): Promise<readonly number[]> {
     return write(this.db, () => {
       this.deleteAccountFolders.run(accountId);
+      this.deleteAccountItems.run(accountId);
       const rows = this.selectAccountKeys.all(accountId) as { key: number }[];
       if (rows.length === 0) return [];
       const keys = rows.map((r) => r.key);
@@ -1113,6 +1141,10 @@ export class SqliteMessageStore implements MessageStorePort {
           throw new Error(`Cannot add a location for unknown message key ${key}`);
         }
         this.upsertLocation.run(l.accountId, l.folderId, l.uidValidity, l.uid, key);
+        // A handle given with the location is kept, unless the folder gave either already.
+        if (l.itemId !== undefined && !this.selectItemUid.get(l.accountId, l.folderId, l.uid)) {
+          this.insertItem.run(l.accountId, l.folderId, l.itemId, l.uid);
+        }
       }
       this.refreshMailboxes(new Set(entries.map((e) => e.key)), true);
     });
@@ -1185,13 +1217,64 @@ export class SqliteMessageStore implements MessageStorePort {
       folder_id: string;
       uid_validity: string;
       uid: number;
+      item_id: string | null;
     }[];
     return rows.map((r) => ({
       accountId: r.account_id,
       folderId: r.folder_id,
       uidValidity: r.uid_validity,
       uid: r.uid,
+      ...(r.item_id === null ? {} : { itemId: r.item_id }),
     }));
+  }
+
+  async numberItems(
+    accountId: string,
+    folderId: string,
+    itemIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>> {
+    if (itemIds.length === 0) return new Map();
+    return write(this.db, () => {
+      const out = new Map<string, number>();
+      let last = (this.selectLastItemUid.get(accountId, folderId) as { last: number | null }).last;
+      for (const itemId of itemIds) {
+        const row = this.selectItem.get(accountId, folderId, itemId) as { uid: number } | undefined;
+        let uid = row?.uid;
+        if (uid === undefined) {
+          uid = (last ?? 0) + 1;
+          last = uid;
+          this.insertItem.run(accountId, folderId, itemId, uid);
+        }
+        out.set(itemId, uid);
+      }
+      return out;
+    });
+  }
+
+  async itemNumbers(
+    accountId: string,
+    folderId: string,
+    itemIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>> {
+    const out = new Map<string, number>();
+    for (const itemId of new Set(itemIds)) {
+      const row = this.selectItem.get(accountId, folderId, itemId) as { uid: number } | undefined;
+      if (row) out.set(itemId, row.uid);
+    }
+    return out;
+  }
+
+  async itemIdsOf(
+    accountId: string,
+    folderId: string,
+    uids: readonly number[],
+  ): Promise<ReadonlyMap<number, string>> {
+    if (uids.length === 0) return new Map();
+    const rows = this.selectItemsOfUids.all(accountId, folderId, JSON.stringify(uids)) as {
+      uid: number;
+      item_id: string;
+    }[];
+    return new Map(rows.map((r) => [r.uid, r.item_id] as const));
   }
 
   async updateFlags(updates: readonly FlagUpdate[]): Promise<readonly number[]> {

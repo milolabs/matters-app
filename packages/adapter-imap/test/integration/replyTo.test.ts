@@ -163,6 +163,10 @@ describe.skipIf(!enabled)("Reply-To on Dovecot (ADR 0042)", () => {
       if (!inbox) throw new Error("no INBOX");
       const context = {
         knownProviderIds: async () => new Set<string>(),
+        // Graph's numbering (ADR 0136, rule 6); IMAP never asks.
+        itemUids: async () => new Map(),
+        knownItemUids: async () => new Map(),
+        itemIdsOf: async () => new Map(),
         storedUids: async () => stored,
         // The store believes in a UID that the server never had; it is asked about, not answered.
         unknownReplyToUids: async () => [...stored, 9999],

@@ -213,11 +213,42 @@ describe("NodemailerSubmit", () => {
     ).toBe("rejected");
     expect(s.received).toHaveLength(1);
   });
+});
 
-  it("only passwords are supported", async () => {
-    const s = await sink();
-    const t: MailTarget = { ...target(s), credential: { kind: "oauth2", accessToken: "tok" } };
-    expect((await plain.submit(t, envelope, rawSource)).kind).toBe("rejected");
+describe("XOAUTH2 (ADR 0133, rule 9)", () => {
+  const TOKEN = "eyJ0eXAi.access-token-for-smtp.sig";
+  const tokenTarget = (s: SmtpSink, accessToken = TOKEN): MailTarget => ({
+    server: { host: s.host, port: s.port, security: "none", username: s.user },
+    credential: { kind: "oauth2", provider: "microsoft", accessToken },
+  });
+
+  it("verifies with the token as the server's user name", async () => {
+    const s = await sink({ accessToken: TOKEN });
+    expect(await plain.verify(tokenTarget(s))).toEqual({ ok: true, limitBytes: null });
+    expect(s.logins).toEqual([{ method: "XOAUTH2", username: s.user }]);
+  });
+
+  it("submits with the token", async () => {
+    const s = await sink({ accessToken: TOKEN });
+    const result = await plain.submit(tokenTarget(s), envelope, rawSource);
+    expect(result.kind).toBe("accepted");
+    expect(s.received).toHaveLength(1);
+    expect(s.received[0]?.user).toBe(s.user);
+    expect(s.logins.map((l) => l.method)).toEqual(["XOAUTH2"]);
+  });
+
+  it("reports a refused token as a refused login, with the token nowhere", async () => {
+    const s = await sink({ accessToken: TOKEN });
+    const wrong = "eyJ0eXAi.some-other-token.sig";
+    const check = await plain.verify(tokenTarget(s, wrong));
+    expect(check).toMatchObject({ ok: false, kind: "auth" });
+    expect(JSON.stringify(check)).not.toContain(wrong);
+
+    s.script.tokenRefusal = `5.7.3 Authentication unsuccessful for ${wrong}`;
+    const result = await plain.submit(tokenTarget(s, wrong), envelope, rawSource);
+    expect(result.kind).toBe("rejected");
+    expect(JSON.stringify(result)).not.toContain(wrong);
+    expect(s.received).toEqual([]);
   });
 });
 

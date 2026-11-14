@@ -1,3 +1,6 @@
+import type { MailTransport } from "./accounts.ts";
+import type { OAuthProvider } from "./browserSignIn.ts";
+
 /**
  * The few mail hosts whose sign-in differs from "the mailbox password works" (ADR 0114, which
  * amends ADR 0023's "no table of providers"). It holds no server settings and plays no part in
@@ -8,8 +11,8 @@
  * - `appPassword`: the account password is refused; an app password made in the account's
  *   security settings works.
  * - `turnOnImap`: mail apps are turned away until access for them is switched on in webmail.
- * - `browserOnly`: no password over IMAP at all, only browser sign-in (OAuth), which Matters
- *   cannot do yet.
+ * - `browserOnly`: no password over IMAP at all, only browser sign-in (OAuth). Matters signs in
+ *   through the person's browser there (ADR 0133); `provider` names whose sign-in it is.
  */
 export type HostSignIn = "appPassword" | "turnOnImap" | "browserOnly";
 
@@ -26,6 +29,8 @@ export interface HostRule {
   readonly term?: string;
   /** Where to do it, as the provider's pages say; without it a general sentence is shown. */
   readonly steps?: string;
+  /** With `browserOnly`: whose browser sign-in the servers take (ADR 0133, rule 11). */
+  readonly provider?: OAuthProvider;
 }
 
 export const HOST_RULES: readonly HostRule[] = [
@@ -81,6 +86,7 @@ export const HOST_RULES: readonly HostRule[] = [
       "smtp-mail.outlook.com",
     ],
     signIn: "browserOnly",
+    provider: "microsoft",
   },
   { id: "gmx", name: "GMX", hosts: ["imap.gmx.net", "mail.gmx.net"], signIn: "turnOnImap" },
   { id: "webde", name: "WEB.DE", hosts: ["imap.web.de", "smtp.web.de"], signIn: "turnOnImap" },
@@ -105,16 +111,38 @@ export function hostRule(host: string): HostRule | undefined {
 }
 
 /**
- * The servers are Microsoft's (Outlook.com or Exchange Online, a custom domain included: its MX
- * leads the lookup to the same servers), which take no password over IMAP.
+ * The account moves its mail over Graph (ADR 0136, rule 2: the transport is asked first), or the
+ * servers are Microsoft's (Outlook.com or Exchange Online, a custom domain included: its MX leads
+ * the lookup to the same servers), which take no password over IMAP.
  */
 export function needsBrowserSignIn(servers: {
-  readonly imap: { readonly host: string };
+  readonly transport?: MailTransport;
+  readonly imap?: { readonly host: string };
   readonly smtp?: { readonly host: string };
 }): boolean {
-  return [servers.imap.host, servers.smtp?.host ?? ""].some(
+  if (servers.transport === "graph") return true;
+  return [servers.imap?.host ?? "", servers.smtp?.host ?? ""].some(
     (host) => hostRule(host)?.signIn === "browserOnly",
   );
+}
+
+/**
+ * Which browser sign-in an account takes, if any. The account's transport is asked first (ADR
+ * 0136, rule 2, amending ADR 0133, rule 11): a Graph account signs in with the Graph entry. For
+ * an IMAP account it is read from the host table, so there is no column for it: either server
+ * being one of them is enough, as in `needsBrowserSignIn`; the incoming one is asked first.
+ */
+export function browserSignInProvider(account: {
+  readonly transport?: MailTransport;
+  readonly imap?: { readonly host: string };
+  readonly smtp?: { readonly host: string };
+}): OAuthProvider | undefined {
+  if (account.transport === "graph") return "microsoftGraph";
+  for (const host of [account.imap?.host ?? "", account.smtp?.host ?? ""]) {
+    const rule = hostRule(host);
+    if (rule?.signIn === "browserOnly" && rule.provider !== undefined) return rule.provider;
+  }
+  return undefined;
 }
 
 /**

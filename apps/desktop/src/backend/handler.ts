@@ -16,7 +16,7 @@ import type {
   AttachmentStorePort,
   ComposeRendererPort,
   DeleteForeverResult,
-  DiscoveredServers,
+  Discovery,
   Draft,
   DraftAttachment,
   DraftContent,
@@ -53,12 +53,14 @@ import type {
 } from "@matters/core";
 import {
   AGENT_WORK_KINDS,
+  canSendFrom,
   chooseImages,
   draftFor,
   failureDetailOf,
   isAgentEffortSetting,
   isMessageKey,
   isPartId,
+  isSignInHandle,
   MAX_IMAGE_RULE_VALUE,
   MAX_IMPORTED_ADDRESSES,
   MAX_THEME_PROBLEM_CHARS,
@@ -81,21 +83,46 @@ import { toAttachmentInfo } from "./attachmentInfo.ts";
 
 /** What the account requests need; `AccountService` implements it over the real ports. */
 export interface AccountsApi {
-  discover(domain: string): Promise<DiscoveredServers | null>;
+  discover(domain: string): Promise<Discovery>;
   list(): Promise<readonly AccountInfo[]>;
-  add(input: {
-    address: string;
-    displayName: string;
-    password: string;
-    imap: ServerInput;
-    smtp?: ServerInput;
-  }): Promise<{ account: AccountInfo; folderCount: number }>;
+  add(input: NewAccountInput): Promise<{ account: AccountInfo; folderCount: number }>;
   /** False when there is no such account. */
   remove(accountId: string): Promise<boolean>;
   syncNow(accountId: string): Promise<boolean>;
   /** Verifies the password, then replaces the saved one (ADR 0113). Null when there is no such account. */
   changePassword(accountId: string, password: string): Promise<PasswordChanged | null>;
+  /**
+   * *Sign in again* (ADR 0133, rule 11): verifies the browser sign-in main holds under `signIn`,
+   * then replaces the stored one. Null when there is no such account.
+   */
+  signInAgain(accountId: string, signIn: string): Promise<PasswordChanged | null>;
 }
+
+/**
+ * An account to add, with a password or with the handle of a browser sign-in main holds (ADR
+ * 0133, rule 6). Exactly one of the two.
+ */
+export type NewAccountInput =
+  | ({
+      readonly transport?: "imap";
+      readonly address: string;
+      readonly displayName: string;
+      readonly imap: ServerInput;
+      readonly smtp?: ServerInput;
+    } & (
+      | { readonly password: string; readonly signIn?: undefined }
+      | { readonly signIn: string; readonly password?: undefined }
+    ))
+  | {
+      /** A Microsoft mailbox over Graph: no servers, a browser sign-in (ADR 0136, rules 2, 13). */
+      readonly transport: "graph";
+      readonly address: string;
+      readonly displayName: string;
+      readonly signIn: string;
+      readonly password?: undefined;
+      readonly imap?: undefined;
+      readonly smtp?: undefined;
+    };
 
 /** What a password change answers; never the password. */
 export type PasswordChanged = Omit<ChangePasswordResponse, "type" | "requestId" | "ok">;
@@ -1058,22 +1085,51 @@ function parseRequest(raw: unknown): BackendRequest | string {
     case "listAccounts":
       return { type, requestId };
     case "addAccount": {
+      if (raw.transport === "graph") {
+        // Over Graph (ADR 0136, rules 2, 3, 13): a sign-in's handle, and no servers or password.
+        if (
+          typeof raw.address !== "string" ||
+          !isSignInHandle(raw.signIn) ||
+          raw.password !== undefined ||
+          raw.imap !== undefined ||
+          raw.smtp !== undefined ||
+          (raw.displayName !== undefined && typeof raw.displayName !== "string")
+        ) {
+          return "address and a sign-in, and no servers or password, are required over Graph";
+        }
+        return {
+          type,
+          requestId,
+          transport: "graph",
+          address: raw.address,
+          signIn: raw.signIn,
+          ...(raw.displayName === undefined ? {} : { displayName: raw.displayName }),
+        };
+      }
+      if (raw.transport !== undefined && raw.transport !== "imap") {
+        return "transport must be imap or graph";
+      }
       const imap = parseServer(raw.imap);
       const smtp = raw.smtp === undefined ? undefined : parseServer(raw.smtp);
+      // A password, or the handle of a browser sign-in (ADR 0133, rule 6): exactly one.
+      const password = typeof raw.password === "string" ? raw.password : undefined;
+      const signIn = isSignInHandle(raw.signIn) ? raw.signIn : undefined;
       if (
         typeof raw.address !== "string" ||
-        typeof raw.password !== "string" ||
+        (password === undefined) === (signIn === undefined) ||
+        (raw.password !== undefined && password === undefined) ||
+        (raw.signIn !== undefined && signIn === undefined) ||
         (raw.displayName !== undefined && typeof raw.displayName !== "string") ||
         !imap ||
         smtp === null
       ) {
-        return "address, password and imap {host, port, security, username} are required";
+        return "address, a password or a sign-in, and imap {host, port, security, username} are required";
       }
       return {
         type,
         requestId,
         address: raw.address,
-        password: raw.password,
+        ...(signIn === undefined ? { password: password ?? "" } : { signIn }),
         ...(raw.displayName === undefined ? {} : { displayName: raw.displayName }),
         imap,
         ...(smtp === undefined ? {} : { smtp }),
@@ -1261,6 +1317,14 @@ function parseRequest(raw: unknown): BackendRequest | string {
         typeof raw.password === "string"
         ? { type, requestId, accountId: raw.accountId, password: raw.password }
         : "accountId and password are required";
+    case "signInAgain":
+      // Only a handle of the shape main gives (ADR 0133, rule 6), never another account's id.
+      return typeof raw.accountId === "string" &&
+        raw.accountId !== "" &&
+        raw.accountId.length <= 200 &&
+        isSignInHandle(raw.signIn)
+        ? { type, requestId, accountId: raw.accountId, signIn: raw.signIn }
+        : "accountId and signIn are required";
     default:
       return typeof type === "string" && type.startsWith("agent")
         ? parseAgentRequest(raw, requestId)
@@ -1307,7 +1371,7 @@ async function messageLimit(deps: BackendDeps, accountId: string): Promise<numbe
   if (!account) return null;
   deps.limits.ensure({
     id: account.id,
-    canSend: account.smtp !== undefined,
+    canSend: canSendFrom(account),
     ...(account.messageLimitBytes === undefined
       ? {}
       : { messageLimitBytes: account.messageLimitBytes }),
@@ -1561,23 +1625,41 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
             },
           ),
         };
-      case "discoverServers":
+      case "discoverServers": {
+        // Who runs the mail rides along with the servers (ADR 0135, rule 1): setup names it and
+        // orders its list by it (rules 3 to 5).
+        const { servers, provider } = await deps.accounts.discover(request.domain);
         return {
           type: "discoverServers",
           requestId,
           ok: true,
-          found: await deps.accounts.discover(request.domain),
+          found: servers,
+          ...(provider === undefined ? {} : { provider }),
         };
+      }
       case "listAccounts":
         return { type: "listAccounts", requestId, ok: true, accounts: await deps.accounts.list() };
       case "addAccount": {
-        const added = await deps.accounts.add({
-          address: request.address,
-          displayName: request.displayName ?? "",
-          password: request.password,
-          imap: request.imap,
-          ...(request.smtp === undefined ? {} : { smtp: request.smtp }),
-        });
+        const displayName = request.displayName ?? "";
+        const added = await deps.accounts.add(
+          request.transport === "graph" || request.imap === undefined
+            ? {
+                transport: "graph",
+                address: request.address,
+                displayName,
+                signIn: request.signIn ?? "",
+              }
+            : {
+                address: request.address,
+                displayName,
+                // The parser let exactly one of the two through.
+                ...(request.signIn === undefined
+                  ? { password: request.password ?? "" }
+                  : { signIn: request.signIn }),
+                imap: request.imap,
+                ...(request.smtp === undefined ? {} : { smtp: request.smtp }),
+              },
+        );
         return { type: "addAccount", requestId, ok: true, ...added };
       }
       case "removeAccount":
@@ -1592,6 +1674,12 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
         const changed = await deps.accounts.changePassword(request.accountId, request.password);
         return changed
           ? { type: "changePassword", requestId, ok: true, ...changed }
+          : { type: "error", requestId, ok: false, code: "notFound", message: "no such account" };
+      }
+      case "signInAgain": {
+        const changed = await deps.accounts.signInAgain(request.accountId, request.signIn);
+        return changed
+          ? { type: "signInAgain", requestId, ok: true, ...changed }
           : { type: "error", requestId, ok: false, code: "notFound", message: "no such account" };
       }
       case "prepareNew": {

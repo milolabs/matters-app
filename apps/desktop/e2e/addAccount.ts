@@ -1,5 +1,6 @@
 // The first-run screen, answered the way a person answers it: the address, then the servers by
-// hand (nothing publishes settings for example.test), the password, and no AI.
+// hand under Another mail server (nothing publishes settings for example.test), the password, and
+// no AI.
 import type { Page } from "@playwright/test";
 import { expect } from "./fixtures.ts";
 import type { Mailbox } from "./servers.ts";
@@ -14,6 +15,8 @@ export async function addAccountOnFirstRun(window: Page, mailbox: Mailbox): Prom
   await expect(
     form.getByRole("heading", { name: "We couldn't find the servers for example.test." }),
   ).toBeVisible({ timeout: 60_000 });
+  // Nothing found: who runs the mail is asked at once; this one is a server of its own.
+  await form.getByRole("radio", { name: /Another mail server/ }).check();
   await form.getByLabel("Incoming server (IMAP)").fill(mailbox.host);
   await form.getByLabel("Port").first().fill(String(mailbox.imapPort));
   await expect(form.getByLabel("Encryption").first()).toHaveValue("tls");

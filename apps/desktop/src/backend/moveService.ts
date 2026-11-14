@@ -27,6 +27,7 @@ import {
   deleteForever,
   finishMoves,
   finishPurge,
+  incomingTarget,
   labelStyle,
   MOVE_BACKOFF_CAP_MS,
   mailErrorKind,
@@ -233,7 +234,7 @@ export class MoveService implements MoveApi {
 
     let connection: MailConnection;
     try {
-      connection = await deps.connector.connect({ server: account.imap, credential });
+      connection = await deps.connector.connect(incomingTarget(account, credential));
     } catch (error) {
       // Offline, a timeout or a password the server turned down: all wait and try again.
       this.report(error);

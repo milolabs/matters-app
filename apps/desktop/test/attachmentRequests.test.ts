@@ -30,7 +30,7 @@ function depsFor(accounts: StoredAccount[], limits: { ensure(a: unknown): void }
     ...imageDeps,
     limits,
     accounts: {
-      discover: async () => null,
+      discover: async () => ({ servers: null }),
       list: async () => [],
       add: async () => {
         throw new Error("not used");
@@ -38,6 +38,7 @@ function depsFor(accounts: StoredAccount[], limits: { ensure(a: unknown): void }
       remove: async () => false,
       syncNow: async () => false,
       changePassword: async () => null,
+      signInAgain: async () => null,
     },
   } as unknown as Parameters<typeof handle>[0];
 }

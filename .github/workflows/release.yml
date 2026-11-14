@@ -185,6 +185,9 @@ jobs:
         run: bun run release:macos
         env:
           MATTERS_SIGN_IDENTITY: "-"
+          # Matters' registration with Microsoft (ADR 0133, rule 4): a repository variable, not a
+          # secret. Empty: the build has no browser sign-in.
+          MATTERS_MICROSOFT_CLIENT_ID: ${{ vars.MATTERS_MICROSOFT_CLIENT_ID }}
 
       - name: The packaged app starts
         run: |
@@ -341,6 +344,7 @@ jobs:
         run: bun run release:macos
         env:
           MATTERS_REQUIRE_NOTARIZATION: "1"
+          MATTERS_MICROSOFT_CLIENT_ID: ${{ vars.MATTERS_MICROSOFT_CLIENT_ID }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
 

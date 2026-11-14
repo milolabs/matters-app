@@ -210,7 +210,7 @@ async function open(
     storage,
     connector,
     channel,
-    discovery: { discover: async () => null },
+    discovery: { discover: async () => ({ servers: null }) },
     registrableDomain,
     files: options.files ? options.files(dir) : new FakeFileWork(),
     clock: options.realTime ? systemClock : clock,

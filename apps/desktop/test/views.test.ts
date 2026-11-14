@@ -45,7 +45,7 @@ function inMemory() {
     renderer: new FakeComposeRenderer(),
     send: noSend,
     accounts: {
-      discover: async () => null,
+      discover: async () => ({ servers: null }),
       list: async () => [],
       add: async () => {
         throw new Error("not used");
@@ -53,6 +53,7 @@ function inMemory() {
       remove: async () => false,
       syncNow: async () => false,
       changePassword: async () => null,
+      signInAgain: async () => null,
     },
     savedViews: storage.views,
     ...imageDeps,
@@ -310,7 +311,7 @@ describe("the write path", () => {
       storage,
       connector,
       channel,
-      discovery: { discover: async () => null },
+      discovery: { discover: async () => ({ servers: null }) },
       registrableDomain: imageDeps.registrableDomain,
       files: new FakeFileWork(),
       sending: {
@@ -342,7 +343,7 @@ describe("the write path", () => {
       renderer: new FakeComposeRenderer(),
       send: noSend,
       accounts: {
-        discover: async () => null,
+        discover: async () => ({ servers: null }),
         list: async () => [],
         add: async () => {
           throw new Error("not used");
@@ -350,6 +351,7 @@ describe("the write path", () => {
         remove: async () => false,
         syncNow: async () => false,
         changePassword: async () => null,
+        signInAgain: async () => null,
       },
       savedViews: reader.read.views,
       ...imageDeps,

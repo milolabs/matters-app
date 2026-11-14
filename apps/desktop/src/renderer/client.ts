@@ -76,6 +76,7 @@ import type {
   SendActionResponse,
   SetImageRuleResponse,
   SetSeenResponse,
+  SignInAgainResponse,
   SortRankedResponse,
   StorageReport,
   SuggestPeopleResponse,
@@ -234,6 +235,11 @@ export interface Backend {
   syncNow(accountId: string): Promise<void>;
   /** Verifies a new password, then replaces the saved one (ADR 0113). */
   changePassword(accountId: string, password: string): Promise<ChangePasswordResponse>;
+  /**
+   * *Sign in again* (ADR 0133, rule 11): the handle of a browser sign-in main holds, verified on
+   * the servers before it replaces the stored one.
+   */
+  signInAgain(accountId: string, signIn: string): Promise<SignInAgainResponse>;
   /** Starting points of a message; nothing is stored until the first `saveDraft`. */
   prepareNew(accountId?: string): Promise<PrepareResponse>;
   prepareReply(threadId: string, mode: ReplyMode): Promise<PrepareResponse>;
@@ -558,6 +564,8 @@ export function createBackend(port: MessagePort): Backend {
     },
     changePassword: (accountId, password) =>
       request<ChangePasswordResponse>({ type: "changePassword", accountId, password }),
+    signInAgain: (accountId, signIn) =>
+      request<SignInAgainResponse>({ type: "signInAgain", accountId, signIn }),
     prepareNew: (accountId) =>
       request<PrepareResponse>({ type: "prepareNew", ...(accountId ? { accountId } : {}) }),
     prepareReply: (threadId, mode) =>

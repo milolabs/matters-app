@@ -12,6 +12,7 @@ import type {
 import {
   backoffDelay,
   finishSeen,
+  incomingTarget,
   mailErrorKind,
   rejectSeen,
   SEEN_BACKOFF_CAP_MS,
@@ -148,7 +149,7 @@ export class SeenService implements SeenApi {
 
     let connection: Awaited<ReturnType<MailConnectorPort["connect"]>>;
     try {
-      connection = await deps.connector.connect({ server: account.imap, credential });
+      connection = await deps.connector.connect(incomingTarget(account, credential));
     } catch (error) {
       // Offline, a timeout or a password the server turned down: all wait and try again.
       this.report(error);

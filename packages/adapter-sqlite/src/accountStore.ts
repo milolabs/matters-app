@@ -1,15 +1,16 @@
 import type { AccountStorePort, StoredAccount, TransportSecurity } from "@matters/core";
-import { AccountExistsError } from "@matters/core";
+import { AccountExistsError, transportOf } from "@matters/core";
 import { type Database, exclusive, write } from "./database.ts";
 
 interface AccountRow {
   id: string;
   address: string;
   display_name: string;
-  imap_host: string;
-  imap_port: number;
-  imap_security: string;
-  imap_username: string;
+  transport: string;
+  imap_host: string | null;
+  imap_port: number | null;
+  imap_security: string | null;
+  imap_username: string | null;
   smtp_host: string | null;
   smtp_port: number | null;
   smtp_security: string | null;
@@ -21,15 +22,22 @@ interface AccountRow {
 const SELECT = "SELECT * FROM accounts";
 
 function toAccount(row: AccountRow): StoredAccount {
-  return {
+  const common = {
     id: row.id,
     address: row.address,
     displayName: row.display_name,
+    ...(row.max_message_bytes === null ? {} : { messageLimitBytes: row.max_message_bytes }),
+    createdAtMs: row.created_at_ms,
+  };
+  // ADR 0136, rule 2: a Graph account has no servers; the table's CHECK keeps an IMAP one whole.
+  if (row.transport === "graph") return { ...common, transport: "graph" };
+  return {
+    ...common,
     imap: {
-      host: row.imap_host,
-      port: row.imap_port,
-      security: row.imap_security as TransportSecurity,
-      username: row.imap_username,
+      host: row.imap_host ?? "",
+      port: row.imap_port ?? 0,
+      security: (row.imap_security ?? "tls") as TransportSecurity,
+      username: row.imap_username ?? "",
     },
     ...(row.smtp_host !== null && row.smtp_port !== null
       ? {
@@ -41,8 +49,6 @@ function toAccount(row: AccountRow): StoredAccount {
           },
         }
       : {}),
-    ...(row.max_message_bytes === null ? {} : { messageLimitBytes: row.max_message_bytes }),
-    createdAtMs: row.created_at_ms,
   };
 }
 
@@ -59,10 +65,10 @@ export class SqliteAccountStore implements AccountStorePort {
     this.selectAll = db.prepare(`${SELECT} ORDER BY created_at_ms, id`);
     this.selectOne = db.prepare(`${SELECT} WHERE id = ?`);
     this.insert = db.prepare(`
-      INSERT INTO accounts (id, address, display_name, imap_host, imap_port, imap_security,
-                            imap_username, smtp_host, smtp_port, smtp_security, smtp_username,
-                            max_message_bytes, created_at_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      INSERT INTO accounts (id, address, display_name, transport, imap_host, imap_port,
+                            imap_security, imap_username, smtp_host, smtp_port, smtp_security,
+                            smtp_username, max_message_bytes, created_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     this.delete = db.prepare("DELETE FROM accounts WHERE id = ?");
     this.setLimit = db.prepare("UPDATE accounts SET max_message_bytes = ? WHERE id = ?");
   }
@@ -83,10 +89,11 @@ export class SqliteAccountStore implements AccountStorePort {
           account.id,
           account.address,
           account.displayName,
-          account.imap.host,
-          account.imap.port,
-          account.imap.security,
-          account.imap.username,
+          transportOf(account),
+          account.imap?.host ?? null,
+          account.imap?.port ?? null,
+          account.imap?.security ?? null,
+          account.imap?.username ?? null,
           account.smtp?.host ?? null,
           account.smtp?.port ?? null,
           account.smtp?.security ?? null,

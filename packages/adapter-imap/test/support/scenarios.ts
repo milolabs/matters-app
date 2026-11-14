@@ -294,6 +294,10 @@ export function describeImapScenarios(
       const context = {
         knownProviderIds: async (ids: readonly string[]) =>
           new Set((await box.store.findByProviderIds(ACCOUNT.id, ids)).keys()),
+        // Graph's numbering (ADR 0136, rule 6); IMAP never asks.
+        itemUids: async () => new Map(),
+        knownItemUids: async () => new Map(),
+        itemIdsOf: async () => new Map(),
         storedUids: (uv: string) => box.store.listLocationUids(ACCOUNT.id, "INBOX", uv),
         unknownReplyToUids: (uv: string, limit: number) =>
           box.store.listUnknownReplyToUids(ACCOUNT.id, "INBOX", uv, limit),

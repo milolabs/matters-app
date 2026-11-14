@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Credential, CredentialAvailability, CredentialPort } from "@matters/core";
-import { CredentialsUnavailableError } from "@matters/core";
+import { CredentialsUnavailableError, SignInEndedError } from "@matters/core";
 
 /** What protects the secrets: the operating system's keychain through Electron's `safeStorage`. */
 export interface Encryptor {
@@ -92,6 +92,21 @@ export class EncryptedFileCredentialStore implements CredentialPort {
         entries[accountId] = Buffer.from(encrypted).toString("base64");
       }
       await this.save({ version: 1, entries });
+    });
+  }
+
+  /**
+   * Moves the encrypted entry of `fromId` to `toId` in one atomic write (ADR 0133, rule 6): the
+   * blob is not decrypted, so the move needs nothing of the encryptor.
+   */
+  move(fromId: string, toId: string): Promise<void> {
+    return this.exclusive(async () => {
+      const file = await this.read();
+      const blob = file.entries[fromId];
+      if (blob === undefined) throw new SignInEndedError();
+      if (fromId === toId) return;
+      const { [fromId]: _gone, ...entries } = file.entries;
+      await this.save({ version: 1, entries: { ...entries, [toId]: blob } });
     });
   }
 

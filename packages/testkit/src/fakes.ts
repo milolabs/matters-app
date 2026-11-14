@@ -69,6 +69,7 @@ import {
   messageKey,
   plainGroups,
   positiveWords,
+  SignInEndedError,
   splitMessageKey,
   tokenize,
 } from "@matters/core";
@@ -106,9 +107,12 @@ export class InMemoryMessageStore implements MessageStorePort, Snapshottable {
   private folders = new Map<string, readonly Label[]>();
   /** The files of each message: whether the structure was read, and every file part in order. */
   private files = new Map<number, { known: boolean; items: readonly ReceivedAttachment[] }>();
+  /** Per account and folder: each provider item id's number (ADR 0136, rule 6). */
+  private items = new Map<string, Map<string, number>>();
 
   snapshot(): () => void {
     const saved = {
+      items: new Map([...this.items].map(([k, v]) => [k, new Map(v)] as const)),
       folders: new Map(this.folders),
       files: new Map(this.files),
       locations: new Map(this.locations),
@@ -119,6 +123,7 @@ export class InMemoryMessageStore implements MessageStorePort, Snapshottable {
       seq: this.seq,
     };
     return () => {
+      this.items = saved.items;
       this.folders = saved.folders;
       this.files = saved.files;
       this.locations = saved.locations;
@@ -294,6 +299,9 @@ export class InMemoryMessageStore implements MessageStorePort, Snapshottable {
 
   async removeAccountMessages(accountId: string): Promise<readonly number[]> {
     this.folders.delete(accountId);
+    for (const id of [...this.items.keys()]) {
+      if (id.startsWith(`${accountId}\u0000`)) this.items.delete(id);
+    }
     const keys = [...this.byKey.values()]
       .filter((m) => m.accountId === accountId)
       .map((m) => m.key);
@@ -349,9 +357,71 @@ export class InMemoryMessageStore implements MessageStorePort, Snapshottable {
       if (!this.byKey.has(key))
         throw new Error(`Cannot add a location for unknown message key ${key}`);
     }
-    for (const { key, location } of entries)
+    for (const { key, location } of entries) {
       this.locations.set(locationId(location), { location, key });
+      if (location.itemId !== undefined) {
+        const numbers = this.itemsOf(location.accountId, location.folderId);
+        const taken = [...numbers.values()].includes(location.uid);
+        if (!numbers.has(location.itemId) && !taken) numbers.set(location.itemId, location.uid);
+      }
+    }
     this.refresh(entries.map((e) => e.key));
+  }
+
+  private itemsOf(accountId: string, folderId: string): Map<string, number> {
+    const id = `${accountId}\u0000${folderId}`;
+    let numbers = this.items.get(id);
+    if (!numbers) {
+      numbers = new Map();
+      this.items.set(id, numbers);
+    }
+    return numbers;
+  }
+
+  async numberItems(
+    accountId: string,
+    folderId: string,
+    itemIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>> {
+    const numbers = this.itemsOf(accountId, folderId);
+    let last = Math.max(0, ...numbers.values());
+    const out = new Map<string, number>();
+    for (const itemId of itemIds) {
+      let uid = numbers.get(itemId);
+      if (uid === undefined) {
+        uid = ++last;
+        numbers.set(itemId, uid);
+      }
+      out.set(itemId, uid);
+    }
+    return out;
+  }
+
+  async itemNumbers(
+    accountId: string,
+    folderId: string,
+    itemIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>> {
+    const numbers = this.items.get(`${accountId}\u0000${folderId}`);
+    const out = new Map<string, number>();
+    for (const itemId of itemIds) {
+      const uid = numbers?.get(itemId);
+      if (uid !== undefined) out.set(itemId, uid);
+    }
+    return out;
+  }
+
+  async itemIdsOf(
+    accountId: string,
+    folderId: string,
+    uids: readonly number[],
+  ): Promise<ReadonlyMap<number, string>> {
+    const wanted = new Set(uids);
+    const out = new Map<number, string>();
+    for (const [itemId, uid] of this.items.get(`${accountId}\u0000${folderId}`) ?? []) {
+      if (wanted.has(uid)) out.set(uid, itemId);
+    }
+    return out;
   }
 
   async removeLocations(locations: readonly MessageLocation[]): Promise<LocationRemoval> {
@@ -1259,6 +1329,15 @@ export class InMemoryCredentialStore implements CredentialPort {
 
   async delete(accountId: string): Promise<void> {
     this.secrets.delete(accountId);
+  }
+
+  async move(fromId: string, toId: string): Promise<void> {
+    const held = this.secrets.get(fromId);
+    if (held === undefined) throw new SignInEndedError();
+    if (this.unavailableReason !== null)
+      throw new CredentialsUnavailableError(this.unavailableReason);
+    this.secrets.set(toId, held);
+    if (fromId !== toId) this.secrets.delete(fromId);
   }
 }
 

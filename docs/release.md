@@ -75,6 +75,16 @@ path.
 6. **Protect the tags**: a ruleset that lets only the owner and GitHub Actions create tags
    matching `v*`.
 
+Alphas need none of the above. One more thing applies to every build that is published, alphas
+included, and needs nothing from Apple:
+
+7. **Set the repository variable `MATTERS_MICROSOFT_CLIENT_ID`** (Settings → Secrets and
+   variables → Actions → Variables) to the client id of Matters' registration with Microsoft
+   Entra. The release workflow gives it to the build, which is how a release can sign in to
+   Microsoft 365 and Outlook.com; the source holds no id, and a build without the variable has
+   no browser sign-in ([ADR 0133](adr/0133-microsoft-mail-signs-in-through-the-browser.md),
+   rule 4). It is a variable, not a secret: the id is in every released app.
+
 ## Rehearsal
 
 Run the `Release` workflow (Actions → Release → Run workflow) on `main` with **rehearsal** ticked.

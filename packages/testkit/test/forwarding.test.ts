@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import type {
   DraftContent,
+  ImapStoredAccount,
   ProcessDeps,
   ReceivedAttachment,
   SendOperation,
@@ -54,7 +55,7 @@ const part = (partId: string, name: string, size: number): ReceivedAttachment =>
   inline: false,
 });
 
-const account = (over: Partial<StoredAccount> = {}): StoredAccount => ({
+const account = (over: Partial<ImapStoredAccount> = {}): StoredAccount => ({
   id: "acc1",
   address: "me@example.com",
   displayName: "me",

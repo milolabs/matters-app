@@ -32,12 +32,20 @@ export interface Label {
 /**
  * One copy of a message in one folder at one UIDVALIDITY (ADR 0016). `uidValidity` is a decimal
  * string: IMAP allows 32 bits and the adapter boundary turns bigint into text.
+ *
+ * The copy's handle on the server belongs to the provider (ADR 0136, rule 6). For IMAP it is
+ * `(uidValidity, uid)` and `itemId` is absent. For Microsoft Graph it is `itemId`, the message's
+ * immutable id; `uid` is then a number the store gave the copy within its folder
+ * (`FolderSyncContext.itemUids`), so everything that addresses a copy by number keeps working,
+ * and `uidValidity` is an epoch the adapter chooses: a new one when it lists the folder anew.
  */
 export interface MessageLocation {
   readonly accountId: string;
   readonly folderId: string;
   readonly uidValidity: string;
   readonly uid: number;
+  /** The provider's own id of this copy, where it is not the UID (Graph); absent for IMAP. */
+  readonly itemId?: string;
 }
 
 export interface Participant {

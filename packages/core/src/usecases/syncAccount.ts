@@ -124,6 +124,10 @@ export async function syncAccount(
         store.listUnknownAutomatedUids(account.id, folder.id, uidValidity, limit),
       unknownAttachmentUids: (uidValidity, limit) =>
         store.listUnknownAttachmentUids(account.id, folder.id, uidValidity, limit),
+      // ADR 0136, rule 6: a provider's item ids and the numbers the store gives them.
+      itemUids: (itemIds) => store.numberItems(account.id, folder.id, itemIds),
+      knownItemUids: (itemIds) => store.itemNumbers(account.id, folder.id, itemIds),
+      itemIdsOf: (uids) => store.itemIdsOf(account.id, folder.id, uids),
     };
     const cursor = await cursors.get(account.id, folder.id);
     let done = 0;

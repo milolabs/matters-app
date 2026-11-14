@@ -127,7 +127,7 @@ async function open(
     storage,
     connector,
     channel,
-    discovery: { discover: async () => null },
+    discovery: { discover: async () => ({ servers: null }) },
     registrableDomain,
     files,
     undoWindowMs: options.undoWindowMs ?? 50,

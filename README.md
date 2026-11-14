@@ -49,8 +49,9 @@ and shows you what is still on you: what you promised, who waits for an answer, 
 
 ## What it does
 
-- **Local first.** Mail is synced over IMAP into a SQLite database on your computer. The window
-  reads only local data, so lists, search and threads do not wait for the network.
+- **Local first.** Mail is synced over IMAP, or Microsoft Graph for Microsoft mailboxes, into a
+  SQLite database on your computer. The window reads only local data, so lists, search and
+  threads do not wait for the network.
 - **Fast by design.** Speed has budgets that are measured on mailboxes of 8,000, 100,000 and
   500,000 messages ([ADR 0012](docs/adr/0012-performance-budgets.md)).
 - **Views with a prompt.** Write in your own words what you want to find, such as
@@ -80,9 +81,12 @@ Matters has no server of its own. The agent runs on what you already have
 
 ## What it does not do yet
 
-- **Sign-in is by password only.** Gmail, iCloud, Yahoo and Fastmail work with an app password.
-  Microsoft 365 and Outlook.com need browser sign-in (OAuth), which is not built yet, so they do
-  not work.
+- **Browser sign-in is for Microsoft only.** Outlook.com and Microsoft 365 sign in in your
+  browser and move over Microsoft Graph
+  ([ADR 0136](docs/adr/0136-microsoft-mail-moves-over-microsoft-graph.md)); in an organisation an
+  administrator may have to allow Matters first. Gmail, iCloud, Yahoo and Fastmail work with an
+  app password. A copy built from source needs a Microsoft registration of its own
+  ([ADR 0133](docs/adr/0133-microsoft-mail-signs-in-through-the-browser.md), rule 4).
 - **The agent connects to Claude Code, Codex and Ollama only.** API keys are planned.
 - **Codex does not report the plan's limits**, so reading in the background stops at the first
   refusal until you continue it.
@@ -129,7 +133,7 @@ plugs into its ports.
 | --- | --- |
 | [`packages/core`](packages/core) | The domain and the use cases |
 | [`packages/contracts`](packages/contracts) | The types the processes share |
-| [`packages/adapter-*`](packages) | Adapters for the ports: IMAP, SMTP, SQLite, MIME, secrets, Claude Code, Codex, Ollama and more |
+| [`packages/adapter-*`](packages) | Adapters for the ports: IMAP, SMTP, Microsoft Graph, SQLite, MIME, secrets, Claude Code, Codex, Ollama and more |
 | [`apps/desktop`](apps/desktop) | The Electron app with a Solid renderer |
 | [`site`](site) | [getmatters.app](https://getmatters.app): plain HTML and CSS with no build step, published with GitHub Pages ([ADR 0127](docs/adr/0127-the-site-lives-in-the-repository.md)) |
 | [`tools`](tools) | The checks, smoke tests, benchmarks and release scripts |

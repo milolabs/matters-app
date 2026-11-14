@@ -1,23 +1,45 @@
 import type { AccountInfo } from "@matters/contracts";
 import {
   type AgentStatus,
+  browserSignInProvider,
   type DiscoveredServers,
   domainOfAddress,
+  type MailProviderId,
+  mailProvider,
   needsBrowserSignIn,
+  type OAuthProvider,
   suggestedSmtpUsername,
   suggestedUsername,
   type TransportSecurity,
-  takesPassword,
 } from "@matters/core";
-import { createSignal, onCleanup, Show } from "solid-js";
+import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { AccountsStore } from "./accounts.ts";
 import { readDeclined, writeDeclined } from "./agentPrefs.ts";
 import { ReadStep, RuntimeStep } from "./agentSetup.tsx";
 import type { Backend } from "./client.ts";
 import { explainFailure, type FailureContext, failureEvidence, passwordHint } from "./explain.ts";
-import { MattersMark, markMaster } from "./icons.tsx";
+import { MattersMark, markMaster, Ring } from "./icons.tsx";
+import {
+  createBrowserSignIn,
+  mainSignIn,
+  providerName,
+  type SignInClient,
+  type SignInPhase,
+  setupStepFor,
+} from "./signIn.ts";
 import { describeStatus } from "./status.ts";
 import { field, pill, pillPrimary } from "./ui.ts";
+import {
+  choiceLabel,
+  choiceNote,
+  choicesFor,
+  currentChoice,
+  foundLine,
+  type LookedUp,
+  type MailChoice,
+  routeFor,
+  type SetupRoute,
+} from "./whoRunsMail.ts";
 
 type Step = "address" | "finding" | "password" | "blocked" | "done" | "runtime" | "read";
 
@@ -31,6 +53,16 @@ const textButton = "cursor-default text-[12.5px] text-mid underline-offset-2 hov
  * from a lookup (ADR 0023) and are shown to correct. What is answered stays on the page as a line
  * of the conversation and can be changed. With `onFinished` this is the first thing a new user
  * sees and ends on a success screen; without it, it is the form inside the Accounts dialog.
+ *
+ * On servers that take only a browser sign-in (ADR 0133, rule 11), when this build offers it,
+ * the password field gives way to *Sign in with Microsoft*: the browser opens, setup waits with
+ * *Cancel*, and the handle that comes back is tested and saved as a password would be.
+ *
+ * Lookup also says who runs the mail (ADR 0135): the line names the provider, and *Not right?*
+ * opens a short list of providers and *Another mail server* in place of the server fields; when
+ * nothing was found the list is there at once. A Microsoft mailbox, found or chosen, is added over
+ * Microsoft Graph with no server fields (ADR 0136, rule 13). The choice holds until the address
+ * changes and wins over what was found.
  */
 export function Setup(props: {
   backend: Backend;
@@ -40,15 +72,39 @@ export function Setup(props: {
   onFinished?: () => void;
   /** AI was turned on or its status changed here: the window outside is told. */
   onAgentStatus?: (status: AgentStatus) => void;
+  /** Main's browser sign-in; tests pass their own. */
+  signIn?: SignInClient;
 }) {
   const firstRun = () => props.onFinished !== undefined;
+  const signInClient = props.signIn ?? mainSignIn;
+  // The providers this build offers browser sign-in for (rule 4), asked of main once.
+  const [offered, setOffered] = createSignal<ReadonlySet<OAuthProvider>>(new Set());
+  // Both Microsoft entries are one registration, but each is asked for (ADR 0136, rule 3).
+  const offeredReady = Promise.all(
+    (["microsoft", "microsoftGraph"] as const).map((p) =>
+      signInClient.offered(p).then(
+        (yes) => (yes ? [p] : []),
+        () => [],
+      ),
+    ),
+  ).then((answers) => setOffered(new Set<OAuthProvider>(answers.flat())));
+  onMount(() => void offeredReady);
+  const browserSignIn = createBrowserSignIn(signInClient);
+  onCleanup(() => browserSignIn.cancel());
   const [step, setStep] = createSignal<Step>("address");
   const [address, setAddress] = createSignal("");
   const [password, setPassword] = createSignal("");
   const [revealed, setRevealed] = createSignal(false);
   const [yourName, setYourName] = createSignal("");
   const [found, setFound] = createSignal(false);
-  const [foundName, setFoundName] = createSignal("");
+  // What lookup answered, and where it and the person's choice lead (ADR 0135, rules 3 to 5).
+  const [lookedUp, setLookedUp] = createSignal<LookedUp>({ servers: null });
+  const [route, setRoute] = createSignal<SetupRoute>({ kind: "choose" });
+  // The person's answer under *Not right?*, for the address it was given for (rule 4).
+  const [chosen, setChosen] = createSignal<{ address: string; choice: MailChoice } | null>(null);
+  const [listOpen, setListOpen] = createSignal(false);
+  // A provider's servers being looked up after it was chosen (rule 6).
+  const [lookingUp, setLookingUp] = createSignal<MailProviderId | null>(null);
   const [host, setHost] = createSignal("");
   const [port, setPort] = createSignal("993");
   const [security, setSecurity] = createSignal<TransportSecurity>("tls");
@@ -58,7 +114,6 @@ export function Setup(props: {
   const [smtpUsername, setSmtpUsername] = createSignal("");
   const [smtpPort, setSmtpPort] = createSignal("465");
   const [smtpSecurity, setSmtpSecurity] = createSignal<TransportSecurity>("tls");
-  const [serversOpen, setServersOpen] = createSignal(false);
   const [checking, setChecking] = createSignal(false);
   const [error, setError] = createSignal("");
   // The server's own words or the raw error, under the sentence (ADR 0114).
@@ -70,6 +125,10 @@ export function Setup(props: {
     account: AccountInfo;
     folderCount: number;
     smtpHost: string;
+    /** Added with a browser sign-in, not a password (ADR 0133). */
+    signedIn: boolean;
+    /** Added over Microsoft Graph (ADR 0136): no servers to name. */
+    graph: boolean;
   } | null>(null);
   // Every account added in this run, for the question about reading them (first run only).
   const [everyAdded, setEveryAdded] = createSignal<readonly AccountInfo[]>([]);
@@ -80,10 +139,34 @@ export function Setup(props: {
   onCleanup(() => setPassword(""));
 
   const domain = () => domainOfAddress(address().trim());
+  /** The mailbox is added over Graph: found or chosen as Microsoft (ADR 0136, rule 13). */
+  const graph = () => route().kind === "graph";
+  // Whose browser sign-in the servers as they now stand take, when this build offers it: the
+  // password field gives way to it (rule 11). Servers changed by hand are read the same way. Over
+  // Graph it is Graph's entry, and there are no servers.
+  const provider = (): OAuthProvider | undefined => {
+    const p = graph()
+      ? "microsoftGraph"
+      : browserSignInProvider({
+          imap: { host: host().trim() },
+          smtp: { host: smtpHost().trim() },
+        });
+    return p !== undefined && offered().has(p) ? p : undefined;
+  };
+  const anyOffered = () => offered().size > 0;
+  const busy = () => checking() || lookingUp() !== null || browserSignIn.phase() !== "idle";
+  /** The list of rule 3, a hint's provider first; Microsoft only when it can be added. */
+  const choices = () =>
+    choicesFor(
+      lookedUp().provider,
+      (id) => mailProvider(id)?.transport !== "graph" || offered().has("microsoftGraph"),
+    );
+  const current = () => currentChoice(route());
+  // The server fields: for *Another mail server* while the list is open, or nothing was found.
+  const serversOpen = () => current() === "other" && (listOpen() || !found());
+  const line = () => foundLine(route(), domain() ?? "", host());
 
   function useServers(servers: DiscoveredServers) {
-    setFound(true);
-    setFoundName(servers.displayName ?? "");
     setHost(servers.imap.host);
     setPort(String(servers.imap.port));
     setSecurity(servers.imap.security);
@@ -95,10 +178,8 @@ export function Setup(props: {
   }
 
   /** Nothing knew the domain: the usual names as a start, to correct by hand. */
-  function enterServers() {
+  function usualServers() {
     const d = domain() ?? "";
-    setFound(false);
-    setFoundName("");
     setHost(`imap.${d}`);
     setPort("993");
     setSecurity("tls");
@@ -107,9 +188,103 @@ export function Setup(props: {
     setSmtpHost(`smtp.${d}`);
     setSmtpPort("465");
     setSmtpSecurity("tls");
-    setServersOpen(true);
-    setStep("password");
   }
+
+  /** *Enter the servers* of the blocked screen: the usual names, with *Another mail server* taken. */
+  function enterServers() {
+    setChosen({ address: address().trim().toLowerCase(), choice: "other" });
+    setListOpen(true);
+    void follow({ kind: "other" });
+  }
+
+  /**
+   * Goes where the route leads (ADR 0135, rules 3 to 5; ADR 0136, rule 13). A provider chosen by
+   * hand whose servers come from lookup (rule 6) is looked up here.
+   */
+  async function follow(next: SetupRoute) {
+    setMicrosoft(false);
+    switch (next.kind) {
+      case "graph":
+        setRoute(next);
+        setFound(true);
+        setStep("password");
+        return;
+      case "servers": {
+        setRoute(next);
+        setFound(true);
+        useServers(next.servers);
+        // Microsoft lists password sign-in in its published settings but refuses it over IMAP.
+        setMicrosoft(needsBrowserSignIn(next.servers));
+        // Its servers take a browser sign-in when this build offers it (ADR 0133).
+        const step = setupStepFor(next.servers, (p) => offered().has(p));
+        setStep(step === "browser" ? "password" : step);
+        return;
+      }
+      case "providerServers": {
+        setStep("password");
+        setLookingUp(next.provider);
+        const asked = address();
+        try {
+          const { found: servers } = await props.backend.discoverServers(next.settingsDomain);
+          if (address() !== asked) return;
+          if (!servers) throw new Error("nothing found");
+          setRoute(next);
+          setFound(true);
+          useServers(servers);
+          // Its usual user name is the whole address (the settings say so).
+          setUsername(suggestedUsername(servers, address().trim()));
+          setStep(
+            setupStepFor(servers, (p) => offered().has(p)) === "blocked" ? "blocked" : "password",
+          );
+        } catch {
+          if (address() !== asked) return;
+          const name = mailProvider(next.provider)?.name ?? "The provider";
+          setError(
+            `${name}'s settings couldn't be looked up just now. Check your internet connection and choose it again, or choose Another mail server.`,
+          );
+          setListOpen(true);
+        } finally {
+          setLookingUp(null);
+        }
+        return;
+      }
+      case "other":
+        setRoute(next);
+        setFound(false);
+        usualServers();
+        setStep("password");
+        return;
+      case "choose":
+        setRoute(next);
+        setFound(false);
+        setStep("password");
+        return;
+      case "microsoftBlocked":
+        setRoute(next);
+        setMicrosoft(true);
+        setStep("blocked");
+        return;
+    }
+  }
+
+  /** The person's answer in the list (rule 3); it holds until the address changes (rule 4). */
+  function choose(choice: MailChoice) {
+    if (busy()) return;
+    setError("");
+    setEvidence("");
+    setOutgoingFailed(false);
+    browserSignIn.clear();
+    setChosen({ address: address().trim().toLowerCase(), choice });
+    // A provider takes the list's place; *Another mail server* opens the fields under it.
+    setListOpen(choice === "other");
+    void follow(routeFor(lookedUp(), choice, offered().has("microsoftGraph")));
+  }
+
+  /** The choice made for this address, if the address has not changed since (rule 4). */
+  const choiceHeld = (): MailChoice | undefined => {
+    const c = chosen();
+    return c !== null && c.address === address().trim().toLowerCase() ? c.choice : undefined;
+  };
 
   async function find() {
     const d = domain();
@@ -118,84 +293,181 @@ export function Setup(props: {
       return;
     }
     setError("");
+    setEvidence("");
     setOutgoingFailed(false);
-    setServersOpen(false);
+    setListOpen(false);
     setStep("finding");
+    let answer: LookedUp = { servers: null };
     try {
-      const { found: servers } = await props.backend.discoverServers(d);
-      if (!servers) {
-        enterServers();
-        return;
-      }
-      useServers(servers);
-      // Microsoft lists password sign-in in its published settings but refuses it over IMAP.
-      setMicrosoft(needsBrowserSignIn(servers));
-      setStep(takesPassword(servers) ? "password" : "blocked");
+      const [{ found: servers, provider }] = await Promise.all([
+        props.backend.discoverServers(d),
+        offeredReady,
+      ]);
+      answer = { servers, ...(provider === undefined ? {} : { provider }) };
     } catch {
-      enterServers();
+      // Lookup failed: as if it found nothing, so the list is there at once.
+    }
+    setLookedUp(answer);
+    // What the person said for this address wins over what was found (rule 4).
+    const held = choiceHeld();
+    if (held === "other") setListOpen(true);
+    await follow(routeFor(answer, held, offered().has("microsoftGraph")));
+  }
+
+  /** The account as typed, with a password or with the handle of a browser sign-in. */
+  async function add(
+    how: { readonly password: string } | { readonly signIn: string },
+    outgoing: boolean,
+  ) {
+    const name = yourName().trim() === "" ? {} : { displayName: yourName().trim() };
+    // Over Graph: the sign-in's handle and no servers (ADR 0136, rules 2 and 13).
+    const overGraph = graph() && "signIn" in how;
+    const r = overGraph
+      ? await props.backend.addAccount({
+          address: address().trim(),
+          ...name,
+          transport: "graph",
+          signIn: how.signIn,
+        })
+      : await addOverImap(how, outgoing, name);
+    setAdded({
+      account: r.account,
+      folderCount: r.folderCount,
+      smtpHost: overGraph ? "" : outgoing ? smtpHost().trim() : "",
+      signedIn: "signIn" in how,
+      graph: overGraph,
+    });
+    setEveryAdded((all) => [...all.filter((a) => a.id !== r.account.id), r.account]);
+    if (firstRun()) setStep("done");
+    props.onAdded(r.account);
+  }
+
+  function addOverImap(
+    how: { readonly password: string } | { readonly signIn: string },
+    outgoing: boolean,
+    name: { readonly displayName?: string },
+  ) {
+    return props.backend.addAccount({
+      address: address().trim(),
+      ...name,
+      ...how,
+      imap: {
+        host: host().trim(),
+        port: Number(port()),
+        security: security(),
+        username: username().trim(),
+      },
+      ...(outgoing
+        ? {
+            smtp: {
+              host: smtpHost().trim(),
+              port: Number(smtpPort()),
+              security: smtpSecurity(),
+              username: smtpUsername().trim() || username().trim(),
+            },
+          }
+        : {}),
+    });
+  }
+
+  const failureContext = (): FailureContext => ({
+    host: host().trim(),
+    port: Number(port()),
+    smtpHost: smtpHost().trim(),
+    browserSignIn: anyOffered(),
+    ...(graph() ? { transport: "graph" as const } : {}),
+  });
+
+  /** What a failed attempt shows: the sentence, the server's words, and what can be changed. */
+  function showFailure(e: unknown) {
+    setError(explainFailure(e, failureContext()));
+    setEvidence(failureEvidence(e, graph()) ?? "");
+    const code = (e as { code?: unknown }).code;
+    // Over Graph there is no outgoing server to leave out: sending is the same sign-in.
+    setOutgoingFailed(!graph() && (code === "outgoingAuthFailed" || code === "outgoingFailed"));
+    // What was found did not work: show it, so it can be corrected. Not when a provider's own
+    // server refused a browser sign-in: its servers are the right ones, and the sentence says
+    // what to do (ADR 0133, rule 10).
+    const refusedAtProvider =
+      provider() !== undefined && (code === "authFailed" || code === "outgoingAuthFailed");
+    if (
+      code !== "accountExists" &&
+      code !== "credentialsUnavailable" &&
+      !refusedAtProvider &&
+      !graph()
+    ) {
+      setListOpen(true);
     }
   }
 
+  /**
+   * The browser sign-in, then the same test and save as with a password (ADR 0133, rule 6). The
+   * failure of the sign-in itself is said in its own sentence; the servers' as for a password.
+   */
+  async function signInAndConnect(withOutgoing = true) {
+    const p = provider();
+    if (p === undefined || busy()) return;
+    setError("");
+    setEvidence("");
+    setOutgoingFailed(false);
+    const outgoing = !graph() && withOutgoing && smtpHost().trim() !== "";
+    await browserSignIn.run(
+      p,
+      address().trim(),
+      (handle) => add({ signIn: handle }, outgoing),
+      (e) => {
+        showFailure(e);
+        return { sentence: "" };
+      },
+    );
+  }
+
   async function connect(withOutgoing = true) {
+    if (provider() !== undefined) return signInAndConnect(withOutgoing);
     setError("");
     setEvidence("");
     setOutgoingFailed(false);
     setChecking(true);
-    const context: FailureContext = {
-      host: host().trim(),
-      port: Number(port()),
-      smtpHost: smtpHost().trim(),
-    };
     const outgoing = withOutgoing && smtpHost().trim() !== "";
     try {
-      const r = await props.backend.addAccount({
-        address: address().trim(),
-        ...(yourName().trim() === "" ? {} : { displayName: yourName().trim() }),
-        password: password(),
-        imap: {
-          host: host().trim(),
-          port: Number(port()),
-          security: security(),
-          username: username().trim(),
-        },
-        ...(outgoing
-          ? {
-              smtp: {
-                host: smtpHost().trim(),
-                port: Number(smtpPort()),
-                security: smtpSecurity(),
-                username: smtpUsername().trim() || username().trim(),
-              },
-            }
-          : {}),
-      });
+      await add({ password: password() }, outgoing);
       setPassword("");
-      setAdded({
-        account: r.account,
-        folderCount: r.folderCount,
-        smtpHost: outgoing ? smtpHost().trim() : "",
-      });
-      setEveryAdded((all) => [...all.filter((a) => a.id !== r.account.id), r.account]);
-      if (firstRun()) setStep("done");
-      props.onAdded(r.account);
     } catch (e) {
-      setError(explainFailure(e, context));
-      setEvidence(failureEvidence(e) ?? "");
-      const code = (e as { code?: unknown }).code;
-      setOutgoingFailed(code === "outgoingAuthFailed" || code === "outgoingFailed");
-      // What was found did not work: show it, so it can be corrected.
-      if (code !== "accountExists" && code !== "credentialsUnavailable") setServersOpen(true);
+      showFailure(e);
     } finally {
       setChecking(false);
     }
   }
 
+  // With a browser sign-in there is no password to wait for (ADR 0133, rule 11).
+  // The sign-in's own failure, or the servers' when the backend refused what it gave.
+  const shownError = () => error() || browserSignIn.failure();
+  const shownEvidence = () => (error() !== "" ? evidence() : browserSignIn.evidence());
+  const connectLabel = () => {
+    const p = provider();
+    if (p === undefined) return checking() ? "Checking your mailbox…" : "Connect";
+    switch (browserSignIn.phase()) {
+      case "browser":
+        return "Waiting for your browser…";
+      case "checking":
+        return "Checking your mailbox…";
+      default:
+        return `Sign in with ${providerName(p)}`;
+    }
+  };
+
   const ready = () =>
-    password() !== "" && host().trim() !== "" && Number(port()) > 0 && username().trim() !== "";
+    route().kind !== "choose" &&
+    lookingUp() === null &&
+    ((graph() && provider() !== undefined) ||
+      ((provider() !== undefined || password() !== "") &&
+        host().trim() !== "" &&
+        Number(port()) > 0 &&
+        username().trim() !== ""));
 
   function submit(e: SubmitEvent) {
     e.preventDefault();
-    if (checking()) return;
+    if (busy()) return;
     if (step() === "address") void find();
     else if (step() === "password" && ready()) void connect();
     else if (step() === "done") afterDone();
@@ -223,7 +495,7 @@ export function Setup(props: {
     setPassword("");
     setYourName("");
     setError("");
-    setServersOpen(false);
+    setListOpen(false);
     setAdded(null);
     setStep("address");
   }
@@ -245,8 +517,11 @@ export function Setup(props: {
           <button
             type="button"
             class={`${textButton} font-sans`}
-            disabled={checking()}
-            onClick={() => setStep("address")}
+            disabled={busy()}
+            onClick={() => {
+              browserSignIn.clear();
+              setStep("address");
+            }}
           >
             Change
           </button>
@@ -303,8 +578,9 @@ export function Setup(props: {
           </div>
           <div class="flex flex-col gap-1.5 text-[12px] leading-[1.5] text-secondary">
             <p>
-              Works with any IMAP mailbox: your company's server or your host's. Gmail and Microsoft
-              365 get proper sign-in later.
+              {anyOffered()
+                ? "Works with any IMAP mailbox: your company's server or your host's. Microsoft accounts sign in through your browser; Gmail gets proper sign-in later."
+                : "Works with any IMAP mailbox: your company's server or your host's. Gmail and Microsoft 365 get proper sign-in later."}
             </p>
             <p>
               To find your servers we look up only{" "}
@@ -329,7 +605,7 @@ export function Setup(props: {
           <h2 class={headline}>
             {microsoft()
               ? `${domain()} is on Microsoft's mail, which needs browser sign-in.`
-              : `${foundName() || domain()} needs browser sign-in.`}
+              : `${lookedUp().servers?.displayName || domain()} needs browser sign-in.`}
           </h2>
           <p class="text-[14px] leading-[1.5] text-mid">
             {microsoft()
@@ -355,25 +631,43 @@ export function Setup(props: {
               <div class="flex flex-col gap-2">
                 <h2 class={headline}>We couldn't find the servers for {domain()}.</h2>
                 <p class="text-[13.5px] leading-[1.5] text-mid">
-                  Your host's help pages list them, usually under IMAP settings. We've put in the
-                  usual names as a start.
+                  {serversOpen()
+                    ? "Your host's help pages list them, usually under IMAP settings. We've put in the usual names as a start."
+                    : "Who runs your mail? Choose it here, or enter the servers yourself."}
                 </p>
               </div>
             }
           >
             <p class="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 font-serif text-[15px] text-mid">
-              <span>
-                {foundName() === "" ? `Found ${host()}` : `Found ${foundName()}: ${host()}`}
-              </span>
+              <span>{line()}</span>
               <button
                 type="button"
-                aria-expanded={serversOpen()}
+                aria-expanded={listOpen()}
+                aria-controls="setup-who"
                 class={`${textButton} font-sans`}
-                onClick={() => setServersOpen(!serversOpen())}
+                disabled={busy()}
+                onClick={() => setListOpen(!listOpen())}
               >
-                {serversOpen() ? "Hide servers" : "Not right?"}
+                {listOpen() ? "Hide" : "Not right?"}
               </button>
             </p>
+          </Show>
+
+          <Show when={listOpen() || !found()}>
+            <WhoRunsList
+              choices={choices()}
+              current={current()}
+              disabled={busy()}
+              onChoose={choose}
+            />
+          </Show>
+
+          <Show when={lookingUp()}>
+            {(id) => (
+              <p class="text-[13.5px] text-mid" role="status">
+                Looking up {mailProvider(id())?.name ?? ""}'s settings…
+              </p>
+            )}
           </Show>
 
           <Show when={serversOpen()}>
@@ -397,97 +691,141 @@ export function Setup(props: {
             />
           </Show>
 
-          <Show when={found()}>
-            <h2 class={headline}>And the password?</h2>
+          <Show when={found() && lookingUp() === null}>
+            <h2 class={headline}>
+              {provider()
+                ? `Now sign in with ${providerName(provider() ?? "microsoft")}.`
+                : "And the password?"}
+            </h2>
           </Show>
 
-          <div>
-            <div class="flex items-baseline justify-between">
-              <label class={label} for="setup-password">
-                Password for {address().trim()}
-              </label>
-              <button
-                type="button"
-                class={textButton}
-                aria-pressed={revealed()}
-                onClick={() => setRevealed(!revealed())}
-              >
-                {revealed() ? "Hide" : "Show"}
-              </button>
-            </div>
-            <input
-              id="setup-password"
-              ref={(el) => queueMicrotask(() => el.focus())}
-              type={revealed() ? "text" : "password"}
-              autocomplete="off"
-              spellcheck={false}
-              class={bigInput}
-              value={password()}
-              onInput={(e) => setPassword(e.currentTarget.value)}
-            />
-            <p class="mt-2 text-[12.5px] leading-[1.5] text-secondary">{passwordHint(host())}</p>
-          </div>
+          <Show when={route().kind === "choose" || lookingUp() !== null}>
+            <Show when={shownError() !== ""}>
+              <p role="alert" class="text-[13px] leading-[1.45] text-late">
+                {shownError()}
+              </p>
+            </Show>
+          </Show>
 
-          <div>
-            <label class={label} for="setup-name">
-              Your name on mail you send (optional)
-            </label>
-            <input
-              id="setup-name"
-              class={`${field} w-full`}
-              autocomplete="off"
-              spellcheck={false}
-              value={yourName()}
-              onInput={(e) => setYourName(e.currentTarget.value)}
-            />
-          </div>
-
-          <Show when={error() !== ""}>
-            <div role="alert" class="flex flex-col gap-2.5 rounded-[10px] bg-fill px-3.5 py-3">
-              <p class="text-[13px] leading-[1.45] text-late">{error()}</p>
-              <Show when={evidence() !== ""}>
-                <p class="selectable text-[12px] leading-[1.45] break-words text-secondary">
-                  {evidence()}
+          <Show when={route().kind !== "choose" && lookingUp() === null}>
+            <Show
+              when={!provider()}
+              fallback={
+                <SignInLine
+                  provider={provider() ?? "microsoft"}
+                  address={address().trim()}
+                  phase={browserSignIn.phase()}
+                />
+              }
+            >
+              <div>
+                <div class="flex items-baseline justify-between">
+                  <label class={label} for="setup-password">
+                    Password for {address().trim()}
+                  </label>
+                  <button
+                    type="button"
+                    class={textButton}
+                    aria-pressed={revealed()}
+                    onClick={() => setRevealed(!revealed())}
+                  >
+                    {revealed() ? "Hide" : "Show"}
+                  </button>
+                </div>
+                <input
+                  id="setup-password"
+                  ref={(el) => queueMicrotask(() => el.focus())}
+                  type={revealed() ? "text" : "password"}
+                  autocomplete="off"
+                  spellcheck={false}
+                  class={bigInput}
+                  value={password()}
+                  onInput={(e) => setPassword(e.currentTarget.value)}
+                />
+                <p class="mt-2 text-[12.5px] leading-[1.5] text-secondary">
+                  {passwordHint(host(), anyOffered())}
                 </p>
-              </Show>
-              <Show when={outgoingFailed()}>
-                <div>
+              </div>
+            </Show>
+
+            <div>
+              <label class={label} for="setup-name">
+                Your name on mail you send (optional)
+              </label>
+              <input
+                id="setup-name"
+                class={`${field} w-full`}
+                autocomplete="off"
+                spellcheck={false}
+                value={yourName()}
+                onInput={(e) => setYourName(e.currentTarget.value)}
+              />
+            </div>
+
+            <Show when={shownError() !== ""}>
+              <div role="alert" class="flex flex-col gap-2.5 rounded-[10px] bg-fill px-3.5 py-3">
+                <p class="text-[13px] leading-[1.45] text-late">{shownError()}</p>
+                <Show when={shownEvidence() !== ""}>
+                  <p class="selectable text-[12px] leading-[1.45] break-words text-secondary">
+                    {shownEvidence()}
+                  </p>
+                </Show>
+                <Show when={outgoingFailed()}>
+                  <div>
+                    <button
+                      type="button"
+                      class={pill}
+                      disabled={busy() || !ready()}
+                      onClick={() => void connect(false)}
+                    >
+                      Add it without sending
+                    </button>
+                  </div>
+                </Show>
+              </div>
+            </Show>
+
+            <div class="flex items-center gap-3">
+              <button type="submit" class={pillPrimary} disabled={busy() || !ready()}>
+                {connectLabel()}
+                <Show when={!busy()}>
+                  <span class="ml-1.5 font-normal opacity-60">↵</span>
+                </Show>
+              </button>
+              <Show
+                when={browserSignIn.phase() !== "browser"}
+                fallback={
+                  <button type="button" class={pill} onClick={() => browserSignIn.cancel()}>
+                    Cancel
+                  </button>
+                }
+              >
+                <Show when={props.onCancel}>
                   <button
                     type="button"
                     class={pill}
-                    disabled={checking() || !ready()}
-                    onClick={() => void connect(false)}
+                    disabled={busy()}
+                    onClick={() => props.onCancel?.()}
                   >
-                    Add it without sending
+                    Cancel
                   </button>
-                </div>
+                </Show>
               </Show>
             </div>
-          </Show>
 
-          <div class="flex items-center gap-3">
-            <button type="submit" class={pillPrimary} disabled={checking() || !ready()}>
-              {checking() ? "Checking your mailbox…" : "Connect"}
-              <Show when={!checking()}>
-                <span class="ml-1.5 font-normal opacity-60">↵</span>
-              </Show>
-            </button>
-            <Show when={props.onCancel}>
-              <button
-                type="button"
-                class={pill}
-                disabled={checking()}
-                onClick={() => props.onCancel?.()}
-              >
+            <p class="text-[12px] text-secondary">
+              {provider()
+                ? "We test the sign-in before saving anything. It's encrypted with your Mac's keychain."
+                : "We test the login before saving anything. The password is encrypted with your Mac's keychain."}
+            </p>
+          </Show>
+          <Show when={route().kind === "choose" && props.onCancel}>
+            <div>
+              <button type="button" class={pill} onClick={() => props.onCancel?.()}>
                 Cancel
               </button>
-            </Show>
-          </div>
-
-          <p class="text-[12px] text-secondary">
-            We test the login before saving anything. The password is encrypted with your Mac's
-            keychain.
-          </p>
+            </div>
+          </Show>
         </div>
       </Show>
 
@@ -497,9 +835,16 @@ export function Setup(props: {
             added={a()}
             headline={headline}
             status={
-              props.accounts ? describeStatus(props.accounts.statusOf(a().account.id)).text : ""
+              props.accounts
+                ? describeStatus(
+                    props.accounts.statusOf(a().account.id),
+                    provider() !== undefined,
+                    a().graph,
+                  ).text
+                : ""
             }
             more={!readDeclined()}
+            signedIn={a().signedIn}
           />
         )}
       </Show>
@@ -542,7 +887,7 @@ export function Setup(props: {
     <Show when={firstRun()} fallback={form}>
       <div class="relative flex h-full flex-col overflow-hidden bg-bg">
         <div class="drag h-[52px] shrink-0" />
-        <BigMark busy={step() === "finding" || checking() || agentBusy()} />
+        <BigMark busy={step() === "finding" || busy() || agentBusy()} />
         <div class="relative min-h-0 flex-1 overflow-y-auto">
           <div class="flex min-h-full flex-col justify-center pr-8 pb-[9vh] pl-[max(32px,11vw)]">
             <div class="mb-9 flex items-center gap-2 text-[13px] font-semibold">
@@ -558,11 +903,13 @@ export function Setup(props: {
 }
 
 function Done(props: {
-  added: { account: AccountInfo; folderCount: number; smtpHost: string };
+  added: { account: AccountInfo; folderCount: number; smtpHost: string; graph: boolean };
   headline: string;
   status: string;
   /** Two questions about AI follow, so this button goes on instead of opening the mail. */
   more: boolean;
+  /** Added with a browser sign-in (ADR 0133). */
+  signedIn: boolean;
 }) {
   const folders = () =>
     props.added.folderCount === 1 ? "1 folder" : `${props.added.folderCount} folders`;
@@ -574,15 +921,22 @@ function Done(props: {
       </div>
       <ul class="m-0 flex list-none flex-col gap-2 p-0 text-[13.5px]">
         <Check>
-          Signed in to {props.added.account.host}, {folders()} found
+          Signed in to {props.added.graph ? "Microsoft" : props.added.account.host}, {folders()}{" "}
+          found
         </Check>
         <Show
-          when={props.added.smtpHost !== ""}
+          when={props.added.graph || props.added.smtpHost !== ""}
           fallback={<li class="pl-6 text-secondary">Read only: no outgoing server yet</li>}
         >
-          <Check>Sending works through {props.added.smtpHost}</Check>
+          <Check>
+            Sending works through {props.added.graph ? "Microsoft" : props.added.smtpHost}
+          </Check>
         </Show>
-        <Check>Password encrypted with your Mac's keychain</Check>
+        <Check>
+          {props.signedIn
+            ? "Sign-in encrypted with your Mac's keychain"
+            : "Password encrypted with your Mac's keychain"}
+        </Check>
       </ul>
       <Show when={props.status !== ""}>
         <p class="text-[12.5px] text-secondary" role="status" aria-live="polite">
@@ -596,6 +950,34 @@ function Done(props: {
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * In the password field's place on servers that take only a browser sign-in (ADR 0133, rule 11):
+ * that the browser opens, and while it is open, that setup waits for it.
+ */
+function SignInLine(props: { provider: OAuthProvider; address: string; phase: SignInPhase }) {
+  const name = () => providerName(props.provider);
+  return (
+    <p
+      class="flex items-start gap-2.5 text-[14px] leading-[1.5] text-mid"
+      role="status"
+      aria-live="polite"
+    >
+      <Show when={props.phase !== "idle"}>
+        <span class="mt-[4px] inline-flex shrink-0 animate-spin">
+          <Ring size={14} />
+        </span>
+      </Show>
+      <span>
+        {props.phase === "browser"
+          ? `Waiting for you to sign in to ${props.address} in your browser. Matters comes back to the front when you're done.`
+          : props.phase === "checking"
+            ? `Signed in with ${name()}. Checking your mailbox…`
+            : `Your browser opens at ${name()}'s sign-in page for ${props.address}. Matters never sees your password there.`}
+      </span>
+    </p>
   );
 }
 
@@ -646,6 +1028,53 @@ function BigMark(props: { busy: boolean }) {
         />
       </g>
     </svg>
+  );
+}
+
+/**
+ * Who runs the mail, said by the person (ADR 0135, rule 3): the providers Matters can add by name
+ * and *Another mail server*, as radio buttons in the app's bordered rows. Choosing one takes
+ * effect at once; the arrow keys move between them.
+ */
+function WhoRunsList(props: {
+  choices: readonly MailChoice[];
+  current: MailChoice | undefined;
+  disabled: boolean;
+  onChoose: (choice: MailChoice) => void;
+}) {
+  return (
+    <div
+      id="setup-who"
+      role="radiogroup"
+      aria-label="Who runs your mail"
+      class="settle flex flex-col gap-2"
+    >
+      <For each={props.choices}>
+        {(choice) => (
+          <label
+            data-mail-choice={choice}
+            class="flex cursor-default items-start gap-2.5 rounded-[10px] border p-3"
+            classList={{
+              "border-edge": props.current === choice,
+              "border-hairline": props.current !== choice,
+            }}
+          >
+            <input
+              type="radio"
+              name="setup-who"
+              class="mt-[3px]"
+              checked={props.current === choice}
+              disabled={props.disabled}
+              onChange={() => props.onChoose(choice)}
+            />
+            <span class="min-w-0 flex-1">
+              <span class="block text-[13.5px] font-semibold">{choiceLabel(choice)}</span>
+              <span class="block text-[12px] text-secondary">{choiceNote(choice)}</span>
+            </span>
+          </label>
+        )}
+      </For>
+    </div>
   );
 }
 

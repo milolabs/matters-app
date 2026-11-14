@@ -13,6 +13,7 @@ import { CredentialRelay } from "../src/backend/credentialRelay.ts";
 import { handle } from "../src/backend/handler.ts";
 import { RemoteAccounts } from "../src/backend/remoteAccounts.ts";
 import { SyncHost, WorkerCommandError, WorkerUnavailableError } from "../src/backend/syncHost.ts";
+import { wireError } from "../src/backend/syncRuntime.ts";
 import type { CrashWorkerConfig } from "./support/crashWorker.ts";
 
 const ACCOUNT = "acc-crash";
@@ -326,7 +327,7 @@ describe("RemoteAccounts", () => {
     const events: string[] = [];
     const accounts = new RemoteAccounts({
       accounts: { list: async () => [stored] },
-      discovery: { discover: async () => null },
+      discovery: { discover: async () => ({ servers: null }) },
       host: { command } as unknown as SyncHost,
       statuses,
       onChanged: () => events.push("changed"),
@@ -365,6 +366,26 @@ describe("RemoteAccounts", () => {
       throw new WorkerCommandError({ name: "ImapError", message: "no", kind: "auth" });
     });
     expect(await auth.call(request)).toMatchObject({ ok: false, code: "authFailed" });
+
+    // Why the server refused, and its words, cross the worker too (ADR 0114): without them the
+    // screen can only say the sign-in was refused.
+    const refused = accountsOver(async () => {
+      throw new WorkerCommandError(
+        wireError(
+          Object.assign(new Error("no"), {
+            name: "ImapAuthError",
+            kind: "auth",
+            detail: { refusal: "notAllowed", serverText: "AUTHENTICATE failed.", other: 1 },
+          }),
+        ),
+      );
+    });
+    expect(await refused.call(request)).toMatchObject({
+      ok: false,
+      code: "authFailed",
+      detail: { refusal: "notAllowed", serverText: "AUTHENTICATE failed." },
+    });
+    expect(wireError(new Error("plain"))).toEqual({ name: "Error", message: "plain" });
 
     const down = accountsOver(async () => {
       throw new WorkerUnavailableError();

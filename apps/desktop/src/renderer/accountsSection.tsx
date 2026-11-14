@@ -1,6 +1,6 @@
 import type { AccountInfo } from "@matters/contracts";
-import type { AgentStatus } from "@matters/core";
-import { mailRuntimesInUse } from "@matters/core";
+import type { AgentStatus, OAuthProvider } from "@matters/core";
+import { browserSignInProvider, mailRuntimesInUse } from "@matters/core";
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { AccountColor } from "./accountMarks.ts";
 import type { AccountsStore } from "./accounts.ts";
@@ -8,9 +8,10 @@ import { ConsentQuestion } from "./agentConnect.tsx";
 import type { Backend } from "./client.ts";
 import { signInTrouble } from "./explain.ts";
 import { Ring } from "./icons.tsx";
-import { passwordRejected } from "./newPassword.ts";
-import { NewPasswordForm } from "./newPasswordForm.tsx";
+import { passwordRejected, signInEnded } from "./newPassword.ts";
+import { NewPasswordForm, SignInAgainForm } from "./newPasswordForm.tsx";
 import { Setup } from "./setup.tsx";
+import { mainSignIn, type SignInClient } from "./signIn.ts";
 import { describeStatus } from "./status.ts";
 
 const small =
@@ -24,12 +25,29 @@ const smallPrimary =
  * "Remove" asks first. Keys: s syncs the account in focus, p asks for its new password, r asks to
  * remove it, n adds another. An account whose password the server refused shows the password form
  * at once (ADR 0113); any other refused sign-in shows its reason and next step instead (ADR 0114).
+ * An account on servers that take only a browser sign-in has *Sign in again* in the password
+ * form's place, under the same key, and it opens by itself when the sign-in has ended (ADR 0133).
  */
 export function AccountsSection(props: {
   backend: Backend;
   accounts: AccountsStore;
   onClose: () => void;
+  /** Main's browser sign-in; tests pass their own. */
+  signIn?: SignInClient;
 }) {
+  const signIn = props.signIn ?? mainSignIn;
+  // Whose browser sign-in an account takes, read from its transport, then the host table (ADR
+  // 0136, rule 2; ADR 0133, rule 11), and whether this build offers it (rule 4), asked of main
+  // once: one registration serves both Microsoft entries.
+  const providerOf = (account: AccountInfo): OAuthProvider | undefined =>
+    browserSignInProvider({ transport: account.transport, imap: { host: account.host } });
+  const [offered, setOffered] = createSignal<ReadonlySet<OAuthProvider>>(new Set());
+  onMount(() => {
+    void signIn.offered("microsoft").then(
+      (yes) => yes && setOffered(new Set<OAuthProvider>(["microsoft", "microsoftGraph"])),
+      () => {},
+    );
+  });
   const [adding, setAdding] = createSignal(false);
   const [confirming, setConfirming] = createSignal<string | null>(null);
   const [removing, setRemoving] = createSignal<string | null>(null);
@@ -38,7 +56,15 @@ export function AccountsSection(props: {
   const [asked, setAsked] = createSignal<ReadonlySet<string>>(new Set());
   const [dismissed, setDismissed] = createSignal<ReadonlySet<string>>(new Set());
   const [saved, setSaved] = createSignal<Readonly<Record<string, string>>>({});
-  const rejected = (id: string) => passwordRejected(props.accounts.statusOf(id));
+  const byBrowser = (id: string) => {
+    const account = props.accounts.accounts().find((a) => a.id === id);
+    return account !== undefined && providerOf(account) !== undefined;
+  };
+  // The way out the row offers first: a new password, or a new sign-in in the browser.
+  const rejected = (id: string) =>
+    byBrowser(id)
+      ? signInEnded(props.accounts.statusOf(id))
+      : passwordRejected(props.accounts.statusOf(id));
   const formOpen = (id: string) =>
     asked().has(id) || (rejected(id) && !dismissed().has(id) && saved()[id] === undefined);
   const plus = (set: ReadonlySet<string>, id: string) => new Set([...set, id]);
@@ -146,6 +172,7 @@ export function AccountsSection(props: {
             <div class="min-h-0 flex-1 overflow-y-auto">
               <Setup
                 backend={props.backend}
+                signIn={signIn}
                 onCancel={() => setAdding(false)}
                 onAdded={(account) => {
                   setAdding(false);
@@ -197,7 +224,13 @@ export function AccountsSection(props: {
             fallback={<p class="px-5 pt-10 text-center text-[13px] text-secondary">No accounts.</p>}
           >
             {(account) => {
-              const status = () => describeStatus(props.accounts.statusOf(account.id));
+              const graph = () => account.transport === "graph";
+              const status = () =>
+                describeStatus(
+                  props.accounts.statusOf(account.id),
+                  providerOf(account) !== undefined,
+                  graph(),
+                );
               return (
                 <div
                   data-account={account.id}
@@ -226,12 +259,15 @@ export function AccountsSection(props: {
                     </span>
                   </div>
                   <div class="text-[12px] text-secondary">
-                    {account.host}:{account.port} ·{" "}
-                    {account.security === "tls"
-                      ? "TLS"
-                      : account.security === "starttls"
-                        ? "STARTTLS"
-                        : "no encryption"}
+                    {/* A Graph account has no servers to show (ADR 0136, rule 2). */}
+                    <Show when={!graph()} fallback="Microsoft · signs in through your browser">
+                      {account.host}:{account.port} ·{" "}
+                      {account.security === "tls"
+                        ? "TLS"
+                        : account.security === "starttls"
+                          ? "STARTTLS"
+                          : "no encryption"}
+                    </Show>
                   </div>
                   <Show when={saved()[account.id]}>
                     {(note) => (
@@ -243,7 +279,12 @@ export function AccountsSection(props: {
                   <Show
                     when={
                       !formOpen(account.id) &&
-                      signInTrouble(props.accounts.statusOf(account.id), account.host)
+                      signInTrouble(
+                        props.accounts.statusOf(account.id),
+                        account.host,
+                        offered().size > 0,
+                        account.transport,
+                      )
                     }
                   >
                     {(why) => (
@@ -256,16 +297,37 @@ export function AccountsSection(props: {
                     )}
                   </Show>
                   <Show when={formOpen(account.id) && confirming() !== account.id}>
-                    <NewPasswordForm
-                      backend={props.backend}
-                      account={account}
-                      status={props.accounts.statusOf(account.id)}
-                      onClose={() => closeForm(account.id)}
-                      onSaved={(note) => {
-                        setAsked((s) => minus(s, account.id));
-                        setSaved((all) => ({ ...all, [account.id]: note }));
-                      }}
-                    />
+                    <Show
+                      when={providerOf(account)}
+                      fallback={
+                        <NewPasswordForm
+                          backend={props.backend}
+                          account={account}
+                          status={props.accounts.statusOf(account.id)}
+                          onClose={() => closeForm(account.id)}
+                          onSaved={(note) => {
+                            setAsked((s) => minus(s, account.id));
+                            setSaved((all) => ({ ...all, [account.id]: note }));
+                          }}
+                        />
+                      }
+                    >
+                      {(provider) => (
+                        <SignInAgainForm
+                          backend={props.backend}
+                          signIn={signIn}
+                          account={account}
+                          provider={provider()}
+                          offered={offered().has(provider())}
+                          status={props.accounts.statusOf(account.id)}
+                          onClose={() => closeForm(account.id)}
+                          onSaved={(note) => {
+                            setAsked((s) => minus(s, account.id));
+                            setSaved((all) => ({ ...all, [account.id]: note }));
+                          }}
+                        />
+                      )}
+                    </Show>
                   </Show>
                   <Show
                     when={confirming() === account.id}
@@ -284,7 +346,11 @@ export function AccountsSection(props: {
                             class={rejected(account.id) ? smallPrimary : small}
                             onClick={() => openForm(account.id)}
                           >
-                            {rejected(account.id) ? "Enter new password" : "Change password"}{" "}
+                            {providerOf(account)
+                              ? "Sign in again"
+                              : rejected(account.id)
+                                ? "Enter new password"
+                                : "Change password"}{" "}
                             <span
                               classList={{
                                 "text-secondary": !rejected(account.id),
@@ -315,8 +381,9 @@ export function AccountsSection(props: {
                         fallback={
                           <>
                             <p class="mb-2 text-[13px]">
-                              Remove {account.address}? Its messages, search index and saved
-                              password are deleted from this computer. Mail on the server stays.
+                              Remove {account.address}? Its messages, search index and saved{" "}
+                              {providerOf(account) ? "sign-in" : "password"} are deleted from this
+                              computer. Mail on the server stays.
                             </p>
                             <div class="flex gap-2">
                               <button

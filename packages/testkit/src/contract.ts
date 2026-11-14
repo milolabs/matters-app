@@ -11,6 +11,7 @@ import type {
   FlagOutboxPort,
   ImageRule,
   ImageRuleStorePort,
+  ImapStoredAccount,
   Label,
   LabelRole,
   LedgerEntry,
@@ -64,10 +65,12 @@ import {
   setSeen,
   splitMessageKey,
   startSend,
+  syncAccount,
   undoMove,
   voidSend,
 } from "@matters/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { FakeItemSync } from "./fakeItemSync.ts";
 import {
   asStored,
   makeDocument,
@@ -2646,6 +2649,82 @@ export function describeSyncBatchContract(name: string, factory: Factory<UnitOfW
       expect(await h().cursors.get(ACC, "INBOX")).toEqual({ uid: 1 });
       expect((await h().read.store.changesSince(0)).changeSeq).toBe(seq);
     });
+
+    describe("a handle that is the provider's own id (ADR 0136, rule 6)", () => {
+      const graph = { id: ACC, address: "me@example.com", displayName: "Me", capabilities: [] };
+      const sync = (server: FakeItemSync) => syncAccount({ ...h(), sync: server }, graph);
+      const keyOf = async (itemId: string) =>
+        (await h().store.findByProviderIds(ACC, [itemId])).get(itemId);
+
+      it("gives each item id a number of its own in its folder, and keeps it", async () => {
+        const first = await h().store.numberItems(ACC, "Inbox", ["a", "b", "a"]);
+        expect([...first]).toEqual([
+          ["a", 1],
+          ["b", 2],
+        ]);
+        expect([...(await h().store.numberItems(ACC, "Inbox", ["c", "b"]))]).toEqual([
+          ["c", 3],
+          ["b", 2],
+        ]);
+        // Another folder counts by itself; a lookup gives no number.
+        expect([...(await h().store.numberItems(ACC, "Archive", ["a"]))]).toEqual([["a", 1]]);
+        expect([...(await h().store.itemNumbers(ACC, "Inbox", ["b", "zz"]))]).toEqual([["b", 2]]);
+        expect(await h().store.numberItems(ACC, "Junk", [])).toEqual(new Map());
+        expect([...(await h().store.itemIdsOf(ACC, "Inbox", [3, 1, 9]))].sort()).toEqual([
+          [1, "a"],
+          [3, "c"],
+        ]);
+      });
+
+      it("keeps the id with the location, and IMAP locations stay without one", async () => {
+        const d = doc(1, "handle", { providerId: "AAMk-1" });
+        const [uid] = (await h().store.numberItems(ACC, "Inbox", ["AAMk-1"])).values();
+        const at = { ...makeLocation(uid as number, "Inbox"), itemId: "AAMk-1" };
+        await apply("Inbox", { documents: [{ document: d, location: at }] });
+        const imap = doc(2, "plain", { providerId: "p" });
+        await apply("INBOX", { documents: [syncedDoc(imap, 7)] });
+        expect(await h().store.getLocations((await keyOf("AAMk-1")) as number)).toEqual([at]);
+        expect(await h().store.getLocations((await keyOf("p")) as number)).toEqual([
+          makeLocation(7),
+        ]);
+      });
+
+      it("takes a move as a new location of a known message: same key, no download", async () => {
+        const server = new FakeItemSync(["Inbox", "Archive"]);
+        server.add("Inbox", "id-1", "moved over graph");
+        server.add("Inbox", "id-2");
+        await sync(server);
+        const key = await keyOf("id-1");
+        expect(server.downloads).toEqual(["id-1", "id-2"]);
+
+        server.move("id-1", "Inbox", "Archive");
+        await sync(server);
+        expect(server.downloads).toEqual(["id-1", "id-2"]);
+        expect(await keyOf("id-1")).toBe(key);
+        const [m] = await h().read.store.getByKeys([key as number]);
+        expect(m?.labelIds).toEqual(["Archive"]);
+        expect(await h().store.getLocations(key as number)).toEqual([
+          { accountId: ACC, folderId: "Archive", uidValidity: "1", uid: 1, itemId: "id-1" },
+        ]);
+        expect(await find("moved")).toEqual([key]);
+      });
+
+      it("takes @removed as a removed location: the last one deletes the message", async () => {
+        const server = new FakeItemSync(["Inbox"]);
+        server.add("Inbox", "id-9", "removed over graph");
+        await sync(server);
+        const key = await keyOf("id-9");
+        expect(await find("removed")).toEqual([key]);
+
+        server.remove("Inbox", "id-9");
+        await sync(server);
+        expect(await keyOf("id-9")).toBeUndefined();
+        expect(await find("removed")).toEqual([]);
+        expect(await h().read.store.getByKeys([key as number])).toEqual([]);
+        // The number is not given again: a stale location cannot reach another message.
+        expect([...(await h().store.numberItems(ACC, "Inbox", ["id-10"]))]).toEqual([["id-10", 2]]);
+      });
+    });
   });
 }
 
@@ -2934,7 +3013,7 @@ export function describeSeenContract(name: string, factory: Factory<UnitOfWorkHa
   });
 }
 
-const stored = (overrides: Partial<StoredAccount> = {}): StoredAccount => ({
+const stored = (overrides: Partial<ImapStoredAccount> = {}): StoredAccount => ({
   id: "acc1",
   address: "me@example.com",
   displayName: "Me",
@@ -2964,6 +3043,23 @@ export function describeAccountStoreContract(name: string, factory: Factory<Acco
       });
       await accounts().add(a);
       expect(await accounts().get(a.id)).toEqual(a);
+    });
+
+    it("keeps a Graph account with its transport and no server settings (ADR 0136, rule 2)", async () => {
+      const graph: StoredAccount = {
+        id: "g1",
+        transport: "graph",
+        address: "me@outlook.example",
+        displayName: "Me",
+        createdAtMs: 300,
+      };
+      await accounts().add(stored());
+      await accounts().add(graph);
+      expect(await accounts().get("g1")).toEqual(graph);
+      // An IMAP account reads back without a transport: absent is `imap`.
+      expect(await accounts().list()).toEqual([stored(), graph]);
+      await accounts().setMessageLimit("g1", 4_000_000);
+      expect(await accounts().get("g1")).toEqual({ ...graph, messageLimitBytes: 4_000_000 });
     });
 
     it("rejects a taken id or address, whatever its case", async () => {

@@ -129,7 +129,7 @@ await startSyncRuntime({
   storage,
   connector,
   channel,
-  discovery: { discover: async () => null },
+  discovery: { discover: async () => ({ servers: null }) },
   registrableDomain,
   files: new FakeFileWork(),
   sending: {

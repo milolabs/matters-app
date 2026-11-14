@@ -10,7 +10,7 @@ import {
 } from "@matters/core";
 
 /**
- * The server refused the user name or password. `detail.refusal` says why, as far as the answer
+ * The server refused the user name and the password or token. `detail.refusal` says why, as far as the answer
  * told (ADR 0114); `detail.serverText` is the server's sentence for showing, kept out of the
  * message, which travels to logs.
  */
@@ -42,21 +42,34 @@ const IMAP_CODES: Readonly<Record<string, SignInRefusal>> = {
   LIMIT: "throttled",
 };
 
+/** How the refused login was made: with a password, or with a browser sign-in's token. */
+export type ImapLogin = "password" | "token";
+
 /**
  * Why an IMAP server refused the sign-in, from its answer: a provider's specific wording first,
  * then the response code, then a temporary-sounding text. On a host that takes browser sign-in
- * only, every refusal but a temporary one means that, whatever it says ("LOGIN failed.").
+ * only, every refusal of a password but a temporary one means that, whatever it says ("LOGIN
+ * failed."). A token there is browser sign-in (ADR 0133, rule 10): a provider's sentence that
+ * names a reason still wins, and a bare refusal means the mailbox may not use IMAP
+ * (`notAllowed`), since the vault hands out only a token that does not end within minutes.
  */
-export function imapRefusal(host: string, code: string | undefined, text: string): SignInRefusal {
+export function imapRefusal(
+  host: string,
+  code: string | undefined,
+  text: string,
+  login: ImapLogin = "password",
+): SignInRefusal {
   const bracket = /\[([A-Z-]+)[\] ]/.exec(text)?.[1];
   const said =
     refusalFromWording(text) ??
     IMAP_CODES[(code ?? bracket ?? "").toUpperCase()] ??
     (soundsTemporary(text) ? "unavailable" : "unknown");
-  if (hostRule(host)?.signIn === "browserOnly" && said !== "unavailable" && said !== "throttled") {
-    return "browserOnly";
-  }
-  return said;
+  if (hostRule(host)?.signIn !== "browserOnly") return said;
+  if (said === "unavailable" || said === "throttled") return said;
+  if (login === "password") return "browserOnly";
+  return said === "credentials" || said === "unknown" || said === "browserOnly"
+    ? "notAllowed"
+    : said;
 }
 
 /** The `ImapAuthError` for a refused LOGIN or AUTHENTICATE, without any secret. */
@@ -65,11 +78,12 @@ export function refusedSignIn(
   user: string,
   answer: { readonly code?: string; readonly text?: string },
   secrets: readonly string[],
+  login: ImapLogin = "password",
 ): ImapAuthError {
   const text = answer.text ?? "";
   const serverText = serverSentence(text, { secrets, user });
   return new ImapAuthError(host, user, {
-    refusal: imapRefusal(host, answer.code, text),
+    refusal: imapRefusal(host, answer.code, text, login),
     ...(serverText === undefined ? {} : { serverText }),
   });
 }

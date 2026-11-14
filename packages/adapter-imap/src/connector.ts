@@ -7,7 +7,6 @@ import type {
   MimeParserPort,
 } from "@matters/core";
 import type { ImapConnectionOptions } from "./connection.ts";
-import { ImapAuthError } from "./errors.ts";
 import { ImapMailSync } from "./mailSync.ts";
 import { watchInbox } from "./watch.ts";
 
@@ -48,25 +47,24 @@ export class ImapConnector implements MailConnectorPort {
     };
   }
 
-  watchInbox(target: MailTarget, handlers: MailWatchHandlers): Promise<MailWatch> {
+  async watchInbox(target: MailTarget, handlers: MailWatchHandlers): Promise<MailWatch> {
     return watchInbox(this.connectionOptions(target), handlers);
   }
 
   private connectionOptions(target: MailTarget): ImapConnectionOptions {
     const { server, credential } = target;
-    if (credential.kind !== "password") {
-      throw new ImapAuthError(
-        server.host,
-        server.username,
-        {},
-        "Only password sign-in is supported",
-      );
-    }
+    // A Graph account is reached through its own adapter (ADR 0136, rule 4).
+    if (server === undefined) throw new Error("This account's mail does not move over IMAP");
     return {
       host: server.host,
       port: server.port,
       security: server.security,
-      auth: { user: server.username, pass: credential.password },
+      // A browser sign-in logs in with XOAUTH2 as the server's user name from the account's
+      // settings (ADR 0133, rule 9); the vault has made sure the token still works (rule 7).
+      auth:
+        credential.kind === "password"
+          ? { user: server.username, pass: credential.password }
+          : { user: server.username, accessToken: credential.accessToken },
       ...(this.options.allowInsecure === undefined
         ? {}
         : { allowInsecure: this.options.allowInsecure }),

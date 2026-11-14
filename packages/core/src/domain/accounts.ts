@@ -13,20 +13,52 @@ export interface MailServerSettings {
   readonly username: string;
 }
 
-/** An account as stored: everything but the password (ADR 0018). */
-export interface StoredAccount {
+/**
+ * How an account's mail moves (ADR 0136, rule 2): IMAP and SMTP with the servers it stores, or
+ * Microsoft Graph, which has no servers to store. Kept with the account; an account does not
+ * change it (it is removed and added again).
+ */
+export type MailTransport = "imap" | "graph";
+
+interface StoredAccountFields {
   readonly id: string;
   readonly address: string;
   readonly displayName: string;
-  readonly imap: MailServerSettings;
-  /** Where mail is sent; an account without it can read but not send. */
-  readonly smtp?: MailServerSettings;
   /**
    * The largest message the outgoing server takes, as it announced in `SIZE` (ADR 0040, rule 4).
    * Absent while unknown; a connection refreshes it.
    */
   readonly messageLimitBytes?: number;
   readonly createdAtMs: number;
+}
+
+/** An account whose mail moves over IMAP and SMTP. Every account from before ADR 0136 is one. */
+export interface ImapStoredAccount extends StoredAccountFields {
+  /** Absent reads as `imap`, so accounts written before the transport existed stay as they are. */
+  readonly transport?: "imap";
+  readonly imap: MailServerSettings;
+  /** Where mail is sent; an account without it can read but not send. */
+  readonly smtp?: MailServerSettings;
+}
+
+/** An account whose mail moves over Microsoft Graph (ADR 0136): it stores no server settings. */
+export interface GraphStoredAccount extends StoredAccountFields {
+  readonly transport: "graph";
+  readonly imap?: undefined;
+  readonly smtp?: undefined;
+}
+
+/** An account as stored: everything but the password (ADR 0018). */
+export type StoredAccount = ImapStoredAccount | GraphStoredAccount;
+
+/** The account's transport; absent is `imap` (ADR 0136, rule 2). */
+export function transportOf(account: { readonly transport?: MailTransport }): MailTransport {
+  return account.transport ?? "imap";
+}
+
+/** Whether mail can be sent from the account: a Graph account always sends (ADR 0136, rule 9). */
+export function canSendFrom(account: StoredAccount): boolean {
+  return account.transport === "graph" || account.smtp !== undefined;
 }
 
 /** A server as a provider announces it; the user name is still a template. */

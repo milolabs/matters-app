@@ -23,6 +23,8 @@ export interface SinkScript {
   dropAtMailFrom?: boolean;
   /** Refuse MAIL FROM with 552 when the client declares a `SIZE=` above this. */
   refuseSizeAbove?: number;
+  /** The text after 535 of a refused XOAUTH2 login; "5.7.3 Authentication unsuccessful" by default. */
+  tokenRefusal?: string;
 }
 
 export interface SmtpSink {
@@ -32,6 +34,10 @@ export interface SmtpSink {
   readonly password: string;
   readonly received: Received[];
   readonly script: SinkScript;
+  /** The access token XOAUTH2 takes; undefined when the sink does not offer XOAUTH2. */
+  readonly accessToken: string | undefined;
+  /** Every AUTH the sink was given, with its mechanism. */
+  readonly logins: { readonly method: string; readonly username: string }[];
   /** Bytes of message data seen so far, also of a message that never ended. */
   readonly dataBytes: () => number;
   /** Connections accepted so far, and the ones still open. */
@@ -49,11 +55,15 @@ export async function startSmtpSink(
     password?: string;
     /** Announced in EHLO as `SIZE`; the server also refuses a larger declaration itself. */
     size?: number;
+    /** Offers AUTH XOAUTH2 and takes this token for `user` (ADR 0133, rule 9). */
+    accessToken?: string;
   } = {},
 ): Promise<SmtpSink> {
   const user = options.user ?? "me";
   const password = options.password ?? "smtp-test-password";
   const received: Received[] = [];
+  const logins: { method: string; username: string }[] = [];
+  const accessToken = options.accessToken;
   const script: SinkScript = {};
   const sockets = new Set<Socket>();
   let dataBytes = 0;
@@ -66,7 +76,21 @@ export async function startSmtpSink(
     logger: false,
     banner: "matters test sink",
     ...(options.size === undefined ? {} : { size: options.size }),
+    ...(accessToken === undefined ? {} : { authMethods: ["PLAIN", "LOGIN", "XOAUTH2"] }),
     onAuth(auth, _session, callback) {
+      logins.push({ method: auth.method, username: auth.username ?? "" });
+      if (auth.method === "XOAUTH2") {
+        if (
+          accessToken !== undefined &&
+          auth.username === user &&
+          auth.accessToken === accessToken
+        ) {
+          callback(null, { user });
+        } else {
+          callback(new Error(script.tokenRefusal ?? "5.7.3 Authentication unsuccessful"));
+        }
+        return;
+      }
       if (auth.username === user && auth.password === password) callback(null, { user });
       else callback(new Error("535 5.7.8 Authentication credentials invalid"));
     },
@@ -138,6 +162,8 @@ export async function startSmtpSink(
     password,
     received,
     script,
+    accessToken,
+    logins,
     dataBytes: () => dataBytes,
     connections: () => ({ total, open: sockets.size }),
     dropConnections: () => {

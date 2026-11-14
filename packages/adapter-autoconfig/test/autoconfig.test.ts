@@ -153,6 +153,10 @@ interface FakeWorld {
   readonly mx?: Record<string, string[]>;
   /** `imap:host:port` of servers that answer a probe. */
   readonly answering?: readonly string[];
+  /** `TXT` records of a name, each as its strings. */
+  readonly txt?: Record<string, string[][]>;
+  /** CNAME targets of a name. */
+  readonly cname?: Record<string, string[]>;
 }
 
 function fakeNetwork(world: FakeWorld) {
@@ -184,13 +188,38 @@ function fakeNetwork(world: FakeWorld) {
     if (!records) throw Object.assign(new Error("ENODATA"), { code: "ENODATA" });
     return records.map((exchange, priority) => ({ exchange, priority }));
   };
+  /** Every name the signs of ADR 0135 asked about. */
+  const signLookups: string[] = [];
+  const resolveTxt = async (name: string) => {
+    signLookups.push(`TXT ${name}`);
+    const records = world.txt?.[name];
+    if (!records) throw Object.assign(new Error("ENODATA"), { code: "ENODATA" });
+    return records;
+  };
+  const resolveCname = async (name: string) => {
+    signLookups.push(`CNAME ${name}`);
+    const records = world.cname?.[name];
+    if (!records) throw Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" });
+    return records;
+  };
   const probes: string[] = [];
   const probe: Prober = async (protocol, host, port) => {
     const key = `${protocol}:${host}:${port}`;
     probes.push(key);
     return world.answering?.includes(key) ?? false;
   };
-  return { requests, lookups, probes, fetch, resolveSrv, resolveMx, probe };
+  return {
+    requests,
+    lookups,
+    probes,
+    signLookups,
+    fetch,
+    resolveSrv,
+    resolveMx,
+    resolveTxt,
+    resolveCname,
+    probe,
+  };
 }
 
 function response(url: string, status: number, body: string): FetchedResponse {
@@ -211,7 +240,7 @@ describe("AutoconfigDiscovery", () => {
       files: { [PROVIDER]: fixture("polish-provider-like.xml") },
       srv: {},
     });
-    const found = await new AutoconfigDiscovery(net).discover("Poczta.Example.PL");
+    const found = (await new AutoconfigDiscovery(net).discover("Poczta.Example.PL")).servers;
 
     expect(found).toMatchObject({
       source: "provider",
@@ -228,7 +257,7 @@ describe("AutoconfigDiscovery", () => {
       },
       srv: {},
     });
-    const found = await new AutoconfigDiscovery(net).discover("poczta.example.pl");
+    const found = (await new AutoconfigDiscovery(net).discover("poczta.example.pl")).servers;
 
     expect(found?.source).toBe("ispdb");
     expect(found?.imap.host).toBe("imap.poczta.example.pl");
@@ -249,9 +278,9 @@ describe("AutoconfigDiscovery", () => {
         files: { [PROVIDER]: first, [ISPDB]: fixture("polish-provider-like.xml") },
         srv: {},
       });
-      const found = await new AutoconfigDiscovery({ ...net, timeoutMs: 30 }).discover(
-        "poczta.example.pl",
-      );
+      const found = (
+        await new AutoconfigDiscovery({ ...net, timeoutMs: 30 }).discover("poczta.example.pl")
+      ).servers;
       expect(found?.source, String(first).slice(0, 20)).toBe("ispdb");
     }
   });
@@ -267,7 +296,7 @@ describe("AutoconfigDiscovery", () => {
       },
       srv: {},
     });
-    expect(await new AutoconfigDiscovery(net).discover("poczta.example.pl")).toBeNull();
+    expect((await new AutoconfigDiscovery(net).discover("poczta.example.pl")).servers).toBeNull();
   });
 
   it("uses DNS SRV last: imaps before imap, lowest priority and highest weight first, submission too", async () => {
@@ -287,7 +316,7 @@ describe("AutoconfigDiscovery", () => {
         ],
       },
     });
-    const found = await new AutoconfigDiscovery(net).discover("poczta.example.pl");
+    const found = (await new AutoconfigDiscovery(net).discover("poczta.example.pl")).servers;
 
     expect(found).toEqual({
       source: "dns",
@@ -324,7 +353,7 @@ describe("AutoconfigDiscovery", () => {
         ],
       },
     });
-    const found = await new AutoconfigDiscovery(net).discover("poczta.example.pl");
+    const found = (await new AutoconfigDiscovery(net).discover("poczta.example.pl")).servers;
     expect(found?.imap).toMatchObject({
       host: "imap.poczta.example.pl",
       port: 143,
@@ -336,18 +365,18 @@ describe("AutoconfigDiscovery", () => {
   it("answers null (manual setup) when no source knows the domain, or the domain is unusable", async () => {
     const net = fakeNetwork({ files: {}, srv: {} });
     const discovery = new AutoconfigDiscovery(net);
-    expect(await discovery.discover("poczta.example.pl")).toBeNull();
+    expect((await discovery.discover("poczta.example.pl")).servers).toBeNull();
     expect(net.lookups).toEqual(["_imaps._tcp.poczta.example.pl", "_imap._tcp.poczta.example.pl"]);
 
     const before = net.requests.length;
-    expect(await discovery.discover("evil.com/../x")).toBeNull();
-    expect(await discovery.discover("me@poczta.example.pl")).toBeNull();
+    expect((await discovery.discover("evil.com/../x")).servers).toBeNull();
+    expect((await discovery.discover("me@poczta.example.pl")).servers).toBeNull();
     expect(net.requests.length).toBe(before);
   });
 
   it("puts nothing but the domain into requests and lookups", async () => {
     const net = fakeNetwork({ files: {}, srv: {} });
-    await new AutoconfigDiscovery(net).discover("poczta.example.pl");
+    (await new AutoconfigDiscovery(net).discover("poczta.example.pl")).servers;
     for (const text of [...net.requests, ...net.lookups]) {
       expect(text).not.toMatch(/@|%40|password/i);
       expect(text).toContain("poczta.example.pl");
@@ -371,7 +400,7 @@ describe("lookup through MX (ADR 0023)", () => {
       srv: {},
       mx: { [DOMAIN]: ["mx1.mail.ovh.net", "mx2.mail.ovh.net"] },
     });
-    const found = await new AutoconfigDiscovery(net).discover(DOMAIN);
+    const found = (await new AutoconfigDiscovery(net).discover(DOMAIN)).servers;
     expect(found?.source).toBe("mx");
     expect(found?.imap.host).toBe("imap.mail.example.com");
     expect(net.requests).toContain(ispdb("mail.ovh.net"));
@@ -389,7 +418,7 @@ describe("lookup through MX (ADR 0023)", () => {
       srv: {},
       mx: { [DOMAIN]: ["firma-example-pl.mail.protection.outlook.com"] },
     });
-    const found = await new AutoconfigDiscovery(net).discover(DOMAIN);
+    const found = (await new AutoconfigDiscovery(net).discover(DOMAIN)).servers;
     expect(found?.source).toBe("mx");
     expect(found?.imap).toMatchObject({
       host: "outlook.office365.com",
@@ -406,7 +435,7 @@ describe("lookup through MX (ADR 0023)", () => {
       mx: { [DOMAIN]: [`mx.${DOMAIN}`] },
       answering: [`imap:mail.${DOMAIN}:993`, `smtp:mail.${DOMAIN}:587`],
     });
-    expect(await new AutoconfigDiscovery(net).discover(DOMAIN)).toEqual({
+    expect((await new AutoconfigDiscovery(net).discover(DOMAIN)).servers).toEqual({
       source: "probe",
       imap: {
         host: `mail.${DOMAIN}`,
@@ -428,8 +457,92 @@ describe("lookup through MX (ADR 0023)", () => {
 
   it("does not knock on a third party's exchanger", async () => {
     const net = fakeNetwork({ files: {}, srv: {}, mx: { [DOMAIN]: ["mx.example.net"] } });
-    expect(await new AutoconfigDiscovery(net).discover(DOMAIN)).toBeNull();
+    expect((await new AutoconfigDiscovery(net).discover(DOMAIN)).servers).toBeNull();
     expect(net.probes.some((p) => p.includes("example.net"))).toBe(false);
+  });
+});
+
+describe("who runs the mail (ADR 0135)", () => {
+  const DOMAIN = "firma.example.pl";
+
+  it("decides Microsoft by the mail exchanger's name, behind no gateway", async () => {
+    const net = fakeNetwork({
+      files: {},
+      srv: {},
+      mx: { [DOMAIN]: ["firma-example-pl.mail.protection.outlook.com"] },
+    });
+    const found = await new AutoconfigDiscovery(net).discover(DOMAIN);
+    expect(found.provider).toEqual({ id: "microsoft", decides: true, by: "mx" });
+  });
+
+  it("decides Microsoft behind a mail gateway by the autodiscover CNAME, with no servers found", async () => {
+    const net = fakeNetwork({
+      files: {},
+      srv: {},
+      mx: { [DOMAIN]: ["mx1.gateway.example.net"] },
+      cname: { [`autodiscover.${DOMAIN}`]: ["autodiscover.outlook.com."] },
+      txt: { [DOMAIN]: [["v=spf1 include:_spf.google.com -all"]] },
+    });
+    const found = await new AutoconfigDiscovery(net).discover(DOMAIN);
+    expect(found).toEqual({
+      servers: null,
+      provider: { id: "microsoft", decides: true, by: "autodiscover" },
+    });
+  });
+
+  it("takes SPF alone as a hint, joined from its strings, and only for one provider", async () => {
+    const hint = fakeNetwork({
+      files: {},
+      srv: {},
+      txt: {
+        [DOMAIN]: [
+          ["google-site-verification=x"],
+          ["v=spf1 ~include:spf.prot", "ection.outlook.com ~all"],
+        ],
+      },
+    });
+    expect((await new AutoconfigDiscovery(hint).discover(DOMAIN)).provider).toEqual({
+      id: "microsoft",
+      decides: false,
+      by: "spf",
+    });
+    const both = fakeNetwork({
+      files: {},
+      srv: {},
+      txt: {
+        [DOMAIN]: [["v=spf1 include:spf.protection.outlook.com include:_spf.google.com -all"]],
+      },
+    });
+    expect((await new AutoconfigDiscovery(both).discover(DOMAIN)).provider).toBeUndefined();
+  });
+
+  it("decides Google by its exchangers over a Microsoft SPF include", async () => {
+    const net = fakeNetwork({
+      files: {},
+      srv: {},
+      mx: { [DOMAIN]: ["aspmx.l.google.com."] },
+      txt: { [DOMAIN]: [["v=spf1 include:spf.protection.outlook.com -all"]] },
+    });
+    expect((await new AutoconfigDiscovery(net).discover(DOMAIN)).provider).toEqual({
+      id: "google",
+      decides: true,
+      by: "mx",
+    });
+  });
+
+  it("asks DNS about the domain only, and drops a late answer after the same wait", async () => {
+    const net = fakeNetwork({ files: {}, srv: {} });
+    const discovery = new AutoconfigDiscovery({
+      ...net,
+      timeoutMs: 30,
+      resolveTxt: (name) => {
+        net.signLookups.push(`TXT ${name}`);
+        return new Promise(() => {});
+      },
+    });
+    const found = await discovery.discover(DOMAIN);
+    expect(found).toEqual({ servers: null });
+    expect(net.signLookups.sort()).toEqual([`CNAME autodiscover.${DOMAIN}`, `TXT ${DOMAIN}`]);
   });
 });
 

@@ -1,5 +1,10 @@
 import type { ChangePasswordResponse } from "@matters/contracts";
-import { newPasswordCanFix, refusalIsTemporary, type SyncStatus } from "@matters/core";
+import {
+  type MailTransport,
+  newPasswordCanFix,
+  refusalIsTemporary,
+  type SyncStatus,
+} from "@matters/core";
 import { createSignal } from "solid-js";
 import { type Backend, BackendError } from "./client.ts";
 import { explainFailure, failureEvidence, refusalSentence } from "./explain.ts";
@@ -27,7 +32,74 @@ export function passwordRejected(status: SyncStatus): boolean {
   );
 }
 
+/**
+ * A browser sign-in has ended (ADR 0133, rule 8): the account's row opens *Sign in again* by
+ * itself, as it opens the password form for a refused password.
+ */
+export function signInEnded(status: SyncStatus): boolean {
+  return (
+    signInStopped(status) && status.state === "error" && status.detail?.refusal === "signInAgain"
+  );
+}
+
 const UNCHANGED = "The saved password is unchanged.";
+const SIGN_IN_UNCHANGED = "The saved sign-in is unchanged.";
+
+/** Why the new browser sign-in was not saved, and that the old one still is (ADR 0133). */
+export function signInAgainFailure(
+  error: unknown,
+  account: {
+    readonly host: string;
+    readonly port: number;
+    readonly transport?: MailTransport;
+  },
+): string {
+  if (error instanceof BackendError) {
+    // Over Graph there is no server or outgoing server to name (ADR 0136, rule 13).
+    if (account.transport === "graph") {
+      return error.code === "notFound"
+        ? "This account is no longer on this computer."
+        : `${explainFailure(error, { host: "", port: 0, place: "newPassword", browserSignIn: true, transport: "graph" })} ${SIGN_IN_UNCHANGED}`;
+    }
+    switch (error.code) {
+      case "outgoingAuthFailed": {
+        const refusal = error.detail?.refusal;
+        const why =
+          refusal === undefined || refusal === "credentials" || refusal === "unknown"
+            ? ""
+            : ` ${refusalSentence(refusal, "", "newPassword", true)}`;
+        return `Receiving works with this sign-in, but the outgoing server refused it, so sending wouldn't.${why} ${SIGN_IN_UNCHANGED}`;
+      }
+      case "notFound":
+        return "This account is no longer on this computer.";
+      case "authFailed":
+      case "tlsFailed":
+      case "unreachable":
+      case "insecureTransport":
+      case "credentialsUnavailable":
+      case "invalidAccount":
+      case "invalidRequest":
+        return `${explainFailure(error, { host: account.host, port: account.port, place: "newPassword", browserSignIn: true })} ${SIGN_IN_UNCHANGED}`;
+      default:
+        return `The sign-in was not saved: ${sentence(error.message)} ${SIGN_IN_UNCHANGED}`;
+    }
+  }
+  return `Something went wrong. ${SIGN_IN_UNCHANGED}`;
+}
+
+/** What the row says once the new sign-in is saved. `graph`: no outgoing server to name. */
+export function signInAgainSaved(
+  response: Pick<ChangePasswordResponse, "outgoing" | "outgoingNote">,
+  graph = false,
+): string {
+  if (response.outgoing === "unchecked") {
+    const why = response.outgoingNote ? ` (${response.outgoingNote})` : "";
+    return graph
+      ? `Signed in. Syncing again. Microsoft could not be asked about sending${why}; the first send will tell.`
+      : `Signed in. Syncing again. The outgoing server could not be asked${why}; the first send will tell.`;
+  }
+  return "Signed in. Syncing again.";
+}
 
 /** Why the new password was not saved, and that the old one still is. */
 export function newPasswordFailure(

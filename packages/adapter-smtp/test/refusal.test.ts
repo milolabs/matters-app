@@ -50,6 +50,45 @@ describe("smtpRefusal (ADR 0114)", () => {
       "unavailable",
     );
   });
+
+  it("calls a bare refusal of a token on Microsoft's servers not allowed (ADR 0133, rule 10)", () => {
+    for (const ms of ["smtp.office365.com", "smtp-mail.outlook.com"]) {
+      expect(smtpRefusal(ms, 535, "535 5.7.3 Authentication unsuccessful", "token")).toBe(
+        "notAllowed",
+      );
+      expect(
+        smtpRefusal(
+          ms,
+          535,
+          "535 5.7.139 Authentication unsuccessful, SmtpClientAuthentication is disabled for the Tenant.",
+          "token",
+        ),
+      ).toBe("notAllowed");
+      expect(smtpRefusal(ms, 535, "535 5.7.139 basic authentication is disabled.", "token")).toBe(
+        "notAllowed",
+      );
+      expect(smtpRefusal(ms, 454, "454 4.7.0 Temporary failure", "token")).toBe("unavailable");
+      expect(
+        smtpRefusal(ms, 535, "535 5.7.8 Error: too many failed attempts, try later", "token"),
+      ).toBe("throttled");
+    }
+    expect(smtpRefusal(host, 535, "535 5.7.8 Authentication credentials invalid", "token")).toBe(
+      "credentials",
+    );
+  });
+
+  it("passes the login kind through smtpFailureDetail", () => {
+    expect(
+      smtpFailureDetail(
+        "auth",
+        "smtp.office365.com",
+        "me@outlook.example",
+        { responseCode: 535, response: "535 5.7.3 Authentication unsuccessful" },
+        ["tok"],
+        "token",
+      )?.refusal,
+    ).toBe("notAllowed");
+  });
 });
 
 describe("smtpFailureDetail", () => {

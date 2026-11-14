@@ -1,6 +1,7 @@
 import { isIP } from "node:net";
 import { Readable } from "node:stream";
 import type {
+  MailServerSettings,
   MailSubmitPort,
   MailTarget,
   MimeSource,
@@ -11,7 +12,8 @@ import type {
 } from "@matters/core";
 import { scrubSecrets } from "@matters/core";
 import SMTPConnection from "nodemailer/lib/smtp-connection";
-import { smtpFailureDetail } from "./errors.ts";
+import XOAuth2 from "nodemailer/lib/xoauth2";
+import { type SmtpLogin, smtpFailureDetail } from "./errors.ts";
 
 export interface SmtpSubmitOptions {
   /**
@@ -59,6 +61,32 @@ function announcedLimit(connection: SMTPConnection): number | null {
   return typeof bytes === "number" && bytes > 0 ? bytes : null;
 }
 
+/**
+ * What `SMTPConnection.login` takes for the credential: user and password, or XOAUTH2 with the
+ * server's user name from the account's settings and the one access token (ADR 0133, rule 9).
+ * The token generator has no way to renew: the vault hands out a token that still works
+ * (rule 7), and on a refusal nodemailer retries once with the same token and then reports the
+ * server's own answer.
+ */
+function loginOf(
+  server: MailServerSettings,
+  credential: MailTarget["credential"],
+): SMTPConnection.AuthenticationType {
+  if (credential.kind === "password") return { user: server.username, pass: credential.password };
+  return {
+    user: server.username,
+    oauth2: new XOAuth2({ user: server.username, accessToken: credential.accessToken }),
+  };
+}
+
+const NOT_SMTP = "This account does not send through an SMTP server";
+
+const secretOf = (credential: MailTarget["credential"]): string =>
+  credential.kind === "password" ? credential.password : credential.accessToken;
+
+const loginKind = (credential: MailTarget["credential"]): SmtpLogin =>
+  credential.kind === "password" ? "password" : "token";
+
 /** Thrown into the race of steps when the caller aborts; never leaves this file. */
 const ABORTED = Symbol("aborted");
 
@@ -86,9 +114,8 @@ export class NodemailerSubmit implements MailSubmitPort {
 
   async verify(target: MailTarget): Promise<OutgoingCheck> {
     const { server, credential } = target;
-    if (credential.kind !== "password") {
-      return { ok: false, kind: "auth", reason: "Only password sign-in is supported" };
-    }
+    // A Graph account sends through its own adapter (ADR 0136, rule 4).
+    if (server === undefined) return { ok: false, kind: "other", reason: NOT_SMTP };
     if (server.security === "none" && !insecureAllowed(this.options)) {
       return {
         ok: false,
@@ -106,15 +133,20 @@ export class NodemailerSubmit implements MailSubmitPort {
       ]);
     try {
       await step((done) => connection.connect(done));
-      await step((done) =>
-        connection.login({ user: server.username, pass: credential.password }, done),
-      );
+      await step((done) => connection.login(loginOf(server, credential), done));
       return { ok: true, limitBytes: announcedLimit(connection) };
     } catch (error) {
       const e = error as SmtpError;
       const kind = kindOfSmtpError(e);
-      const secrets = [credential.password];
-      const detail = smtpFailureDetail(kind, server.host, server.username, e, secrets);
+      const secrets = [secretOf(credential)];
+      const detail = smtpFailureDetail(
+        kind,
+        server.host,
+        server.username,
+        e,
+        secrets,
+        loginKind(credential),
+      );
       return {
         ok: false,
         kind,
@@ -126,7 +158,7 @@ export class NodemailerSubmit implements MailSubmitPort {
     }
   }
 
-  private connectionTo(server: MailTarget["server"], messageBytes = 0): SMTPConnection {
+  private connectionTo(server: MailServerSettings, messageBytes = 0): SMTPConnection {
     return new SMTPConnection({
       host: server.host,
       port: server.port,
@@ -150,9 +182,7 @@ export class NodemailerSubmit implements MailSubmitPort {
     watch?: SubmitWatch,
   ): Promise<SubmitResult> {
     const { server, credential } = target;
-    if (credential.kind !== "password") {
-      return { kind: "rejected", reason: "Only password sign-in is supported" };
-    }
+    if (server === undefined) return { kind: "rejected", reason: NOT_SMTP };
     if (server.security === "none" && !insecureAllowed(this.options)) {
       return {
         kind: "rejected",
@@ -161,7 +191,7 @@ export class NodemailerSubmit implements MailSubmitPort {
     }
     const signal = watch?.signal;
     if (signal?.aborted) return { kind: "aborted" };
-    const secrets = [credential.password];
+    const secrets = [secretOf(credential)];
     const reject = (error: unknown): SubmitResult => {
       const e = error as SmtpError;
       const reason = scrubSecrets(e.message || String(error), secrets);
@@ -231,9 +261,7 @@ export class NodemailerSubmit implements MailSubmitPort {
           connection.connect((error?: Error | null) => done(error ?? null)),
         );
         await step<void>((done) =>
-          connection.login({ user: server.username, pass: credential.password }, (error) =>
-            done(error ?? null),
-          ),
+          connection.login(loginOf(server, credential), (error) => done(error ?? null)),
         );
         watch?.onServerLimit?.(announcedLimit(connection));
       } catch (error) {

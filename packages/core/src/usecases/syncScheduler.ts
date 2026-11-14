@@ -14,7 +14,7 @@ import type {
   MailTarget,
   MailWatch,
 } from "../ports/index.ts";
-import { toAccount } from "./accounts.ts";
+import { incomingTarget, toAccount } from "./accounts.ts";
 import type { ApplySyncBatchDeps } from "./applySyncBatch.ts";
 import { SyncAbortedError, syncAccount } from "./syncAccount.ts";
 
@@ -347,7 +347,7 @@ export class SyncScheduler {
   private async targetOf(rt: Runtime): Promise<MailTarget> {
     const credential = await this.deps.credentials.get(rt.account.id);
     if (!credential) throw new CredentialsUnavailableError("The saved password is missing");
-    return { server: rt.account.imap, credential };
+    return incomingTarget(rt.account, credential);
   }
 
   private armInterval(rt: Runtime): void {

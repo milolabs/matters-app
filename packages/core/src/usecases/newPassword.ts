@@ -14,7 +14,12 @@ import type {
   MailConnectorPort,
   MailSubmitPort,
 } from "../ports/index.ts";
-import { InvalidAccountError, OutgoingServerError } from "./accounts.ts";
+import {
+  InvalidAccountError,
+  incomingTarget,
+  OutgoingServerError,
+  outgoingTarget,
+} from "./accounts.ts";
 import type { SyncStatus } from "./syncScheduler.ts";
 
 /** Longer than any password a mail server takes; a bound on what a request may carry. */
@@ -70,21 +75,23 @@ export async function setNewPassword(
   const availability = await deps.credentials.availability();
   if (!availability.available) throw new CredentialsUnavailableError(availability.reason);
 
+  // A Graph account has no password to change: it signs in again (ADR 0136, rule 3).
+  if (account.transport === "graph") {
+    throw new InvalidAccountError("This account signs in through the browser");
+  }
   const credential: Credential = { kind: "password", username: account.imap.username, password };
   try {
-    const connection = await deps.connector.connect({ server: account.imap, credential });
+    const connection = await deps.connector.connect(incomingTarget(account, credential));
     await connection.close().catch(() => {});
   } catch (error) {
     throw withoutSecret(error, password);
   }
 
   let outgoing: OutgoingVerdict = { state: "none" };
-  if (account.smtp) {
+  const target = outgoingTarget(account, credential);
+  if (target) {
     // The one stored password serves both servers; the outgoing one has its own user name.
-    const check = await deps.outgoing.verify({
-      server: account.smtp,
-      credential: { ...credential, username: account.smtp.username },
-    });
+    const check = await deps.outgoing.verify(target);
     if (check.ok) outgoing = { state: "verified" };
     else if (check.kind === "auth") {
       throw new OutgoingServerError("auth", scrubSecrets(check.reason, [password]), check.detail);
@@ -117,7 +124,9 @@ export class PasswordRejectedError extends Error {
     super(
       newPasswordCanFix(refusal)
         ? "The server refused the saved password. Enter the new one in Settings, Accounts."
-        : `The server turned the sign-in away (${refusal}). Settings, Accounts says what it needs; then choose Sync now.`,
+        : refusal === "signInAgain"
+          ? "The sign-in has ended. Choose Sign in again in Settings, Accounts."
+          : `The server turned the sign-in away (${refusal}). Settings, Accounts says what it needs; then choose Sync now.`,
     );
     this.name = "PasswordRejectedError";
     this.detail = { refusal };
@@ -147,7 +156,7 @@ export class RejectedPasswords {
     } else if (status.state === "idle") this.ids.delete(accountId);
   }
 
-  /** A new password was verified and stored, or the account is gone. */
+  /** A new password or a new browser sign-in was verified and stored, or the account is gone. */
   clear(accountId: string): void {
     this.ids.delete(accountId);
   }
@@ -160,13 +169,14 @@ export class RejectedPasswords {
   guard(inner: CredentialPort): CredentialPort {
     return {
       availability: (): Promise<CredentialAvailability> => inner.availability(),
-      get: async (accountId) => {
+      get: async (accountId, options) => {
         const refusal = this.ids.get(accountId);
         if (refusal !== undefined) throw new PasswordRejectedError(refusal);
-        return inner.get(accountId);
+        return inner.get(accountId, options);
       },
       set: (accountId, credential) => inner.set(accountId, credential),
       delete: (accountId) => inner.delete(accountId),
+      move: (fromId, toId) => inner.move(fromId, toId),
     };
   }
 }
