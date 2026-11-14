@@ -175,7 +175,15 @@ describe("whom the headers name", () => {
     // A header written to be slow to read is read in one pass.
     const started = performance.now();
     expect(addressesIn(`"${'\\"'.repeat(200_000)}`)).toEqual([]);
+    expect(addressesIn(`<${"!@".repeat(200_000)}`)).toHaveLength(1);
+    expect(addressesIn("!".repeat(400_000))).toEqual([]);
     expect(performance.now() - started).toBeLessThan(1000);
+    // The address in angle brackets wins over a word before it.
+    expect(addressesIn("x@y.example <real@example.org>, <a b@c>, Ann <ANN@Example.org>")).toEqual([
+      "real@example.org",
+      "b@c",
+      "ann@example.org",
+    ]);
     expect(
       bccHeader("To: a@example.org\r\nCc: b@example.org\r\n", [
         "a@example.org",

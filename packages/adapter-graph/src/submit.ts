@@ -78,12 +78,40 @@ function withoutNames(value: string): string {
 export function addressesIn(value: string): string[] {
   const out: string[] = [];
   for (const piece of withoutNames(value).split(",")) {
-    const angle = /<([^<>\s]+@[^<>\s]+)>/.exec(piece);
-    const bare = /([^\s<>:;,]+@[^\s<>:;,]+)/.exec(piece);
-    const address = angle?.[1] ?? bare?.[1];
+    const address = addressOf(piece);
     if (address !== undefined) out.push(address.toLowerCase());
   }
   return out;
+}
+
+/** What ends a word of a list entry: white space and the marks around an address. */
+const isBreak = (c: string) =>
+  c === " " || c === "\t" || c === "\r" || c === "\n" || "<>:;,".includes(c);
+
+/** A word with something on both sides of an `@`. */
+const looksLikeAddress = (word: string) => {
+  const at = word.indexOf("@");
+  return at > 0 && at < word.length - 1;
+};
+
+/**
+ * The address of one entry: what stands between angle brackets when that is an address, else
+ * the first word that is one. Read word by word, without a pattern (see `withoutNames`).
+ */
+function addressOf(piece: string): string | undefined {
+  let first: string | undefined;
+  let start = 0;
+  for (let i = 0; i <= piece.length; i++) {
+    const c = i < piece.length ? (piece[i] ?? "") : " ";
+    if (!isBreak(c)) continue;
+    const word = piece.slice(start, i);
+    if (looksLikeAddress(word)) {
+      if (piece[start - 1] === "<" && c === ">") return word;
+      first ??= word;
+    }
+    start = i + 1;
+  }
+  return first;
 }
 
 /** The `Bcc` header for the recipients the headers do not name (rule 9); empty when none. */
