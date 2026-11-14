@@ -244,12 +244,70 @@ export function themeListing(loaded: LoadedTheme): ThemeListing {
   };
 }
 
+/**
+ * Main's count of changes in this run, and when the last way back and the last change of theme
+ * came (ADR 0134, rule 11). Plain integers, so a page can say which state it started from and main
+ * can decide against what it knows came after, whatever order the messages arrive in.
+ */
+export interface AppearanceRevisions {
+  readonly revision: number;
+  readonly resetRevision: number;
+  readonly themeRevision: number;
+}
+
+/** At start: nothing has changed in this run; 0 also means "no way back yet". */
+export const FIRST_REVISIONS: AppearanceRevisions = {
+  revision: 0,
+  resetRevision: 0,
+  themeRevision: 0,
+};
+
+/** A revision as one may cross: a whole number from 0, never more than a safe integer. */
+export const isRevision = (v: unknown): v is number =>
+  typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+
+/**
+ * The revisions after one change main applied. Every change counts, and every way back is marked,
+ * even one that finds the default already on: a reset is something the person asked for, not a
+ * state, so a page cannot tell it from the same state said again by comparing states (rule 11).
+ */
+export function nextRevisions(
+  at: AppearanceRevisions,
+  change: { readonly reset: boolean; readonly themeChanged: boolean },
+): AppearanceRevisions {
+  const revision = at.revision + 1;
+  return {
+    revision,
+    resetRevision: change.reset ? revision : at.resetRevision,
+    themeRevision: change.themeChanged ? revision : at.themeRevision,
+  };
+}
+
+/** What main does with a theme the agent made: nothing, add it beside the others, or put it on. */
+export type ThemeAddDecision = "stopped" | "added" | "on";
+
+/**
+ * Decided by main as it adds the theme, in the same turn of its loop, so no order of messages can
+ * undo a way back or put a theme on over a later choice (ADR 0134, rule 11). `since` is the
+ * revision the making started at, as the page says it. A way back after it stops the theme: it is
+ * not added at all. A change of theme after it is the person's choice: the theme is added and that
+ * choice stays on. A change of mode alone is neither. A `since` that is missing or not one main
+ * gave cannot be judged, so the theme is only added: never put on, never thrown away.
+ */
+export function themeAddDecision(since: unknown, at: AppearanceRevisions): ThemeAddDecision {
+  if (!isRevision(since) || since > at.revision) return "added";
+  if (at.resetRevision > since) return "stopped";
+  if (at.themeRevision > since) return "added";
+  return "on";
+}
+
 /** Everything Appearance shows, from main's state. */
 export function appearanceInfo(
   stored: StoredAppearance,
   applied: LoadedTheme | null,
   fallback: string | null,
   themes: readonly LoadedTheme[],
+  revisions: AppearanceRevisions = FIRST_REVISIONS,
 ): AppearanceInfo {
   return {
     mode: stored.mode,
@@ -258,6 +316,9 @@ export function appearanceInfo(
     themeChosen: stored.theme !== null,
     themes: themes.map(themeListing),
     fallback,
+    revision: revisions.revision,
+    resetRevision: revisions.resetRevision,
+    themeRevision: revisions.themeRevision,
   };
 }
 
@@ -364,6 +425,11 @@ export function readAppearanceInfo(v: unknown): AppearanceInfo | null {
   ) {
     return null;
   }
+  const { revision, resetRevision, themeRevision } = v;
+  if (!isRevision(revision) || !isRevision(resetRevision) || !isRevision(themeRevision)) {
+    return null;
+  }
+  if (resetRevision > revision || themeRevision > revision) return null;
   const themes = v.themes.map(readListing);
   if (themes.some((t) => t === null)) return null;
   return {
@@ -373,6 +439,9 @@ export function readAppearanceInfo(v: unknown): AppearanceInfo | null {
     themeChosen: v.themeChosen,
     themes: themes as ThemeListing[],
     fallback,
+    revision,
+    resetRevision,
+    themeRevision,
   };
 }
 
@@ -415,6 +484,7 @@ export function readThemeAddAnswer(v: unknown): ThemeAddAnswer | null {
     return theme && appearance ? { ok: true, theme, appearance } : null;
   }
   if (v.ok === false && isText(v.full, 1000) && v.full !== "") return { ok: false, full: v.full };
+  if (v.ok === false && v.stopped === true) return { ok: false, stopped: true };
   if (v.ok !== false || !Array.isArray(v.problems) || v.problems.length > 200) return null;
   const problems = v.problems.map(readProblem);
   if (problems.length === 0 || problems.some((p) => p === null)) return null;

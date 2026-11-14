@@ -88,11 +88,11 @@ export function AppearanceSection(props: {
   const [made, setMade] = createSignal("");
   let stop = false;
   /** What the person does to the appearance while a theme is made (ADR 0134, rule 11). */
-  let watch = appearanceWatch(null);
+  let watch: ReturnType<typeof appearanceWatch> | null = null;
 
-  /** What main says now. The way back while a theme is made stops it; see `appearanceWatch`. */
+  /** What main says now. A way back while a theme is made stops it; see `appearanceWatch`. */
   function seen(a: AppearanceInfo) {
-    if (making() && watch.seen(a)) cancel();
+    if (making() && watch?.seen(a)) cancel();
     setInfo(a);
   }
 
@@ -107,7 +107,12 @@ export function AppearanceSection(props: {
 
   onMount(() => {
     const off = onAppearanceChanged(seen);
-    onCleanup(off);
+    onCleanup(() => {
+      off();
+      // Leaving Appearance (for Agents, say) stops a theme being made: nothing here would show
+      // what became of it, and its late answer is not to land over what is chosen meanwhile.
+      if (making()) cancel();
+    });
     void askAppearance({ action: "get" }).then((a) => {
       if (a) setInfo(a);
     });
@@ -148,18 +153,21 @@ export function AppearanceSection(props: {
   };
 
   async function make() {
-    if (making() || !maker().ready || asked() === "") return;
+    // Main's state first: the making is handed in with the revision it started at (rule 11).
+    const start = info();
+    if (making() || !maker().ready || asked() === "" || start === null) return;
     setMadeRefused([]);
     setMadeProblem("");
     setMade("");
     // A full list keeps no more (`MAX_THEMES`): say so before a turn is spent on it.
-    if ((info()?.themes.length ?? 0) >= MAX_THEMES) {
+    if (start.themes.length >= MAX_THEMES) {
       setMadeProblem(THEMES_FULL);
       return;
     }
     setMaking(true);
     stop = false;
-    watch = appearanceWatch(info());
+    const w = appearanceWatch(start);
+    watch = w;
     try {
       const on = fromCurrent() ? current() : null;
       // Cancel while this is read is honoured before the first turn: `makeTheme` asks `stopped`.
@@ -167,7 +175,7 @@ export function AppearanceSection(props: {
       const result = await makeTheme(
         {
           make: (input) => props.backend.agentMakeTheme(input),
-          add: (text) => addTheme(text, watch.putOn()),
+          add: (text) => addTheme(text, w.since),
           stopped: () => stop,
         },
         { description: asked(), ...(currentText === null ? {} : { current: currentText }) },
@@ -420,7 +428,7 @@ export function AppearanceSection(props: {
                 : "Only your words go to the agent; no mail."}{" "}
               Its theme is checked so its text stays readable, and asked for once more if it does
               not pass. The new theme is added beside the others and put on, unless you choose
-              another theme meanwhile; Use default stops it.
+              another theme meanwhile; Use default, or leaving Appearance, stops it.
             </p>
           </Show>
           <Show when={made() !== ""}>

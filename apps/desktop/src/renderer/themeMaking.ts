@@ -49,7 +49,10 @@ export function themeMaker(status: AgentStatus | null): ThemeMaker {
 
 /** What became of one ask. */
 export type ThemeMade =
-  /** Main kept it and put it on; `tries` is 2 when the first answer was refused. */
+  /**
+   * Main kept it, and put it on unless the person chose another theme meanwhile (the answer's
+   * appearance says which); `tries` is 2 when the first answer was refused.
+   */
   | {
       readonly kind: "added";
       readonly answer: Extract<ThemeAddAnswer, { ok: true }>;
@@ -59,13 +62,16 @@ export type ThemeMade =
   | { readonly kind: "refused"; readonly problems: readonly ThemeProblem[] }
   /** The turn did not give a theme, or main could not keep it: a sentence for the person. */
   | { readonly kind: "failed"; readonly message: string }
-  /** The person stopped it; nothing was added. */
+  /** The person stopped it, or went back to the default meanwhile; nothing was added. */
   | { readonly kind: "stopped" };
 
 export interface ThemeMakingDeps {
   /** The backend's turn (`agentMakeTheme`): the theme's text, or an error with a sentence. */
   make(input: ThemeInput): Promise<string>;
-  /** Main's check, the one every theme passes: kept and on, or refused with every reason. */
+  /**
+   * Main's check, the one every theme passes: kept (and on, when main says so), refused with every
+   * reason, or not kept because the person went back to the default meanwhile (rule 11).
+   */
   add(text: string): Promise<ThemeAddAnswer | null>;
   /** The person pressed Cancel. */
   stopped(): boolean;
@@ -104,6 +110,8 @@ export async function makeTheme(deps: ThemeMakingDeps, input: ThemeInput): Promi
     const answer = await deps.add(text);
     if (answer === null) return { kind: "failed", message: KEEP_FAILED };
     if (answer.ok) return { kind: "added", answer, tries };
+    // Main saw a way back after the making started: it keeps nothing, and nothing is asked again.
+    if ("stopped" in answer) return { kind: "stopped" };
     // No room for another theme: asking again would be refused the same way.
     if ("full" in answer) return { kind: "failed", message: answer.full };
     if (tries === 2) return { kind: "refused", problems: answer.problems };
@@ -112,29 +120,26 @@ export async function makeTheme(deps: ThemeMakingDeps, input: ThemeInput): Promi
   return { kind: "failed", message: FAILED };
 }
 
-/** The default (ADR 0134, rule 11): mode System and no theme chosen. */
-const atDefault = (a: AppearanceInfo) => a.mode === "system" && !a.themeChosen;
-
 /**
  * What the person did to the appearance while a theme was being made, from what main says, here
- * or from another window, the menu or the keys. Going back to the default stops the ask, so a late
- * answer neither adds nor puts on a theme over the way back (rule 11). Choosing another theme
- * keeps the ask, but the theme made is then only added beside the others, not put on over that
- * choice. A change of mode alone is neither.
+ * or from another window, the menu or the keys (ADR 0134, rule 11). Main marks every way back with
+ * its revision, even one that finds the default already on, so a reset seen after the making
+ * started stops the ask; nothing is inferred from the state, and a change of mode alone, even one
+ * that ends at System with no theme, does not stop it. `since` goes with the theme to main, which
+ * decides for itself (`themeAddDecision`): a way back after it keeps nothing, a choice of theme
+ * after it keeps the new theme off. Stopping here only saves the turn.
  */
-export function appearanceWatch(start: AppearanceInfo | null) {
-  const theme = start?.theme ?? null;
-  let wasDefault = start === null || atDefault(start);
-  let chosenOther = false;
+export function appearanceWatch(start: AppearanceInfo) {
+  const since = start.revision;
+  let stopped = false;
   return {
-    /** Main says this now; true when it is the way back, and the ask is to stop. */
+    /** The revision the making started at, for main. */
+    since,
+    /** Main says this now; true once, when it is the first way back since the start. */
     seen(a: AppearanceInfo): boolean {
-      const back = atDefault(a) && !wasDefault;
-      wasDefault = atDefault(a);
-      if (!back && a.theme !== theme) chosenOther = true;
-      return back;
+      if (stopped || a.resetRevision <= since) return false;
+      stopped = true;
+      return true;
     },
-    /** Whether a theme main keeps is put on, or only added. */
-    putOn: () => !chosenOther,
   };
 }

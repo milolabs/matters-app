@@ -8,6 +8,7 @@ import type { ThemeScheme, ThemeSets } from "@matters/contracts";
 import { THEME_FILE_LIMIT } from "@matters/contracts";
 import {
   isAppearanceMode,
+  isRevision,
   isThemeId,
   readAppearanceInfo,
   readThemeAddAnswer,
@@ -16,7 +17,10 @@ import {
 import { THEME_TOKENS } from "../main/themes.ts";
 
 export const CHANNEL_APPEARANCE = "matters:appearance";
-/** Main to every window: `{ appearance, colors }` in force after a change. */
+/**
+ * Main to every window: `{ appearance, colors }` in force after a change. The appearance carries
+ * main's revisions, so a way back is told apart from the same state said again (ADR 0134, rule 11).
+ */
 export const CHANNEL_APPEARANCE_CHANGED = "matters:appearance-changed";
 /**
  * The preload to main, synchronously, as the preload starts: the checked colours in force, so they
@@ -69,9 +73,10 @@ function argsOf(ask: Record<string, unknown>): unknown[] | null {
     case "text":
       return isThemeId(ask.id) ? [ask.action, ask.id] : null;
     case "add":
-      // `on: false` keeps it without putting it on: the person chose another theme meanwhile.
+      // `since` is the revision the making started at; main decides from it (ADR 0134, rule 11).
+      // One that is not a revision is not passed on, and main then only adds the theme.
       if (typeof ask.text !== "string" || ask.text.length > TEXT_LIMIT) return null;
-      return ask.on === false ? [ask.action, ask.text, false] : [ask.action, ask.text];
+      return isRevision(ask.since) ? [ask.action, ask.text, ask.since] : [ask.action, ask.text];
     default:
       return null;
   }

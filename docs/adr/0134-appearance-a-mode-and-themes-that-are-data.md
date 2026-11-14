@@ -148,6 +148,9 @@
 - Matters keeps at most 500 themes, the built-in ones included. At the limit a new theme is not
   made or added, and Appearance says to remove one first. A folder that holds more lists the
   first 500 by name, so some can be removed.
-- A theme that is being made when the person goes back to the default is stopped and is not
-  added. One that is being made when the person chooses another theme is added to the list and
-  is not put on over that choice.
+- A theme that is being made when the person asks for the default (*Use default*, *Reset
+  Appearance* or the keys, also when the default is already on) or leaves Appearance is stopped
+  and is not added. One that is being made when the person chooses another theme is added to the
+  list and is not put on over that choice. A change of mode alone does neither. Main decides this
+  when the theme is handed in, from a revision it counts and the one the making started at, so no
+  order in which the messages arrive can undo a way back or override a later choice.

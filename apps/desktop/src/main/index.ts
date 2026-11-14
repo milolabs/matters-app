@@ -63,15 +63,18 @@ import { CHANNEL_RECEIVED } from "../preload/receivedBridge.ts";
 import { CHANNEL_STORAGE } from "../preload/storageBridge.ts";
 import {
   APPEARANCE_FILE,
+  type AppearanceRevisions,
   appearanceInfo,
   builtInTheme,
   type ChosenTheme,
   DEFAULT_APPEARANCE,
   differsFromDefault,
+  FIRST_REVISIONS,
   isAppearanceMode,
   isResetAppearanceChord,
   isThemeId,
   type LoadedTheme,
+  nextRevisions,
   ownThemeFile,
   ownThemeId,
   ownThemeRoom,
@@ -83,6 +86,7 @@ import {
   serializeAppearance,
   THEMES_FOLDER,
   type ThemeRead,
+  themeAddDecision,
   themeListing,
   themeSourceFor,
   windowColors,
@@ -463,8 +467,11 @@ function themeList(): LoadedTheme[] {
   return [...builtIns, ...ownList];
 }
 
+/** Every change counts, and every way back is marked (ADR 0134, rule 11; see `nextRevisions`). */
+let revisions: AppearanceRevisions = FIRST_REVISIONS;
+
 const currentAppearance = (): AppearanceInfo =>
-  appearanceInfo(stored, chosen.theme, chosen.fallback, themeList());
+  appearanceInfo(stored, chosen.theme, chosen.fallback, themeList(), revisions);
 
 // A new window asks for the colours as its preload starts (ADR 0134, rule 9): main answers from
 // memory, at once. Every window of the app may ask; it gets only checked values.
@@ -476,11 +483,19 @@ if (!identityHelper) {
 
 /**
  * Applies what the person chose, keeps it, and tells every open window, so a Settings window and
- * the mail window agree whichever of them (or the menu, or the shortcut) changed it. Under the
- * benchmark's theme nothing changes.
+ * the mail window agree whichever of them (or the menu, or the shortcut) changed it. Every call
+ * moves the revision on; `reset` marks a way back, even one that changes nothing (ADR 0134,
+ * rule 11). Under the benchmark's theme nothing changes.
  */
-function applyAppearance(next: StoredAppearance, theme: ChosenTheme): AppearanceInfo {
+function applyAppearance(
+  next: StoredAppearance,
+  theme: ChosenTheme,
+  reset = false,
+): AppearanceInfo {
   if (traceTheme) return currentAppearance();
+  const themeChanged =
+    next.theme !== stored.theme || (theme.theme?.id ?? null) !== (chosen.theme?.id ?? null);
+  revisions = nextRevisions(revisions, { reset, themeChanged });
   stored = next;
   chosen = theme;
   nativeTheme.themeSource = themeSourceFor(stored.mode, chosen.theme);
@@ -508,7 +523,8 @@ function applyAppearance(next: StoredAppearance, theme: ChosenTheme): Appearance
 const setMode = (mode: AppearanceMode) => applyAppearance({ ...stored, mode }, chosen);
 
 /** The way back (ADR 0134, rule 11): mode System and no theme; the themes stay in the list. */
-const resetAppearance = () => applyAppearance(DEFAULT_APPEARANCE, { theme: null, fallback: null });
+const resetAppearance = () =>
+  applyAppearance(DEFAULT_APPEARANCE, { theme: null, fallback: null }, true);
 
 /** A theme of the list, or the default (null). An id main does not know changes nothing. */
 function chooseTheme(id: string | null): AppearanceInfo | null {
@@ -522,10 +538,15 @@ function chooseTheme(id: string | null): AppearanceInfo | null {
 /**
  * A theme handed in as text (ADR 0134, rule 12): the agent's answer to the person's description,
  * which the page passes on as something from outside. It passes the check or is refused with
- * every reason; one that passes is written to `themes/` under an id main makes, listed, and put on
- * unless `putOn` is false.
+ * every reason; one that passes is written to `themes/` under an id main makes and listed. `since`
+ * is the revision the making started at: main alone decides from it whether a way back stopped the
+ * theme, or a later choice keeps it off (rule 11, `themeAddDecision`). Decided here, before the
+ * file is written and in the same synchronous call, so no message between can undo it.
  */
-function addTheme(text: string, putOn: boolean): ThemeAddAnswer | null {
+function addTheme(text: string, since: unknown): ThemeAddAnswer | null {
+  const decision = themeAddDecision(since, revisions);
+  // Gone back to the default meanwhile: nothing is saved, and no second turn is asked for.
+  if (decision === "stopped") return { ok: false, stopped: true };
   // A full list keeps no more than it can show (`MAX_THEMES`), whatever the text, so no second
   // turn is asked for. Read before the file is written, so the scan cannot already hold the new
   // theme when it is added below.
@@ -545,9 +566,10 @@ function addTheme(text: string, putOn: boolean): ThemeAddAnswer | null {
   const loaded: LoadedTheme = { id, source: "own", theme: result.theme };
   ownList = withOwnTheme(ownList ?? [], loaded);
   // The person chose another theme while this one was made: it is listed, and theirs stays on.
-  const appearance = putOn
-    ? applyAppearance({ ...stored, theme: id }, { theme: loaded, fallback: null })
-    : applyAppearance(stored, chosen);
+  const appearance =
+    decision === "on"
+      ? applyAppearance({ ...stored, theme: id }, { theme: loaded, fallback: null })
+      : applyAppearance(stored, chosen);
   return { ok: true, theme: themeListing(loaded), appearance };
 }
 
@@ -1328,7 +1350,7 @@ if (!identityHelper)
       if (action === "set" && isAppearanceMode(arg)) return setMode(arg);
       if (action === "theme" && (arg === null || isThemeId(arg))) return chooseTheme(arg);
       if (action === "remove" && isThemeId(arg)) return removeTheme(arg);
-      if (action === "add" && typeof arg === "string") return addTheme(arg, more !== false);
+      if (action === "add" && typeof arg === "string") return addTheme(arg, more);
       if (action === "text" && isThemeId(arg)) return themeText(arg);
       return null;
     });

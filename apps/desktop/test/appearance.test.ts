@@ -6,11 +6,14 @@ import {
   type ChosenTheme,
   DEFAULT_APPEARANCE,
   differsFromDefault,
+  FIRST_REVISIONS,
   fixedSchemeOf,
   isAppearanceMode,
   isOwnThemeId,
   isResetAppearanceChord,
+  isRevision,
   isThemeId,
+  nextRevisions,
   ownThemeFile,
   ownThemeId,
   ownThemeIdOfFile,
@@ -21,6 +24,7 @@ import {
   readAppearanceInfo,
   resolveChosenTheme,
   serializeAppearance,
+  themeAddDecision,
   themeSourceFor,
   windowColors,
   windowGround,
@@ -107,6 +111,9 @@ const INFO = {
     },
   ],
   fallback: null,
+  revision: 7,
+  resetRevision: 3,
+  themeRevision: 5,
 } as const;
 
 describe("the appearance bridge", () => {
@@ -191,15 +198,35 @@ describe("the appearance bridge", () => {
     ]);
   });
 
-  it("asks main to keep a theme without putting it on, when the page says so", async () => {
+  it("hands main the revision a making started at, and nothing that is not one (rule 11)", async () => {
     const r = rig({ ok: true, theme: INFO.themes[0], appearance: INFO });
-    ask(r, { action: "add", text: "{}", on: false });
-    ask(r, { action: "add", text: "{}", on: "no" });
+    ask(r, { action: "add", text: "{}", since: 0 });
+    ask(r, { action: "add", text: "{}", since: 12 });
+    // Not a revision: the theme still goes to main, with nothing main could read as one, so main
+    // only adds it (`themeAddDecision`).
+    for (const since of [-1, 1.5, "3", Number.NaN, Number.MAX_SAFE_INTEGER + 2, null, {}]) {
+      ask(r, { action: "add", text: "{}", since });
+    }
+    ask(r, { action: "add", text: "{}" });
     await flush();
     expect(r.invoked).toEqual([
-      [CHANNEL_APPEARANCE, "add", "{}", false],
-      [CHANNEL_APPEARANCE, "add", "{}"],
+      [CHANNEL_APPEARANCE, "add", "{}", 0],
+      [CHANNEL_APPEARANCE, "add", "{}", 12],
+      ...Array.from({ length: 8 }, () => [CHANNEL_APPEARANCE, "add", "{}"]),
     ]);
+  });
+
+  it("passes on main's word that a way back stopped the theme, and nothing else with it", async () => {
+    const r = rig({ ok: false, stopped: true, path: "/Users/x" });
+    ask(r, { action: "add", text: "{}", since: 1 });
+    await flush();
+    expect(r.posted).toEqual([
+      { mattersAppearanceAnswer: { requestId: "a", answer: { ok: false, stopped: true } } },
+    ]);
+    const not = rig({ ok: false, stopped: "yes" });
+    ask(not, { action: "add", text: "{}", since: 1 });
+    await flush();
+    expect(not.posted).toEqual([{ mattersAppearanceAnswer: { requestId: "a", answer: null } }]);
   });
 
   it("takes a list as long as main keeps, and no longer (MAX_THEMES)", async () => {
@@ -252,6 +279,14 @@ describe("the appearance bridge", () => {
       null,
       { ...INFO, mode: "sepia" },
       { ...INFO, theme: "../x" },
+      // Main's revisions are whole numbers from 0, and none is ahead of the count.
+      { ...INFO, revision: undefined },
+      { ...INFO, revision: -1 },
+      { ...INFO, revision: 7.5 },
+      { ...INFO, resetRevision: "3" },
+      { ...INFO, themeRevision: null },
+      { ...INFO, resetRevision: 8 },
+      { ...INFO, themeRevision: 8 },
       {
         ...INFO,
         themes: [{ ...INFO.themes[0], swatches: [{ ground: "red", ink: "", accent: "" }] }],
@@ -527,6 +562,53 @@ describe("main's state", () => {
       [{ control: true, meta: true }, "win32"],
     ] as const) {
       expect(isResetAppearanceChord(key(over), platform)).toBe(false);
+    }
+  });
+});
+
+describe("what main does with a theme made meanwhile (ADR 0134, rule 11)", () => {
+  const mode = { reset: false, themeChanged: false };
+  const theme = { reset: false, themeChanged: true };
+  const reset = { reset: true, themeChanged: false };
+
+  it("counts every change and marks every way back, even one that changes nothing", () => {
+    const once = nextRevisions(FIRST_REVISIONS, mode);
+    expect(once).toEqual({ revision: 1, resetRevision: 0, themeRevision: 0 });
+    // A reset at the default changes no state, and is still told apart from that state said again.
+    const back = nextRevisions(once, reset);
+    expect(back).toEqual({ revision: 2, resetRevision: 2, themeRevision: 0 });
+    expect(nextRevisions(back, reset)).toEqual({ revision: 3, resetRevision: 3, themeRevision: 0 });
+    expect(nextRevisions(back, theme)).toEqual({ revision: 3, resetRevision: 2, themeRevision: 3 });
+    expect(isRevision(0)).toBe(true);
+    for (const v of [-1, 0.5, "1", null, Number.POSITIVE_INFINITY])
+      expect(isRevision(v)).toBe(false);
+  });
+
+  it("puts it on when nothing but the mode changed since the making started", () => {
+    const since = 4;
+    const at = { revision: 4, resetRevision: 2, themeRevision: 3 };
+    expect(themeAddDecision(since, at)).toBe("on");
+    // Light, Dark or System, also ending at System with no theme: not a way back.
+    expect(themeAddDecision(since, nextRevisions(nextRevisions(at, mode), mode))).toBe("on");
+  });
+
+  it("keeps nothing after a way back, whatever came first and however late the add arrives", () => {
+    const at = { revision: 4, resetRevision: 0, themeRevision: 0 };
+    // The keys at the default, reaching main just before the add the page had already sent.
+    expect(themeAddDecision(4, nextRevisions(at, reset))).toBe("stopped");
+    // A way back, then another theme chosen: still stopped.
+    expect(themeAddDecision(4, nextRevisions(nextRevisions(at, reset), theme))).toBe("stopped");
+    // A way back before the making started is not this one's.
+    const before = nextRevisions(at, reset);
+    expect(themeAddDecision(before.revision, before)).toBe("on");
+  });
+
+  it("only adds it after a choice of theme, or when the page's revision cannot be judged", () => {
+    const at = { revision: 4, resetRevision: 0, themeRevision: 0 };
+    expect(themeAddDecision(4, nextRevisions(at, theme))).toBe("added");
+    expect(themeAddDecision(4, nextRevisions(nextRevisions(at, theme), mode))).toBe("added");
+    for (const since of [undefined, null, -1, 2.5, "4", 5]) {
+      expect(themeAddDecision(since, at)).toBe("added");
     }
   });
 });

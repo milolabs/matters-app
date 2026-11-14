@@ -19,6 +19,9 @@ const appearance: AppearanceInfo = {
   themeChosen: true,
   themes: [],
   fallback: null,
+  revision: 4,
+  resetRevision: 0,
+  themeRevision: 2,
 };
 const kept: ThemeAddAnswer = {
   ok: true,
@@ -153,6 +156,14 @@ describe("the one retry (ADR 0134, rule 15)", () => {
     expect(h.added).toEqual(["bad"]);
   });
 
+  it("adds nothing when main says a way back came first, even with the page unaware", async () => {
+    // The page had not heard of the reset when it handed the theme in; main had (rule 11).
+    const h = rig(["bad", "good"], [{ ok: false, stopped: true }, kept]);
+    expect(await makeTheme(h.deps, { description: "moss" })).toEqual({ kind: "stopped" });
+    expect(h.asked).toHaveLength(1);
+    expect(h.added).toEqual(["bad"]);
+  });
+
   it("says the list is full in main's words, and asks no second time", async () => {
     const full = "Matters keeps up to 500 themes. Remove one you do not use, then add another.";
     const h = rig(["first", "second"], [{ ok: false, full }]);
@@ -171,39 +182,59 @@ describe("what the person does while a theme is made (ADR 0134, rule 11)", () =>
     ...over,
   });
   const moss = at({ mode: "dark", theme: "own-0123456789ab", themeChosen: true });
-  const paper = at({ mode: "dark", theme: "paper", themeChosen: true });
   const atDefault = at({ mode: "system", theme: null, themeChosen: false });
 
-  it("stops the ask on the way back, from here, the menu or the keys", () => {
+  // Main's revisions as it counts them: `revision` moves on every change, `resetRevision` marks
+  // the last way back.
+  const after = (a: AppearanceInfo, over: Partial<AppearanceInfo>, reset = false) => {
+    const revision = a.revision + 1;
+    return { ...a, ...over, revision, resetRevision: reset ? revision : a.resetRevision };
+  };
+
+  it("stops the ask on a way back, from here, the menu or the keys", () => {
     const w = appearanceWatch(moss);
+    expect(w.since).toBe(moss.revision);
     expect(w.seen(moss)).toBe(false);
-    expect(w.seen(atDefault)).toBe(true);
+    const back = after(moss, { mode: "system", theme: null, themeChosen: false }, true);
+    expect(w.seen(back)).toBe(true);
     // Said again, by the answer and the push: it was stopped once.
-    expect(w.seen(atDefault)).toBe(false);
+    expect(w.seen(back)).toBe(false);
     // Another theme first, then the way back: still the way back.
     const v = appearanceWatch(moss);
-    expect(v.seen(paper)).toBe(false);
-    expect(v.seen(atDefault)).toBe(true);
-    // Made from the default, another theme, then back to the default.
-    const d = appearanceWatch(atDefault);
-    expect(d.seen(atDefault)).toBe(false);
-    expect(d.seen(paper)).toBe(false);
-    expect(d.seen(atDefault)).toBe(true);
+    const chose = after(moss, { theme: "paper" });
+    expect(v.seen(chose)).toBe(false);
+    expect(v.seen(after(chose, { mode: "system", theme: null, themeChosen: false }, true))).toBe(
+      true,
+    );
   });
 
-  it("keeps the ask when another theme is chosen, and the made one is then only added", () => {
+  it("stops the ask on a way back that finds the default already on", () => {
+    // Nothing in the state changes: only main's mark says the person asked for the default.
+    const d = appearanceWatch(atDefault);
+    expect(d.seen(atDefault)).toBe(false);
+    expect(d.seen(after(atDefault, {}, true))).toBe(true);
+  });
+
+  it("is not stopped by a way back from before the making started", () => {
+    const earlier = after(atDefault, {}, true);
+    const w = appearanceWatch(earlier);
+    expect(w.seen(earlier)).toBe(false);
+    expect(w.seen(after(earlier, { mode: "dark" }))).toBe(false);
+  });
+
+  it("keeps the ask on a change of mode alone, also one that ends at the default", () => {
+    // Dark with no theme, then System: the default's state, but not a way back.
+    const dark = at({ mode: "dark", theme: null, themeChosen: false });
+    const w = appearanceWatch(dark);
+    expect(w.seen(after(dark, { mode: "system" }))).toBe(false);
+    expect(w.seen(after(moss, { mode: "light" }))).toBe(false);
+  });
+
+  it("keeps the ask when another theme is chosen; main then only adds the theme", () => {
     const w = appearanceWatch(moss);
-    expect(w.putOn()).toBe(true);
-    // A change of mode, or the list changing in another window, is not a choice of theme.
-    expect(w.seen({ ...moss, mode: "light" })).toBe(false);
-    expect(w.seen(moss)).toBe(false);
-    expect(w.putOn()).toBe(true);
-    expect(w.seen(paper)).toBe(false);
-    expect(w.putOn()).toBe(false);
-    // The default theme in a mode the person chose is a theme too, not the way back.
-    const d = appearanceWatch(moss);
-    expect(d.seen(at({ mode: "dark", theme: null, themeChosen: false }))).toBe(false);
-    expect(d.putOn()).toBe(false);
+    expect(w.seen(after(moss, { theme: "paper" }))).toBe(false);
+    // What goes with the add is the start, so main sees the choice that came after it.
+    expect(w.since).toBe(moss.revision);
   });
 });
 

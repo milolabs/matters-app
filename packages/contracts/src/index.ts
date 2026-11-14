@@ -1537,18 +1537,35 @@ export interface AppearanceInfo {
   readonly themes: readonly ThemeListing[];
   /** Why the default is on although a theme was chosen (ADR 0134, rule 11), or null. */
   readonly fallback: string | null;
+  /**
+   * Main's count of changes to the appearance in this run: it goes up on every change of mode or
+   * theme and on every way back, even one that changes nothing (ADR 0134, rule 11). A theme being
+   * made is handed in with the revision it started at, and main decides from what came after.
+   */
+  readonly revision: number;
+  /**
+   * The revision of the last way back (*Use default*, *Reset Appearance*, the keys), 0 for none in
+   * this run. Equal to `revision` in the state a way back gave: that is how a page tells a reset
+   * from the same state said again.
+   */
+  readonly resetRevision: number;
+  /** The revision of the last change of the theme in force, 0 for none in this run. */
+  readonly themeRevision: number;
 }
 
 /**
  * The answer to a theme handed in as text (ADR 0134, rule 12): the agent's, from the person's
- * description. Either it was kept and is on, or it was refused for these reasons, or the list
- * had no room for it.
+ * description. Either it was kept (and put on, unless the person chose another theme meanwhile),
+ * or it was refused for these reasons, or the list had no room for it, or the person went back to
+ * the default while it was made (rule 11).
  */
 export type ThemeAddAnswer =
   | { readonly ok: true; readonly theme: ThemeListing; readonly appearance: AppearanceInfo }
   | { readonly ok: false; readonly problems: readonly ThemeProblem[] }
   /** The list is full (`MAX_THEMES`): nothing was saved, and asking again would not help. */
-  | { readonly ok: false; readonly full: string };
+  | { readonly ok: false; readonly full: string }
+  /** The person went back to the default after the making started: nothing was saved. */
+  | { readonly ok: false; readonly stopped: true };
 
 /** What main measures for Settings › Storage: sizes per kind of folder, never paths (ADR 0089). */
 export interface MainStorageInfo {

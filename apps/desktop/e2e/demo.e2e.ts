@@ -1,6 +1,6 @@
 // The main screens on the demo mailbox (`MATTERS_SEED=1`): about 430 threads written by the seed,
 // no server and no Docker. Each test starts its own app on an empty data folder, which the seed fills.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, type Running, test } from "./fixtures.ts";
@@ -540,4 +540,88 @@ test("a theme is made from a description, checked, and asked for once more when 
   await expect(section.getByRole("button", { name: "Remove the theme Meadow" })).toBeVisible();
   await section.locator("[data-theme-maker]").scrollIntoViewIfNeeded();
   await settings.screenshot({ path: testInfo.outputPath("theme-maker.png") });
+});
+
+test("a theme being made is stopped by a way back at the default and by leaving, not by a mode", async ({
+  start,
+  dataDir,
+}) => {
+  const running = await start(demo);
+  await expect(running.window.getByRole("listbox", { name: "Messages" })).toBeVisible();
+  const [settings] = await Promise.all([
+    running.app.waitForEvent("window"),
+    running.window.getByRole("button", { name: "Settings" }).click(),
+  ]);
+  await turnAiOn(settings);
+  await settings.getByRole("button", { name: "Appearance", exact: true }).click();
+  const section = settings.getByRole("region", { name: "Appearance" });
+  const field = section.getByRole("textbox", { name: "Describe a theme" });
+  const makeButton = section.getByRole("button", { name: "Make theme" });
+  const themes = join(dataDir, "userData", "themes");
+  const ownFiles = () => {
+    try {
+      return readdirSync(themes).length;
+    } catch {
+      return 0;
+    }
+  };
+  // The demo turn takes a fraction of a second, so each step is done in the page in one go: the
+  // click that starts the making, and what the person does while it runs.
+  const clickMake = () =>
+    settings.evaluate(() => {
+      const button = [...document.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Make theme",
+      );
+      button?.click();
+    });
+
+  // A change of mode alone, even one that ends at System with no theme, keeps the making: the
+  // theme is added and put on.
+  await field.fill("a quiet lagoon");
+  await clickMake();
+  await settings.evaluate(() => {
+    for (const mode of ["dark", "system"]) {
+      document
+        .querySelector<HTMLInputElement>(`input[name="appearance-mode"][value="${mode}"]`)
+        ?.click();
+    }
+  });
+  await expect(section.getByRole("radio", { name: /^Lagoon/ })).toBeChecked();
+  expect(ownFiles()).toBe(1);
+
+  // Back to the default, then the reset keys while the default is already on: nothing is added.
+  await section.getByRole("button", { name: "Use default" }).click();
+  await expect(section.getByRole("button", { name: "Use default" })).toBeDisabled();
+  await field.fill("a deep ocean");
+  await clickMake();
+  await running.app.evaluate(({ BrowserWindow }, mac) => {
+    // Through the window's input, as a key press is: Playwright's own keys bypass main.
+    const target = BrowserWindow.getAllWindows().find((w) => w.getTitle() === "Settings");
+    const modifiers = [mac ? "meta" : "control", "alt", "shift"] as const;
+    target?.webContents.sendInputEvent({
+      type: "keyDown",
+      keyCode: "0",
+      modifiers: [...modifiers],
+    });
+    target?.webContents.sendInputEvent({ type: "keyUp", keyCode: "0", modifiers: [...modifiers] });
+  }, process.platform === "darwin");
+  await expect(makeButton).toBeVisible();
+  await expect(section.getByRole("radio", { name: /^Matters/ })).toBeChecked();
+  await expect(section.getByRole("radio", { name: /^Ocean/ })).toHaveCount(0);
+  expect(ownFiles()).toBe(1);
+
+  // Leaving Appearance while a theme is made stops it too.
+  await field.fill("a misty harbour");
+  await settings.evaluate(() => {
+    const buttons = [...document.querySelectorAll("button")];
+    buttons.find((b) => b.textContent?.trim() === "Make theme")?.click();
+    buttons.find((b) => b.textContent?.trim() === "Agents")?.click();
+  });
+  await expect(settings.getByRole("region", { name: "Agents" })).toBeVisible();
+  // Longer than the demo turn, so a theme that was not stopped would have been added by now.
+  await settings.waitForTimeout(1000);
+  expect(ownFiles()).toBe(1);
+  await settings.getByRole("button", { name: "Appearance", exact: true }).click();
+  await expect(section.getByRole("radio", { name: /^Harbour/ })).toHaveCount(0);
+  await expect(section.getByRole("radio", { name: /^Matters/ })).toBeChecked();
 });
