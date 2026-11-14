@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { undeclaredEntries } from "@matters/core";
+import { type Holding, undeclaredEntries } from "@matters/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   dropEraseOrder,
@@ -659,6 +659,126 @@ describe("running the erase", () => {
       expect(existsSync(database)).toBe(false);
       expect(existsSync(ownerPath(database))).toBe(false);
       expect(readFileSync(join(outside, "precious.txt"), "utf8")).toBe("the person's own file");
+      expect(readEraseOrder(dataDir).kind).toBe("none");
+    });
+
+    /**
+     * A database in a folder of the data folder (MATTERS_DB_PATH = <data>/shared/mail.db): the
+     * sweep, or a declared folder, would take the folder and with it the held owner file.
+     */
+    async function nested(o: {
+      readonly extra?: readonly Holding[];
+      readonly dataDir?: string;
+      readonly databasePath?: string;
+    }) {
+      fill();
+      const data = o.dataDir ?? dataDir;
+      const database = o.databasePath ?? join(dataDir, "shared", "mail.db");
+      file(database, "shared pages");
+      file(join(dataDir, "shared", "notes.txt"), "notes");
+      file(join(dataDir, "shared", "deeper", "x.txt"), "x");
+      const owner = ownerPath(database);
+      const base = recordingFs();
+      // Before every delete from the database step to the release, the sweep's included: a
+      // second claim is refused.
+      let claimed = false;
+      const unheld: string[] = [];
+      const fs = {
+        ...base,
+        remove(path: string) {
+          if (claimed && path !== owner && !base.removed.includes(owner)) {
+            const c = claimAs("second", database)();
+            if (c.kind === "claimed") {
+              unheld.push(path);
+              c.release();
+            }
+          }
+          base.remove(path);
+        },
+      };
+      const second: string[] = [];
+      const result = await runErase(
+        order(false),
+        [...ALL_HOLDINGS, ...(o.extra ?? [])],
+        { ...targets(), dataDir: data, databasePath: database, earlierDir: null },
+        {
+          fs,
+          keychain: new FakeKeychain(),
+          guard: eraseGuard({
+            folders: [data],
+            files: ["", "-wal", "-shm", "-journal", ".owner"].map((s) => database + s),
+            tempDir,
+            tempPrefixes: ["matters-agent-"],
+          }),
+          now: () => 0,
+          claimDatabase: claimAs("erase", database, fs.removed),
+          progress: (e) => {
+            if (e.kind === "step" && e.step === "database") claimed = true;
+            if (e.kind !== "step" || !["files", "caches", "order"].includes(e.step)) return;
+            const c = claimAs("second", database)();
+            second.push(`${e.step} ${c.kind} ${existsSync(owner)}`);
+            if (c.kind === "claimed") c.release();
+          },
+        },
+      );
+      expect(unheld).toEqual([]);
+      return { result, owner, fs, second };
+    }
+
+    it("nested in the data folder keeps its owner file and the folders above it until the release", async () => {
+      const { result, owner, fs, second } = await nested({});
+      expect(second).toEqual(["files held true", "caches held true", "order held true"]);
+      expect(eraseReport(result).ok).toBe(true);
+      // The owner file once, by the release; its folder after it, emptied, then the order.
+      expect(fs.removed.filter((p) => p === owner)).toHaveLength(1);
+      expect(fs.removed.slice(-4)).toEqual([
+        owner,
+        join(dataDir, "shared"),
+        join(dataDir, ERASE_ORDER_FILE),
+        dataDir,
+      ]);
+      expect(fs.removed).toContain(join(dataDir, "shared", "deeper"));
+      expect(existsSync(dataDir)).toBe(false);
+      expect(readEraseOrder(dataDir).kind).toBe("none");
+    });
+
+    it("nested in a declared folder: the folder is emptied around the owner file, not left", async () => {
+      const shared: Holding = {
+        id: "test.shared",
+        group: "files",
+        step: "files",
+        place: { kind: "data", name: "shared", match: "exact" },
+      };
+      const { result, owner, fs, second } = await nested({ extra: [shared] });
+      expect(second).toEqual(["files held true", "caches held true", "order held true"]);
+      expect(eraseReport(result).ok).toBe(true);
+      // Its database files went in the database step; what it held besides is counted gone.
+      expect(result.outcomes.find((o) => o.holding.id === "test.shared")?.outcome).toEqual({
+        kind: "gone",
+        bytes: "notes".length + "x".length,
+      });
+      expect(fs.removed.indexOf(join(dataDir, "shared"))).toBe(fs.removed.indexOf(owner) + 1);
+      expect(existsSync(dataDir)).toBe(false);
+      expect(readEraseOrder(dataDir).kind).toBe("none");
+    });
+
+    it("nested, through a linked data folder: the owner file is still known by its real path", async () => {
+      const link = join(root, "linked data");
+      symlinkSync(dataDir, link);
+      const { result, owner, fs, second } = await nested({
+        dataDir: link,
+        databasePath: join(dataDir, "shared", "mail.db"),
+      });
+      expect(second).toEqual(["files held true", "caches held true", "order held true"]);
+      expect(eraseReport(result).ok).toBe(true);
+      expect(fs.removed.filter((p) => p === owner)).toHaveLength(1);
+      // The link itself is not the data folder's to remove; the folder it leads to ends empty.
+      expect(fs.removed.slice(-3)).toEqual([
+        owner,
+        join(link, "shared"),
+        join(link, ERASE_ORDER_FILE),
+      ]);
+      expect(readdirSync(dataDir)).toEqual([]);
       expect(readEraseOrder(dataDir).kind).toBe("none");
     });
 

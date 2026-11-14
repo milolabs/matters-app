@@ -174,6 +174,15 @@ function realOf(path: string, real: (p: string) => string): string {
   }
 }
 
+/**
+ * Where a delete of `path` lands, as the guard sees it: every link on the way followed, the last
+ * part not (deleting a link removes the link).
+ */
+function targetOf(path: string, real: (p: string) => string): string {
+  const absolute = resolve(path);
+  return join(realOf(dirname(absolute), real), basename(absolute));
+}
+
 const inside = (path: string, folder: string) =>
   path === folder || path.startsWith(folder.endsWith(sep) ? folder : folder + sep);
 
@@ -195,9 +204,8 @@ export function eraseGuard(
   const tempDir = realOf(roots.tempDir, real);
   return (path: string) => {
     if (path === "") return false;
-    const absolute = resolve(path);
     // The last part is not followed: deleting a link removes the link.
-    const target = join(realOf(dirname(absolute), real), basename(absolute));
+    const target = targetOf(path, real);
     if (forbidden.has(target)) return false;
     if (files.includes(target)) return true;
     if (folders.some((f) => inside(target, f))) return true;
@@ -365,6 +373,11 @@ export interface EraseDeps {
    * a live run owns is never deleted under it. Throws ENOENT when its folder is not there.
    */
   readonly claimDatabase?: () => DatabaseClaim;
+  /**
+   * Real paths, as the guard resolves them; the held owner file is compared through it (defaults
+   * to the system's).
+   */
+  readonly real?: (path: string) => string;
   /** Told before each holding and after it, for the window (rule 11). */
   readonly progress?: (event: EraseProgress) => void;
   /** The "done" marker the identity move reads (ADR 0105), when the earlier copy stays (rule 4). */
@@ -449,57 +462,124 @@ async function eraseKey(h: Holding, t: EraseTargets, deps: EraseDeps): Promise<H
   return still === true ? left("keychainRefused") : { kind: "gone", bytes: 0 };
 }
 
-function erasePaths(paths: readonly string[], deps: EraseDeps): HoldingOutcome {
-  let gone = 0;
-  let any = false;
-  let leftBytes = 0;
-  let left: { reason: LeftReason; where: string } | null = null;
-  const leave = (reason: LeftReason, where: string, bytes: number) => {
-    left = { reason, where };
-    leftBytes += bytes;
-  };
-  for (const path of paths) {
-    let entry: ReturnType<EraseFs["entry"]>;
-    try {
-      entry = deps.fs.entry(path);
-    } catch (error) {
-      // It could not be looked at: maybe there, never "absent".
-      any = true;
-      leave(reasonOf(error), path, 0);
-      continue;
-    }
-    if (entry === null) continue;
-    any = true;
-    const bytes =
-      entry.kind === "dir" ? deps.fs.size(path) : entry.kind === "file" ? entry.size : 0;
-    if (!deps.guard(path)) {
-      leave("outsideReach", path, bytes);
-      continue;
-    }
-    try {
-      deps.fs.remove(path);
-    } catch (error) {
-      leave(reasonOf(error), path, bytes);
-      continue;
-    }
-    // Looked for again: a delete that said yes and left the file is not "gone".
-    let still: boolean;
-    try {
-      still = deps.fs.entry(path) !== null;
-    } catch {
-      still = true;
-    }
-    if (still) leave("busy", path, bytes);
-    else gone += bytes;
-  }
-  const kept = left as { reason: LeftReason; where: string } | null;
+/**
+ * The held claim's owner file (ADR 0110), while the claim is held: no delete takes it, nor a folder
+ * above it. `file` is its real path; `around` the folders emptied around it, by real path, each
+ * with the path it was reached by, removed once the claim is released and the file is gone.
+ */
+interface Keep {
+  readonly file: string;
+  readonly real: (path: string) => string;
+  readonly around: Map<string, string>;
+}
+
+interface Tally {
+  gone: number;
+  any: boolean;
+  leftBytes: number;
+  left: { reason: LeftReason; where: string } | null;
+}
+
+function erasePaths(
+  paths: readonly string[],
+  deps: EraseDeps,
+  keep: Keep | null = null,
+): HoldingOutcome {
+  const tally: Tally = { gone: 0, any: false, leftBytes: 0, left: null };
+  for (const path of paths) erasePath(path, deps, keep, tally);
+  const kept = tally.left as { reason: LeftReason; where: string } | null;
   if (kept !== null)
-    return { kind: "left", reason: kept.reason, where: kept.where, bytes: leftBytes };
-  return any ? { kind: "gone", bytes: gone } : { kind: "absent" };
+    return { kind: "left", reason: kept.reason, where: kept.where, bytes: tally.leftBytes };
+  return tally.any ? { kind: "gone", bytes: tally.gone } : { kind: "absent" };
+}
+
+/**
+ * One path, removed and looked for again. The one chokepoint every delete of a holding and of the
+ * sweep goes through: while a claim is held, its owner file is passed over (it goes by the
+ * release), and a folder above it is emptied around it instead of removed. Neither is left.
+ */
+function erasePath(path: string, deps: EraseDeps, keep: Keep | null, tally: Tally): void {
+  const leave = (reason: LeftReason, where: string, bytes: number) => {
+    tally.left = { reason, where };
+    tally.leftBytes += bytes;
+  };
+  // The held owner file is not even looked at here: it is looked for once, by the release.
+  const target = keep === null ? null : targetOf(path, keep.real);
+  if (keep !== null && target === keep.file) return;
+  let entry: ReturnType<EraseFs["entry"]>;
+  try {
+    entry = deps.fs.entry(path);
+  } catch (error) {
+    // It could not be looked at: maybe there, never "absent".
+    tally.any = true;
+    leave(reasonOf(error), path, 0);
+    return;
+  }
+  if (entry === null) return;
+  if (keep !== null && target !== null) {
+    if (entry.kind === "dir" && inside(keep.file, target)) {
+      tally.any = true;
+      if (!deps.guard(path)) {
+        leave("outsideReach", path, deps.fs.size(path));
+        return;
+      }
+      let names: readonly string[];
+      try {
+        names = deps.fs.list(path);
+      } catch (error) {
+        leave(reasonOf(error), path, 0);
+        return;
+      }
+      if (!keep.around.has(target)) keep.around.set(target, path);
+      for (const name of names) erasePath(join(path, name), deps, keep, tally);
+      return;
+    }
+  }
+  tally.any = true;
+  const bytes = entry.kind === "dir" ? deps.fs.size(path) : entry.kind === "file" ? entry.size : 0;
+  if (!deps.guard(path)) {
+    leave("outsideReach", path, bytes);
+    return;
+  }
+  try {
+    deps.fs.remove(path);
+  } catch (error) {
+    leave(reasonOf(error), path, bytes);
+    return;
+  }
+  // Looked for again: a delete that said yes and left the file is not "gone".
+  let still: boolean;
+  try {
+    still = deps.fs.entry(path) !== null;
+  } catch {
+    still = true;
+  }
+  if (still) leave("busy", path, bytes);
+  else tally.gone += bytes;
+}
+
+/**
+ * The folders emptied around the owner file, once the claim is released and the file is gone:
+ * deepest first, each only while it is empty and the guard allows it. What a run started since
+ * has written keeps its folder; an empty folder that cannot be removed holds nothing.
+ */
+function removeAround(keep: Keep, deps: EraseDeps): void {
+  const depth = (p: string) => p.split(sep).length;
+  const folders = [...keep.around.entries()].sort(([a], [b]) => depth(b) - depth(a));
+  for (const [, path] of folders) {
+    try {
+      if (deps.fs.list(path).length === 0 && deps.guard(path)) deps.fs.remove(path);
+    } catch {}
+  }
 }
 
 /** A holding's paths, erased; a folder that could not be listed is left, never "absent". */
-function eraseHolding(h: Holding, t: EraseTargets, deps: EraseDeps): HoldingOutcome {
+function eraseHolding(
+  h: Holding,
+  t: EraseTargets,
+  deps: EraseDeps,
+  keep: Keep | null = null,
+): HoldingOutcome {
   let paths: readonly string[];
   try {
     paths = pathsOf(h, t, deps.fs);
@@ -507,7 +587,7 @@ function eraseHolding(h: Holding, t: EraseTargets, deps: EraseDeps): HoldingOutc
     const where = h.place.kind === "temp" ? t.tempDir : t.dataDir;
     return { kind: "left", reason: reasonOf(error), bytes: 0, where };
   }
-  return erasePaths(paths, deps);
+  return erasePaths(paths, deps, keep);
 }
 
 /** The erase's own claim on the database, held from the database step to the end of the sweep. */
@@ -529,6 +609,7 @@ function eraseDatabase(
   deps: EraseDeps,
   note: (h: Holding, o: HoldingOutcome) => void,
   hold: (held: HeldClaim) => void,
+  keep: () => Keep | null,
 ): void {
   let claim: { release(): void } | null = null;
   let refused: LeftReason | null = null;
@@ -552,7 +633,7 @@ function eraseDatabase(
       note(h, leaveAll(paths, refused, deps));
       continue;
     }
-    note(h, eraseHolding(h, t, deps));
+    note(h, eraseHolding(h, t, deps, keep()));
   }
 }
 
@@ -656,8 +737,9 @@ export function leaveErase(
  * known and nothing was left: a start after a partial erase tries again. A look that fails is a
  * thing left, never one gone. When the earlier copy stays, the identity move's "done" marker is
  * written before the order goes, so that the move never brings it back (rule 4). The database's
- * claim (ADR 0110) is held from the database step until the sweep is done; its owner file goes
- * last, by releasing it, before the order. On every other way out the claim is released too. It
+ * claim (ADR 0110) is held from the database step until the sweep is done, and while it is held no
+ * delete takes its owner file nor a folder above it; the file goes last, by releasing it, then the
+ * folders emptied around it, before the order. On every other way out the claim is released too. It
  * does not throw: what it could not do is in the result.
  */
 export async function runErase(
@@ -676,12 +758,14 @@ export async function runErase(
   // The database's claim, from the database step until the sweep is done (ADR 0110): while it is
   // held no other run can claim the database and write files the sweep would take.
   let held: HeldClaim | null = null;
+  // Its owner file and the folders above it, which no delete takes while it is held.
+  let kept: Keep | null = null;
+  const keep = () => (held === null ? null : kept);
   const settle = () => {
     const h = held;
     held = null;
     if (h !== null) settleClaim(h, t, deps, note);
   };
-  const ownerFile = resolve(t.databasePath + OWNER_SUFFIX);
   try {
     for (const { step, holdings: inStep } of erasePlan(holdings, { earlierCopy })) {
       deps.progress?.({ kind: "step", step });
@@ -689,7 +773,8 @@ export async function runErase(
         // Something left: the sweep below would take it too, a database another run owns included.
         if (outcomes.some((o) => o.outcome.kind === "left")) break;
         // What no holding claimed: the folder is removed whole, not file by file (rule 3). The
-        // claim's own owner file is not among it: it goes by releasing the claim, below.
+        // claim's own owner file, and any folder above it, are passed over: the file goes by
+        // releasing the claim, below, and the folders after it.
         const undeclared: Holding = {
           id: "desktop.undeclared",
           group: "caches",
@@ -701,12 +786,11 @@ export async function runErase(
           stray = deps.fs
             .list(t.dataDir)
             .filter((n) => n !== ERASE_ORDER_FILE)
-            .map((n) => join(t.dataDir, n))
-            .filter((path) => held === null || resolve(path) !== ownerFile);
+            .map((n) => join(t.dataDir, n));
         } catch (error) {
           note(undeclared, { kind: "left", reason: reasonOf(error), bytes: 0, where: t.dataDir });
         }
-        if (stray.length > 0) note(undeclared, erasePaths(stray, deps));
+        if (stray.length > 0) note(undeclared, erasePaths(stray, deps, keep()));
         if (outcomes.some((o) => o.outcome.kind === "left")) break;
         try {
           keepEarlierOut(t, deps);
@@ -726,6 +810,9 @@ export async function runErase(
         // The owner file last of all the erase deletes; the order only once it is known gone.
         settle();
         if (outcomes.some((o) => o.outcome.kind === "left")) break;
+        // The folders kept only for the owner file, now that it is gone.
+        const around = kept as Keep | null;
+        if (around !== null) removeAround(around, deps);
         for (const h of inStep) note(h, eraseHolding(h, t, deps));
         // Empty now: the folder itself goes too (it stays with the marker in it, or with what a
         // run started since the claim was released has written).
@@ -738,14 +825,26 @@ export async function runErase(
         continue;
       }
       if (step === "database") {
-        eraseDatabase(inStep, t, deps, note, (h) => {
-          held = h;
-        });
+        eraseDatabase(
+          inStep,
+          t,
+          deps,
+          note,
+          (h) => {
+            kept = {
+              file: targetOf(t.databasePath + OWNER_SUFFIX, deps.real ?? realpathSync),
+              real: deps.real ?? realpathSync,
+              around: new Map(),
+            };
+            held = h;
+          },
+          keep,
+        );
         continue;
       }
       for (const h of inStep) {
         if (h.place.kind === "keychain") note(h, await eraseKey(h, t, deps));
-        else note(h, eraseHolding(h, t, deps));
+        else note(h, eraseHolding(h, t, deps, keep()));
       }
     }
   } finally {

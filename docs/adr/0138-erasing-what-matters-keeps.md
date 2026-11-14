@@ -257,7 +257,11 @@ and an error is never read as "gone" or "absent".
   that fails is a thing left), before the order. On every other way out (something left, a step
   that breaks off) the claim is released too, and only the erase's own file is ever removed. The
   data folder itself goes after the order, and only while it is empty, so what a run started
-  after the release has written keeps it.
+  after the release has written keeps it. While the claim is held, no delete of the run (a
+  declared holding or the sweep) takes the owner file or a folder above it, compared by real path
+  as the guard compares: such a folder (a database at `<data>/shared/mail.db`) is emptied around
+  the file instead, is not counted as left, and goes after the release, deepest first, only while
+  empty and through the guard.
 - **Rule 7's words on a refused key are not on the screens.** The key protects nothing only once
   `credentials.json` is gone, and that file can be left in the same run; the result names the
   key and where to delete it, and promises nothing about it.
