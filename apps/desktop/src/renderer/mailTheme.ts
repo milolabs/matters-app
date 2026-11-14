@@ -7,6 +7,32 @@
 /** What a message says about themes. */
 export type MailTheme = "dark" | "light-only" | "none";
 
+/**
+ * The ground and ink under a message in dark: the theme's `bg` and `ink` (ADR 0134, rule 10), or
+ * the default's. Opaque `#rrggbb`, as the theme check leaves them.
+ */
+export interface MailGround {
+  readonly bg: string;
+  readonly ink: string;
+}
+
+/** The default theme's dark ground and ink (`styles.css`, ADR 0085). */
+export const DEFAULT_MAIL_GROUND: MailGround = { bg: "#1e1e20", ink: "#f5f5f7" };
+
+/**
+ * Page basics; the sender's own styles come after and can override them. In light a message is
+ * shown as sent, on white; in dark the ground and ink are the app's (ADR 0085, amended by ADR 0134,
+ * rule 10: the theme's). Only hex from the theme check is put in, so nothing else can reach CSS.
+ */
+export function mailBaseStyle(ground: MailGround = DEFAULT_MAIL_GROUND): string {
+  return `<style>html{background:#fff;color:#1d1d1f}body{margin:0;padding:16px;font:14px/1.5 -apple-system,system-ui,sans-serif;overflow-wrap:break-word}img{max-width:100%;height:auto}a{color:#1a56c4}pre{white-space:pre-wrap}@media (prefers-color-scheme:dark){html{background:${ground.bg};color:${ground.ink}}a{color:#8ab4f8}}</style>`;
+}
+
+const DEFAULT_BASE = mailBaseStyle();
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+const isDefaultGround = (g: MailGround) =>
+  g.bg === DEFAULT_MAIL_GROUND.bg && g.ink === DEFAULT_MAIL_GROUND.ink;
+
 /** How the frame shows a message: which page markup, and the scheme its media queries see. */
 export interface MailView {
   readonly html: string;
@@ -57,15 +83,28 @@ export function mailTheme(raw: string, clean: string): MailTheme {
   return lightOnly ? "light-only" : "none";
 }
 
-/** The view for the app's theme. `darken` runs only for a message that says nothing, in dark. */
+/**
+ * The view for the app's theme. `darken` runs only for a message that says nothing, in dark. In
+ * dark the base style's ground and ink are the theme's (`ground`), and what is recolored lands on
+ * that ground (ADR 0134, rule 10).
+ */
 export function mailView(
   clean: { readonly html: string; readonly theme: MailTheme },
   appDark: boolean,
-  darken: (html: string) => string = darkenMail,
+  darken?: (html: string) => string,
+  ground: MailGround = DEFAULT_MAIL_GROUND,
 ): MailView {
   if (!appDark || clean.theme === "light-only") return { html: clean.html, scheme: "light" };
-  if (clean.theme === "dark") return { html: clean.html, scheme: "dark" };
-  return { html: darken(clean.html), scheme: "dark" };
+  // The default's ground, or one that is not plain hex: the message as `sanitizeMail` made it.
+  const plain =
+    isDefaultGround(ground) || !HEX_COLOR.test(ground.bg) || !HEX_COLOR.test(ground.ink);
+  const html =
+    plain || !clean.html.startsWith(DEFAULT_BASE)
+      ? clean.html
+      : mailBaseStyle(ground) + clean.html.slice(DEFAULT_BASE.length);
+  if (clean.theme === "dark") return { html, scheme: "dark" };
+  const recolor = darken ?? ((h: string) => darkenMail(h, plain ? undefined : ground));
+  return { html: recolor(html), scheme: "dark" };
 }
 
 // ---- Colors ---------------------------------------------------------------------------------
@@ -233,16 +272,37 @@ const DARK_INK = 0.6;
 
 export type Role = "ground" | "ink";
 
+/** Grounds with less chroma than this read as white or grey: they take the theme ground's tint. */
+const NEUTRAL = 0.03;
+
+/** The dark ground recolored grounds land on, in OKLCH; the default's has no tint to give. */
+type GroundLch = readonly [number, number, number];
+const DEFAULT_GROUND_LCH: GroundLch = [GROUND, 0, 0];
+
+/** A theme's ground in OKLCH, once per message (ADR 0134, rule 10). */
+export function groundLch(ground: MailGround | undefined): GroundLch {
+  const rgb = ground ? hex(ground.bg) : null;
+  return rgb ? toOklch(rgb) : DEFAULT_GROUND_LCH;
+}
+
 /**
- * One color for the dark theme. A light ground becomes dark (white goes to the app's ground) and
- * dark ink becomes light (black to about #e8e8e8); both keep their hue, so a brand stays
- * recognisable. Colors already right for dark stay as they are.
+ * One color for the dark theme. A light ground becomes dark (white goes to the app's ground: the
+ * theme's `bg`, ADR 0134, rule 10) and dark ink becomes light (black to about #e8e8e8); both keep
+ * their hue, so a brand stays recognisable, and a white or grey ground takes the theme ground's
+ * tint. Colors already right for dark stay as they are.
  */
-export function darkColor(rgb: Rgb, role: Role): Rgb | null {
+export function darkColor(
+  rgb: Rgb,
+  role: Role,
+  ground: GroundLch = DEFAULT_GROUND_LCH,
+): Rgb | null {
   const [L, C, h] = toOklch(rgb);
   if (role === "ground") {
     if (L <= LIGHT_GROUND) return null;
-    return inGamut(GROUND + (1 - L) * 0.5, C * 0.6, h);
+    const [gL, gC, gh] = ground;
+    return C < NEUTRAL
+      ? inGamut(gL + (1 - L) * 0.5, gC, gh)
+      : inGamut(gL + (1 - L) * 0.5, C * 0.6, h);
   }
   if (L >= DARK_INK) return null;
   return inGamut(0.93 - L * 0.4, C, h);
@@ -264,7 +324,7 @@ const COLOR_TOKEN = new RegExp(
 );
 
 /** Every color in a CSS value, for its role; what is in `url(…)` is left alone. */
-function recolorValue(value: string, role: Role): string {
+function recolorValue(value: string, role: Role, ground: GroundLch): string {
   return value
     .split(/(url\([^)]*\))/i)
     .map((part, i) =>
@@ -272,7 +332,7 @@ function recolorValue(value: string, role: Role): string {
         ? part
         : part.replace(COLOR_TOKEN, (token) => {
             const parsed = parseColor(token);
-            const next = parsed === null ? null : darkColor(parsed.rgb, role);
+            const next = parsed === null ? null : darkColor(parsed.rgb, role, ground);
             return next === null || parsed === null ? token : format(next, parsed.alpha);
           }),
     )
@@ -297,12 +357,14 @@ function roleOf(property: string): Role | null {
 }
 
 /** CSS declarations, in a style sheet or a `style` attribute, with their colors for dark. */
-export function darkenCss(css: string): string {
+export function darkenCss(css: string, ground: GroundLch = DEFAULT_GROUND_LCH): string {
   return css.replace(
     /(^|[{;\s])([a-z-]+)(\s*:\s*)([^;{}]+)/gi,
     (whole, before: string, property: string, colon: string, value: string) => {
       const role = roleOf(property);
-      return role === null ? whole : `${before}${property}${colon}${recolorValue(value, role)}`;
+      return role === null
+        ? whole
+        : `${before}${property}${colon}${recolorValue(value, role, ground)}`;
     },
   );
 }
@@ -322,17 +384,18 @@ const ATTRIBUTE = /(\s)([^\s"'>/=]+)(\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))
 
 /**
  * Sanitized markup for the dark theme, as text (ADR 0085): the colors of `<style>` sheets,
- * `style` attributes and old color attributes. Text of the message is not touched, and neither
- * are images.
+ * `style` attributes and old color attributes, landing on `ground` (the theme's, ADR 0134,
+ * rule 10). Text of the message is not touched, and neither are images.
  */
-export function darkenMail(html: string): string {
+export function darkenMail(html: string, ground?: MailGround): string {
+  const g = groundLch(ground);
   return html
     .split(/(<style\b[^>]*>[\s\S]*?<\/style\s*>)/i)
     .map((part, i) => {
       if (i % 2 === 1) {
         const open = part.indexOf(">") + 1;
         const close = part.lastIndexOf("</");
-        return part.slice(0, open) + darkenCss(part.slice(open, close)) + part.slice(close);
+        return part.slice(0, open) + darkenCss(part.slice(open, close), g) + part.slice(close);
       }
       return part.replace(TAG, (tag) =>
         tag.replace(
@@ -349,11 +412,11 @@ export function darkenMail(html: string): string {
             const n = name.toLowerCase();
             const value = dq ?? sq ?? bare ?? "";
             let next: string;
-            if (n === "style") next = darkenCss(value);
+            if (n === "style") next = darkenCss(value, g);
             else {
               const role = ATTRIBUTE_ROLES[n];
               if (role === undefined) return whole;
-              next = recolorValue(value, role);
+              next = recolorValue(value, role, g);
             }
             if (next === value) return whole;
             const quote = sq !== undefined ? "'" : '"';

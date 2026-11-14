@@ -111,6 +111,7 @@ describe("efforts in stored settings (ADR 0118, rule 8)", () => {
       write: "default",
       answer: "default",
       titles: "low",
+      appearance: "default",
     });
   });
 
@@ -124,6 +125,7 @@ describe("efforts in stored settings (ADR 0118, rule 8)", () => {
       write: "default",
       answer: "default",
       titles: "default",
+      appearance: "default",
     });
     const t = await stored({ efforts: { write: "xhigh" } });
     expect(t.efforts).toEqual({
@@ -131,6 +133,7 @@ describe("efforts in stored settings (ADR 0118, rule 8)", () => {
       write: "xhigh",
       answer: "default",
       titles: "low",
+      appearance: "default",
     });
     expect((await stored({ efforts: "high" })).efforts).toEqual(DEFAULT_AGENT_EFFORTS);
     expect((await stored({ efforts: null })).efforts).toEqual(DEFAULT_AGENT_EFFORTS);

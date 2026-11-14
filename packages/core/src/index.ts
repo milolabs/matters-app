@@ -68,4 +68,5 @@ export * from "./usecases/talkLoop.ts";
 export * from "./usecases/talkOffers.ts";
 export * from "./usecases/talkTitle.ts";
 export * from "./usecases/talkTrail.ts";
+export * from "./usecases/themeRequest.ts";
 export * from "./usecases/views.ts";

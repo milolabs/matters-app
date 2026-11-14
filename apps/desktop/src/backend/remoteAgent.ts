@@ -26,6 +26,7 @@ import type {
   TalkEntry,
   TalkResult,
   TalkSummary,
+  ThemeInput,
   ThreadAgentView,
 } from "@matters/core";
 import type { AgentApi } from "./agentApi.ts";
@@ -237,6 +238,14 @@ export class RemoteAgent implements AgentApi {
 
   async talkStop(threadId: string): Promise<void> {
     await this.host.command({ name: "agentTalkStop", threadId });
+  }
+
+  makeTheme(input: ThemeInput): Promise<{ text: string }> {
+    return this.host.command({ name: "agentMakeTheme", input });
+  }
+
+  async makeThemeStop(): Promise<void> {
+    await this.host.command({ name: "agentMakeThemeStop" });
   }
 
   talkEntries(threadId: string): Promise<readonly TalkEntry[]> {

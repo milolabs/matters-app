@@ -26,6 +26,7 @@ import type {
   TalkEntry,
   TalkResult,
   TalkSummary,
+  ThemeInput,
   ThreadAgentView,
 } from "@matters/core";
 
@@ -165,6 +166,18 @@ export interface AgentApi {
     text: string,
     words: string,
   ): Promise<{ text: string }>;
+  /**
+   * A theme from the person's description (ADR 0134, rules 12 to 15): one `P0` turn of the kind
+   * `appearance`, on its runtime, model and effort, and on no other runtime. No mail, no address
+   * and no account go with it, and no account is asked: AI on, the kind's runtime ready, room in
+   * its plan. The answer is the theme's text, never checked, stored or applied here: the page hands
+   * it to main, which checks it as any file from outside. An answer that is not one JSON object is
+   * an `AgentUnavailableError` with a sentence; so is a stopped turn. Refused with a sentence and no
+   * turn when the description is blank or too long.
+   */
+  makeTheme(input: ThemeInput): Promise<{ text: string }>;
+  /** Cuts the running theme turn short; nothing is kept. No turn running: nothing. */
+  makeThemeStop(): Promise<void>;
   /** Short answers for what the other side's last message asked and the draft does not answer. */
   answerQuestions(
     threadId: string,

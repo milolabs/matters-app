@@ -46,7 +46,13 @@ describe("resolveEffort (rules 2 and 4)", () => {
 
 describe("effortFor (rule 1)", () => {
   const settings = {
-    efforts: { understand: "medium", write: "default", answer: "max", titles: "low" },
+    efforts: {
+      understand: "medium",
+      write: "default",
+      answer: "max",
+      titles: "low",
+      appearance: "high",
+    },
   } as const;
 
   it("takes the setting of the kind of work", () => {
@@ -54,6 +60,7 @@ describe("effortFor (rule 1)", () => {
     expect(effortFor("write", settings, ALL)).toBeUndefined();
     expect(effortFor("answer", settings, ALL)).toBe("max");
     expect(effortFor("titles", settings, ALL)).toBe("low");
+    expect(effortFor("appearance", settings, ALL)).toBe("high");
   });
 
   it("holds the runtime's list to each of them", () => {
@@ -67,6 +74,9 @@ describe("effortFor (rule 1)", () => {
     expect(effortFor("titles", DEFAULT_AGENT_SETTINGS, ALL)).toBe("low");
     expect(effortFor("write", DEFAULT_AGENT_SETTINGS, ALL)).toBeUndefined();
     expect(effortFor("answer", DEFAULT_AGENT_SETTINGS, ALL)).toBeUndefined();
+    // Making a theme starts at the default (ADR 0134, rule 13).
+    expect(effortFor("appearance", DEFAULT_AGENT_SETTINGS, ALL)).toBeUndefined();
+    expect(DEFAULT_AGENT_EFFORTS.appearance).toBe("default");
   });
 });
 
@@ -80,7 +90,13 @@ describe("readEfforts (rule 8)", () => {
   it("keeps each known value and gives each unknown or missing kind its start", () => {
     expect(
       readEfforts({ understand: "xhigh", write: "LOW", titles: "default", other: "max" }),
-    ).toEqual({ understand: "xhigh", write: "default", answer: "default", titles: "default" });
+    ).toEqual({
+      understand: "xhigh",
+      write: "default",
+      answer: "default",
+      titles: "default",
+      appearance: "default",
+    });
     expect(readEfforts({ answer: "high" })).toEqual({ ...DEFAULT_AGENT_EFFORTS, answer: "high" });
   });
 });

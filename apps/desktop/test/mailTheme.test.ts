@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_MAIL_GROUND,
   darkColor,
   darkenCss,
   darkenMail,
+  groundLch,
+  mailBaseStyle,
   mailTheme,
   mailView,
 } from "../src/renderer/mailTheme.ts";
@@ -133,5 +136,77 @@ describe("recoloring markup, as text", () => {
     const started = performance.now();
     darkenMail(html);
     expect(performance.now() - started).toBeLessThan(250);
+  });
+});
+
+// ADR 0134, rule 10: in dark, the ground and ink under a message are the theme's.
+describe("mail on a theme's ground", () => {
+  const night = { bg: "#141416", ink: "#ececef" };
+  const paper = { bg: "#1f1d1a", ink: "#f3efe7" };
+  const bytes = (rgb: readonly number[] | null) => (rgb ?? []).map((c) => Math.round(c * 255));
+
+  it("puts the theme's ground and ink in the base style, in dark only", () => {
+    const html = `${mailBaseStyle()}<p>Hi</p>`;
+    const dark = mailView({ html, theme: "none" }, true, undefined, night);
+    expect(dark.html).toContain(
+      "@media (prefers-color-scheme:dark){html{background:#141416;color:#ececef}",
+    );
+    expect(dark.html).not.toContain("#1e1e20");
+    expect(dark.html.endsWith("<p>Hi</p>")).toBe(true);
+    // A sender's own dark variant also lands on the theme's ground.
+    expect(mailView({ html, theme: "dark" }, true, undefined, night).html).toContain(
+      "background:#141416",
+    );
+    // In light a message is shown as sent, on white, whatever the theme.
+    expect(mailView({ html, theme: "none" }, false, undefined, night)).toEqual({
+      html,
+      scheme: "light",
+    });
+    expect(mailView({ html, theme: "light-only" }, true, undefined, night)).toEqual({
+      html,
+      scheme: "light",
+    });
+  });
+
+  it("leaves the default's ground as it was, and takes only plain hex", () => {
+    const html = `${mailBaseStyle()}<p>Hi</p>`;
+    expect(mailView({ html, theme: "dark" }, true, undefined, DEFAULT_MAIL_GROUND).html).toBe(html);
+    expect(mailBaseStyle()).toContain("background:#1e1e20;color:#f5f5f7");
+    const odd = { bg: "red;}body{display:none", ink: "#ffffff" };
+    expect(mailView({ html, theme: "dark" }, true, undefined, odd).html).toBe(html);
+  });
+
+  it("recolors white onto the theme's ground itself, and keeps a brand's hue", () => {
+    for (const ground of [night, paper]) {
+      const white = bytes(darkColor([1, 1, 1], "ground", groundLch(ground)));
+      const bg = [1, 3, 5].map((i) => Number.parseInt(ground.bg.slice(i, i + 2), 16));
+      for (const [i, c] of white.entries()) {
+        expect(Math.abs(c - (bg[i] ?? 0)), ground.bg).toBeLessThanOrEqual(2);
+      }
+    }
+    // A light blue ground stays blue, a little darker than the theme's ground's lightness above it.
+    const blue = darkColor([0.85, 0.9, 1], "ground", groundLch(night));
+    expect((blue?.[2] ?? 0) > (blue?.[0] ?? 1)).toBe(true);
+  });
+
+  it("darkens a message's white table onto the theme's ground", () => {
+    const out = mailView(
+      {
+        html: `${mailBaseStyle()}<table bgcolor="#ffffff"><tr><td>x</td></tr></table>`,
+        theme: "none",
+      },
+      true,
+      undefined,
+      night,
+    ).html;
+    const m = /bgcolor="(#[0-9a-f]{6})"/.exec(out);
+    expect(m?.[1]).toBeDefined();
+    const got = [1, 3, 5].map((i) => Number.parseInt((m?.[1] ?? "").slice(i, i + 2), 16));
+    const want = [0x14, 0x14, 0x16];
+    for (const [i, c] of got.entries()) {
+      expect(Math.abs(c - (want[i] ?? 0))).toBeLessThanOrEqual(2);
+    }
+    // Without a theme it lands on the default's, as before.
+    expect(darkenMail('<table bgcolor="#ffffff"></table>')).toMatch(/bgcolor="#1[ef]1[ef]1[ef]"/);
   });
 });

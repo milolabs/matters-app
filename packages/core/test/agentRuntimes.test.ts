@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentRuntimeInfo } from "../src/index.ts";
 import {
+  AGENT_WORK_KINDS,
   AgentRunError,
   buildPreparedRequest,
   buildPromptRequest,
@@ -8,13 +9,16 @@ import {
   DEFAULT_AGENT_MODELS,
   DEFAULT_AGENT_SETTINGS,
   effortFor,
+  everyKindOn,
   inputCharsFor,
   isAgentRunError,
   kindsOn,
+  kindTakesMail,
   LEGACY_RUNTIME_ID,
   levelsFor,
   MAX_PARALLEL_TURNS,
   MAX_PROMPT_BATCH_CHARS,
+  mailRuntimesInUse,
   mayRun,
   mayRunOn,
   modelUsesTools,
@@ -113,13 +117,23 @@ describe("settings read back in every shape (ADR 0119, rule 4; ADR 0121, rule 12
     weekSharePercent: 25,
     usedByUsPercent: 3,
   };
-  const all = (id: string) => ({ understand: id, write: id, answer: id, titles: id });
+  const all = (id: string) => ({
+    understand: id,
+    write: id,
+    answer: id,
+    titles: id,
+    appearance: id,
+  });
+  // What settings from before read as: making a theme starts on writing's model and runtime, at
+  // the default effort (ADR 0134, rule 13).
+  const readModels = { ...flat.models, appearance: flat.models.write };
+  const readEffortsOf = { ...flat.efforts, appearance: "default" };
 
   it("reads flat models and efforts from before as the choices of the runtime they name", () => {
     const s = readAgentSettings(flat);
-    expect(s.models).toEqual(flat.models);
-    expect(s.efforts).toEqual(flat.efforts);
-    expect(s.choices).toEqual({ "claude-code": { models: flat.models, efforts: flat.efforts } });
+    expect(s.models).toEqual(readModels);
+    expect(s.efforts).toEqual(readEffortsOf);
+    expect(s.choices).toEqual({ "claude-code": { models: readModels, efforts: readEffortsOf } });
     expect(s).toMatchObject({
       enabled: true,
       kindRuntime: all("claude-code"),
@@ -132,7 +146,7 @@ describe("settings read back in every shape (ADR 0119, rule 4; ADR 0121, rule 12
     const { runtimeId: _r, ...none } = flat;
     const s = readAgentSettings(none);
     expect(s.kindRuntime).toEqual({});
-    expect(s.choices?.[LEGACY_RUNTIME_ID]?.models).toEqual(flat.models);
+    expect(s.choices?.[LEGACY_RUNTIME_ID]?.models).toEqual(readModels);
   });
 
   it("reads one chosen runtime as every kind on it, with its own choices", () => {
@@ -178,13 +192,20 @@ describe("settings read back in every shape (ADR 0119, rule 4; ADR 0121, rule 12
       },
       plans: { codex: { usedByUsPercent: 2 }, "": { usedByUsPercent: 9 } },
     });
-    expect(s.kindRuntime).toEqual({ understand: "ollama", write: "claude-code", answer: "codex" });
+    // Stored before making themes was a kind: it starts where writing is (ADR 0134, rule 13).
+    expect(s.kindRuntime).toEqual({
+      understand: "ollama",
+      write: "claude-code",
+      answer: "codex",
+      appearance: "claude-code",
+    });
     expect(s.models).toEqual({
       understand: "q",
       write: "opus",
       // Codex keeps nothing yet: the start, until the service gives it its own.
       answer: DEFAULT_AGENT_MODELS.answer,
       titles: DEFAULT_AGENT_MODELS.titles,
+      appearance: "opus",
     });
     expect(s.efforts.write).toBe("max");
     expect(s.plans).toEqual({ codex: { usedByUsPercent: 2 } });
@@ -217,12 +238,12 @@ describe("settings read back in every shape (ADR 0119, rule 4; ADR 0121, rule 12
       kindRuntime: { understand: "ollama" },
       choices: { ollama: { models: all("q") } },
     });
-    expect(s.models).toEqual({ ...flat.models, understand: "q" });
+    expect(s.models).toEqual({ ...readModels, understand: "q" });
     expect(s.efforts.understand).toBe(DEFAULT_AGENT_EFFORTS.understand);
     expect(s.plans?.["claude-code"]?.limits).toEqual({ usingOverage: false, seenAtMs: 1 });
     s = patchAgentSettings(s, { kindRuntime: { understand: "claude-code" } });
-    expect(s.models).toEqual(flat.models);
-    expect(s.efforts).toEqual(flat.efforts);
+    expect(s.models).toEqual(readModels);
+    expect(s.efforts).toEqual(readEffortsOf);
     s = patchAgentSettings(s, { plan: { runtimeId: "ollama", usedByUsPercent: 0 } });
     s = patchAgentSettings(s, { plan: { runtimeId: "claude-code", limits: null } });
     expect("limits" in (s.plans?.["claude-code"] ?? {})).toBe(false);
@@ -255,13 +276,20 @@ describe("startingChoices and unlistedKinds (rule 4)", () => {
       write: "qwen3:8b",
       answer: "qwen3:8b",
       titles: "qwen3:8b",
+      appearance: "qwen3:8b",
     });
     expect(startingChoices({ models: local, defaultModel: "gone" })?.models.write).toBe("qwen3:8b");
     expect(startingChoices({ models: [] })).toBeNull();
   });
 
   it("names the kinds whose model their runtime does not list; titles off is not a model", () => {
-    const models = { understand: "qwen3:8b", write: "gone", answer: "qwen3:8b", titles: "off" };
+    const models = {
+      understand: "qwen3:8b",
+      write: "gone",
+      answer: "qwen3:8b",
+      titles: "off",
+      appearance: "qwen3:8b",
+    };
     const kindRuntime = { understand: "ollama", write: "ollama", answer: "plan", titles: "ollama" };
     const infos: Record<string, { models: readonly string[] }> = {
       ollama: { models: local },
@@ -393,8 +421,109 @@ describe("starting choices per kind of work (ADR 0120)", () => {
         defaultModels: { understand: "small", titles: "small", write: "gone" },
       }),
     ).toEqual({
-      models: { understand: "small", write: "big", answer: "big", titles: "small" },
+      models: {
+        understand: "small",
+        write: "big",
+        answer: "big",
+        titles: "small",
+        // Nothing suggested for it: where writing starts (ADR 0134, rule 13).
+        appearance: "big",
+      },
       efforts: DEFAULT_AGENT_EFFORTS,
     });
+    expect(
+      startingChoices({
+        models: ["big", "small", "mid"],
+        defaultModel: "big",
+        defaultModels: { write: "small", appearance: "mid" },
+      })?.models.appearance,
+    ).toBe("mid");
+    expect(
+      startingChoices({ models: ["big", "small"], defaultModels: { write: "small" } })?.models
+        .appearance,
+    ).toBe("small");
+  });
+});
+
+describe("making themes is a kind of work (ADR 0134, rules 13 and 14)", () => {
+  it("is listed fifth, after the four kinds before it, and takes no mail", () => {
+    expect(AGENT_WORK_KINDS).toEqual(["understand", "write", "answer", "titles", "appearance"]);
+    expect(AGENT_WORK_KINDS.filter((k) => !kindTakesMail(k))).toEqual(["appearance"]);
+    expect(DEFAULT_AGENT_MODELS.appearance).toBe(DEFAULT_AGENT_MODELS.write);
+    expect(DEFAULT_AGENT_EFFORTS.appearance).toBe("default");
+    expect(everyKindOn("x")).toEqual({
+      understand: "x",
+      write: "x",
+      answer: "x",
+      titles: "x",
+      appearance: "x",
+    });
+  });
+
+  it("reads settings stored before it as the kind on writing's runtime and model, losing nothing", () => {
+    // As written by the build before this kind: a runtime per kind, choices for two runtimes.
+    const before = {
+      enabled: true,
+      kindRuntime: { understand: "ollama", write: "codex", answer: "codex", titles: "ollama" },
+      choices: {
+        ollama: {
+          models: { understand: "q", write: "q", answer: "q", titles: "off" },
+          efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
+        },
+        codex: {
+          models: { understand: "luna", write: "sol", answer: "sol", titles: "luna" },
+          efforts: { understand: "low", write: "high", answer: "medium", titles: "low" },
+        },
+      },
+      weekSharePercent: 25,
+      plans: { codex: { usedByUsPercent: 3 } },
+      readingPaused: true,
+    };
+    const s = readAgentSettings(before);
+    expect(s.kindRuntime).toEqual({ ...before.kindRuntime, appearance: "codex" });
+    expect(s.models).toEqual({
+      understand: "q",
+      write: "sol",
+      answer: "sol",
+      titles: "off",
+      appearance: "sol",
+    });
+    expect(s.efforts).toEqual({
+      understand: "low",
+      write: "high",
+      answer: "medium",
+      titles: "low",
+      appearance: "default",
+    });
+    // Each runtime keeps what it held, and gains the kind on its own writing model.
+    expect(s.choices?.ollama?.models).toEqual({ ...before.choices.ollama.models, appearance: "q" });
+    expect(s.choices?.codex?.efforts).toEqual({
+      ...before.choices.codex.efforts,
+      appearance: "default",
+    });
+    expect(s).toMatchObject({ enabled: true, weekSharePercent: 25, readingPaused: true });
+    expect(s.plans).toEqual({ codex: { usedByUsPercent: 3 } });
+    // Once written, it reads back the same, and the kind can then move on its own.
+    expect(readAgentSettings(JSON.parse(JSON.stringify(s)))).toEqual(s);
+    const moved = patchAgentSettings(s, { kindRuntime: { appearance: "ollama" } });
+    expect(moved.kindRuntime.write).toBe("codex");
+    expect(moved.models.appearance).toBe("q");
+    expect(readAgentSettings(JSON.parse(JSON.stringify(moved))).kindRuntime.appearance).toBe(
+      "ollama",
+    );
+  });
+
+  it("is not put anywhere when writing is on no runtime", () => {
+    const s = readAgentSettings({ kindRuntime: { understand: "ollama" } });
+    expect(s.kindRuntime).toEqual({ understand: "ollama" });
+  });
+
+  it("names a runtime in use for it only among the runtimes in use, not those mail goes to", () => {
+    const s = patchAgentSettings(DEFAULT_AGENT_SETTINGS, {
+      kindRuntime: { ...everyKindOn("plan"), appearance: "local" },
+    });
+    expect(runtimesInUse(s)).toEqual(["plan", "local"]);
+    expect(mailRuntimesInUse(s)).toEqual(["plan"]);
+    expect(kindsOn(s, "local")).toEqual(["appearance"]);
   });
 });

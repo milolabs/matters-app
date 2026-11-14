@@ -3,6 +3,7 @@ import type { AccountsStore } from "./accounts.ts";
 import { AccountsSection } from "./accountsSection.tsx";
 import { takeSettingsSection, watchSettingsSection } from "./agentPrefs.ts";
 import { AgentSection } from "./agentSection.tsx";
+import { AppearanceSection } from "./appearanceSection.tsx";
 import type { Backend } from "./client.ts";
 import { ImagesSection } from "./imagesSection.tsx";
 import { NotificationsSection } from "./notificationsSection.tsx";
@@ -35,6 +36,13 @@ export function Settings(props: { backend: Backend; accounts: AccountsStore }) {
       id: "notifications",
       label: "Notifications",
       view: () => <NotificationsSection backend={props.backend} accounts={props.accounts} />,
+    },
+    {
+      id: "appearance",
+      label: "Appearance",
+      view: () => (
+        <AppearanceSection backend={props.backend} onAgents={() => setActive("agents")} />
+      ),
     },
     { id: "images", label: "Images", view: () => <ImagesSection backend={props.backend} /> },
     {

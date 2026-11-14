@@ -683,6 +683,11 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
       case "agentTalkStop":
         await needAgent().talkStop(command.threadId);
         return null;
+      case "agentMakeTheme":
+        return needAgent().makeTheme(command.input);
+      case "agentMakeThemeStop":
+        await needAgent().makeThemeStop();
+        return null;
       case "agentTalkAll":
         return needAgent().talkAll(command.words, command.talkId ?? null, command.choice);
       case "agentTalkAllStop":

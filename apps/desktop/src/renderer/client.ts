@@ -10,6 +10,7 @@ import type {
   AgentFillGapsResponse,
   AgentInstructionsResponse,
   AgentJournalResponse,
+  AgentMakeThemeResponse,
   AgentMatchActResponse,
   AgentPrepareResponse,
   AgentPromptBadgeResponse,
@@ -129,6 +130,7 @@ import type {
   TalkEntry,
   TalkResult,
   TalkSummary,
+  ThemeInput,
   ThreadAgentView,
   UndoMoveResult,
   UndoResult,
@@ -347,6 +349,15 @@ export interface Backend {
   agentTalk(threadId: string, words: string, choice?: TalkChoice): Promise<TalkResult>;
   /** Cuts the running talk turn of the thread short. */
   agentTalkStop(threadId: string): Promise<void>;
+  /**
+   * A theme from the person's description (ADR 0134, rules 12 to 15): the theme's text as the
+   * agent wrote it, unchecked; the page hands it to main with `addTheme`. `BackendError`
+   * `agentUnavailable` says in a sentence why not (AI off, the runtime not ready, the plan used
+   * up, the answer was not a theme, stopped).
+   */
+  agentMakeTheme(input: ThemeInput): Promise<string>;
+  /** Cuts the running theme turn short. */
+  agentMakeThemeStop(): Promise<void>;
   // Help with a reply (ADR 0098). Each is one turn the person asked for, on their plan; none sends
   // mail or saves the draft. `text` is the composer's whole Markdown body; what comes back keeps
   // the quote below the person's lines as it was and every gap in [brackets]. They reject with a
@@ -711,6 +722,11 @@ export function createBackend(port: MessagePort): Backend {
       ).result,
     agentTalkStop: async (threadId) => {
       await request({ type: "agentTalkStop", threadId });
+    },
+    agentMakeTheme: async (input) =>
+      (await request<AgentMakeThemeResponse>({ type: "agentMakeTheme", ...input })).text,
+    agentMakeThemeStop: async () => {
+      await request({ type: "agentMakeThemeStop" });
     },
     agentRewriteDraft: async (about, text, how) =>
       (await request<AgentRewriteDraftResponse>({ type: "agentRewriteDraft", ...about, text, how }))

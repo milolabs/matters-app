@@ -112,6 +112,9 @@ export const test = base.extend<Fixtures>({
           ...options.env,
         },
         recordVideo: { dir: info.outputPath(`start-${n}-video`) },
+        // Playwright makes every page answer `prefers-color-scheme: light` unless told not to; the
+        // app's own appearance decides, as it does for a person (ADR 0134, rule 2).
+        colorScheme: null,
       });
       // What the app writes is kept with the test, for reading after a failure.
       const log: string[] = [];

@@ -23,13 +23,25 @@ import type { Backend } from "../src/renderer/client.ts";
 import { BackendError } from "../src/renderer/client.ts";
 
 const NOW = Date.UTC(2026, 10, 5, 10, 42);
-const models = { understand: "haiku", write: "sonnet", answer: "sonnet", titles: "haiku" };
+const models = {
+  understand: "haiku",
+  write: "sonnet",
+  answer: "sonnet",
+  titles: "haiku",
+  appearance: "sonnet",
+};
 const status = (over: Partial<AgentStatus> = {}): AgentStatus => ({
   settings: {
     enabled: true,
     kindRuntime: everyKindOn("claude-code"),
     models,
-    efforts: { understand: "low", write: "default", answer: "default", titles: "low" },
+    efforts: {
+      understand: "low",
+      write: "default",
+      answer: "default",
+      titles: "low",
+      appearance: "default",
+    },
     weekSharePercent: 10,
     plans: {
       "claude-code": {

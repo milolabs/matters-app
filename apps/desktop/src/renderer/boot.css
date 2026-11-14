@@ -5,16 +5,19 @@
  * wait goes on the dot lifts and settles, like something being weighed. Nothing here is data, and
  * the words speak only of the app.
  *
- * The colours mirror the tokens in styles.css (`:root`), which may not have loaded yet: --bg,
- * --chrome, --hairline, --ink, --secondary and --font-sans. The mark's colours are the icon's own
- * (build/icons/icon.svg): its violet, and in dark its paper for the M. Change them together.
+ * The colours are the app's tokens (--bg, --chrome, --hairline, --secondary, and --ink for the M
+ * in light), read from the root element, where the preload has put a theme's values before this
+ * paints (ADR 0134, rule 9). styles.css may not have loaded yet, so each keeps the default's value
+ * as its fallback; those mirror styles.css (`:root`) and --font-sans, and change with them. The
+ * mark's colours are the icon's own (build/icons/icon.svg): its violet, and in dark its paper for
+ * the M; a theme does not set them (ADR 0134, rule 5).
  */
 #boot {
-  --boot-bg: #ffffff;
-  --boot-chrome: #fafaf9;
-  --boot-hairline: #ededeb;
-  --boot-secondary: #6e6e73;
-  --boot-m: #1d1d1f;
+  --boot-bg: var(--bg, #ffffff);
+  --boot-chrome: var(--chrome, #fafaf9);
+  --boot-hairline: var(--hairline, #ededeb);
+  --boot-secondary: var(--secondary, #6e6e73);
+  --boot-m: var(--ink, #1d1d1f);
   --boot-dot: #5b45c9;
   position: fixed;
   inset: 0;
@@ -30,10 +33,10 @@
 }
 @media (prefers-color-scheme: dark) {
   #boot {
-    --boot-bg: #1e1e20;
-    --boot-chrome: #242426;
-    --boot-hairline: #34343a;
-    --boot-secondary: #98989f;
+    --boot-bg: var(--bg, #1e1e20);
+    --boot-chrome: var(--chrome, #242426);
+    --boot-hairline: var(--hairline, #34343a);
+    --boot-secondary: var(--secondary, #98989f);
     --boot-m: #f5f1ea;
     --boot-dot: #9a88f5;
   }

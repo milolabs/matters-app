@@ -11,6 +11,8 @@ import type {
 import {
   kindInfo,
   kindsOn,
+  kindTakesMail,
+  mailRuntimesInUse,
   NO_WEEK_LIMIT_PERCENT,
   runtimeInfo,
   runtimesInUse,
@@ -49,6 +51,11 @@ export const WORK: readonly { key: AgentWorkKind; label: string; hint: string }[
     key: "titles",
     label: "Talk titles",
     hint: "A short name for each talk across all mail, from your questions only.",
+  },
+  {
+    key: "appearance",
+    label: "Appearance",
+    hint: "A theme made from your description. No mail goes with it.",
   },
 ];
 
@@ -803,7 +810,10 @@ export function ConsentQuestion(props: {
   status: AgentStatus;
   /** The accounts this answer is about. */
   accounts: readonly AccountInfo[];
-  /** The runtimes it is about. Absent: every runtime a kind of work is on. */
+  /**
+   * The runtimes it is about. Absent: every runtime a kind of work that takes mail is on; one in
+   * use only for making themes is asked nothing (ADR 0134, rule 14).
+   */
   runtimeIds?: readonly string[];
   /** The kinds of work that go to the runtime, when they are not on it yet (a kind that moves). */
   kinds?: readonly AgentWorkKind[];
@@ -818,14 +828,15 @@ export function ConsentQuestion(props: {
   const [changing, setChanging] = createSignal(false);
   const [starting, setStarting] = createSignal(false);
   const [problem, setProblem] = createSignal("");
-  const ids = () => props.runtimeIds ?? runtimesInUse(props.status.settings);
+  const ids = () => props.runtimeIds ?? mailRuntimesInUse(props.status.settings);
   const runtimes = () =>
     ids().flatMap((id) => {
       const entry = props.status.runtimes.find((r) => r.id === id);
       return entry === undefined ? [] : [entry];
     });
-  /** The kinds of work this consent is for on a runtime. */
-  const kindsFor = (id: string) => props.kinds ?? kindsOn(props.status.settings, id);
+  /** The kinds of work this consent is for on a runtime: those that take mail. */
+  const kindsFor = (id: string) =>
+    (props.kinds ?? kindsOn(props.status.settings, id)).filter(kindTakesMail);
   const reading = () => props.status.settings.kindRuntime.understand;
   const readingInfo = () => runtimeInfo(props.status, reading());
   const accountIds = () => props.accounts.map((a) => a.id);

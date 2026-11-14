@@ -22,6 +22,7 @@ import {
   AGENT_EFFORTS,
   AGENT_WORK_KINDS,
   kindsOn,
+  kindTakesMail,
   levelsFor,
   modelUsesTools,
   NO_WEEK_LIMIT_PERCENT,
@@ -93,6 +94,18 @@ export function effortOptions(
 export function ledgerEffort(entry: { readonly effort?: AgentEffortSetting }): string {
   if (entry.effort === undefined || entry.effort === "default") return "";
   return `${EFFORT_WORDS[entry.effort].toLowerCase()} effort`;
+}
+
+/**
+ * The account a ledger line's turn went for, in words: none for a turn no account was asked for,
+ * as a theme's (ADR 0134, rule 15), and a plain phrase for one since removed.
+ */
+export function ledgerAccount(
+  entry: { readonly accountId: string },
+  addressOf: (id: string) => string | undefined,
+): string {
+  if (entry.accountId === "") return "";
+  return addressOf(entry.accountId) ?? "an account that was removed";
 }
 
 /** What the control shows: a stored level the runtime does not list goes as `Default` (rule 4). */
@@ -508,6 +521,7 @@ export const KIND_WORDS: Readonly<Record<AgentWorkKind, string>> = {
   write: "writing",
   answer: "questions",
   titles: "talk titles",
+  appearance: "making themes",
 };
 
 /** `understanding mail and writing`, or `understanding mail, writing and questions`. */
@@ -538,7 +552,12 @@ export function kindWaits(status: AgentStatus, kind: AgentWorkKind): string {
   if (runtime !== null && runtime.status !== "ready") {
     return `Waits: ${name} is ${statusWords(runtime).toLowerCase()}.`;
   }
-  if (status.settings.enabled && !status.consents.some((c) => c.runtimeId === id)) {
+  // Making a theme takes no mail, so it waits on no account (ADR 0134, rule 14).
+  if (
+    kindTakesMail(kind) &&
+    status.settings.enabled &&
+    !status.consents.some((c) => c.runtimeId === id)
+  ) {
     return `Waits: you have not let ${name} read any account yet.`;
   }
   return "";

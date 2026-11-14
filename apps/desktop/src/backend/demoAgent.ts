@@ -15,6 +15,8 @@ import {
   AGENT_EFFORTS,
   ASKED_CLOSE,
   ASKED_OPEN,
+  DESCRIBED_CLOSE,
+  DESCRIBED_OPEN,
   DRAFT_CLOSE,
   DRAFT_OPEN,
   draftGaps,
@@ -22,6 +24,7 @@ import {
   GAPS_OPEN,
   LAST_CLOSE,
   LAST_OPEN,
+  PROBLEMS_OPEN,
   PROMPT_CLOSE,
   PROMPT_OPEN,
   REWRITE_HOW_TEXT,
@@ -241,20 +244,40 @@ export class DemoAgentRuntime implements AgentRuntimePort {
     if (this.turnMs > 0) await this.takeTime(options.signal);
     const props = (request.schema as { properties?: Record<string, unknown> }).properties ?? {};
     const value =
-      "verdicts" in props
-        ? this.judged(request)
-        : "rewritten" in props
-          ? this.rewritten(request)
-          : "written" in props
-            ? this.written(request)
-            : "withAnswers" in props
-              ? this.withAnswers(request)
-              : "asks" in props
-                ? this.checked(request)
-                : "fills" in props
-                  ? this.filled(request)
-                  : this.other(request, props);
+      "theme" in props
+        ? this.themed(request)
+        : "verdicts" in props
+          ? this.judged(request)
+          : "rewritten" in props
+            ? this.rewritten(request)
+            : "written" in props
+              ? this.written(request)
+              : "withAnswers" in props
+                ? this.withAnswers(request)
+                : "asks" in props
+                  ? this.checked(request)
+                  : "fills" in props
+                    ? this.filled(request)
+                    : this.other(request, props);
     return { value, limits: this.limits(), inputTokens: 1, outputTokens: 1 };
+  }
+
+  /**
+   * A theme from a description (ADR 0134, rule 14), in a fenced block as a model may write it. A
+   * dark ground of green, named by the longest word of the description. Two words make it fail the
+   * contrast check, so the retry of rule 15 runs for real: "unreadable" fails every time, "faint"
+   * only until the request carries the problems of the answer before.
+   */
+  private themed(request: AgentRunRequest) {
+    const description = between(request.untrusted, DESCRIBED_OPEN, DESCRIBED_CLOSE);
+    const word = longestWord(description) || "Demo";
+    const name = word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    const retried = request.untrusted.includes(PROBLEMS_OPEN);
+    const unreadable = /unreadable/i.test(description) || (/faint/i.test(description) && !retried);
+    const dark = unreadable
+      ? { bg: "#132019", chrome: "#18271f", ink: "#2a3a30" }
+      : { bg: "#132019", chrome: "#18271f", fill: "#1f3027" };
+    return { theme: `\`\`\`json\n${JSON.stringify({ name, dark }, null, 2)}\n\`\`\`` };
   }
 
   private other(request: AgentRunRequest, props: Record<string, unknown>): unknown {

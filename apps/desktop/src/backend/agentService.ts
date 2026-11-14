@@ -64,6 +64,7 @@ import type {
   TalkQuote,
   TalkResult,
   TalkSummary,
+  ThemeInput,
   ThreadAgentView,
   WholeFileAnswer,
 } from "@matters/core";
@@ -93,6 +94,7 @@ import {
   buildTalkPlanRequest,
   buildTalkRequest,
   buildTalkTitleRequest,
+  buildThemeRequest,
   buildWriteRequest,
   choicesOn,
   clean,
@@ -108,6 +110,7 @@ import {
   isEmptyQuery,
   joinDraft,
   kindsOn,
+  kindTakesMail,
   lastFromThem,
   levelsFor,
   MAX_CARRY_QUERIES,
@@ -120,6 +123,7 @@ import {
   MAX_INSTRUCTIONS,
   MAX_TALK_QUERY_CHARS,
   MAX_TALK_THREADS,
+  MAX_THEME_DESCRIPTION_CHARS,
   MAX_WRITE_WORDS_CHARS,
   matchQuery,
   mayRunOn,
@@ -149,6 +153,7 @@ import {
   TALK_TIME_CAP_MS,
   TALK_TITLE_QUESTIONS,
   TITLES_OFF,
+  themeTextOf,
   threadRoom,
   unlistedKinds,
   wholeFilesProblem,
@@ -181,6 +186,7 @@ import {
 import { type MailToolsState, openMailTools, type ReadFileRecord } from "./mailTools.ts";
 import { type PromptRuntime, PromptService } from "./promptService.ts";
 import { followTrail, type TrailResult } from "./talkTrail.ts";
+import { THEME_FORMAT } from "./themeFormat.ts";
 
 /** Threads with activity in this many days are read before older ones (`P1`, else `P3`). */
 export const RECENT_DAYS = 2;
@@ -326,6 +332,9 @@ const PLAN_NAMES: Readonly<Record<string, string>> = {
   codex: "ChatGPT plan",
 };
 const TALK_FAILED = "The assistant could not answer this. Try again.";
+/** A theme turn whose answer is not one JSON object (ADR 0134, rule 12). */
+export const NOT_A_THEME = "The assistant's answer was not a theme. Try again.";
+const THEME_FAILED = "The assistant could not make a theme. Try again.";
 /** The model is asked to name a talk at most this often in a run of the app (ADR 0086, rule 7). */
 const MAX_TITLE_TRIES = 2;
 const TALK_REJECTED = "That answer did not match your mail, so it is not shown.";
@@ -384,6 +393,7 @@ const KIND_WORDS: Readonly<Record<AgentWorkKind, string>> = {
   write: "writing",
   answer: "questions about your mail",
   titles: "talk titles",
+  appearance: "making themes",
 };
 
 /** A model the runtime no longer lists (ADR 0119, rule 4): said so, and nothing is put in its place. */
@@ -453,6 +463,8 @@ export class AgentService implements AgentApi {
   private limitHeld: { untilMs?: number } | null = null;
   /** The test of each runtime, so it never runs twice at once. */
   private readonly testing = new Map<string, Promise<AgentRuntimeInfo>>();
+  /** The theme turn that is running, if any: one at a time (ADR 0134, rule 15). */
+  private makingTheme: AbortController | null = null;
 
   /** A prompt is a filter (ADR 0116): its turns, behind the same gates as every turn here. */
   private readonly prompts: PromptService;
@@ -1152,10 +1164,26 @@ export class AgentService implements AgentApi {
     for (const id of runtimesInUse(s)) {
       const runtime = this.runtimeById(id);
       if (runtime === NO_RUNTIME || this.blocked.has(id)) continue;
-      if (!consents.some((c) => c.runtimeId === id)) continue;
+      if (!this.testsAlone(id, s, consents)) continue;
       if (this.infoOf(id) === null) await this.inspectRuntime(runtime).catch(() => {});
       if (this.infoOf(id)?.status === "found") await this.sharedTest(runtime).catch(() => {});
     }
+  }
+
+  /**
+   * Whether a runtime in use may be tested by itself, with the made-up message: an account agreed
+   * to it, or a kind of work on it takes no mail and so needs no account (ADR 0134, rule 14). A
+   * runtime in use only for making themes is tested like any other in use (ADR 0121, rule 2).
+   */
+  private testsAlone(
+    runtimeId: string,
+    s: Pick<AgentSettings, "kindRuntime">,
+    consents: readonly { readonly runtimeId: string }[],
+  ): boolean {
+    return (
+      consents.some((c) => c.runtimeId === runtimeId) ||
+      kindsOn(s, runtimeId).some((k) => !kindTakesMail(k))
+    );
   }
 
   /**
@@ -1724,7 +1752,7 @@ export class AgentService implements AgentApi {
         info.status === "found" &&
         next.enabled &&
         runtimesInUse(next).includes(id) &&
-        (await consentedAccounts(this.deps, id)).size > 0
+        this.testsAlone(id, next, await this.deps.settings.listConsents())
       ) {
         // Once the new choice passed its check, the reading starts on it at once.
         void this.testRuntime(id)
@@ -2044,6 +2072,83 @@ export class AgentService implements AgentApi {
     const got = acceptWrite(value, parts.own, subject);
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
     return { text: got.value === parts.own.trim() ? text : joinDraft(got.value, parts.quote) };
+  }
+
+  // --- A theme from a description (ADR 0134, rules 12 to 15) ---
+
+  async makeThemeStop(): Promise<void> {
+    this.makingTheme?.abort();
+  }
+
+  /**
+   * One turn of the kind `appearance` on its own runtime, model and effort (rule 13), and on no
+   * other (rule 15). Its gates are AI on, the runtime ready and room in its plan as work the person
+   * asked for (`P0`); no account is asked, since no mail goes (rule 14). The ledger names the turn
+   * with its kind, with no account and no thread. The answer is the theme's text: it is not
+   * checked, stored or applied here, but handed back for main's check (rule 12).
+   */
+  async makeTheme(input: ThemeInput): Promise<{ text: string }> {
+    const description = input.description.replace(/\s+/g, " ").trim();
+    if (description === "") throw new InvalidAgentSettingError("Describe the theme first.");
+    if (description.length > MAX_THEME_DESCRIPTION_CHARS) {
+      throw new InvalidAgentSettingError("That description is too long. Say it in fewer words.");
+    }
+    if (this.makingTheme !== null) {
+      throw new AgentUnavailableError("The assistant is still making a theme.");
+    }
+    // Taken before the first wait, so a second call cannot slip in during the gates.
+    const mine = new AbortController();
+    this.makingTheme = mine;
+    // The kind's stop, also taken before the gates: moving the kind to another runtime while they
+    // wait aborts this one and stores a new one, and the turn must not then run on the runtime the
+    // person moved it from (rule 15).
+    const stop = AbortSignal.any([this.signalOf("appearance"), mine.signal]);
+    let runtimeId = "";
+    try {
+      const { s, on } = await this.gateOn("appearance");
+      runtimeId = on.id;
+      await this.gateRuntime(on, s);
+      const model = this.modelFor("appearance", s, on);
+      const effort = this.effortOn("appearance", s, on, model);
+      const request = buildThemeRequest(
+        {
+          description,
+          ...(input.current === undefined ? {} : { current: input.current }),
+          ...(input.retry === undefined ? {} : { retry: input.retry }),
+        },
+        THEME_FORMAT,
+      );
+      // Stopped before anything left: no turn, so no line in the ledger.
+      if (stop.aborted) throw new AgentUnavailableError("Stopped.");
+      const before = this.limitsOf(on.id, await this.deps.settings.get());
+      let value: unknown;
+      try {
+        const run = await on.run({ model, ...request, ...withEffort(effort) }, { signal: stop });
+        await this.noteRun(on.id, run.limits, before);
+        value = run.value;
+      } finally {
+        // Counted whether or not it worked; no account and no thread went (rule 15).
+        await this.deps.insights.appendLedger([
+          {
+            atMs: this.now,
+            runtimeId: on.id,
+            accountId: "",
+            purpose: "appearance",
+            threads: 0,
+            ...withEffort(effort),
+          },
+        ]);
+      }
+      if (stop.aborted) throw new AgentUnavailableError("Stopped.");
+      const text = themeTextOf(value, THEME_FORMAT);
+      if (text === null) throw new AgentUnavailableError(NOT_A_THEME);
+      return { text };
+    } catch (error) {
+      if (stop.aborted) throw new AgentUnavailableError("Stopped.");
+      throw this.askFailure(error, THEME_FAILED, runtimeId);
+    } finally {
+      this.makingTheme = null;
+    }
   }
 
   async answerQuestions(

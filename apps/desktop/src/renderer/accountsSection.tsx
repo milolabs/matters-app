@@ -1,6 +1,6 @@
 import type { AccountInfo } from "@matters/contracts";
 import type { AgentStatus } from "@matters/core";
-import { runtimesInUse } from "@matters/core";
+import { mailRuntimesInUse } from "@matters/core";
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { AccountColor } from "./accountMarks.ts";
 import type { AccountsStore } from "./accounts.ts";
@@ -61,8 +61,9 @@ export function AccountsSection(props: {
   async function askToRead(account: AccountInfo) {
     try {
       const status = await props.backend.agentStatus();
-      // The same question as in first run, for every runtime a kind of work is on (ADR 0121).
-      if (status.settings.enabled && runtimesInUse(status.settings).length > 0) {
+      // The same question as in first run, for every runtime a kind of work that takes mail is on
+      // (ADR 0121; ADR 0134, rule 14).
+      if (status.settings.enabled && mailRuntimesInUse(status.settings).length > 0) {
         setReading({ account, status });
       }
     } catch {
