@@ -34,10 +34,14 @@ test.afterEach(async () => {
   await auth.stop();
 });
 
-/** firma.example's mail exchanger is Microsoft's; hint.example only sends through Google. */
+/**
+ * firma.example's mail exchanger is Microsoft's; hint.example only sends through Google;
+ * slow.example has nothing, after a while.
+ */
 const DNS = JSON.stringify({
   "firma.example": { mx: ["firma-example.mail.protection.outlook.com"] },
   "hint.example": { txt: ["v=spf1 include:_spf.google.com ~all"] },
+  "slow.example": { delayMs: 3_000 },
 });
 
 const env = () => ({
@@ -200,4 +204,40 @@ test("a hint puts its provider first; nothing found shows the list at once", asy
   await expect(form.getByRole("button", { name: /Connect|Sign in with/ })).toHaveCount(0);
   await expect(form.getByLabel("Incoming server (IMAP)")).toHaveCount(0);
   await shot(window, "setup-nothing-found-hint");
+});
+
+test("a lookup left with Change says nothing about the address typed after it", async ({
+  start,
+}) => {
+  const { window } = await start({ env: env() });
+  const form = await lookUp(window, "jan@slow.example");
+  await expect(form.getByRole("status")).toContainText("Looking up slow.example");
+  await form.getByRole("button", { name: "Change" }).click();
+  await lookUp(window, ADDRESS);
+  await expect(form.getByText("Found Microsoft 365 for firma.example")).toBeVisible({
+    timeout: 30_000,
+  });
+  // The first lookup ends after this one; what it found (nothing) is not shown.
+  await window.waitForTimeout(3_500);
+  await expect(form.getByText("Found Microsoft 365 for firma.example")).toBeVisible();
+  await expect(form.getByRole("heading", { name: /We couldn't find the servers/ })).toHaveCount(0);
+});
+
+test("a chosen provider whose settings cannot be looked up leaves nothing else to connect", async ({
+  start,
+}) => {
+  const { window } = await start({ env: env() });
+  const form = await lookUp(window, ADDRESS);
+  await expect(form.getByText("Found Microsoft 365 for firma.example")).toBeVisible({
+    timeout: 30_000,
+  });
+  await form.getByRole("button", { name: "Not right?" }).click();
+  const radios = form.getByRole("radiogroup", { name: "Who runs your mail" }).getByRole("radio");
+  // The window tests' DNS table asks no settings database, so Google's are not found.
+  await radios.nth(1).click();
+  await expect(form.getByRole("alert")).toContainText(
+    "Google's settings couldn't be looked up just now.",
+  );
+  await expect(form.getByRole("button", { name: /^Sign in with Microsoft/ })).toHaveCount(0);
+  for (const i of [0, 1, 2]) await expect(radios.nth(i)).not.toBeChecked();
 });

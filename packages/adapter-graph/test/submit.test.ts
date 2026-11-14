@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import type { MimeSource } from "@matters/core";
 import { type StandInGraphServer, startStandInGraphServer } from "@matters/testkit";
 import { afterEach, describe, expect, it } from "vitest";
@@ -119,6 +121,54 @@ describe("sending over Graph's sendMail (ADR 0136, rule 9)", () => {
     });
     expect(result).toMatchObject({ kind: "rejected" });
     expect(server.sent).toEqual([]);
+  });
+
+  it("beforeDataEnd that throws sends no complete body, whatever the length of the message", async () => {
+    const { server, submitter } = await setup();
+    // With no rest for the encoder at the end, the last piece is the end of the body.
+    for (const pad of [0, 1, 2]) {
+      const text = mail("out-3", { to: "Ann <ann@example.org>", body: "x".repeat(5000 + pad) });
+      const head = text.slice(0, text.indexOf("\r\n\r\n") + 2);
+      const bcc = Buffer.byteLength(bccHeader(head, envelope.recipients));
+      if ((bcc + Buffer.byteLength(text)) % 3 !== 0) continue;
+      const result = await submitter.submit(target(), envelope, source(text), {
+        beforeDataEnd: async () => {
+          // Long enough for a whole body to have been taken.
+          await new Promise((done) => setTimeout(done, 100));
+          throw new Error("the mark could not be written");
+        },
+      });
+      expect(result).toMatchObject({ kind: "rejected" });
+      expect(server.sent).toEqual([]);
+      return;
+    }
+    throw new Error("no length divisible by three");
+  });
+
+  it("a refusal whose body stalls is decided by its status once the answer's time is up", async () => {
+    const stall = createServer((request, response) => {
+      request.resume();
+      request.once("end", () => {
+        response.writeHead(403, { "content-type": "application/json", "content-length": "100" });
+        response.write('{"error":');
+      });
+    });
+    await new Promise<void>((done) => stall.listen(0, "127.0.0.1", done));
+    try {
+      const port = (stall.address() as AddressInfo).port;
+      const submitter = new GraphSubmitter({
+        baseUrl: `http://127.0.0.1:${port}/v1.0`,
+        schedule: instantSchedule(),
+        answerTimeoutMs: 200,
+      });
+      expect(await submitter.submit(target(), envelope, source(message))).toMatchObject({
+        kind: "rejected",
+        code: 403,
+      });
+    } finally {
+      stall.closeAllConnections();
+      await new Promise((done) => stall.close(done));
+    }
   });
 
   it("an abort before the end of the body is aborted, and nothing is sent", async () => {

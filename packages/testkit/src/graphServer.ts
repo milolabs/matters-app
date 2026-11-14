@@ -71,6 +71,11 @@ export interface StandInGraphServer {
   readonly refusals: ScriptedGraphRefusal[];
   /** Largest page a delta round gives, whatever `odata.maxpagesize` asks. */
   maxPageSize: number;
+  /**
+   * Properties a delta row of a message leaves out, as a row may carry only what changed (the
+   * delta query overview); `GET /me/messages/{id}` still has them.
+   */
+  readonly deltaOmits: Set<string>;
   /** Links in answers start with this; a test sets another host to try the adapter's guard. */
   linkBase: string;
   /** Largest `sendMail` body taken (base64 characters); beyond it `413`. */
@@ -208,6 +213,7 @@ export async function startStandInGraphServer(
     sent: [],
     refusals: [],
     maxPageSize: 1000,
+    deltaOmits: new Set(),
     linkBase: baseUrl,
     maxSendBytes: 4 * 1024 * 1024,
     addFolder(displayName, parentId = null) {
@@ -330,7 +336,10 @@ export async function startStandInGraphServer(
   function pageOf(state: { round: Round; offset: number }, pageSize: number) {
     const { round } = state;
     const size = Math.max(1, Math.min(pageSize, self.maxPageSize));
-    const rows = round.rows.slice(state.offset, state.offset + size);
+    const rows = round.rows.slice(state.offset, state.offset + size).map((r) => {
+      if (r["@removed"] !== undefined || self.deltaOmits.size === 0) return r;
+      return Object.fromEntries(Object.entries(r).filter(([key]) => !self.deltaOmits.has(key)));
+    });
     const offset = state.offset + rows.length;
     const path = `${self.linkBase}/me/mailFolders/${encodeURIComponent(round.folderId)}/messages/delta`;
     if (offset < round.rows.length) {
@@ -553,6 +562,11 @@ export async function startStandInGraphServer(
           404,
           errorBody("ErrorItemNotFound", "The specified object was not found in the store."),
         );
+        return;
+      }
+      if (segments.length === 2 && method === "GET") {
+        const select = query.get("$select");
+        json(response, 200, row(m, select ? select.split(",") : null));
         return;
       }
       if (segments[2] === "$value" && method === "GET") {

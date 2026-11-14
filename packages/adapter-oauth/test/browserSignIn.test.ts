@@ -18,6 +18,8 @@ async function setup(over: Partial<BrowserOAuthOptions> = {}) {
   servers.push(server);
   const clock = new ManualClock();
   const opened: string[] = [];
+  // Pages the stand-in has answered: the sign-in waits in the browser from then on.
+  const browsed: string[] = [];
   const oauth = new BrowserOAuth({
     clientIds: { microsoft: server.clientId },
     authority: server.authority,
@@ -26,13 +28,22 @@ async function setup(over: Partial<BrowserOAuthOptions> = {}) {
     openBrowser: async (url) => {
       opened.push(url);
       await server.browse(url);
+      browsed.push(url);
     },
     ...over,
   });
-  return { server, oauth, clock, opened };
+  return { server, oauth, clock, opened, browsed };
 }
 
 const ask = { provider: "microsoft", address: "Me@Outlook.example" } as const;
+
+/** Until the stand-in answered the browser: the listener is up, its time runs, nobody signed in. */
+async function untilBrowsed(browsed: readonly string[]): Promise<void> {
+  for (let i = 0; browsed.length === 0; i++) {
+    if (i > 1000) throw new Error("the browser was never answered");
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
 
 describe("BrowserOAuth.signIn against a stand-in server (ADR 0133, rules 1 to 3)", () => {
   it("opens the browser, trades the code with the verifier, and returns the tokens", async () => {
@@ -101,7 +112,7 @@ describe("BrowserOAuth.signIn against a stand-in server (ADR 0133, rules 1 to 3)
     const t = await setup();
     t.server.signInAs = null;
     const result = t.oauth.signIn(ask);
-    await new Promise((r) => setTimeout(r, 20));
+    await untilBrowsed(t.browsed);
     await t.clock.advance(5 * 60_000);
     expect(await result).toEqual({ ok: false, reason: "notFinished" });
   });
@@ -111,7 +122,7 @@ describe("BrowserOAuth.signIn against a stand-in server (ADR 0133, rules 1 to 3)
     t.server.signInAs = null;
     const controller = new AbortController();
     const result = t.oauth.signIn({ ...ask, signal: controller.signal });
-    await new Promise((r) => setTimeout(r, 20));
+    await untilBrowsed(t.browsed);
     controller.abort();
     expect(await result).toEqual({ ok: false, reason: "notFinished" });
   });
@@ -120,7 +131,7 @@ describe("BrowserOAuth.signIn against a stand-in server (ADR 0133, rules 1 to 3)
     const t = await setup();
     t.server.signInAs = null;
     const first = t.oauth.signIn(ask);
-    await new Promise((r) => setTimeout(r, 20));
+    await untilBrowsed(t.browsed);
     const firstRedirect = new URL(t.opened[0] ?? "").searchParams.get("redirect_uri") ?? "";
     t.server.signInAs = { email: "me@outlook.example" };
     const second = t.oauth.signIn(ask);

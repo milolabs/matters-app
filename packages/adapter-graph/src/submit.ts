@@ -311,9 +311,11 @@ export class GraphSubmitter implements MailSubmitPort {
           sourceError = new Error(`it has ${sent} bytes, not the ${source.size} announced`);
           throw sourceError;
         }
-        await Promise.race([write(held), answer]);
         if (early !== null) throw ANSWERED;
-        const last = encoder.end();
+        // The held piece goes with what the encoder still has, so the body is never whole
+        // before `beforeDataEnd` passed, whatever its length (with no rest at the end, the held
+        // piece is the end of the body).
+        const last = Buffer.concat([held, encoder.end()]);
         try {
           await watch?.beforeDataEnd?.();
         } catch (error) {
@@ -377,17 +379,21 @@ export class GraphSubmitter implements MailSubmitPort {
     }
   }
 
-  /** Graph's answer as a `SubmitResult`, with the care SMTP's gets. */
+  /**
+   * Graph's answer as a `SubmitResult`, with the care SMTP's gets. A success needs no body; a
+   * refusal's body is read for as long as the answer may take, then the status alone decides.
+   */
   private async verdict(
     response: IncomingMessage,
     client: GraphClient,
     secrets: readonly string[],
   ): Promise<SubmitResult> {
     const status = response.statusCode ?? 0;
-    const text = await readText(response).catch(() => "");
     if (status >= 200 && status < 300) {
+      response.resume();
       return { kind: "accepted", response: `${status} ${response.statusMessage ?? ""}`.trim() };
     }
+    const text = await readText(response, this.answerTimeoutMs);
     let body: unknown = null;
     try {
       body = JSON.parse(text);
@@ -410,13 +416,28 @@ export class GraphSubmitter implements MailSubmitPort {
   }
 }
 
-async function readText(response: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of response) {
-    size += (chunk as Buffer).length;
-    if (size > 1024 * 1024) break;
-    chunks.push(chunk as Buffer);
+/** The answer's text, at most 1 MiB; empty when it fails or does not end within `timeoutMs`. */
+async function readText(response: IncomingMessage, timeoutMs: number): Promise<string> {
+  const read = (async () => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of response) {
+      size += (chunk as Buffer).length;
+      if (size > 1024 * 1024) break;
+      chunks.push(chunk as Buffer);
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  })().catch(() => "");
+  let cancel = () => {};
+  const stalled = new Promise<string>((resolve) => {
+    cancel = defaultSchedule(() => {
+      response.destroy();
+      resolve("");
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([read, stalled]);
+  } finally {
+    cancel();
   }
-  return Buffer.concat(chunks).toString("utf8");
 }

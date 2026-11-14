@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { type AddressInfo, connect } from "node:net";
 import { ManualClock } from "@matters/testkit";
 import { afterEach, describe, expect, it } from "vitest";
 import { listenForRedirect, type RedirectListener, type Schedule } from "../src/index.ts";
@@ -59,6 +59,25 @@ describe("listenForRedirect (ADR 0133, rule 2)", () => {
     ] as const) {
       expect((await fetch(url, init)).status).toBe(404);
     }
+    expect(await pending(listener.answer)).toBe("pending");
+    await fetch(`${base}/?code=right&state=the-state`);
+    expect(await listener.answer).toEqual({ kind: "code", code: "right" });
+  });
+
+  it("answers 404 to a request line that is not a URL, and keeps waiting", async () => {
+    const { listener, base } = await listen();
+    const raw = await new Promise<string>((resolve, reject) => {
+      const socket = connect(listener.port, "127.0.0.1", () => {
+        socket.write("GET //x:port/?state=the-state HTTP/1.1\r\nHost: localhost\r\n\r\n");
+      });
+      let text = "";
+      socket.on("data", (chunk) => {
+        text += chunk.toString("latin1");
+      });
+      socket.on("end", () => resolve(text));
+      socket.on("error", reject);
+    });
+    expect(raw).toMatch(/^HTTP\/1\.1 404/);
     expect(await pending(listener.answer)).toBe("pending");
     await fetch(`${base}/?code=right&state=the-state`);
     expect(await listener.answer).toEqual({ kind: "code", code: "right" });

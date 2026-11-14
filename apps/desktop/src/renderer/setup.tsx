@@ -238,6 +238,9 @@ export function Setup(props: {
           );
         } catch {
           if (address() !== asked) return;
+          // Nothing is taken: what was there before is not what the person chose.
+          setRoute({ kind: "choose" });
+          setFound(false);
           const name = mailProvider(next.provider)?.name ?? "The provider";
           setError(
             `${name}'s settings couldn't be looked up just now. Check your internet connection and choose it again, or choose Another mail server.`,
@@ -286,6 +289,9 @@ export function Setup(props: {
     return c !== null && c.address === address().trim().toLowerCase() ? c.choice : undefined;
   };
 
+  // The lookup whose answer setup is waiting for; an older one that ends later is dropped.
+  let lookups = 0;
+
   async function find() {
     const d = domain();
     if (!d) {
@@ -297,6 +303,7 @@ export function Setup(props: {
     setOutgoingFailed(false);
     setListOpen(false);
     setStep("finding");
+    const lookup = ++lookups;
     let answer: LookedUp = { servers: null };
     try {
       const [{ found: servers, provider }] = await Promise.all([
@@ -307,6 +314,8 @@ export function Setup(props: {
     } catch {
       // Lookup failed: as if it found nothing, so the list is there at once.
     }
+    // *Change* was pressed meanwhile, or another lookup started: this answer is for nobody.
+    if (lookup !== lookups || step() !== "finding") return;
     setLookedUp(answer);
     // What the person said for this address wins over what was found (rule 4).
     const held = choiceHeld();

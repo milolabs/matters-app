@@ -23,9 +23,10 @@ async function tick(clock: ManualClock, ms = WATCH_INTERVAL_MS) {
   }
 }
 
-async function setup() {
+async function setup(before: (server: StandInGraphServer) => void = () => {}) {
   const server = await startStandInGraphServer({ token: TOKEN });
   servers.push(server);
+  before(server);
   const clock = new ManualClock();
   const connector = new GraphConnector({
     parser: new PostalMimeParser(),
@@ -61,6 +62,17 @@ describe("watching the inbox by asking (ADR 0136, rule 10)", () => {
     await t.watch.close();
     expect(t.clock.pendingDelays()).toEqual([]);
     expect(t.closed).toEqual([]);
+  });
+
+  it("says a change for mail that came while the opening round ran", async () => {
+    const t = await setup((server) =>
+      server.addMessage("inbox", mail("during"), { receivedMs: Date.UTC(2026, 10, 15) }),
+    );
+    await settle();
+    expect(t.changes.length).toBe(1);
+    await tick(t.clock);
+    expect(t.changes.length).toBe(1);
+    await t.watch.close();
   });
 
   it("obeys a long Retry-After, and starts over on an expired link with a change", async () => {

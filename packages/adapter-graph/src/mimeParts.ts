@@ -175,11 +175,14 @@ function readPart(
   to: number,
   partId: string,
   depth: number,
+  // A part without a Content-Type is `text/plain`, but in `multipart/digest` it is
+  // `message/rfc822` (RFC 2046, 5.1.5), as IMAP's BODYSTRUCTURE has it.
+  defaultType = "text/plain",
 ): MimePart {
   const { headerEnd, body } = bodyStart(raw, from, to);
   const headers = headersOf(latin1(raw, from, headerEnd));
-  const contentType = valueAndParams(headers.get("content-type") ?? "text/plain");
-  const type = contentType.value.includes("/") ? contentType.value : "text/plain";
+  const contentType = valueAndParams(headers.get("content-type") ?? defaultType);
+  const type = contentType.value.includes("/") ? contentType.value : defaultType;
   const disposition = headers.has("content-disposition")
     ? valueAndParams(headers.get("content-disposition") ?? "")
     : undefined;
@@ -188,9 +191,10 @@ function readPart(
   const boundary = contentType.params.get("boundary");
   const children: MimePart[] = [];
   if (type.startsWith("multipart/") && boundary !== undefined && boundary !== "" && depth < 32) {
+    const childType = type === "multipart/digest" ? "message/rfc822" : "text/plain";
     for (const [i, [start, end]] of bodiesBetween(raw, body, to, boundary).entries()) {
       const id = partId === "" ? String(i + 1) : `${partId}.${i + 1}`;
-      children.push(readPart(raw, start, end, id, depth + 1));
+      children.push(readPart(raw, start, end, id, depth + 1, childType));
     }
   }
   return {

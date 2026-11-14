@@ -81,6 +81,20 @@ describe("read state, moves and deleting over Graph (ADR 0136, rule 7)", () => {
     expect(deletes.map((r) => r.path)).toEqual([`/me/messages/${t}`]);
   });
 
+  it("does not delete a message restored from Deleted Items since the last sync: stale", async () => {
+    const h = await harness();
+    const t = h.server.addMessage("deleteditems", mail("restored"));
+    await h.sync();
+    const stored = await locationOf(h, t);
+    // Another app puts it back; its immutable id stays the same.
+    h.server.move(t, "inbox");
+    const connection = await h.connector.connect(target());
+    const results = await connection.moves.expunge([stored]);
+    expect(results.map((r) => r.outcome)).toEqual(["stale"]);
+    expect(h.server.messages.has(t)).toBe(true);
+    expect(h.server.requests.filter((r) => r.method === "DELETE")).toEqual([]);
+  });
+
   it("finds the Sent copy by Message-ID, quotes escaped; never appends", async () => {
     const h = await harness();
     const id = h.server.addMessage("sentitems", mail("it's-sent"));

@@ -10,6 +10,7 @@ import {
   clientIds,
   isLoopbackUrl,
   MICROSOFT_CLIENT_ID,
+  NO_CLIENT_ID_VARIABLE,
   parseSignInAsk,
   testBrowser,
 } from "../src/main/browserSignIn.ts";
@@ -64,6 +65,22 @@ describe("main's checks of a page's ask (ADR 0133)", () => {
     expect(clientIds({ [CLIENT_ID_VARIABLE]: " abc-123 " })).toEqual({
       microsoft: "abc-123",
       microsoftGraph: "abc-123",
+    });
+  });
+
+  it("a dev build's window test can say there is no registration, whatever was built in", () => {
+    const builtIn = "built-in-id";
+    expect(clientIds({}, { builtIn })).toEqual({ microsoft: builtIn, microsoftGraph: builtIn });
+    // An empty variable falls back to the id built in, so it cannot say "none".
+    expect(clientIds({ [CLIENT_ID_VARIABLE]: "" }, { builtIn })).toEqual({
+      microsoft: builtIn,
+      microsoftGraph: builtIn,
+    });
+    expect(clientIds({ [NO_CLIENT_ID_VARIABLE]: "1" }, { builtIn, devBuild: true })).toEqual({});
+    // A packaged app does not read it.
+    expect(clientIds({ [NO_CLIENT_ID_VARIABLE]: "1" }, { builtIn })).toEqual({
+      microsoft: builtIn,
+      microsoftGraph: builtIn,
     });
   });
 });
@@ -485,6 +502,22 @@ describe("one sign-in on a screen", () => {
       expect(flow.failure()).toMatch(/^Your organisation has to approve Matters/);
       expect(flow.evidence()).toBe("Microsoft said: “AADSTS90094”");
       expect(use).not.toHaveBeenCalled();
+      dispose();
+    });
+  });
+
+  it("does not use a sign-in that finished as the person cancelled", async () => {
+    const t = client([{ ok: true, handle: "signin-late", address: "me@x.com" }]);
+    await createRoot(async (dispose) => {
+      const flow = createBrowserSignIn(t.c);
+      const use = vi.fn(async () => {});
+      const run = flow.run("microsoft", "me@x.com", use, () => ({ sentence: "" }));
+      // Main had the answer already: start answers with a handle, not with "cancelled".
+      flow.cancel();
+      expect(await run).toBe(false);
+      expect(use).not.toHaveBeenCalled();
+      expect(flow.phase()).toBe("idle");
+      expect(flow.failure()).toBe("");
       dispose();
     });
   });

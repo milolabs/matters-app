@@ -69,6 +69,21 @@ describe("GraphMailSync over the stand-in (ADR 0136, rules 5 and 6)", () => {
     expect(h.server.requestsTo("$deltatoken=").length).toBeGreaterThan(0);
   });
 
+  it("a row that leaves out the flag keeps the stored one: the message is asked", async () => {
+    const h = await harness();
+    const a = h.server.addMessage("inbox", mail("a"), { flagged: true });
+    await h.sync();
+    const flagsOfA = async () => (await h.messages()).find((m) => m.subject === "a")?.flags;
+    expect((await flagsOfA())?.flagged).toBe(true);
+    // An updated message's row may carry only what changed (the delta query overview).
+    for (const key of ["flag", "isDraft"]) h.server.deltaOmits.add(key);
+    h.server.setRead(a, true);
+    const result = await h.sync();
+    expect(result.downloads).toBe(0);
+    expect(await flagsOfA()).toMatchObject({ seen: true, flagged: true, draft: false });
+    expect(h.server.requestsTo(`/me/messages/${a}?$select=`).length).toBe(1);
+  });
+
   it("a move is a new location of the known message: same key, no second download", async () => {
     const h = await harness();
     const id = h.server.addMessage("inbox", mail("moved", { subject: "moved over graph" }));

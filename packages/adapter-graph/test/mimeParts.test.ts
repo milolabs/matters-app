@@ -86,6 +86,36 @@ describe("parts of a raw message, numbered as IMAP numbers them (ADR 0136, rule 
     expect(text("9")).toBeUndefined();
   });
 
+  it("a part of a digest without a Content-Type is a message, not text (RFC 2046, 5.1.5)", () => {
+    const digest = raw([
+      "Subject: digest",
+      'Content-Type: multipart/mixed; boundary="outer"',
+      "",
+      "--outer",
+      "Content-Type: text/plain",
+      "",
+      "the letter",
+      "--outer",
+      'Content-Type: multipart/digest; boundary="d"',
+      "",
+      "--d",
+      "",
+      "Subject: first",
+      "",
+      "one",
+      "--d",
+      "Content-Type: text/plain",
+      "",
+      "a note",
+      "--d--",
+      "--outer--",
+      "",
+    ]);
+    expect(attachmentsOfMime(digest).map((a) => [a.partId, a.mimeType])).toEqual([
+      ["2.1", "message/rfc822"],
+    ]);
+  });
+
   it("a message of one part is part 1; one with no structure is not a file", () => {
     const single = raw([
       "Content-Type: application/pdf; name=a.pdf",

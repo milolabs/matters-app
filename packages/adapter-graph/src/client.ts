@@ -157,19 +157,33 @@ export class GraphClient {
     };
   }
 
-  /** A JSON request; the answer's body is parsed JSON, or null when there is none. */
+  /**
+   * A JSON request; the answer's body is parsed JSON, or null when there is none. A success whose
+   * body is not JSON (cut short, a proxy's page) fails as a request (rule 11): read as nothing,
+   * a folder list would come back empty and be taken as the truth.
+   */
   async json(pathOrLink: string, request: GraphRequest = {}): Promise<GraphAnswer> {
     const response = await this.send(pathOrLink, request);
     const text = await this.read(() => response.text());
     let body: unknown = null;
+    let unreadable = false;
     if (text !== "") {
       try {
         body = JSON.parse(text);
       } catch {
-        body = null;
+        unreadable = true;
       }
     }
-    if (response.ok) return { status: response.status, body };
+    if (response.ok) {
+      if (unreadable) {
+        throw new GraphRequestError(
+          `Microsoft Graph answered ${response.status} with a body that is not JSON`,
+          "other",
+          response.status,
+        );
+      }
+      return { status: response.status, body };
+    }
     if (response.status === 404 && request.allow404) return { status: 404, body };
     if (response.status === 403 && request.allow403) return { status: 403, body };
     throw this.failure(response, body);

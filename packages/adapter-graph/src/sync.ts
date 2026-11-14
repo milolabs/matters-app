@@ -22,6 +22,8 @@ import { attachmentsOfMime } from "./mimeParts.ts";
 
 /** What delta query is asked for: only what sync needs (ADR 0136, rule 5). */
 const DELTA_SELECT = "id,isRead,isDraft,flag,receivedDateTime";
+/** What a row that lacks some of it is completed with. */
+const FLAG_SELECT = "isRead,isDraft,flag";
 
 const EMPTY = { documents: [], knownLocations: [], flagUpdates: [], removedLocations: [] } as const;
 
@@ -43,6 +45,29 @@ interface DeltaItem {
   readonly id: string;
   readonly flags: MessageFlags;
   readonly receivedMs?: number;
+  /**
+   * The row had the read state, the flag and the draft state. A row of an updated message may
+   * carry only what changed (the delta query overview), and a missing one is not `false`.
+   */
+  readonly complete: boolean;
+}
+
+/** The flags of a row; which of them it had at all. */
+function flagsOf(row: Record<string, unknown>): { flags: MessageFlags; complete: boolean } {
+  const flag = (row.flag as { flagStatus?: unknown } | null | undefined)?.flagStatus;
+  return {
+    flags: {
+      seen: row.isRead === true,
+      flagged: flag === "flagged",
+      // Graph v1.0 has no plain property for it; the store keeps what Graph says.
+      answered: false,
+      draft: row.isDraft === true,
+    },
+    complete:
+      typeof row.isRead === "boolean" &&
+      typeof flag === "string" &&
+      typeof row.isDraft === "boolean",
+  };
 }
 
 /**
@@ -130,18 +155,11 @@ function itemsOf(body: unknown): { items: DeltaItem[]; removed: string[] } {
       removed.push(row.id);
       continue;
     }
-    const flag = (row.flag as { flagStatus?: unknown } | null)?.flagStatus;
     const received =
       typeof row.receivedDateTime === "string" ? Date.parse(row.receivedDateTime) : Number.NaN;
     items.push({
       id: row.id,
-      flags: {
-        seen: row.isRead === true,
-        flagged: flag === "flagged",
-        // Graph v1.0 has no plain property for it; the store keeps what Graph says.
-        answered: false,
-        draft: row.isDraft === true,
-      },
+      ...flagsOf(row),
       ...(Number.isNaN(received) ? {} : { receivedMs: received }),
     });
   }
@@ -226,7 +244,13 @@ export class GraphMailSync implements MailSyncPort {
       itemId,
     });
 
+    // The links of this run: one given twice would page forever (rule 5).
+    const asked = new Set<string>();
     for (;;) {
+      if (asked.has(state.link)) {
+        throw new GraphRequestError("Microsoft Graph repeated a page link");
+      }
+      asked.add(state.link);
       let body: unknown;
       try {
         body = (await this.client.json(state.link, { paged: true })).body;
@@ -236,6 +260,7 @@ export class GraphMailSync implements MailSyncPort {
           // and the copies still there keep their numbers (rule 5).
           this.stats.folderResets++;
           state = this.fullRound(folder.id, state.epoch, state.lastUid);
+          asked.clear();
           continue;
         }
         if (error instanceof GraphRequestError && error.status === 404) {
@@ -245,7 +270,9 @@ export class GraphMailSync implements MailSyncPort {
         }
         throw error;
       }
-      const { items, removed } = itemsOf(body);
+      const page = itemsOf(body);
+      const removed = page.removed;
+      const items = await this.completed(page.items);
       const next = nextLinkOf(body);
       const delta = next === undefined ? deltaLinkOf(body) : undefined;
       const following = next ?? delta;
@@ -257,11 +284,11 @@ export class GraphMailSync implements MailSyncPort {
 
       const present = new Set(items.map((i) => i.id));
       const held = [...new Set([...state.held, ...removed])].filter((id) => !present.has(id));
-      const page = await this.additions(account, folder, state.epoch, items, context);
+      const added = await this.additions(account, folder, state.epoch, items, context);
       let anchor = state.anchor;
       if (anchor !== null && held.includes(anchor.providerId)) anchor = null;
-      if (state.full && page.anchor !== null) anchor = page.anchor;
-      const lastUid = Math.max(state.lastUid, ...page.uids);
+      if (state.full && added.anchor !== null) anchor = added.anchor;
+      const lastUid = Math.max(state.lastUid, ...added.uids);
 
       if (next !== undefined) {
         // A page link is kept, so a stop resumes here, with what the round removed so far. A
@@ -269,7 +296,7 @@ export class GraphMailSync implements MailSyncPort {
         const checkpoint = JSON.stringify(held).length <= MAX_HELD_CHARS;
         const running: FolderCursor = { ...state, lastUid, link: next, held, anchor };
         yield {
-          ...page.batch,
+          ...added.batch,
           cursor: writeCursor(
             checkpoint ? running : { ...running, link: state.start, held: [], anchor: null },
           ),
@@ -280,8 +307,8 @@ export class GraphMailSync implements MailSyncPort {
 
       // The last page: its additions first, with a cursor that asks this page again, then the
       // removals and the delta link (the order of `MailSyncPort.syncFolder`).
-      if (page.count > 0) {
-        yield { ...page.batch, cursor: writeCursor({ ...state, lastUid, held, anchor }) };
+      if (added.count > 0) {
+        yield { ...added.batch, cursor: writeCursor({ ...state, lastUid, held, anchor }) };
       }
       const gone = await context.knownItemUids(held);
       const removedLocations = [...gone].map(([itemId, uid]) => at(state.epoch, uid, itemId));
@@ -330,6 +357,25 @@ export class GraphMailSync implements MailSyncPort {
       }
       return;
     }
+  }
+
+  /**
+   * Rows without their read state, flag or draft state get them from the message itself, so a
+   * property a row left out is not written over the stored one as `false`. A message gone in
+   * between is left out: the next round says `@removed`.
+   */
+  private async completed(items: readonly DeltaItem[]): Promise<DeltaItem[]> {
+    const asked = await mapLimit(items, DOWNLOADS_AT_ONCE, async (item) => {
+      if (item.complete) return item;
+      const answer = await this.client.json(
+        `/me/messages/${encodeURIComponent(item.id)}?$select=${FLAG_SELECT}`,
+        { allow404: true },
+      );
+      if (answer.status === 404) return null;
+      const row = (answer.body ?? {}) as Record<string, unknown>;
+      return { ...item, ...flagsOf(row), complete: true };
+    });
+    return asked.filter((item): item is DeltaItem => item !== null);
   }
 
   private fullRound(folderId: string, previousEpoch: string | null, lastUid: number): FolderCursor {

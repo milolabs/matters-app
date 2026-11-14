@@ -51,7 +51,8 @@ export async function watchInbox(
   const controller = new AbortController();
   const since = new Date(nowMs).toISOString();
   const firstLink = `/me/mailFolders/inbox/messages/delta?$select=id&$filter=receivedDateTime+ge+${since}`;
-  let link = (await round(client, firstLink, controller.signal)).delta;
+  const opening = await round(client, firstLink, controller.signal);
+  let link = opening.delta;
   let closing = false;
   let cancel: (() => void) | null = null;
   let unreachable = 0;
@@ -98,6 +99,13 @@ export async function watchInbox(
     if (!closing) cancel = schedule(() => void poll(), wait);
   };
   cancel = schedule(() => void poll(), WATCH_INTERVAL_MS);
+  // Mail that came while the opening round ran is in that round, before its delta link: no poll
+  // would ever report it, so it is a change now.
+  if (opening.changed) {
+    queueMicrotask(() => {
+      if (!closing) handlers.onChange();
+    });
+  }
 
   return {
     async close() {

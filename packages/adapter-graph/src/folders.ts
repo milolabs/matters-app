@@ -1,5 +1,6 @@
 import type { Account, Label, LabelRole } from "@matters/core";
 import type { GraphClient } from "./client.ts";
+import { GraphRequestError } from "./errors.ts";
 
 /** Microsoft's well-known folder names and the roles they give (ADR 0136, rule 5). */
 export const WELL_KNOWN: Readonly<Record<string, Exclude<LabelRole, "other">>> = {
@@ -72,7 +73,11 @@ export class GraphFolders {
     }
     const out: Label[] = [];
     const walk = async (path: string, prefix: string, depth: number): Promise<void> => {
+      const seen = new Set<string>();
       for (let link: string | undefined = `${path}?${SELECT}`; link !== undefined; ) {
+        // A next link given twice would page forever; the list is not known, not cut short.
+        if (seen.has(link)) throw new GraphRequestError("Microsoft Graph repeated a page link");
+        seen.add(link);
         const answer = await this.client.json(link);
         for (const folder of foldersOf(answer.body)) {
           const name = prefix === "" ? folder.displayName : `${prefix}/${folder.displayName}`;

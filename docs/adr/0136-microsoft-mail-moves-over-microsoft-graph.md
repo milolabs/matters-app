@@ -74,13 +74,20 @@
    - The provider id (ADR 0016) is the immutable id. A move is a new location for a known
      message: no download.
    - `@removed` is a removed location; a changed read state or flag is a flag update.
+   - A row that lacks the read state, the flag or the draft state is completed with one request
+     for the message before it is used, so a state that was not sent is never taken for "no"; a
+     message gone by then is left to the next round's `@removed`.
+   - A page link that comes back a second time in one round ends the round with an error: a
+     list that does not advance is not followed.
 6. **A location's handle on the server belongs to the provider.** IMAP's stays
    `(uidValidity, uid)`. For Graph it is the message's immutable id, kept with the location; the
    store gives the copy a number of its own within its folder, so everything that addresses a
    copy by number keeps working. No row of an IMAP account changes.
 7. **Read state and moves are single requests.** `PATCH /me/messages/{id}` sets read;
    `POST /me/messages/{id}/move` moves, to a well-known folder for Archive, Trash and Junk.
-   Deleting for good is `DELETE`, and only in Deleted Items (ADR 0044, rule 16). A `404` is
+   Deleting for good is `DELETE`, and only for a message Graph says is in Deleted Items when
+   asked just before: the id stays the same when a message moves, so one restored meanwhile
+   would be reached; it is *stale*, as one that is gone (ADR 0044, rule 16). A `404` is
    *stale*, a `403` is *rejected*, as the port already says.
 8. **A file is cut out of the message's MIME.** The part ids are the parser's, so a download
    fetches `$value` again and streams the one part. Graph's own attachment ids are not used.

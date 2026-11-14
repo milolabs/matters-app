@@ -140,6 +140,18 @@ export class GraphMoves implements MailMovePort {
         continue;
       }
       try {
+        // The id stays the same when the message moves (immutable ids), so `DELETE` would reach
+        // it wherever it is now: it is asked where the message is first, and one restored from
+        // Deleted Items meanwhile is stale here, as an expunged UID is in IMAP (rule 16).
+        const where = await this.client.json(
+          `${messagePath(location.itemId)}?$select=parentFolderId`,
+          { allow404: true, allow403: true },
+        );
+        const parent = (where.body as { parentFolderId?: unknown } | null)?.parentFolderId;
+        if (where.status === 403 || where.status === 404 || parent !== trash) {
+          out.push({ location, outcome: where.status === 403 ? "rejected" : "stale" });
+          continue;
+        }
         const answer = await this.client.json(messagePath(location.itemId), {
           method: "DELETE",
           allow404: true,

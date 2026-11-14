@@ -74,7 +74,9 @@ export class FakeItemSync implements MailSyncPort {
   ): AsyncIterable<SyncBatch> {
     const log = this.log(folder.id);
     const from = typeof cursor?.read === "number" ? cursor.read : 0;
-    const changes = log.slice(from);
+    // The round reads the log as it is now; what is added while it runs is the next round's.
+    const end = log.length;
+    const changes = log.slice(from, end);
     // What each id came to over the round: an id added and removed again is only a removal.
     const last = new Map<string, Change["kind"]>();
     for (const change of changes) last.set(change.itemId, change.kind);
@@ -119,7 +121,7 @@ export class FakeItemSync implements MailSyncPort {
     yield {
       ...batch,
       removedLocations: [...gone].map(([itemId, uid]) => at(uid, itemId)),
-      cursor: { read: log.length },
+      cursor: { read: end },
     };
   }
 }

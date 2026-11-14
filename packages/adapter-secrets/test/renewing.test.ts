@@ -268,6 +268,21 @@ describe("RenewingCredentialStore (ADR 0133, rules 5 to 8)", () => {
     expect(await vault.get("acc")).toBeNull();
   });
 
+  it("does not end a sign-in that was signed in again while the old one was renewed", async () => {
+    await vault.set("acc", oauth({ expiresAtMs: NOW }));
+    const pending = store.get("acc");
+    await asked(renewal, 1);
+    await store.move(store.hold(oauth({ accessToken: "new", refreshToken: "new-r" })), "acc");
+    renewal.answer({ ok: false, failure: "signInAgain", reason: "invalid_grant" });
+    expect(await pending).toEqual({
+      kind: "oauth2",
+      provider: "microsoft",
+      accessToken: "new",
+      expiresAtMs: NOW + 60 * MINUTE,
+    });
+    expect(await vault.get("acc")).toEqual(oauth({ accessToken: "new", refreshToken: "new-r" }));
+  });
+
   it("passes a password through as it is", async () => {
     const password: Credential = { kind: "password", username: "me", password: "pw" };
     await store.set("acc", password);

@@ -180,6 +180,9 @@ export class RenewingCredentialStore implements CredentialPort {
     if (stored?.kind !== "oauth2") return stored;
     if ((!now && !this.endsSoon(stored)) || stored.refreshToken === undefined) return stored;
     const answer = await this.renewal.renew(stored.provider, stored.refreshToken);
+    // Removed or replaced while the provider was asked (a Sign in again, rule 11): what was
+    // written then stands, and the old refresh token's refusal says nothing about it.
+    if ((this.writes.get(accountId) ?? 0) !== seen) return this.vault.get(accountId);
     if (!answer.ok) throw renewalFailure(answer);
     const next: OAuthCredential = {
       ...stored,
@@ -187,8 +190,6 @@ export class RenewingCredentialStore implements CredentialPort {
       refreshToken: answer.tokens.refreshToken ?? stored.refreshToken,
       expiresAtMs: answer.tokens.expiresAtMs,
     };
-    // Removed or replaced while the provider was asked: what was written then stands.
-    if ((this.writes.get(accountId) ?? 0) !== seen) return this.vault.get(accountId);
     await this.vault.set(accountId, next);
     return next;
   }

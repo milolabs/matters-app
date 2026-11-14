@@ -185,6 +185,12 @@ export function createBrowserSignIn(client: SignInClient) {
       setPhase("idle");
       return false;
     }
+    // A sign-in that finished as the person cancelled, or as the screen went away, is not used:
+    // main drops what the handle holds when it runs out (ADR 0133, rule 6).
+    if (cancelled) {
+      setPhase("idle");
+      return false;
+    }
     setPhase("checking");
     try {
       await use(answer.handle);

@@ -15,6 +15,8 @@ interface TestDomain {
   readonly mx?: readonly string[];
   readonly autodiscover?: readonly string[];
   readonly txt?: readonly string[];
+  /** How long the lookup of this domain takes, so a test can act while it runs. */
+  readonly delayMs?: number;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
@@ -27,8 +29,8 @@ function notFound(): never {
 
 /**
  * The lookup of ADR 0023 and 0135 with DNS answered from a table, `{ "<domain>": { mx, autodiscover,
- * txt } }`, and nothing asked of the network: no settings database, no probe. A domain not in the
- * table has no records. Null when the variable is unset or is not such a table.
+ * txt, delayMs } }`, and nothing asked of the network: no settings database, no probe. A domain not
+ * in the table has no records. Null when the variable is unset or is not such a table.
  */
 export function testDiscovery(raw: string | undefined): ServerDiscoveryPort | null {
   if (raw === undefined || raw === "") return null;
@@ -46,10 +48,13 @@ export function testDiscovery(raw: string | undefined): ServerDiscoveryPort | nu
       mx: names(value.mx),
       autodiscover: names(value.autodiscover),
       txt: names(value.txt),
+      ...(typeof value.delayMs === "number" && value.delayMs > 0
+        ? { delayMs: Math.min(value.delayMs, 30_000) }
+        : {}),
     });
   }
   const of = (name: string) => table.get(name.toLowerCase());
-  return new AutoconfigDiscovery({
+  const discovery = new AutoconfigDiscovery({
     timeoutMs: 500,
     fetch: async (url) => ({
       ok: false,
@@ -73,4 +78,11 @@ export function testDiscovery(raw: string | undefined): ServerDiscoveryPort | nu
     },
     probe: async () => false,
   });
+  return {
+    discover: async (domain) => {
+      const delayMs = of(domain)?.delayMs;
+      if (delayMs !== undefined) await new Promise((done) => setTimeout(done, delayMs));
+      return discovery.discover(domain);
+    },
+  };
 }

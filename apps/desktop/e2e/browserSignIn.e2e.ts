@@ -31,6 +31,12 @@ const offered = (browser: "wait" | "follow") => ({
   MATTERS_TEST_OAUTH_BROWSER: browser,
 });
 
+/**
+ * A build without a registration, whatever this one was built with: an empty variable would fall
+ * back to the id built in (rule 4), so the dev build's own seam says "none".
+ */
+const noRegistration = { MATTERS_TEST_NO_CLIENT_ID: "1" };
+
 async function shot(page: Page, name: string) {
   if (!SHOTS) return;
   mkdirSync(SHOTS, { recursive: true });
@@ -126,7 +132,7 @@ test("what Microsoft said in the browser comes back as a sentence (rule 12)", as
 test("without a client id, a Microsoft server still takes no password, as before", async ({
   start,
 }) => {
-  const { window } = await start();
+  const { window } = await start({ env: noRegistration });
   const form = await microsoftByHand(window);
   await expect(form.getByRole("button", { name: /Sign in with Microsoft/ })).toHaveCount(0);
   await expect(form.getByLabel("Password for me@contoso.invalid")).toBeVisible();
@@ -169,7 +175,7 @@ test("a Microsoft address in setup shows the sign-in step when a client id is se
 test("a Microsoft address in setup shows the old blocked screen without a client id", async ({
   start,
 }) => {
-  const { window } = await start();
+  const { window } = await start({ env: noRegistration });
   const form = await microsoftLookedUp(window);
   await expect(
     form.getByRole("heading", {

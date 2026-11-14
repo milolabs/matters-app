@@ -763,7 +763,15 @@ export async function reconcileUnknown(
   let waiting = 0;
   for (const op of await deps.outbox.listByState(["unknown"])) {
     const account = await deps.accounts.get(op.accountId);
-    const credential = await deps.credentials.get(op.accountId);
+    // A credential that cannot be had now (a renewal that failed, ADR 0133 rules 7 and 8) is
+    // this operation's to wait out; the others are still checked.
+    let credential: Awaited<ReturnType<typeof deps.credentials.get>>;
+    try {
+      credential = await deps.credentials.get(op.accountId);
+    } catch {
+      waiting++;
+      continue;
+    }
     if (!account || !credential || !op.messageId) {
       leftToUser++;
       continue;

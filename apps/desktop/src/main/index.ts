@@ -866,7 +866,8 @@ function createCredentialStore() {
 
 /**
  * Browser sign-in (ADR 0133): the person's own browser through `shell.openExternal` (rule 1), the
- * client id from the source or the environment (rule 4). Window tests of a dev build may point it
+ * client id from the source or the environment (rule 4), or none when a dev build's window test
+ * says so (`MATTERS_TEST_NO_CLIENT_ID`). Window tests of a dev build may point it
  * at a stand-in authorization server on this machine (`MATTERS_TEST_OAUTH_AUTHORITY`, which the
  * adapter refuses unless it is loopback, rule 13) and play the browser against it
  * (`MATTERS_TEST_OAUTH_BROWSER`, see `testBrowser`). A packaged app reads neither.
@@ -877,7 +878,7 @@ function createBrowserOAuth(): BrowserOAuth {
     authority === undefined ? null : testBrowser(process.env.MATTERS_TEST_OAUTH_BROWSER, authority);
   try {
     return new BrowserOAuth({
-      clientIds: clientIds(process.env),
+      clientIds: clientIds(process.env, { devBuild }),
       openBrowser: standIn ?? ((url) => shell.openExternal(url)),
       ...(authority === undefined ? {} : { authority }),
     });
@@ -941,6 +942,7 @@ function startBackend(
     MATTERS_TEST_PASSWORD: _secret,
     MATTERS_TEST_ACCOUNT: _hook,
     MATTERS_MICROSOFT_CLIENT_ID: _clientId,
+    MATTERS_TEST_NO_CLIENT_ID: _noClientId,
     MATTERS_TEST_OAUTH_AUTHORITY: _authority,
     MATTERS_TEST_OAUTH_BROWSER: _browser,
     MATTERS_TEST_GRAPH_BASE: graphBase,

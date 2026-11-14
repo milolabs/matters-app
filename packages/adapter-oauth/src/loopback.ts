@@ -121,8 +121,13 @@ export async function listenForRedirect(options: ListenOptions): Promise<Redirec
   const onAbort = () => settle({ kind: "ended", why: "aborted" });
 
   const handle = (request: IncomingMessage, response: ServerResponse) => {
-    const url = new URL(request.url ?? "/", "http://localhost");
+    // Any program here can send a request line `URL` cannot read; it gets 404, not a throw in main.
+    let url: URL | null = null;
+    try {
+      url = new URL(request.url ?? "/", "http://localhost");
+    } catch {}
     if (
+      url === null ||
       settled ||
       request.method !== "GET" ||
       url.pathname !== "/" ||

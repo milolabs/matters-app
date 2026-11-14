@@ -37,13 +37,23 @@ export const MICROSOFT_CLIENT_ID =
 export const CLIENT_ID_VARIABLE = "MATTERS_MICROSOFT_CLIENT_ID";
 
 /**
+ * Window tests of a dev build say "this build has no registration" with this set to `1`, so
+ * what they expect of a build without one does not depend on what the build was given (rule 4).
+ * A packaged app does not read it.
+ */
+export const NO_CLIENT_ID_VARIABLE = "MATTERS_TEST_NO_CLIENT_ID";
+
+/**
  * The client id per provider entry: the environment's, else the one built in; empty is none. One
  * registration serves both Microsoft entries, IMAP's and Graph's (ADR 0136, rule 3).
  */
 export function clientIds(
   env: Readonly<Record<string, string | undefined>>,
+  options: { readonly devBuild?: boolean; readonly builtIn?: string } = {},
 ): Partial<Record<OAuthProvider, string>> {
-  const id = (env[CLIENT_ID_VARIABLE] ?? "").trim() || MICROSOFT_CLIENT_ID.trim();
+  if (options.devBuild === true && env[NO_CLIENT_ID_VARIABLE] === "1") return {};
+  const builtIn = options.builtIn ?? MICROSOFT_CLIENT_ID;
+  const id = (env[CLIENT_ID_VARIABLE] ?? "").trim() || builtIn.trim();
   return id === "" ? {} : { microsoft: id, microsoftGraph: id };
 }
 
