@@ -20,6 +20,9 @@ function codesOf(description: string | undefined, codes: readonly number[] = [])
   return found;
 }
 
+/** More of a description than this is never read. */
+const MAX_DESCRIPTION = 4000;
+
 /**
  * The provider's description, fit to show as a quote (ADR 0114, rule 3): Microsoft's trace and
  * correlation ids and timestamp are cut, and `serverSentence` does the rest (links with a query,
@@ -27,8 +30,11 @@ function codesOf(description: string | undefined, codes: readonly number[] = [])
  */
 export function providerSentence(description: string | undefined): string | undefined {
   if (description === undefined) return undefined;
-  const cut = description.split(/\s*(Trace ID|Correlation ID|Timestamp):/i)[0] ?? "";
-  return serverSentence(cut, { secrets: [] });
+  // The description comes from outside: bounded first, and cut with a pattern that cannot be
+  // made slow.
+  const text = description.slice(0, MAX_DESCRIPTION);
+  const at = text.search(/(?:Trace ID|Correlation ID|Timestamp):/i);
+  return serverSentence((at < 0 ? text : text.slice(0, at)).trimEnd(), { secrets: [] });
 }
 
 /**

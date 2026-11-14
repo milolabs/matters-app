@@ -284,6 +284,10 @@ describe("error mapping (rule 12)", () => {
         "AADSTS65001: Ask jan@contoso.example, see https://login.example/x?token=1.\r\nTrace ID: abc",
       ),
     ).toBe("AADSTS65001: Ask …, see");
+    // A description made to be slow to read is bounded and cut in one pass.
+    const started = performance.now();
+    expect(providerSentence(`Refused${" ".repeat(500_000)}Trace ID: abc`)).toBe("Refused");
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 });
 

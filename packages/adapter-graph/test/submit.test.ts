@@ -163,6 +163,19 @@ describe("whom the headers name", () => {
     expect(
       addressesIn('"Doe, John" <John@Example.org>, ann@example.org (Ann), "x@y" <z@example.org>'),
     ).toEqual(["john@example.org", "ann@example.org", "z@example.org"]);
+    // An escaped quote stays inside its name; a bracket that never closes is no comment.
+    expect(addressesIn('"a \\" b, x@y" <c@example.org>, d@example.org')).toEqual([
+      "c@example.org",
+      "d@example.org",
+    ]);
+    expect(addressesIn("a@example.org (open, b@example.org")).toEqual([
+      "a@example.org",
+      "b@example.org",
+    ]);
+    // A header written to be slow to read is read in one pass.
+    const started = performance.now();
+    expect(addressesIn(`"${'\\"'.repeat(200_000)}`)).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(1000);
     expect(
       bccHeader("To: a@example.org\r\nCc: b@example.org\r\n", [
         "a@example.org",

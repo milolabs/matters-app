@@ -125,9 +125,11 @@ function json(
   headers: Record<string, string> = {},
 ) {
   const text = body === undefined ? "" : JSON.stringify(body);
+  // Always JSON and never sniffed: what a request sent comes back in some answers.
   response.writeHead(status, {
-    ...(text === "" ? {} : { "content-type": "application/json" }),
     ...headers,
+    "content-type": "application/json",
+    "x-content-type-options": "nosniff",
   });
   response.end(text);
 }

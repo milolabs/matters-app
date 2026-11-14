@@ -37,12 +37,47 @@ const TOO_LARGE_CODE = /MessageSizeExceeded|RequestEntityTooLarge|MessageTooLarg
 /** The longest header block read to find who the message names. */
 const MAX_HEADER_BYTES = 1024 * 1024;
 
+/**
+ * The list without what is not an address: quoted names, which may hold commas and `@`, and
+ * comments in round brackets. One pass over the text, so a header written to be slow to read
+ * costs no more than its length.
+ */
+function withoutNames(value: string): string {
+  let out = "";
+  // What an open comment has held so far: kept if the bracket never closes, as that is no comment.
+  let held = "";
+  let quoted = false;
+  let comment = 0;
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i] ?? "";
+    if (quoted) {
+      if (c === "\\") i++;
+      else if (c === '"') quoted = false;
+    } else if (c === '"') {
+      quoted = true;
+      if (comment === 0) out += " ";
+    } else if (c === "(") {
+      comment++;
+      held += c;
+    } else if (c === ")" && comment > 0) {
+      comment--;
+      if (comment === 0) {
+        held = "";
+        out += " ";
+      }
+    } else if (comment === 0) {
+      out += c;
+    } else {
+      held += c;
+    }
+  }
+  return out + held;
+}
+
 /** The addresses in a list of `To` or `Cc`, lower case. */
 export function addressesIn(value: string): string[] {
   const out: string[] = [];
-  // Quoted names may hold commas and `@`; they are not addresses.
-  const text = value.replace(/"(?:[^"\\]|\\.)*"/g, '""').replace(/\([^()]*\)/g, " ");
-  for (const piece of text.split(",")) {
+  for (const piece of withoutNames(value).split(",")) {
     const angle = /<([^<>\s]+@[^<>\s]+)>/.exec(piece);
     const bare = /([^\s<>:;,]+@[^\s<>:;,]+)/.exec(piece);
     const address = angle?.[1] ?? bare?.[1];
