@@ -1,11 +1,14 @@
-import { createSignal, For, type JSX } from "solid-js";
+import { createSignal, For, type JSX, Show } from "solid-js";
+import { AboutSection } from "./aboutSection.tsx";
 import type { AccountsStore } from "./accounts.ts";
 import { AccountsSection } from "./accountsSection.tsx";
 import { takeSettingsSection, watchSettingsSection } from "./agentPrefs.ts";
 import { AgentSection } from "./agentSection.tsx";
 import { AppearanceSection } from "./appearanceSection.tsx";
 import type { Backend } from "./client.ts";
+import { onSettingsSection } from "./files.ts";
 import { ImagesSection } from "./imagesSection.tsx";
+import { createReleaseStore } from "./newerVersion.ts";
 import { NotificationsSection } from "./notificationsSection.tsx";
 import { StorageSection } from "./storageSection.tsx";
 
@@ -14,8 +17,14 @@ const mac = navigator.userAgent.includes("Macintosh");
 
 /** The settings window: its sections down the side, the chosen one beside them (ADR 0036). */
 export function Settings(props: { backend: Backend; accounts: AccountsStore }) {
+  const release = createReleaseStore();
   // A new section is one more entry here.
-  const sections: readonly { id: string; label: string; view: () => JSX.Element }[] = [
+  const sections: readonly {
+    id: string;
+    label: string;
+    view: () => JSX.Element;
+    dot?: () => boolean;
+  }[] = [
     {
       id: "accounts",
       label: "Accounts",
@@ -50,16 +59,26 @@ export function Settings(props: { backend: Backend; accounts: AccountsStore }) {
       label: "Storage",
       view: () => <StorageSection backend={props.backend} accounts={props.accounts} />,
     },
+    // Last in the list, with the gear's dot beside it while a newer version is unseen (ADR 0137).
+    {
+      id: "about",
+      label: "About",
+      view: () => <AboutSection release={release} />,
+      dot: () => release.info()?.dot === true,
+    },
   ];
-  // The mail window can open Settings on a section (the plans line links to Agents).
-  const asked = () => {
-    const id = takeSettingsSection();
-    return sections.some((s) => s.id === id) ? id : null;
-  };
-  const [active, setActive] = createSignal(asked() ?? sections[0]?.id);
+  const known = (id: string | null) => (sections.some((s) => s.id === id) ? id : null);
+  // The mail window can open Settings on a section (the plans line links to Agents); main can too,
+  // in the address it opens the window at, or by message once it is open (the menu's About item).
+  const asked = () => known(takeSettingsSection());
+  const fromMain = known(new URLSearchParams(location.search).get("section"));
+  const [active, setActive] = createSignal(fromMain ?? asked() ?? sections[0]?.id);
   watchSettingsSection(() => {
     const id = asked();
     if (id !== null) setActive(id);
+  });
+  onSettingsSection((id) => {
+    if (known(id) !== null) setActive(id);
   });
 
   return (
@@ -82,6 +101,13 @@ export function Settings(props: { backend: Backend; accounts: AccountsStore }) {
               onClick={() => setActive(section.id)}
             >
               {section.label}
+              <Show when={section.dot?.()}>
+                <span
+                  data-newer-dot
+                  aria-hidden="true"
+                  class="float-right mt-3 size-1.5 rounded-full bg-ink"
+                />
+              </Show>
             </button>
           )}
         </For>

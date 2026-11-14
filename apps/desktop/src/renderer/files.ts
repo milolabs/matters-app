@@ -8,6 +8,7 @@ import type {
   NoticeSystem,
   PickedFile,
   ReceivedAnswer,
+  ReleaseInfo,
   ThemeAddAnswer,
 } from "@matters/contracts";
 import type { ReceivedAsk } from "./received.ts";
@@ -162,6 +163,50 @@ export function onAppearanceChanged(listener: (appearance: AppearanceInfo) => vo
     }
     // The preload rebuilt it from main's answer; only the shape is trusted, as for every answer.
     listener(data.mattersAppearanceChanged as unknown as AppearanceInfo);
+  };
+  window.addEventListener("message", onMessage);
+  return () => window.removeEventListener("message", onMessage);
+}
+
+/** What Settings › About and the gear ask main about newer versions (ADR 0137). */
+export type ReleaseAsk =
+  | { action: "get" }
+  | { action: "enable"; on: boolean }
+  | { action: "check" }
+  | { action: "seen" }
+  | { action: "open"; which: "download" | "notes" | "site" | "source" | "issues" };
+
+/**
+ * Newer versions (ADR 0137): what main knows, after the change asked for. A link is named, never
+ * given: main opens the one it checked (rule 8). Null when main does not answer.
+ */
+export async function askRelease(ask: ReleaseAsk): Promise<ReleaseInfo | null> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: ReleaseInfo | null }>("mattersReleaseAnswer", requestId);
+  window.postMessage({ mattersRelease: { requestId, ...ask } }, "*");
+  return (await reply).answer;
+}
+
+/** What is known of newer versions changed; main tells every window (ADR 0115). */
+export function onReleaseChanged(listener: (info: ReleaseInfo) => void): () => void {
+  const onMessage = (event: MessageEvent) => {
+    const data: unknown = event.data;
+    if (event.source !== window || !isRecord(data) || !isRecord(data.mattersReleaseChanged)) {
+      return;
+    }
+    // The preload rebuilt it from main's answer; only the shape is trusted, as for every answer.
+    listener(data.mattersReleaseChanged as unknown as ReleaseInfo);
+  };
+  window.addEventListener("message", onMessage);
+  return () => window.removeEventListener("message", onMessage);
+}
+
+/** Main asks the settings window to show a section (the menu's newer-version item, ADR 0137). */
+export function onSettingsSection(listener: (id: string) => void): () => void {
+  const onMessage = (event: MessageEvent) => {
+    const data: unknown = event.data;
+    if (event.source !== window || !isRecord(data)) return;
+    if (typeof data.mattersSettingsSection === "string") listener(data.mattersSettingsSection);
   };
   window.addEventListener("message", onMessage);
   return () => window.removeEventListener("message", onMessage);

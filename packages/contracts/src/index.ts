@@ -1596,6 +1596,42 @@ export type ThemeAddAnswer =
   /** The person went back to the default after the making started: nothing was saved. */
   | { readonly ok: false; readonly stopped: true };
 
+/** A newer version main knows of (ADR 0137): what may be shown of the site's file, and no link. */
+export interface ReleaseNewer {
+  /** As the app shows it: "0.1.0-alpha.5". */
+  readonly version: string;
+  /** When it was published, ms since the epoch; null when the file gave no date that reads. */
+  readonly dateMs: number | null;
+  /** A pre-release, which macOS asks about before it opens one (rule 11). */
+  readonly preRelease: boolean;
+  /** About offers Download; main alone knows where it leads (rule 8). */
+  readonly download: boolean;
+  /** About offers Release notes. */
+  readonly notes: boolean;
+}
+
+/** What main says about newer versions, to Settings › About and every window (ADR 0137). */
+export interface ReleaseInfo {
+  /** The version that runs, as the app shows it. */
+  readonly version: string;
+  /** Its stage ("alpha", "beta"), null for a stable version. */
+  readonly stage: string | null;
+  /** This build asks at all (rule 5): false for a build that is not packaged. */
+  readonly asks: boolean;
+  /** The person's switch (rule 6). */
+  readonly enabled: boolean;
+  /** A check is under way. */
+  readonly checking: boolean;
+  /** A newer version than the one that runs, while the switch is on; null otherwise. */
+  readonly newer: ReleaseNewer | null;
+  /** The dot on the gear and beside About (rules 9 and 10). */
+  readonly dot: boolean;
+  /** When a check last worked, ms since the epoch; null for never. */
+  readonly checkedMs: number | null;
+  /** Why the last check failed, in one phrase (rule 12); null when it worked or none was made. */
+  readonly failure: string | null;
+}
+
 /** What main measures for Settings › Storage: sizes per kind of folder, never paths (ADR 0089). */
 export interface MainStorageInfo {
   readonly folders: {

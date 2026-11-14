@@ -28,6 +28,7 @@ export * from "./domain/quotes.ts";
 export * from "./domain/received.ts";
 export * from "./domain/recipients.ts";
 export * from "./domain/relation.ts";
+export * from "./domain/release.ts";
 export * from "./domain/reply.ts";
 export * from "./domain/seen.ts";
 export * from "./domain/send.ts";
