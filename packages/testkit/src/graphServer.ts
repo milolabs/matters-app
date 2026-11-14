@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 
 /** One request the stand-in was given. The token is not kept: `bearer` says whether it matched. */
 export interface GraphServerRequest {
@@ -100,6 +100,12 @@ export interface StandInGraphServer {
   expireDeltaTokens(): void;
   /** Requests whose path contains this text. */
   requestsTo(text: string): GraphServerRequest[];
+  /**
+   * Resolves once no connection to the stand-in is open and what those connections sent has
+   * been handled: after it, `sent` and `requests` hold everything a finished or dropped request
+   * left. A connection kept alive holds it back.
+   */
+  settled(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -196,6 +202,19 @@ export async function startStandInGraphServer(
       else response.destroy();
     });
   });
+  const open = new Set<Socket>();
+  const waitingForNone: (() => void)[] = [];
+  server.on("connection", (socket) => {
+    open.add(socket);
+    socket.once("close", () => {
+      open.delete(socket);
+      if (open.size > 0) return;
+      // One turn more, for the handler of what the last connection sent.
+      setImmediate(() => {
+        if (open.size === 0) for (const done of waitingForNone.splice(0)) done();
+      });
+    });
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${port}/v1.0`;
@@ -265,6 +284,11 @@ export async function startStandInGraphServer(
     requestsTo(text) {
       return self.requests.filter((r) => r.path.includes(text));
     },
+    settled: () =>
+      new Promise<void>((resolve) => {
+        if (open.size === 0) setImmediate(resolve);
+        else waitingForNone.push(resolve);
+      }),
     stop: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();

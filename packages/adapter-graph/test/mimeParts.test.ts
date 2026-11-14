@@ -114,6 +114,12 @@ describe("parts of a raw message, numbered as IMAP numbers them (ADR 0136, rule 
     expect(attachmentsOfMime(digest).map((a) => [a.partId, a.mimeType])).toEqual([
       ["2.1", "message/rfc822"],
     ]);
+    // The part has no headers of its own (a blank first line): the file is the whole message
+    // inside, its headers included, not what follows that message's own blank line.
+    const inside = findPart(digest, "2.1");
+    expect(inside && Buffer.from(decodePart(digest, inside)).toString()).toBe(
+      "Subject: first\r\n\r\none",
+    );
   });
 
   it("a message of one part is part 1; one with no structure is not a file", () => {

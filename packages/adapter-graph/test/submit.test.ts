@@ -120,6 +120,7 @@ describe("sending over Graph's sendMail (ADR 0136, rule 9)", () => {
       },
     });
     expect(result).toMatchObject({ kind: "rejected" });
+    await server.settled();
     expect(server.sent).toEqual([]);
   });
 
@@ -133,12 +134,13 @@ describe("sending over Graph's sendMail (ADR 0136, rule 9)", () => {
       if ((bcc + Buffer.byteLength(text)) % 3 !== 0) continue;
       const result = await submitter.submit(target(), envelope, source(text), {
         beforeDataEnd: async () => {
-          // Long enough for a whole body to have been taken.
-          await new Promise((done) => setTimeout(done, 100));
           throw new Error("the mark could not be written");
         },
       });
       expect(result).toMatchObject({ kind: "rejected" });
+      // Not a wait of some length: the stand-in says when the dropped connection is closed and
+      // what it carried has been handled, so a whole body taken would be in `sent` by now.
+      await server.settled();
       expect(server.sent).toEqual([]);
       return;
     }

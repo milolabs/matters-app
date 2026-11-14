@@ -29,13 +29,14 @@ const latin1 = (bytes: Uint8Array, start = 0, end = bytes.length) =>
 /** Where the header block ends (after its blank line) and the body starts. */
 function bodyStart(raw: Uint8Array, from: number, to: number): { headerEnd: number; body: number } {
   const text = latin1(raw, from, to);
+  // A blank first line: no headers at all. Asked first, or the blank line after the headers of
+  // a message inside (a part of a digest) would be taken for this part's.
+  if (text.startsWith("\r\n")) return { headerEnd: from, body: from + 2 };
+  if (text.startsWith("\n")) return { headerEnd: from, body: from + 1 };
   const crlf = text.indexOf("\r\n\r\n");
   const lf = text.indexOf("\n\n");
   if (crlf >= 0 && (lf < 0 || crlf <= lf)) return { headerEnd: from + crlf, body: from + crlf + 4 };
   if (lf >= 0) return { headerEnd: from + lf, body: from + lf + 2 };
-  // A blank first line: no headers at all.
-  if (text.startsWith("\r\n")) return { headerEnd: from, body: from + 2 };
-  if (text.startsWith("\n")) return { headerEnd: from, body: from + 1 };
   return { headerEnd: to, body: to };
 }
 
