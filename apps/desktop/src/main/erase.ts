@@ -66,28 +66,68 @@ export function parseEraseOrder(text: string): EraseOrder | null {
   return null;
 }
 
+/** What the start found where the order would be: three cases, never confused with each other. */
+export type EraseOrderRead =
+  /** Nothing there (ENOENT, ENOTDIR): a normal start. */
+  | { readonly kind: "none" }
+  /** An order was read: this start erases. */
+  | { readonly kind: "order"; readonly order: EraseOrder }
+  /**
+   * Whether an order is there could not be told (EACCES, EIO, ...): neither a normal start nor an
+   * erase. `code` is the system's code, when it gave one.
+   */
+  | { readonly kind: "unreadable"; readonly code: string | null };
+
 /**
  * The one look a normal start pays for (ADR 0138, Consequences): a read that fails with ENOENT. An
- * order that cannot be parsed still counts, and so does one that is there but cannot be read
- * (EACCES, EIO): the person confirmed something, and the erase goes on without the earlier copy,
- * the safe default. Only "nothing there" is no order.
+ * order that is there but cannot be parsed still counts: the file is there, so the person
+ * confirmed, and the erase goes on without the earlier copy, the safe default. A read that fails
+ * otherwise proves nothing either way: it is "unreadable", and nothing starts and nothing is
+ * deleted.
  */
-export function readEraseOrder(dataDir: string): EraseOrder | null {
+export function readEraseOrder(
+  dataDir: string,
+  read: (path: string) => string = (path) => readFileSync(path, "utf8"),
+): EraseOrderRead {
   let text: string;
   try {
-    text = readFileSync(join(dataDir, ERASE_ORDER_FILE), "utf8");
+    text = read(join(dataDir, ERASE_ORDER_FILE));
   } catch (error) {
-    if (missing(error)) return null;
-    text = "";
+    if (missing(error)) return { kind: "none" };
+    const code = (error as { code?: unknown } | null)?.code;
+    return { kind: "unreadable", code: typeof code === "string" ? code : null };
   }
-  return (
-    parseEraseOrder(text) ?? {
+  return {
+    kind: "order",
+    order: parseEraseOrder(text) ?? {
       version: 1,
       at: new Date(0).toISOString(),
       earlierCopy: false,
       permissionPages: [],
-    }
-  );
+    },
+  };
+}
+
+/**
+ * What a start does with what it read: each case has its own way, so an order that could not be
+ * read is never taken for one that was (ADR 0138, Notes after review).
+ */
+export function startFor<T>(
+  read: EraseOrderRead,
+  on: {
+    readonly none: () => T;
+    readonly order: (order: EraseOrder) => T;
+    readonly unreadable: (code: string | null) => T;
+  },
+): T {
+  switch (read.kind) {
+    case "none":
+      return on.none();
+    case "order":
+      return on.order(read.order);
+    case "unreadable":
+      return on.unreadable(read.code);
+  }
 }
 
 /** Written aside, then renamed into place: a half-written order is never read. */
@@ -470,16 +510,25 @@ function eraseHolding(h: Holding, t: EraseTargets, deps: EraseDeps): HoldingOutc
   return erasePaths(paths, deps);
 }
 
+/** The erase's own claim on the database, held from the database step to the end of the sweep. */
+interface HeldClaim {
+  readonly claim: { release(): void };
+  /** The owner file's holdings, noted when the claim is released and the file looked for again. */
+  readonly owners: readonly Holding[];
+}
+
 /**
  * The database's files, under the database's own claim (ADR 0110): when a live run owns the
- * database, none of them is touched and each is left. Its own owner file goes last, by releasing
- * the claim; one a later start wrote meanwhile is that start's, and is left.
+ * database, none of them is touched and each is left. The claim is not released here: it is
+ * handed to `hold`, and held until the data folder has been swept (no other run can claim the database and
+ * write files the sweep would take). Its owner file goes last, by `settleClaim`.
  */
 function eraseDatabase(
   inStep: readonly Holding[],
   t: EraseTargets,
   deps: EraseDeps,
   note: (h: Holding, o: HoldingOutcome) => void,
+  hold: (held: HeldClaim) => void,
 ): void {
   let claim: { release(): void } | null = null;
   let refused: LeftReason | null = null;
@@ -494,35 +543,50 @@ function eraseDatabase(
     }
   }
   const isOwner = (h: Holding) => h.place.kind === "database" && h.place.suffix === OWNER_SUFFIX;
-  try {
-    for (const h of [...inStep.filter((h) => !isOwner(h)), ...inStep.filter(isOwner)]) {
-      if (refused !== null) {
-        const paths = h.place.kind === "database" ? [t.databasePath + h.place.suffix] : [];
-        note(h, leaveAll(paths, refused, deps));
-        continue;
-      }
-      if (claim !== null && isOwner(h)) {
-        const path = t.databasePath + OWNER_SUFFIX;
-        claim.release();
-        claim = null;
-        let after: ReturnType<EraseFs["entry"]> | undefined;
-        try {
-          after = deps.fs.entry(path);
-        } catch {
-          after = undefined;
-        }
-        note(
-          h,
-          after === null
-            ? { kind: "gone", bytes: 0 }
-            : { kind: "left", reason: "inUse", bytes: after?.size ?? 0, where: path },
-        );
-        continue;
-      }
-      note(h, eraseHolding(h, t, deps));
+  const owners = inStep.filter(isOwner);
+  // Handed over before anything else: the caller releases it on every path, a throw included.
+  if (claim !== null) hold({ claim, owners });
+  for (const h of [...inStep.filter((h) => !isOwner(h)), ...(claim === null ? owners : [])]) {
+    if (refused !== null) {
+      const paths = h.place.kind === "database" ? [t.databasePath + h.place.suffix] : [];
+      note(h, leaveAll(paths, refused, deps));
+      continue;
     }
-  } finally {
-    claim?.release();
+    note(h, eraseHolding(h, t, deps));
+  }
+}
+
+/**
+ * Releases the erase's claim, which removes its own owner file and no other (ADR 0110), then looks
+ * for the file again: gone, or left. One a later start wrote meanwhile is that start's, and a look
+ * that fails is a thing left. Never throws.
+ */
+function settleClaim(
+  held: HeldClaim,
+  t: EraseTargets,
+  deps: EraseDeps,
+  note: (h: Holding, o: HoldingOutcome) => void,
+): void {
+  const path = t.databasePath + OWNER_SUFFIX;
+  try {
+    held.claim.release();
+  } catch {
+    // Looked at below: what is still there is left.
+  }
+  let outcome: HoldingOutcome;
+  try {
+    const after = deps.fs.entry(path);
+    outcome =
+      after === null
+        ? { kind: "gone", bytes: 0 }
+        : { kind: "left", reason: "inUse", bytes: after.size, where: path };
+  } catch (error) {
+    outcome = { kind: "left", reason: reasonOf(error), bytes: 0, where: path };
+  }
+  for (const h of held.owners) {
+    try {
+      note(h, outcome);
+    } catch {}
   }
 }
 
@@ -591,8 +655,10 @@ export function leaveErase(
  * before the order, so the folder ends empty; the order goes last, and only when every outcome is
  * known and nothing was left: a start after a partial erase tries again. A look that fails is a
  * thing left, never one gone. When the earlier copy stays, the identity move's "done" marker is
- * written before the order goes, so that the move never brings it back (rule 4). It does not
- * throw: what it could not do is in the result.
+ * written before the order goes, so that the move never brings it back (rule 4). The database's
+ * claim (ADR 0110) is held from the database step until the sweep is done; its owner file goes
+ * last, by releasing it, before the order. On every other way out the claim is released too. It
+ * does not throw: what it could not do is in the result.
  */
 export async function runErase(
   order: EraseOrder,
@@ -607,63 +673,84 @@ export async function runErase(
     outcomes.push({ holding, outcome });
     deps.progress?.({ kind: "holding", holding, outcome });
   };
-  for (const { step, holdings: inStep } of erasePlan(holdings, { earlierCopy })) {
-    deps.progress?.({ kind: "step", step });
-    if (step === "order") {
-      // Something left: the sweep below would take it too, a database another run owns included.
-      if (outcomes.some((o) => o.outcome.kind === "left")) break;
-      // What no holding claimed: the folder is removed whole, not file by file (rule 3).
-      const undeclared: Holding = {
-        id: "desktop.undeclared",
-        group: "caches",
-        step: "order",
-        place: { kind: "data", name: "", match: "prefix" },
-      };
-      let stray: string[] = [];
-      try {
-        stray = deps.fs
-          .list(t.dataDir)
-          .filter((n) => n !== ERASE_ORDER_FILE)
-          .map((n) => join(t.dataDir, n));
-      } catch (error) {
-        note(undeclared, { kind: "left", reason: reasonOf(error), bytes: 0, where: t.dataDir });
+  // The database's claim, from the database step until the sweep is done (ADR 0110): while it is
+  // held no other run can claim the database and write files the sweep would take.
+  let held: HeldClaim | null = null;
+  const settle = () => {
+    const h = held;
+    held = null;
+    if (h !== null) settleClaim(h, t, deps, note);
+  };
+  const ownerFile = resolve(t.databasePath + OWNER_SUFFIX);
+  try {
+    for (const { step, holdings: inStep } of erasePlan(holdings, { earlierCopy })) {
+      deps.progress?.({ kind: "step", step });
+      if (step === "order") {
+        // Something left: the sweep below would take it too, a database another run owns included.
+        if (outcomes.some((o) => o.outcome.kind === "left")) break;
+        // What no holding claimed: the folder is removed whole, not file by file (rule 3). The
+        // claim's own owner file is not among it: it goes by releasing the claim, below.
+        const undeclared: Holding = {
+          id: "desktop.undeclared",
+          group: "caches",
+          step: "order",
+          place: { kind: "data", name: "", match: "prefix" },
+        };
+        let stray: string[] = [];
+        try {
+          stray = deps.fs
+            .list(t.dataDir)
+            .filter((n) => n !== ERASE_ORDER_FILE)
+            .map((n) => join(t.dataDir, n))
+            .filter((path) => held === null || resolve(path) !== ownerFile);
+        } catch (error) {
+          note(undeclared, { kind: "left", reason: reasonOf(error), bytes: 0, where: t.dataDir });
+        }
+        if (stray.length > 0) note(undeclared, erasePaths(stray, deps));
+        if (outcomes.some((o) => o.outcome.kind === "left")) break;
+        try {
+          keepEarlierOut(t, deps);
+        } catch (error) {
+          // Without the marker the move would bring the earlier copy back: the order stays.
+          note(
+            {
+              id: "desktop.doneMarker",
+              group: "settings",
+              step: "order",
+              place: { kind: "data", name: "", match: "prefix" },
+            },
+            { kind: "left", reason: reasonOf(error), bytes: 0, where: t.dataDir },
+          );
+          break;
+        }
+        // The owner file last of all the erase deletes; the order only once it is known gone.
+        settle();
+        if (outcomes.some((o) => o.outcome.kind === "left")) break;
+        for (const h of inStep) note(h, eraseHolding(h, t, deps));
+        // Empty now: the folder itself goes too (it stays with the marker in it, or with what a
+        // run started since the claim was released has written).
+        try {
+          if (deps.fs.list(t.dataDir).length === 0 && deps.guard(t.dataDir))
+            deps.fs.remove(t.dataDir);
+        } catch {
+          // An empty folder left behind holds nothing.
+        }
+        continue;
       }
-      if (stray.length > 0) note(undeclared, erasePaths(stray, deps));
-      const left = outcomes.some((o) => o.outcome.kind === "left");
-      if (left) break;
-      try {
-        keepEarlierOut(t, deps);
-      } catch (error) {
-        // Without the marker the move would bring the earlier copy back: the order stays.
-        note(
-          {
-            id: "desktop.doneMarker",
-            group: "settings",
-            step: "order",
-            place: { kind: "data", name: "", match: "prefix" },
-          },
-          { kind: "left", reason: reasonOf(error), bytes: 0, where: t.dataDir },
-        );
-        break;
+      if (step === "database") {
+        eraseDatabase(inStep, t, deps, note, (h) => {
+          held = h;
+        });
+        continue;
       }
-      for (const h of inStep) note(h, eraseHolding(h, t, deps));
-      // Empty now: the folder itself goes too (it stays with the marker in it).
-      try {
-        if (deps.fs.list(t.dataDir).length === 0 && deps.guard(t.dataDir))
-          deps.fs.remove(t.dataDir);
-      } catch {
-        // An empty folder left behind holds nothing.
+      for (const h of inStep) {
+        if (h.place.kind === "keychain") note(h, await eraseKey(h, t, deps));
+        else note(h, eraseHolding(h, t, deps));
       }
-      continue;
     }
-    if (step === "database") {
-      eraseDatabase(inStep, t, deps, note);
-      continue;
-    }
-    for (const h of inStep) {
-      if (h.place.kind === "keychain") note(h, await eraseKey(h, t, deps));
-      else note(h, eraseHolding(h, t, deps));
-    }
+  } finally {
+    // Every other way out (something left, a step that threw): released, and its file looked for.
+    settle();
   }
   return { startedAtMs, endedAtMs: deps.now(), earlierCopy, outcomes };
 }

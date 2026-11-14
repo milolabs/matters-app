@@ -13,6 +13,7 @@ import {
   type DatabaseClaim,
   type EraseDeps,
   type EraseOrder,
+  type EraseOrderRead,
   type EraseProgress,
   type EraseTargets,
   eraseGuard,
@@ -21,6 +22,7 @@ import {
   macKeychain,
   nodeEraseFs,
   otherKeychain,
+  readEraseOrder,
   runErase,
 } from "./erase.ts";
 import { eraseReport } from "./eraseReport.ts";
@@ -60,10 +62,7 @@ const run = (file: string, args: readonly string[]) =>
 
 /** Points this run at a throwaway data folder. Call before ready, before anything reads it. */
 export function enterEraseMode(options: EraseModeOptions): void {
-  const throwaway = mkdtempSync(join(tmpdir(), "matters-erase-"));
-  app.setPath("userData", throwaway);
-  app.setPath("sessionData", throwaway);
-  process.on("exit", () => rmSync(throwaway, { recursive: true, force: true }));
+  const throwaway = useThrowawayFolder();
 
   const tempDir = options.tempDir ?? tmpdir();
   const targets: EraseTargets = {
@@ -238,34 +237,122 @@ export function enterEraseMode(options: EraseModeOptions): void {
           return null;
       }
     });
-    win = new BrowserWindow({
-      width: 560,
-      height: 440,
-      resizable: false,
-      fullscreenable: false,
-      maximizable: false,
-      show: false,
-      ...options.titleBar(),
-      backgroundColor: options.background(),
-      webPreferences: {
-        preload: join(import.meta.dirname, "../preload/index.cjs"),
-        contextIsolation: true,
-        sandbox: true,
-        nodeIntegration: false,
-        webSecurity: true,
-      },
-    });
-    options.lockDown(win);
-    win.once("ready-to-show", () => win?.show());
+    win = eraseWindow(options);
     win.on("closed", () => {
       win = null;
       // There is no cancel (rule 10): closing the window leaves the order, and the next start goes on.
       if (running === null) app.exit(0);
       else void running.then(() => app.exit(0));
     });
-    const page = process.env.ELECTRON_RENDERER_URL;
-    if (page && !app.isPackaged) void win.loadURL(new URL("erase.html", page).href);
-    else void win.loadFile(join(import.meta.dirname, "../renderer/erase.html"));
+    loadErasePage(win);
     void erase();
+  });
+}
+
+type WindowOptions = Pick<EraseModeOptions, "background" | "titleBar" | "lockDown">;
+
+/** The erase's small window, shown when ready; the page is loaded by `loadErasePage`. */
+function eraseWindow(options: WindowOptions): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 560,
+    height: 440,
+    resizable: false,
+    fullscreenable: false,
+    maximizable: false,
+    show: false,
+    ...options.titleBar(),
+    backgroundColor: options.background(),
+    webPreferences: {
+      preload: join(import.meta.dirname, "../preload/index.cjs"),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      webSecurity: true,
+    },
+  });
+  options.lockDown(win);
+  win.once("ready-to-show", () => win.show());
+  return win;
+}
+
+function loadErasePage(win: BrowserWindow): void {
+  const page = process.env.ELECTRON_RENDERER_URL;
+  if (page && !app.isPackaged) void win.loadURL(new URL("erase.html", page).href);
+  else void win.loadFile(join(import.meta.dirname, "../renderer/erase.html"));
+}
+
+/** Points this run at a throwaway data folder, removed when the run ends. */
+function useThrowawayFolder(): string {
+  const throwaway = mkdtempSync(join(tmpdir(), "matters-erase-"));
+  app.setPath("userData", throwaway);
+  app.setPath("sessionData", throwaway);
+  process.on("exit", () => rmSync(throwaway, { recursive: true, force: true }));
+  return throwaway;
+}
+
+export const ERASE_UNREADABLE_PREFIX = "MATTERS_ERASE_UNREADABLE ";
+
+export interface UnreadableModeOptions extends WindowOptions {
+  /** The real data folder, read before userData is pointed elsewhere. */
+  readonly dataDir: string;
+  /** The system's code of the failed read, when it gave one. */
+  readonly code: string | null;
+  /** A smoke run: no window; one line on stdout, then exit 1. */
+  readonly smoke: boolean;
+  /** Reads the order again (Try again); the real reader by default. */
+  readonly read?: (dataDir: string) => EraseOrderRead;
+}
+
+/**
+ * The start that could not tell whether an erase was ordered (ADR 0138, Notes after review): the
+ * order could not be read, and that proves neither that the person confirmed nor that they did
+ * not. Nothing runs: no backend, no database, no mail window, nothing deleted. Electron is pointed
+ * at a throwaway data folder so nothing is opened in the real one. The erase's window says what
+ * happened, with Try again (which reads again, and starts afresh once the answer is known) and
+ * Quit Matters.
+ */
+export function enterUnreadableMode(options: UnreadableModeOptions): void {
+  useThrowawayFolder();
+  const read = options.read ?? ((dir: string) => readEraseOrder(dir));
+  let code = options.code;
+  let win: BrowserWindow | null = null;
+  app.whenReady().then(() => {
+    console.error(`matters-erase: ${options.dataDir} could not be read (${code ?? "unknown"})`);
+    if (options.smoke) {
+      process.stdout.write(
+        `${ERASE_UNREADABLE_PREFIX}${JSON.stringify({ code, folder: options.dataDir })}\n`,
+        () => app.exit(1),
+      );
+      return;
+    }
+    ipcMain.handle(CHANNEL_ERASE, async (event, action: unknown) => {
+      if (!win || event.sender !== win.webContents) return null;
+      switch (action) {
+        case "state":
+          return { kind: "unreadable", code, folder: options.dataDir };
+        case "retry": {
+          const again = read(options.dataDir);
+          if (again.kind === "unreadable") {
+            code = again.code;
+            return { kind: "unreadable", code, folder: options.dataDir };
+          }
+          // Known now, either way: a fresh start does what it finds.
+          app.relaunch();
+          app.exit(0);
+          return { ok: true };
+        }
+        case "quit":
+          app.exit(0);
+          return { ok: true };
+        case "show":
+          shell.showItemInFolder(options.dataDir);
+          return { ok: true };
+        default:
+          return null;
+      }
+    });
+    win = eraseWindow(options);
+    win.on("closed", () => app.exit(0));
+    loadErasePage(win);
   });
 }

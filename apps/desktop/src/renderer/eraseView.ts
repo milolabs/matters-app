@@ -136,3 +136,23 @@ export function partialHeading(left: number): string {
   if (left === 1) return "Almost all of it is gone. One thing is still here.";
   return `Almost all of it is gone. ${left < 10 ? ["", "", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"][left] : count(left)} things are still here.`;
 }
+
+/**
+ * Why the data folder could not be read, in plain words (ADR 0138, Notes after review): the start
+ * could not tell whether an erase was ordered, so it did nothing.
+ */
+export function unreadableReason(code: string | null): string {
+  switch (code) {
+    case "EACCES":
+    case "EPERM":
+      return "The system does not allow Matters to open it. Check its permissions, then try again.";
+    case "EIO":
+      return "The disk it is on could not be read. Check that the disk is connected, then try again.";
+    case "EBUSY":
+      return "Another program has it open. Close it, then try again.";
+    default:
+      return code
+        ? `The system gave an error (${code}). Try again in a moment.`
+        : "The system gave an error. Try again in a moment.";
+  }
+}

@@ -8,6 +8,7 @@ import {
   labelOf,
   leftReason,
   partialHeading,
+  unreadableReason,
 } from "./eraseView.ts";
 import { askEraseWindow, onEraseProgress } from "./files.ts";
 import { CheckIcon, MattersMark, Ring } from "./icons.tsx";
@@ -57,6 +58,21 @@ export function EraseScreen() {
   const [report, setReport] = createSignal<EraseReport | null>(null);
   const [pages, setPages] = createSignal<readonly PermissionPageId[]>([]);
   const [busy, setBusy] = createSignal(false);
+  /** A start that could not read its data folder: nothing was erased, nothing opened. */
+  const [unreadable, setUnreadable] = createSignal<{
+    readonly code: string | null;
+    readonly folder: string;
+  } | null>(null);
+  const takeUnreadable = (a: Record<string, unknown> | null) => {
+    if (a?.kind !== "unreadable") return false;
+    // Nothing is being erased: the window's title must not say so.
+    document.title = "Matters";
+    setUnreadable({
+      code: typeof a.code === "string" ? a.code : null,
+      folder: typeof a.folder === "string" ? a.folder : "",
+    });
+    return true;
+  };
 
   const apply = (event: Record<string, unknown>) => {
     if (event.kind === "step" && typeof event.step === "string") setStep(event.step);
@@ -71,11 +87,11 @@ export function EraseScreen() {
 
   onMount(() => {
     onCleanup(onEraseProgress(apply));
-    void askEraseWindow("pages").then((a) => {
-      if (Array.isArray(a?.pages)) setPages(a.pages as PermissionPageId[]);
-    });
     void askEraseWindow("state").then((state) => {
-      if (!state) return;
+      if (!state || takeUnreadable(state)) return;
+      void askEraseWindow("pages").then((a) => {
+        if (Array.isArray(a?.pages)) setPages(a.pages as PermissionPageId[]);
+      });
       if (state.kind === "result") apply(state);
       else {
         setEarlierCopy(state.earlierCopy === true);
@@ -139,171 +155,213 @@ export function EraseScreen() {
     </ul>
   );
 
+  const erasing = () => (
+    <Show
+      when={report()}
+      fallback={
+        <>
+          <h1 class="mt-7 font-serif text-[21px] leading-[1.2] font-semibold">
+            Erasing Matters from this Mac
+          </h1>
+          <p role="status" class="mt-1.5 text-[13px] text-secondary">
+            Nothing is read or synced meanwhile.
+          </p>
+          <ol class="m-0 mt-6 flex list-none flex-col p-0">
+            <For each={ROWS.filter((r) => r.id !== "earlier" || earlierCopy())}>
+              {(row) => (
+                <li class="flex h-[34px] items-center gap-2.5 border-b border-hairline">
+                  <Show when={rowState(row.steps) === "done"}>
+                    <span class="text-good">
+                      <CheckIcon size={14} />
+                    </span>
+                  </Show>
+                  <Show when={rowState(row.steps) === "now"}>
+                    <span class="inline-flex animate-spin">
+                      <Ring size={14} />
+                    </span>
+                  </Show>
+                  <span
+                    class="flex-1 text-[13px]"
+                    classList={{
+                      "font-medium": rowState(row.steps) === "now",
+                      "text-secondary": rowState(row.steps) === "later",
+                    }}
+                  >
+                    {row.label}
+                  </span>
+                  <Show when={rowState(row.steps) !== "later"}>
+                    <span class="text-[12px] text-secondary tabular-nums">
+                      {bytes()[row.id]
+                        ? `${storageSize(bytes()[row.id] ?? 0)}${rowState(row.steps) === "done" ? " gone" : ""}`
+                        : rowState(row.steps) === "done"
+                          ? "gone"
+                          : ""}
+                    </span>
+                  </Show>
+                </li>
+              )}
+            </For>
+          </ol>
+          <p class={`mt-auto ${hint}`}>
+            There is no way back from here. If Matters is closed or the Mac sleeps, it carries on
+            the next time Matters opens, before anything else.
+          </p>
+        </>
+      }
+    >
+      {(r) => (
+        <Show
+          when={r().ok}
+          fallback={
+            <>
+              <h1 class="mt-7 font-serif text-[21px] leading-[1.2] font-semibold">
+                {partialHeading(r().left.length)}
+              </h1>
+              <p role="alert" class="mt-1.5 text-[13px] text-late">
+                {r().groups.length > 0
+                  ? `${r()
+                      .groups.map((g) => labelOf(g.group as GroupId))
+                      .join(", ")}: erased. These could not be:`
+                  : "These could not be erased:"}
+              </p>
+              <ul class="m-0 mt-4 flex list-none flex-col p-0">
+                <For each={r().left}>
+                  {(item) => (
+                    <li class="flex min-h-[46px] items-center gap-2.5 border-t border-hairline py-1 last:border-b">
+                      <div class="flex min-w-0 flex-1 flex-col">
+                        <span class="truncate text-[13px]">
+                          {item.kind === "key"
+                            ? `The Keychain key “${item.where ?? ""}”`
+                            : `${labelOf(item.group as GroupId)}${item.bytes > 0 ? `, ${storageSize(item.bytes)}` : ""}`}
+                        </span>
+                        <span class="text-[12px] text-secondary">
+                          {leftReason(item.reason, item.kind)}
+                        </span>
+                      </div>
+                      <Show
+                        when={item.kind === "key"}
+                        fallback={
+                          <button type="button" class={small} onClick={() => void act("show")}>
+                            Show in Finder
+                          </button>
+                        }
+                      >
+                        <Show when={item.reason === "keychainRefused"}>
+                          <button type="button" class={small} onClick={() => void act("keychain")}>
+                            Open Keychain Access
+                          </button>
+                        </Show>
+                      </Show>
+                    </li>
+                  )}
+                </For>
+              </ul>
+              <p class={`mt-3 ${hint}`}>
+                Until they are gone, Matters tries again each time it opens and shows you this.
+              </p>
+              <div class="mt-auto flex items-center gap-2">
+                <button
+                  type="button"
+                  class={pillSmallPrimary}
+                  disabled={busy()}
+                  ref={(el) => queueMicrotask(() => el.focus())}
+                  onClick={() => void act("retry")}
+                >
+                  Try again
+                </button>
+                <button type="button" class={pillSmall} onClick={() => void act("quit")}>
+                  Quit Matters
+                </button>
+                <span class="flex-1" />
+                <button
+                  type="button"
+                  class="cursor-default text-[12.5px] text-mid underline underline-offset-2"
+                  onClick={() => void act("leave")}
+                >
+                  Leave them and start again
+                </button>
+              </div>
+            </>
+          }
+        >
+          <h1 class="mt-7 font-serif text-[21px] leading-[1.2] font-semibold">
+            {r().markerLeft
+              ? "Your mail and data are gone from this Mac."
+              : "Nothing of Matters is left on this Mac."}
+          </h1>
+          <p role="status" class="mt-1.5 text-[13px] text-good">
+            {erasedLine(r().bytes, r().ms, r().earlierCopy)} {checkedLine(r().keys)}
+          </p>
+          <h2 class="mt-6 mb-1.5 text-[13px] font-semibold">Still outside Matters</h2>
+          {outside()}
+          <div class="mt-auto flex items-center gap-2">
+            <button
+              type="button"
+              class={pillSmallPrimary}
+              ref={(el) => queueMicrotask(() => el.focus())}
+              onClick={() => void act("startAgain")}
+            >
+              Start again
+            </button>
+            <button type="button" class={pillSmall} onClick={() => void act("quit")}>
+              Quit Matters
+            </button>
+            <span class="flex-1 text-right text-[12px] text-secondary">
+              This list is not kept anywhere.
+            </span>
+          </div>
+        </Show>
+      )}
+    </Show>
+  );
+
+  async function readAgain() {
+    setBusy(true);
+    takeUnreadable(await askEraseWindow("retry"));
+    setBusy(false);
+  }
+
   return (
     <div class="flex h-full flex-col bg-bg px-14 pt-[52px] pb-8">
       <div class="drag flex items-center gap-2 text-[13px] font-semibold">
         <MattersMark size={16} />
         Matters
       </div>
-      <Show
-        when={report()}
-        fallback={
+      <Show when={unreadable()} fallback={erasing()}>
+        {(u) => (
           <>
             <h1 class="mt-7 font-serif text-[21px] leading-[1.2] font-semibold">
-              Erasing Matters from this Mac
+              Matters could not read its folder
             </h1>
-            <p role="status" class="mt-1.5 text-[13px] text-secondary">
-              Nothing is read or synced meanwhile.
+            <p role="alert" class="mt-1.5 text-[13px] text-late">
+              {unreadableReason(u().code)}
             </p>
-            <ol class="m-0 mt-6 flex list-none flex-col p-0">
-              <For each={ROWS.filter((r) => r.id !== "earlier" || earlierCopy())}>
-                {(row) => (
-                  <li class="flex h-[34px] items-center gap-2.5 border-b border-hairline">
-                    <Show when={rowState(row.steps) === "done"}>
-                      <span class="text-good">
-                        <CheckIcon size={14} />
-                      </span>
-                    </Show>
-                    <Show when={rowState(row.steps) === "now"}>
-                      <span class="inline-flex animate-spin">
-                        <Ring size={14} />
-                      </span>
-                    </Show>
-                    <span
-                      class="flex-1 text-[13px]"
-                      classList={{
-                        "font-medium": rowState(row.steps) === "now",
-                        "text-secondary": rowState(row.steps) === "later",
-                      }}
-                    >
-                      {row.label}
-                    </span>
-                    <Show when={rowState(row.steps) !== "later"}>
-                      <span class="text-[12px] text-secondary tabular-nums">
-                        {bytes()[row.id]
-                          ? `${storageSize(bytes()[row.id] ?? 0)}${rowState(row.steps) === "done" ? " gone" : ""}`
-                          : rowState(row.steps) === "done"
-                            ? "gone"
-                            : ""}
-                      </span>
-                    </Show>
-                  </li>
-                )}
-              </For>
-            </ol>
-            <p class={`mt-auto ${hint}`}>
-              There is no way back from here. If Matters is closed or the Mac sleeps, it carries on
-              the next time Matters opens, before anything else.
+            <p class="mt-4 truncate text-[13px]" title={u().folder}>
+              {u().folder}
             </p>
-          </>
-        }
-      >
-        {(r) => (
-          <Show
-            when={r().ok}
-            fallback={
-              <>
-                <h1 class="mt-7 font-serif text-[21px] leading-[1.2] font-semibold">
-                  {partialHeading(r().left.length)}
-                </h1>
-                <p role="alert" class="mt-1.5 text-[13px] text-late">
-                  {r().groups.length > 0
-                    ? `${r()
-                        .groups.map((g) => labelOf(g.group as GroupId))
-                        .join(", ")}: erased. These could not be:`
-                    : "These could not be erased:"}
-                </p>
-                <ul class="m-0 mt-4 flex list-none flex-col p-0">
-                  <For each={r().left}>
-                    {(item) => (
-                      <li class="flex min-h-[46px] items-center gap-2.5 border-t border-hairline py-1 last:border-b">
-                        <div class="flex min-w-0 flex-1 flex-col">
-                          <span class="truncate text-[13px]">
-                            {item.kind === "key"
-                              ? `The Keychain key “${item.where ?? ""}”`
-                              : `${labelOf(item.group as GroupId)}${item.bytes > 0 ? `, ${storageSize(item.bytes)}` : ""}`}
-                          </span>
-                          <span class="text-[12px] text-secondary">
-                            {leftReason(item.reason, item.kind)}
-                          </span>
-                        </div>
-                        <Show
-                          when={item.kind === "key"}
-                          fallback={
-                            <button type="button" class={small} onClick={() => void act("show")}>
-                              Show in Finder
-                            </button>
-                          }
-                        >
-                          <Show when={item.reason === "keychainRefused"}>
-                            <button
-                              type="button"
-                              class={small}
-                              onClick={() => void act("keychain")}
-                            >
-                              Open Keychain Access
-                            </button>
-                          </Show>
-                        </Show>
-                      </li>
-                    )}
-                  </For>
-                </ul>
-                <p class={`mt-3 ${hint}`}>
-                  Until they are gone, Matters tries again each time it opens and shows you this.
-                </p>
-                <div class="mt-auto flex items-center gap-2">
-                  <button
-                    type="button"
-                    class={pillSmallPrimary}
-                    disabled={busy()}
-                    ref={(el) => queueMicrotask(() => el.focus())}
-                    onClick={() => void act("retry")}
-                  >
-                    Try again
-                  </button>
-                  <button type="button" class={pillSmall} onClick={() => void act("quit")}>
-                    Quit Matters
-                  </button>
-                  <span class="flex-1" />
-                  <button
-                    type="button"
-                    class="cursor-default text-[12.5px] text-mid underline underline-offset-2"
-                    onClick={() => void act("leave")}
-                  >
-                    Leave them and start again
-                  </button>
-                </div>
-              </>
-            }
-          >
-            <h1 class="mt-7 font-serif text-[21px] leading-[1.2] font-semibold">
-              {r().markerLeft
-                ? "Your mail and data are gone from this Mac."
-                : "Nothing of Matters is left on this Mac."}
-            </h1>
-            <p role="status" class="mt-1.5 text-[13px] text-good">
-              {erasedLine(r().bytes, r().ms, r().earlierCopy)} {checkedLine(r().keys)}
+            <p class={`mt-3 ${hint}`}>
+              Until it can, Matters opens nothing and erases nothing: it cannot tell whether you
+              asked it to erase everything.
             </p>
-            <h2 class="mt-6 mb-1.5 text-[13px] font-semibold">Still outside Matters</h2>
-            {outside()}
             <div class="mt-auto flex items-center gap-2">
               <button
                 type="button"
                 class={pillSmallPrimary}
+                disabled={busy()}
                 ref={(el) => queueMicrotask(() => el.focus())}
-                onClick={() => void act("startAgain")}
+                onClick={() => void readAgain()}
               >
-                Start again
+                Try again
               </button>
               <button type="button" class={pillSmall} onClick={() => void act("quit")}>
                 Quit Matters
               </button>
-              <span class="flex-1 text-right text-[12px] text-secondary">
-                This list is not kept anywhere.
-              </span>
+              <span class="flex-1" />
+              <button type="button" class={small} onClick={() => void act("show")}>
+                Show in Finder
+              </button>
             </div>
-          </Show>
+          </>
         )}
       </Show>
     </div>

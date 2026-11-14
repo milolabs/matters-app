@@ -108,6 +108,19 @@ describe("the provider's page (ADR 0138, rule 8)", () => {
     expect(permissionPages("microsoft", "a@outlook.com").map((p) => p.id)).toEqual([
       "microsoftPersonal",
     ]);
+    // The whole domain, compared without case.
+    expect(permissionPages("microsoft", "x@OUTLOOK.com").map((p) => p.id)).toEqual([
+      "microsoftPersonal",
+    ]);
+  });
+
+  it("offers both pages on a domain that only looks like Microsoft's own", () => {
+    for (const address of ["x@outlook.example.com", "x@hotmail.example", "x@live.com.example"]) {
+      expect(permissionPages("microsoft", address).map((p) => p.id)).toEqual([
+        "microsoftWork",
+        "microsoftPersonal",
+      ]);
+    }
   });
 
   it("offers both pages for any other address: a personal account may use a Gmail address", () => {

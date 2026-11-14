@@ -109,8 +109,14 @@ import {
   testBrowser,
 } from "./browserSignIn.ts";
 import { BUILT_IN_THEMES } from "./builtInThemes.ts";
-import { readEraseOrder, writeEraseOrder } from "./erase.ts";
-import { enterEraseMode } from "./eraseMode.ts";
+import {
+  type EraseOrder,
+  type EraseOrderRead,
+  readEraseOrder,
+  startFor,
+  writeEraseOrder,
+} from "./erase.ts";
+import { enterEraseMode, enterUnreadableMode } from "./eraseMode.ts";
 import { eraseOverview } from "./eraseOverview.ts";
 import { type GrantMessage, GrantMint } from "./grants.ts";
 import {
@@ -239,11 +245,29 @@ if (!identityHelper && process.platform !== "win32") claimDataFolder();
 /**
  * Erase everything (ADR 0138, rule 3): an order in the data folder makes this start erase, before
  * the identity move, the database's claim, the Keychain and the backend, none of which runs. A
- * normal start pays for one read that finds nothing.
+ * normal start pays for one read that finds nothing. When that read fails otherwise, whether there
+ * is an order is not known: this start neither erases nor opens anything, and says so.
  */
-const eraseOrder = identityHelper ? null : readEraseOrder(app.getPath("userData"));
-const erasing = eraseOrder !== null;
-if (eraseOrder) {
+const orderRead: EraseOrderRead = identityHelper
+  ? { kind: "none" }
+  : readEraseOrder(app.getPath("userData"));
+/** Not a normal start: an erase, or a data folder that could not be read. */
+const erasing = orderRead.kind !== "none";
+startFor(orderRead, {
+  none: () => {},
+  unreadable: (code) =>
+    enterUnreadableMode({
+      dataDir: app.getPath("userData"),
+      code,
+      smoke,
+      background: () => background(),
+      titleBar: () => titleBar,
+      lockDown: (win) => lockDown(win),
+    }),
+  order: (eraseOrder) => enterErase(eraseOrder),
+});
+
+function enterErase(eraseOrder: EraseOrder): void {
   if (process.platform === "win32") claimDataFolder();
   const dataDir = app.getPath("userData");
   // Read now: the erase points userData at a throwaway folder before it claims anything.

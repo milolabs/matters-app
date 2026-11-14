@@ -25,11 +25,19 @@ export const MICROSOFT_PERMISSION_PAGES = {
 export type SignInKind = "password" | "microsoft";
 
 /**
- * Microsoft's own personal domains (outlook.com, hotmail.co.uk, ...): no organisation can claim
- * them, so an address there is a personal account. Any other address can be either: a personal
- * Microsoft account may use a Gmail address, and nothing the account records says which.
+ * Microsoft's own personal domains, the whole domain, exactly: no organisation can claim them, so
+ * an address there is a personal account. The list is short on purpose: a domain missing from it
+ * gets both pages, which is safe; one wrongly on it (`outlook.example.com`) would hide the work
+ * page. Any other address can be either: a personal Microsoft account may use a Gmail address,
+ * and nothing the account records says which.
  */
-const MICROSOFT_PERSONAL = /^(outlook|hotmail|live|msn)\.[a-z.]+$/;
+const MICROSOFT_PERSONAL: ReadonlySet<string> = new Set([
+  "outlook.com",
+  "hotmail.com",
+  "hotmail.co.uk",
+  "live.com",
+  "msn.com",
+]);
 
 /** Which of the provider's pages: main opens it by this name, never by an address from a page. */
 export type PermissionPageId = "microsoftWork" | "microsoftPersonal";
@@ -74,7 +82,7 @@ export const isPermissionPageId = (v: unknown): v is PermissionPageId =>
 export function permissionPages(signIn: SignInKind, address: string): readonly PermissionPage[] {
   if (signIn !== "microsoft") return [];
   const domain = address.slice(address.lastIndexOf("@") + 1).toLowerCase();
-  if (MICROSOFT_PERSONAL.test(domain)) return [page("microsoftPersonal")];
+  if (MICROSOFT_PERSONAL.has(domain)) return [page("microsoftPersonal")];
   return [page("microsoftWork"), page("microsoftPersonal")];
 }
 

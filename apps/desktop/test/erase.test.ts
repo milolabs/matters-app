@@ -28,6 +28,7 @@ import {
   parseEraseOrder,
   readEraseOrder,
   runErase,
+  startFor,
   writeEraseOrder,
 } from "../src/main/erase.ts";
 import { eraseReport } from "../src/main/eraseReport.ts";
@@ -142,21 +143,77 @@ function recordingFs(failOn?: string): EraseFs & { removed: string[] } {
 
 describe("the erase order", () => {
   it("is written whole and read back; a broken one still erases, without the earlier copy", () => {
-    expect(readEraseOrder(dataDir)).toBeNull();
+    expect(readEraseOrder(dataDir)).toEqual({ kind: "none" });
     writeEraseOrder(dataDir, order(true));
-    expect(readEraseOrder(dataDir)?.earlierCopy).toBe(true);
+    expect(readEraseOrder(dataDir)).toEqual({ kind: "order", order: order(true) });
     expect(readdirSync(dataDir)).toEqual([ERASE_ORDER_FILE]);
+    // There but not an order: the person confirmed something; the earlier copy stays.
     writeFileSync(join(dataDir, ERASE_ORDER_FILE), "{not json");
-    expect(readEraseOrder(dataDir)?.earlierCopy).toBe(false);
+    const broken = readEraseOrder(dataDir);
+    expect(broken.kind === "order" && broken.order.earlierCopy).toBe(false);
     dropEraseOrder(dataDir);
-    expect(readEraseOrder(dataDir)).toBeNull();
+    expect(readEraseOrder(dataDir)).toEqual({ kind: "none" });
   });
 
-  it("counts an order that is there but cannot be read: only nothing there is no order", () => {
-    // A folder where the file should be: read fails with EISDIR, as EACCES or EIO would.
+  it("tells three cases apart: none, an order, and a read that proves neither", () => {
+    expect(readEraseOrder(join(root, "no such folder"))).toEqual({ kind: "none" });
+    expect(readEraseOrder(join(dataDir, "window.json", "below a file"))).toEqual({ kind: "none" });
+    writeEraseOrder(dataDir, order(false));
+    expect(readEraseOrder(dataDir).kind).toBe("order");
+    const failing = (code: string) => () => {
+      throw Object.assign(new Error(code), { code });
+    };
+    for (const code of ["EACCES", "EIO", "EPERM"]) {
+      expect(readEraseOrder(dataDir, failing(code))).toEqual({ kind: "unreadable", code });
+    }
+    expect(
+      readEraseOrder(dataDir, () => {
+        throw new Error("no code");
+      }),
+    ).toEqual({ kind: "unreadable", code: null });
+    // A folder where the file should be: the read fails with EISDIR.
+    dropEraseOrder(dataDir);
     mkdirSync(join(dataDir, ERASE_ORDER_FILE));
-    expect(readEraseOrder(dataDir)).toEqual(expect.objectContaining({ earlierCopy: false }));
-    expect(readEraseOrder(join(root, "no such folder"))).toBeNull();
+    expect(readEraseOrder(dataDir)).toEqual({ kind: "unreadable", code: "EISDIR" });
+  });
+
+  it("erases nothing when the order could not be read: no path, no key", async () => {
+    fill();
+    const before = readdirSync(dataDir).sort();
+    const keychain = new FakeKeychain();
+    const touched: string[] = [];
+    const fs: EraseFs = {
+      ...nodeEraseFs,
+      remove(path) {
+        touched.push(`remove ${path}`);
+      },
+      writeAtomic(path) {
+        touched.push(`write ${path}`);
+      },
+    };
+    const read = readEraseOrder(dataDir, () => {
+      throw Object.assign(new Error("denied"), { code: "EACCES" });
+    });
+    const started = await startFor(read, {
+      none: async () => "normal",
+      order: async (o) => {
+        await runErase(o, ALL_HOLDINGS, targets(), {
+          fs,
+          keychain,
+          guard: guardFor(o),
+          now: () => 0,
+          doneMarker: marker,
+        });
+        return "erase";
+      },
+      unreadable: async (code) => `unreadable ${code}`,
+    });
+    expect(started).toBe("unreadable EACCES");
+    expect(touched).toEqual([]);
+    expect(keychain.calls).toEqual([]);
+    expect(keychain.held).toEqual(new Set(["current-key", "earlier-key"]));
+    expect(readdirSync(dataDir).sort()).toEqual(before);
+    expect(readFileSync(join(dataDir, "credentials.json"), "utf8")).toBe("vault");
   });
 
   it("keeps only known provider pages", () => {
@@ -287,7 +344,7 @@ describe("running the erase", () => {
       expect.objectContaining({ group: "files", kind: "path", reason: "busy" }),
     ]);
     // The order stays: the next start continues it.
-    expect(readEraseOrder(dataDir)).not.toBeNull();
+    expect(readEraseOrder(dataDir).kind).toBe("order");
     expect(existsSync(join(dataDir, "credentials.json"))).toBe(false);
 
     const second = await runErase(order(false), ALL_HOLDINGS, targets(), {
@@ -321,7 +378,7 @@ describe("running the erase", () => {
     ]);
     // Everything else went; the vault is gone, so the key protects nothing.
     expect(existsSync(join(dataDir, "credentials.json"))).toBe(false);
-    expect(readEraseOrder(dataDir)).not.toBeNull();
+    expect(readEraseOrder(dataDir).kind).toBe("order");
   });
 
   it("reads a look that fails as something left, never as absent, and keeps the order", async () => {
@@ -354,7 +411,7 @@ describe("running the erase", () => {
       ]),
     );
     expect(existsSync(join(dataDir, "attachments", "a1", "file.pdf"))).toBe(true);
-    expect(readEraseOrder(dataDir)).not.toBeNull();
+    expect(readEraseOrder(dataDir).kind).toBe("order");
   });
 
   it("asks for a key again before the order is decided: one said gone but still there keeps it", async () => {
@@ -375,7 +432,7 @@ describe("running the erase", () => {
     expect(eraseReport(result).left).toEqual([
       expect.objectContaining({ kind: "key", reason: "keychainRefused", where: "current-key" }),
     ]);
-    expect(readEraseOrder(dataDir)).not.toBeNull();
+    expect(readEraseOrder(dataDir).kind).toBe("order");
   });
 
   it("keeps the order when the marker cannot be written, and does not throw", async () => {
@@ -393,7 +450,7 @@ describe("running the erase", () => {
       doneMarker: marker,
     });
     expect(eraseReport(result).ok).toBe(false);
-    expect(readEraseOrder(dataDir)).not.toBeNull();
+    expect(readEraseOrder(dataDir).kind).toBe("order");
   });
 
   it("leaving a partial erase writes the marker before the order goes (rule 4)", async () => {
@@ -421,10 +478,10 @@ describe("running the erase", () => {
       },
     };
     expect(leaveErase({ dataDir, earlierDir }, failing)).toBe(false);
-    expect(readEraseOrder(dataDir)).not.toBeNull();
+    expect(readEraseOrder(dataDir).kind).toBe("order");
 
     expect(leaveErase({ dataDir, earlierDir }, deps)).toBe(true);
-    expect(readEraseOrder(dataDir)).toBeNull();
+    expect(readEraseOrder(dataDir).kind).toBe("none");
     expect(JSON.parse(readFileSync(join(dataDir, "identity-migration.json"), "utf8")).state).toBe(
       "done",
     );
@@ -473,7 +530,7 @@ describe("running the erase", () => {
       expect(JSON.parse(readFileSync(ownerPath(join(dataDir, "matters.db")), "utf8")).token).toBe(
         "other",
       );
-      expect(readEraseOrder(dataDir)).not.toBeNull();
+      expect(readEraseOrder(dataDir).kind).toBe("order");
     });
 
     it("is erased under the erase's own claim, which goes last", async () => {
@@ -489,6 +546,159 @@ describe("running the erase", () => {
       });
       expect(eraseReport(result).ok).toBe(true);
       expect(readdirSync(dataDir)).toEqual(["identity-migration.json"]);
+    });
+
+    /** A claim judged as ADR 0110 judges it: the erase's own file is a live run's. */
+    const claimAs = (token: string, database: string, removed?: string[]) => () =>
+      claimDatabase({
+        path: ownerPath(database),
+        me: me(token),
+        fs: removed
+          ? {
+              ...nodeOwnerFs,
+              remove(path) {
+                removed.push(path);
+                nodeOwnerFs.remove(path);
+              },
+            }
+          : nodeOwnerFs,
+        judge: (owner) =>
+          owner?.token === "erase"
+            ? { kind: "held", owner, why: "the erase" }
+            : { kind: "stale", why: "process gone" },
+        nowMs: () => Date.now(),
+      });
+
+    it("is held until the sweep: a second claim in between is refused", async () => {
+      fill();
+      const database = join(dataDir, "matters.db");
+      const second: string[] = [];
+      const result = await runErase(order(false), ALL_HOLDINGS, targets(), {
+        fs: nodeEraseFs,
+        keychain: new FakeKeychain(),
+        guard: guardFor(order(false)),
+        now: () => 0,
+        doneMarker: marker,
+        claimDatabase: claimAs("erase", database),
+        progress: (e) => {
+          if (
+            e.kind !== "step" ||
+            !["files", "settings", "caches", "temp", "order"].includes(e.step)
+          )
+            return;
+          const c = claimAs("second", database)();
+          second.push(`${e.step} ${c.kind}`);
+          if (c.kind === "claimed") c.release();
+        },
+      });
+      expect(second).toEqual([
+        "files held",
+        "settings held",
+        "caches held",
+        "temp held",
+        "order held",
+      ]);
+      expect(eraseReport(result).ok).toBe(true);
+      expect(readdirSync(dataDir)).toEqual(["identity-migration.json"]);
+    });
+
+    it("lets its owner file go last of all it deletes, before the order", async () => {
+      fill();
+      const database = join(dataDir, "matters.db");
+      const fs = recordingFs();
+      const result = await runErase(order(false), ALL_HOLDINGS, targets(), {
+        fs,
+        keychain: new FakeKeychain(),
+        guard: guardFor(order(false)),
+        now: () => 0,
+        doneMarker: marker,
+        claimDatabase: claimAs("erase", database, fs.removed),
+      });
+      expect(eraseReport(result).ok).toBe(true);
+      const owner = ownerPath(database);
+      // Swept with the rest it would be taken while held; it goes once, by the release.
+      expect(fs.removed.filter((p) => p === owner)).toHaveLength(1);
+      expect(fs.removed.slice(-2)).toEqual([owner, join(dataDir, ERASE_ORDER_FILE)]);
+      expect(fs.removed.indexOf(owner)).toBeGreaterThan(
+        fs.removed.indexOf(join(dataDir, "Mystery Store")),
+      );
+      expect(
+        result.outcomes.find(
+          (o) => o.holding.place.kind === "database" && o.holding.place.suffix === ".owner",
+        )?.outcome,
+      ).toEqual({ kind: "gone", bytes: 0 });
+    });
+
+    it("outside the data folder (MATTERS_DB_PATH) is held, then released and looked for", async () => {
+      fill();
+      rmSync(join(dataDir, "matters.db"));
+      rmSync(join(dataDir, "matters.db-wal"));
+      const database = join(outside, "shared.db");
+      file(database, "shared pages");
+      const t = { ...targets(), databasePath: database };
+      const second: string[] = [];
+      const result = await runErase(order(false), ALL_HOLDINGS, t, {
+        fs: nodeEraseFs,
+        keychain: new FakeKeychain(),
+        guard: eraseGuard({
+          folders: [dataDir],
+          files: ["", "-wal", "-shm", "-journal", ".owner"].map((s) => database + s),
+          tempDir,
+          tempPrefixes: ["matters-agent-"],
+        }),
+        now: () => 0,
+        doneMarker: marker,
+        claimDatabase: claimAs("erase", database),
+        progress: (e) => {
+          if (e.kind === "step" && e.step === "order")
+            second.push(claimAs("second", database)().kind);
+        },
+      });
+      expect(second).toEqual(["held"]);
+      expect(eraseReport(result).ok).toBe(true);
+      expect(existsSync(database)).toBe(false);
+      expect(existsSync(ownerPath(database))).toBe(false);
+      expect(readFileSync(join(outside, "precious.txt"), "utf8")).toBe("the person's own file");
+      expect(readEraseOrder(dataDir).kind).toBe("none");
+    });
+
+    it("is released when something is left; an owner file that cannot be looked for is left", async () => {
+      fill();
+      const database = join(dataDir, "matters.db");
+      const left = await runErase(order(false), ALL_HOLDINGS, targets(), {
+        fs: recordingFs("window.json"),
+        keychain: new FakeKeychain(),
+        guard: guardFor(order(false)),
+        now: () => 0,
+        doneMarker: marker,
+        claimDatabase: claimAs("erase", database),
+      });
+      expect(eraseReport(left).ok).toBe(false);
+      expect(existsSync(ownerPath(database))).toBe(false);
+      expect(existsSync(join(dataDir, "Mystery Store"))).toBe(true);
+      expect(readEraseOrder(dataDir).kind).toBe("order");
+
+      const owner = ownerPath(database);
+      const blind: EraseFs = {
+        ...nodeEraseFs,
+        entry(path) {
+          if (path === owner) throw Object.assign(new Error("i/o"), { code: "EIO" });
+          return nodeEraseFs.entry(path);
+        },
+      };
+      const unseen = await runErase(order(false), ALL_HOLDINGS, targets(), {
+        fs: blind,
+        keychain: new FakeKeychain(),
+        guard: guardFor(order(false)),
+        now: () => 0,
+        doneMarker: marker,
+        claimDatabase: claimAs("erase", database),
+      });
+      expect(eraseReport(unseen).left).toEqual([
+        expect.objectContaining({ reason: "failed", where: owner }),
+      ]);
+      expect(existsSync(owner)).toBe(false);
+      expect(readEraseOrder(dataDir).kind).toBe("order");
     });
   });
 

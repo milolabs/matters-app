@@ -10,11 +10,14 @@
 //    identity's key only (a fake: no smoke run ever starts /usr/bin/security).
 // 4. The start after that opens on an empty mailbox and does not bring the earlier copy back in.
 // 5. An erase that includes the earlier copy leaves no folder at all and asks for both keys.
+// 6. An order that cannot be read (EACCES) is neither a normal start nor an erase: the start says
+//    so and ends, and nothing in the folder or the key store is touched.
 //
 // Account removal (rule 5) is checked by packages/adapter-sqlite/test/holdings.test.ts on a real
 // database file, down to the file's bytes after compaction.
 import { spawn } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -30,6 +33,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RESULT = "MATTERS_ERASE_RESULT ";
+const UNREADABLE = "MATTERS_ERASE_UNREADABLE ";
 const ORDER = "erase-order.json";
 const MARKER = "identity-migration.json";
 
@@ -179,6 +183,32 @@ try {
   check(!existsSync(earlier), "the earlier copy stayed");
   const askedAll = existsSync(keychainLog) ? readFileSync(keychainLog, "utf8") : "";
   check(/remove matters-smoke-earlier-key/.test(askedAll), "the earlier key was not asked for");
+
+  // 6. An order that cannot be read: nothing starts, nothing goes.
+  rmSync(keychainLog, { force: true });
+  const blocked = join(scratch, "Blocked");
+  mkdirSync(blocked, { recursive: true });
+  writeFileSync(join(blocked, "credentials.json"), "a vault (a fake)");
+  writeFileSync(join(blocked, ORDER), "{}");
+  chmodSync(join(blocked, ORDER), 0o000);
+  try {
+    const unreadable = await runApp({ ...eraseEnv, MATTERS_USER_DATA: blocked }, 40_000);
+    const line = unreadable.log.split("\n").find((l) => l.startsWith(UNREADABLE));
+    report.unreadable = line ? JSON.parse(line.slice(UNREADABLE.length)) : undefined;
+    check(unreadable.exitCode === 1, `the unreadable start ended with ${unreadable.exitCode}`);
+    check(
+      (report.unreadable as { code?: unknown } | undefined)?.code === "EACCES",
+      `the unreadable start did not say why: ${unreadable.log.slice(-400)}`,
+    );
+    check(!unreadable.result, "the unreadable start erased");
+    check(
+      JSON.stringify(readdirSync(blocked).sort()) === JSON.stringify(["credentials.json", ORDER]),
+      `the unreadable start changed the folder: ${readdirSync(blocked).join(", ")}`,
+    );
+    check(!existsSync(keychainLog), "the unreadable start asked the key store");
+  } finally {
+    chmodSync(join(blocked, ORDER), 0o600);
+  }
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

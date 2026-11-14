@@ -10,6 +10,7 @@ import {
   partialHeading,
   reviewRows,
   reviewTotal,
+  unreadableReason,
   unsentWarning,
 } from "../src/renderer/eraseView.ts";
 import { removalNotice } from "../src/renderer/removal.ts";
@@ -198,5 +199,14 @@ describe("the bridges", () => {
     bridge.message({ source: {}, data: { mattersErase: { requestId: "2", action: "quit" } } });
     expect(invoked).toEqual([]);
     expect(posted).toEqual([{ mattersEraseAnswer: { requestId: "1", answer: null } }]);
+  });
+});
+
+describe("a data folder that could not be read", () => {
+  it("says why in plain words, with the code only when nothing plainer is known", () => {
+    expect(unreadableReason("EACCES")).toMatch(/does not allow Matters to open it/);
+    expect(unreadableReason("EIO")).toMatch(/disk/);
+    expect(unreadableReason("ELOOP")).toContain("(ELOOP)");
+    expect(unreadableReason(null)).not.toContain("(");
   });
 });

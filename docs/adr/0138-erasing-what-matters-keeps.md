@@ -225,9 +225,16 @@ The account's colour in localStorage goes with it too.
 The principle: the erase order goes only when every final outcome is known and nothing is left,
 and an error is never read as "gone" or "absent".
 
-- **An order that cannot be read is an order.** Only ENOENT (or ENOTDIR) means none; an order
-  that is there but fails to read (EACCES, EIO) erases with the safe defaults, like one that
-  cannot be parsed.
+- **Reading the order has three outcomes, which the start cannot confuse** (a tagged result).
+  Nothing there (ENOENT, ENOTDIR): a normal start. An order read, including one that is there but
+  cannot be parsed: an erase, without the earlier copy, the safe default (the file is there, so
+  the person confirmed). Any other failure (EACCES, EIO, ...): whether there is an order is not
+  known, and a read error proves no confirmation, so the start neither erases nor opens anything:
+  no backend, no database, no mail window, nothing deleted. On a throwaway Electron data folder,
+  the erase's window says that Matters could not read its folder, why in plain words, and where,
+  with *Try again* (which reads again and, once the answer is known, starts afresh) and *Quit
+  Matters*. An earlier version of this note treated such a failure as an order; that would have
+  let an unreadable folder delete the Keychain key and whatever else it could reach.
 - **A look that fails is a thing left.** `EraseFs.entry` and `list` throw on anything but "not
   there"; the holding is then reported left with the reason, and the order stays.
 - **Keys are checked as they are erased,** not after the order went: a key the store says it
@@ -243,7 +250,14 @@ and an error is never read as "gone" or "absent".
   database between two data folders, whose locks differ. Before deleting the database's files the
   erase takes its owner file with the same claim a normal start takes; when another live run
   holds it, each of its files is left with the reason "another copy of Matters has this mailbox
-  open". The erase's own owner file goes last, by releasing the claim.
+  open". The claim is held from the database step until the data folder has been swept: released
+  earlier, another run could claim the database in between and write an owner file and database
+  files the sweep would then delete. The sweep passes over the claim's own owner file; that file
+  goes last of all the erase deletes, by releasing the claim, and is then looked for again (a look
+  that fails is a thing left), before the order. On every other way out (something left, a step
+  that breaks off) the claim is released too, and only the erase's own file is ever removed. The
+  data folder itself goes after the order, and only while it is empty, so what a run started
+  after the release has written keeps it.
 - **Rule 7's words on a refused key are not on the screens.** The key protects nothing only once
   `credentials.json` is gone, and that file can be left in the same run; the result names the
   key and where to delete it, and promises nothing about it.
@@ -254,3 +268,7 @@ and an error is never read as "gone" or "absent".
   facts (senders) that name no thread, and in text the agent wrote from what it searched; which
   account a fact came from is not kept. Deleting answers too many is preferred to keeping one
   that may quote removed mail. The person's questions stay, and so do the talks of a thread.
+- **Microsoft's personal domains are an exact list** (outlook.com, hotmail.com, hotmail.co.uk,
+  live.com, msn.com), compared on the whole domain without case. A pattern such as `outlook.*`
+  also took `outlook.example.com`, whose work accounts would have been shown the personal page
+  alone. A domain missing from the list gets both pages, which is the safe side.
