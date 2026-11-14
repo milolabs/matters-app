@@ -15,6 +15,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -234,6 +235,11 @@ export interface EraseFs {
   size(path: string): number;
   /** Removes a file, a link or a whole folder; throws with the system's code when it cannot. */
   remove(path: string): void;
+  /**
+   * Removes a folder only if it is empty, in one step: it throws (ENOTEMPTY) when something was
+   * written into it since it was last looked at, so that is never taken with the folder.
+   */
+  removeEmptyDir(path: string): void;
   /** Writes a small file in one step. */
   writeAtomic(path: string, text: string): void;
 }
@@ -280,6 +286,7 @@ export const nodeEraseFs: EraseFs = {
   },
   size: sizeOfSync,
   remove: (path) => rmSync(path, { recursive: true, force: true, maxRetries: 2 }),
+  removeEmptyDir: (path) => rmdirSync(path),
   writeAtomic(path, text) {
     const temp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
     writeFileSync(temp, text, { mode: 0o600, flag: "wx" });
@@ -568,7 +575,7 @@ function removeAround(keep: Keep, deps: EraseDeps): void {
   const folders = [...keep.around.entries()].sort(([a], [b]) => depth(b) - depth(a));
   for (const [, path] of folders) {
     try {
-      if (deps.fs.list(path).length === 0 && deps.guard(path)) deps.fs.remove(path);
+      if (deps.fs.list(path).length === 0 && deps.guard(path)) deps.fs.removeEmptyDir(path);
     } catch {}
   }
 }
@@ -818,7 +825,7 @@ export async function runErase(
         // run started since the claim was released has written).
         try {
           if (deps.fs.list(t.dataDir).length === 0 && deps.guard(t.dataDir))
-            deps.fs.remove(t.dataDir);
+            deps.fs.removeEmptyDir(t.dataDir);
         } catch {
           // An empty folder left behind holds nothing.
         }

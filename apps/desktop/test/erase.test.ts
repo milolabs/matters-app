@@ -138,6 +138,10 @@ function recordingFs(failOn?: string): EraseFs & { removed: string[] } {
       removed.push(path);
       nodeEraseFs.remove(path);
     },
+    removeEmptyDir(path) {
+      removed.push(path);
+      nodeEraseFs.removeEmptyDir(path);
+    },
   };
 }
 
@@ -323,6 +327,29 @@ describe("running the erase", () => {
     expect(existsSync(earlierDir)).toBe(false);
     expect(keychain.held.size).toBe(0);
     expect(result.earlierCopy).toBe(true);
+  });
+
+  it("does not take what was written into the folder after it was seen empty", async () => {
+    fill();
+    writeEraseOrder(dataDir, order(true));
+    const late = join(dataDir, "written-since.txt");
+    const fs: EraseFs = {
+      ...nodeEraseFs,
+      // A run started since the claim was released writes just before the folder is removed.
+      removeEmptyDir(path) {
+        if (path === dataDir) file(late, "new mail");
+        nodeEraseFs.removeEmptyDir(path);
+      },
+    };
+    const result = await runErase(order(true), ALL_HOLDINGS, targets(), {
+      fs,
+      keychain: new FakeKeychain(),
+      guard: guardFor(order(true)),
+      now: () => 0,
+      doneMarker: marker,
+    });
+    expect(eraseReport(result).ok).toBe(true);
+    expect(readFileSync(late, "utf8")).toBe("new mail");
   });
 
   it("is continued after an interruption, and repeating a finished erase changes nothing", async () => {
