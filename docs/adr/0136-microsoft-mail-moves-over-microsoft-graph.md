@@ -140,10 +140,18 @@
   - the largest message `sendMail` takes as MIME (the documentation gives no number);
   - that `Bcc` recipients in the MIME are delivered and the header is not shown to others;
   - how delta query orders and pages a large personal mailbox;
-  - how often a normal day's use meets `429`;
-  - whether `DELETE /me/mailFolders/{id}/messages/{id}` refuses a message that has left that
-    folder when ids are immutable. If it does, delete-for-good should use it: today a message
-    restored between the question of rule 7 and the `DELETE` is still deleted.
+  - how often a normal day's use meets `429`.
+- Tried against a personal mailbox on 2026-11-14, about deleting for good:
+  - `DELETE` does not destroy the message. It leaves its folder and still answers when asked
+    for by its immutable id; a second `DELETE` of it is refused (`ErrorCannotDeleteObject`).
+    Where it went was not read: by what Outlook shows, the mailbox's recoverable items, from
+    which the person can get it back. So "delete forever" over Graph is weaker than IMAP's
+    expunge.
+  - `DELETE /me/mailFolders/{id}/messages/{id}` does not refuse a message that has left that
+    folder: it deleted one that had been restored to Drafts. The folder in the path closes
+    nothing, so the gap of rule 7 stays: a message restored between the question and the
+    `DELETE` is deleted, and can be recovered as above.
+  - A move keeps the immutable id, and the account has an Archive folder.
 - Not covered: Exchange on a company's own servers (IMAP), shared mailboxes, archive
   mailboxes, national clouds, calendars and contacts, categories and the Focused inbox.
 - Search stays local, as for every account.
