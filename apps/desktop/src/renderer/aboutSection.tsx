@@ -1,4 +1,4 @@
-import { createEffect, Match, Show, Switch } from "solid-js";
+import { createEffect, createSignal, Match, onCleanup, Show, Switch } from "solid-js";
 import { askRelease, type ReleaseAsk } from "./files.ts";
 import { MattersMark } from "./icons.tsx";
 import {
@@ -27,9 +27,14 @@ export function AboutSection(props: { release: ReleaseStore }) {
   const ask = (a: ReleaseAsk) => void askRelease(a).then((next) => props.release.take(next));
   const open = (which: Extract<ReleaseAsk, { action: "open" }>["which"]) =>
     ask({ action: "open", which });
-  // Seeing About takes the dot away, in every window, until a newer one is out (rule 10).
+  // Seeing About takes the dot away, in every window, until a newer one is out (rule 10). Seeing:
+  // a version that comes while the window is minimized or hidden is not seen until it is back.
+  const [visible, setVisible] = createSignal(document.visibilityState === "visible");
+  const onVisibility = () => setVisible(document.visibilityState === "visible");
+  document.addEventListener("visibilitychange", onVisibility);
+  onCleanup(() => document.removeEventListener("visibilitychange", onVisibility));
   createEffect(() => {
-    if (info()?.dot) ask({ action: "seen" });
+    if (visible() && info()?.dot) ask({ action: "seen" });
   });
 
   return (

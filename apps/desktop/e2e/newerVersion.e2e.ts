@@ -40,7 +40,7 @@ async function standIn() {
         body: JSON.stringify({
           repo: "milolabs/matters-app",
           version,
-          date: "2026-11-14T08:00:00Z",
+          date: PUBLISHED,
           url: `https://github.com/milolabs/matters-app/releases/download/${version}/Matters-arm64.dmg`,
           notes: `https://github.com/milolabs/matters-app/releases/tag/${version}`,
           stage: "alpha",
@@ -50,6 +50,23 @@ async function standIn() {
     },
     stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
+}
+
+/** When the stand-in's release was published. */
+const PUBLISHED = "2026-11-14T08:00:00Z";
+
+/**
+ * The day as About writes it: in this machine's time zone, with the year when it is not this
+ * one. Worked out here, so the test holds in any zone and in any year.
+ */
+function publishedDay(instant: string): string {
+  const d = new Date(instant);
+  const thisYear = d.getFullYear() === new Date().getFullYear();
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "long",
+    ...(thisYear ? {} : { year: "numeric" }),
+  }).format(d);
 }
 
 const demo = (env: Record<string, string> = {}) => ({ env: { MATTERS_SEED: "1", ...env } });
@@ -101,7 +118,7 @@ test("a newer version puts a dot on the gear, and About takes it away", async ({
     await expect(about.getByRole("heading", { name: "About" })).toBeVisible();
     await expect(about.getByText("Version 0.0.0", { exact: true })).toBeVisible();
     await expect(about.getByRole("status")).toHaveText(
-      "0.1.0-alpha.5 is out. Published on 14 November.",
+      `0.1.0-alpha.5 is out. Published on ${publishedDay(PUBLISHED)}.`,
     );
     await expect(about.getByRole("button", { name: "Release notes" })).toBeVisible();
     await expect(about.getByRole("button", { name: "Download" })).toBeVisible();

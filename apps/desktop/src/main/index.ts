@@ -1362,6 +1362,17 @@ if (!identityHelper)
     const boot = createWindow();
     const { win, stage } = boot;
     mailWindow = boot;
+    // The mail window showed its mail (ADR 0137, rule 4). Heard from here, before anything below
+    // is awaited: the page loads meanwhile, and a listener added later could miss it.
+    let mailShown = false;
+    let whenMailShown: (() => void) | null = null;
+    const onMailShown = (event: Electron.IpcMainEvent) => {
+      if (event.sender !== win.webContents) return;
+      ipcMain.removeListener("matters:first-screen", onMailShown);
+      mailShown = true;
+      whenMailShown?.();
+    };
+    ipcMain.on("matters:first-screen", onMailShown);
     trace("window-created");
     connectToBackend(win, backend);
     // The backend's stage, for the loading screen (ADR 0103, rule 1): a name and two integers.
@@ -1586,15 +1597,14 @@ if (!identityHelper)
         armRelease();
       }
     };
-    powerMonitor.on("resume", () => armRelease());
     // The check of a start comes after the mail window has shown its mail, never before: it is
-    // not on the path of the launch (rule 4; ADR 0012).
-    const onMailShown = (event: Electron.IpcMainEvent) => {
-      if (event.sender !== win.webContents) return;
-      ipcMain.removeListener("matters:first-screen", onMailShown);
-      armRelease();
-    };
-    ipcMain.on("matters:first-screen", onMailShown);
+    // not on the path of the launch (rule 4; ADR 0012). The mail may have been shown while this
+    // function was waiting, so the listener above heard it and this only asks whether it did.
+    whenMailShown = armRelease;
+    if (mailShown) armRelease();
+    powerMonitor.on("resume", () => {
+      if (mailShown) armRelease();
+    });
     /** The menu's item: About, and a check when the switch is on (rule 11). */
     const checkFromMenu = () => {
       openSettings("about");
