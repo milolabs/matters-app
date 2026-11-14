@@ -1,12 +1,7 @@
-import type { AccountInfo, ServerInput } from "@matters/contracts";
-import type {
-  AccountStorePort,
-  DiscoveredServers,
-  ServerDiscoveryPort,
-  SyncStatus,
-} from "@matters/core";
+import type { AccountInfo } from "@matters/contracts";
+import type { AccountStorePort, Discovery, ServerDiscoveryPort, SyncStatus } from "@matters/core";
 import { accountInfo } from "./accounts.ts";
-import type { AccountsApi, PasswordChanged } from "./handler.ts";
+import type { AccountsApi, NewAccountInput, PasswordChanged } from "./handler.ts";
 import type { SyncHost } from "./syncHost.ts";
 
 export interface RemoteAccountsDeps {
@@ -31,7 +26,7 @@ export class RemoteAccounts implements AccountsApi {
     this.deps = deps;
   }
 
-  discover(domain: string): Promise<DiscoveredServers | null> {
+  discover(domain: string): Promise<Discovery> {
     return this.deps.discovery.discover(domain);
   }
 
@@ -42,13 +37,8 @@ export class RemoteAccounts implements AccountsApi {
     );
   }
 
-  async add(input: {
-    address: string;
-    displayName: string;
-    password: string;
-    imap: ServerInput;
-    smtp?: ServerInput;
-  }): Promise<{ account: AccountInfo; folderCount: number }> {
+  /** A password or a sign-in's handle goes to the worker; neither comes back. */
+  async add(input: NewAccountInput): Promise<{ account: AccountInfo; folderCount: number }> {
     const added = await this.deps.host.command({ name: "addAccount", ...input });
     this.deps.statuses.set(added.account.id, added.account.status);
     this.deps.onChanged();
@@ -67,6 +57,16 @@ export class RemoteAccounts implements AccountsApi {
   /** The password goes to the worker, which verifies it and writes the vault; it comes back to no one. */
   async changePassword(accountId: string, password: string): Promise<PasswordChanged | null> {
     const changed = await this.deps.host.command({ name: "changePassword", accountId, password });
+    if (changed) {
+      this.deps.statuses.set(accountId, changed.account.status);
+      this.deps.onChanged();
+    }
+    return changed;
+  }
+
+  /** The handle goes to the worker, which reads the token by it from main's vault (ADR 0133). */
+  async signInAgain(accountId: string, signIn: string): Promise<PasswordChanged | null> {
+    const changed = await this.deps.host.command({ name: "signInAgain", accountId, signIn });
     if (changed) {
       this.deps.statuses.set(accountId, changed.account.status);
       this.deps.onChanged();

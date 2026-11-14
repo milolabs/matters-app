@@ -25,6 +25,12 @@ const FOLDERS_TABLE = `CREATE TABLE folders (
   exclusive INTEGER NOT NULL, PRIMARY KEY (account_id, folder_id)
 )`;
 
+/** The provider's own handles of copies (version 57): the store prepares its reads at once. */
+const LOCATION_ITEMS_TABLE = `CREATE TABLE location_items (
+  account_id TEXT NOT NULL, folder_id TEXT NOT NULL, item_id TEXT NOT NULL, uid INTEGER NOT NULL,
+  PRIMARY KEY (account_id, folder_id, item_id)
+)`;
+
 /**
  * Stores messages in a database built from older migrations, with the store of today. Columns
  * that came later are added for the write and dropped again, so the data stays what that
@@ -46,8 +52,12 @@ export async function upsertOnOldSchema(
   const foldersAdded =
     db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'folders'").get() === undefined;
   if (foldersAdded) db.exec(FOLDERS_TABLE);
+  const itemsAdded =
+    db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'location_items'").get() === undefined;
+  if (itemsAdded) db.exec(LOCATION_ITEMS_TABLE);
   await new SqliteMessageStore(db).upsertMessages(messages);
   if (tableAdded) db.exec("DROP TABLE message_attachments");
   if (foldersAdded) db.exec("DROP TABLE folders");
+  if (itemsAdded) db.exec("DROP TABLE location_items");
   for (const [name] of added) db.exec(`ALTER TABLE messages DROP COLUMN ${name}`);
 }

@@ -11,6 +11,7 @@ import { ClaudeCodeRuntime } from "@matters/adapter-claude-code";
 import { CodexRuntime } from "@matters/adapter-codex";
 import { MarkdownComposeRenderer } from "@matters/adapter-compose";
 import { createReceivedFiles } from "@matters/adapter-files";
+import { GraphConnector, GraphSubmitter, RefusedTokens } from "@matters/adapter-graph";
 import { ImapConnector } from "@matters/adapter-imap";
 import { PostalMimeParser, visibleText } from "@matters/adapter-mime";
 import { OllamaRuntime } from "@matters/adapter-ollama";
@@ -25,6 +26,7 @@ import type { FromWorker, ToWorker, WorkerChannel, WorkerConfig } from "./protoc
 import { startSyncRuntime } from "./syncRuntime.ts";
 import { ThreadedFileWork } from "./threadedFileWork.ts";
 import { mark } from "./trace.ts";
+import { ConnectorByTransport, SubmitByTransport } from "./transports.ts";
 
 function testAccount(raw: string | null): StoredAccount | null {
   if (!raw) return null;
@@ -66,19 +68,28 @@ const storage = createSqliteStorage(config.dbPath, {
   onMigrationStep: (step, total) => port.postMessage({ type: "migrating", step, total }),
 });
 mark("worker-db-open");
+const parser = new PostalMimeParser({ registrableDomain });
+// The adapter by the account's transport (ADR 0136, rule 4). One book of refused tokens for both
+// Graph adapters and the vault's reader, so a refused token is renewed once (rule 11).
+const refusedTokens = new RefusedTokens({ renewedByVault: true });
+const graphBase = config.graphBase ? { baseUrl: config.graphBase } : {};
 await startSyncRuntime({
   storage,
-  connector: new ImapConnector({
-    parser: new PostalMimeParser({ registrableDomain }),
-    registrableDomain,
+  connector: new ConnectorByTransport({
+    imap: new ImapConnector({ parser, registrableDomain }),
+    graph: new GraphConnector({ parser, refusedTokens, ...graphBase }),
   }),
+  refusedTokens,
   channel,
   discovery: new AutoconfigDiscovery(),
   registrableDomain,
   sending: {
     renderer: new MarkdownComposeRenderer(),
     composer: new NodemailerComposer(),
-    submit: new NodemailerSubmit(),
+    submit: new SubmitByTransport({
+      smtp: new NodemailerSubmit(),
+      graph: new GraphSubmitter({ refusedTokens, ...graphBase }),
+    }),
     sha256: (text) => createHash("sha256").update(text, "utf8").digest("hex"),
   },
   // The file work thread starts with the first attachment and retires when idle (ADR 0041).

@@ -84,6 +84,7 @@ export async function openConnection(options: ImapConnectionOptions): Promise<Op
           ...(typeof raw.response === "string" ? { text: raw.response } : {}),
         },
         secretsOf(options.auth),
+        "accessToken" in options.auth ? "token" : "password",
       );
     }
     throw safeError(error, secretsOf(options.auth));

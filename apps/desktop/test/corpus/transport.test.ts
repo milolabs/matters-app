@@ -243,17 +243,21 @@ function discovery(
     fetch: async (url) => serve(url),
     resolveSrv: srv ?? (async () => Promise.reject(new Error("no records"))),
     resolveMx: async () => [],
+    resolveTxt: async () => [],
+    resolveCname: async () => [],
     probe: async () => false,
     timeoutMs: 1000,
   });
 }
-const summary = (found: Awaited<ReturnType<AutoconfigDiscovery["discover"]>>) =>
+const summary = ({ servers: found }: Awaited<ReturnType<AutoconfigDiscovery["discover"]>>) =>
   found ? { source: found.source, imap: found.imap, smtp: found.smtp ?? null } : null;
 
 async function autoconfig(c: CorpusCase): Promise<Record<string, unknown>> {
   // Control: the same discovery finds a plain, correct document over HTTPS. Without it a stub that
   // returned nothing would make every refusal below true.
-  const control = await discovery((url) => response(GOOD_XML(), url)).discover("example.org");
+  const { servers: control } = await discovery((url) => response(GOOD_XML(), url)).discover(
+    "example.org",
+  );
   if (control?.imap?.security !== "tls")
     throw new Error("control failed: a correct HTTPS document was not discovered");
   switch (c.id) {
@@ -303,7 +307,7 @@ async function autoconfig(c: CorpusCase): Promise<Record<string, unknown>> {
       return { discovered: [a, b] };
     }
     case "transport-autoconfig-srv-cleartext-only": {
-      const found = await discovery(
+      const { servers: found } = await discovery(
         (url) => ({ ...response("", url), ok: false }),
         async (name) =>
           name.startsWith("_imap._tcp.")

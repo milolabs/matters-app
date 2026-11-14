@@ -14,20 +14,25 @@ import { chmod, copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/pr
 import { hostname, uptime } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { BrowserOAuth } from "@matters/adapter-oauth";
 import {
   EncryptedFileCredentialStore,
   parseCredential,
+  RenewingCredentialStore,
   type RpcPort,
   serveCredentials,
 } from "@matters/adapter-secrets";
 import {
   type AppearanceInfo,
   type AppearanceMode,
+  type BrowserSignInAnswer,
+  type BrowserSignInOffer,
   MAX_THEMES,
   type ReceivedAnswer,
   THEMES_FULL,
   type ThemeAddAnswer,
 } from "@matters/contracts";
+import type { CredentialPort } from "@matters/core";
 import {
   app,
   BrowserWindow,
@@ -60,6 +65,7 @@ import {
 import { CHANNEL_DROP, CHANNEL_PASTE, CHANNEL_PICK } from "../preload/fileBridge.ts";
 import { CHANNEL_NOTICE_SYSTEM } from "../preload/noticeBridge.ts";
 import { CHANNEL_RECEIVED } from "../preload/receivedBridge.ts";
+import { CHANNEL_SIGN_IN } from "../preload/signInBridge.ts";
 import { CHANNEL_STORAGE } from "../preload/storageBridge.ts";
 import {
   APPEARANCE_FILE,
@@ -94,6 +100,13 @@ import {
   withOwnTheme,
 } from "./appearance.ts";
 import { BackendLink } from "./backendLink.ts";
+import {
+  clientIds,
+  isLoopbackUrl,
+  parseSignInAsk,
+  SignInService,
+  testBrowser,
+} from "./browserSignIn.ts";
 import { BUILT_IN_THEMES } from "./builtInThemes.ts";
 import { type GrantMessage, GrantMint } from "./grants.ts";
 import {
@@ -852,6 +865,32 @@ function createCredentialStore() {
 }
 
 /**
+ * Browser sign-in (ADR 0133): the person's own browser through `shell.openExternal` (rule 1), the
+ * client id from the source or the environment (rule 4), or none when a dev build's window test
+ * says so (`MATTERS_TEST_NO_CLIENT_ID`). Window tests of a dev build may point it
+ * at a stand-in authorization server on this machine (`MATTERS_TEST_OAUTH_AUTHORITY`, which the
+ * adapter refuses unless it is loopback, rule 13) and play the browser against it
+ * (`MATTERS_TEST_OAUTH_BROWSER`, see `testBrowser`). A packaged app reads neither.
+ */
+function createBrowserOAuth(): BrowserOAuth {
+  const authority = devBuild ? process.env.MATTERS_TEST_OAUTH_AUTHORITY : undefined;
+  const standIn =
+    authority === undefined ? null : testBrowser(process.env.MATTERS_TEST_OAUTH_BROWSER, authority);
+  try {
+    return new BrowserOAuth({
+      clientIds: clientIds(process.env, { devBuild }),
+      openBrowser: standIn ?? ((url) => shell.openExternal(url)),
+      ...(authority === undefined ? {} : { authority }),
+    });
+  } catch (error) {
+    // Only a test's variable can get here: say so and stop rather than sign in anywhere else.
+    console.error(`matters-main: ${error instanceof Error ? error.message : "browser sign-in"}`);
+    app.exit(1);
+    process.exit(1);
+  }
+}
+
+/**
  * The passwords half of the identity move (ADR 0105): decrypted under the old name by the helper,
  * encrypted again here under the new one. Until it succeeds the app does not start.
  */
@@ -895,10 +934,21 @@ async function prepareTestAccount(
 }
 
 function startBackend(
-  store: ReturnType<typeof createCredentialStore>,
+  store: CredentialPort,
   testAccount: string | undefined,
 ): Electron.UtilityProcess {
-  const { MATTERS_TEST_PASSWORD: _secret, MATTERS_TEST_ACCOUNT: _hook, ...inherited } = process.env;
+  // What only main uses stays in main: the test password, and how browser sign-in is set up.
+  const {
+    MATTERS_TEST_PASSWORD: _secret,
+    MATTERS_TEST_ACCOUNT: _hook,
+    MATTERS_MICROSOFT_CLIENT_ID: _clientId,
+    MATTERS_TEST_NO_CLIENT_ID: _noClientId,
+    MATTERS_TEST_OAUTH_AUTHORITY: _authority,
+    MATTERS_TEST_OAUTH_BROWSER: _browser,
+    MATTERS_TEST_GRAPH_BASE: graphBase,
+    MATTERS_TEST_DNS: testDns,
+    ...inherited
+  } = process.env;
   trace("backend-fork");
   const backend = utilityProcess.fork(backendPath, [], {
     serviceName: "matters-backend",
@@ -919,6 +969,13 @@ function startBackend(
       // Downloaded copies of received files, a cache the worker trims (ADR 0043, rules 6 and 8).
       MATTERS_RECEIVED_DIR: receivedDir(),
       ...(testAccount ? { MATTERS_TEST_ACCOUNT: testAccount } : {}),
+      // Window tests of a dev build only (ADR 0130): a stand-in Graph service on this machine
+      // (ADR 0136, rule 12: loopback only, and the adapter checks again) and DNS answers from a
+      // table. A packaged app passes neither.
+      ...(devBuild && graphBase && isLoopbackUrl(graphBase)
+        ? { MATTERS_TEST_GRAPH_BASE: graphBase }
+        : {}),
+      ...(devBuild && testDns ? { MATTERS_TEST_DNS: testDns } : {}),
       // The backend writes to the trace only when main allowed it (a dev build, a benchmark).
       MATTERS_TRACE_FILE: tracing ? (process.env.MATTERS_TRACE_FILE ?? "") : "",
     },
@@ -1178,9 +1235,27 @@ if (!identityHelper)
     const store = createCredentialStore();
     if (credentialsPending) await moveCredentials(store);
     const testAccount = await prepareTestAccount(store);
+    // The backend gets the vault through the renewing store (ADR 0133, rules 5 to 8): a browser
+    // sign-in's access token, renewed when it ends soon, never its refresh token. What a sign-in
+    // gave waits there under a handle until setup has tested it (rule 6).
+    const oauth = createBrowserOAuth();
+    const vault = new RenewingCredentialStore({ vault: store, renewal: oauth });
+    const signIns = new SignInService({
+      oauth,
+      hold: (signIn) => vault.hold(signIn),
+      // The person signed in in their browser: bring the window that asked back in front of it.
+      returned: (owner) => {
+        const asked = BrowserWindow.getAllWindows().find((w) => w.webContents.id === owner);
+        if (!asked || asked.isDestroyed()) return;
+        if (asked.isMinimized()) asked.restore();
+        asked.show();
+        app.focus({ steal: true });
+        asked.focus();
+      },
+    });
     // The backend first: it starts in its own process while main builds the window, so the
     // window's construction (tens of milliseconds of main-thread work) no longer delays it.
-    const backend = startBackend(store, testAccount);
+    const backend = startBackend(vault, testAccount);
     const boot = createWindow();
     const { win, stage } = boot;
     mailWindow = boot;
@@ -1299,6 +1374,47 @@ if (!identityHelper)
     ipcMain.on("matters:open-settings", (event) => {
       if (event.sender === win.webContents) openSettings();
     });
+    // Browser sign-in (ADR 0133): setup in the mail window and Settings › Accounts may ask. The
+    // answer is a handle and the address that signed in, never a token (rule 5). A sign-in ends
+    // when the window that asked closes or loads another page (rule 2).
+    ipcMain.handle(
+      CHANNEL_SIGN_IN,
+      async (
+        event,
+        action: unknown,
+        provider: unknown,
+        address: unknown,
+      ): Promise<BrowserSignInAnswer | BrowserSignInOffer | { cancelled: true } | null> => {
+        const sender = event.sender;
+        if (sender !== win.webContents && (!settings || sender !== settings.webContents)) {
+          return null;
+        }
+        const ask = parseSignInAsk(action, provider, address);
+        if (ask === null) return null;
+        if (ask.action === "offered") return { offered: signIns.offered(ask.provider) };
+        if (ask.action === "cancel") {
+          signIns.cancel(sender.id);
+          return { cancelled: true };
+        }
+        const owner = sender.id;
+        const end = () => signIns.cancel(owner);
+        const navigated = (details: { isMainFrame: boolean; isSameDocument: boolean }) => {
+          if (details.isMainFrame && !details.isSameDocument) end();
+        };
+        sender.once("destroyed", end);
+        sender.on("render-process-gone", end);
+        sender.on("did-start-navigation", navigated);
+        try {
+          return await signIns.start(owner, ask.provider, ask.address);
+        } finally {
+          if (!sender.isDestroyed()) {
+            sender.removeListener("destroyed", end);
+            sender.removeListener("render-process-gone", end);
+            sender.removeListener("did-start-navigation", navigated);
+          }
+        }
+      },
+    );
     // Settings › Storage (ADR 0089, rule 5): only the settings window may ask; sizes, never paths.
     const mainStorage = async (): Promise<MainStorage> => ({
       folders: await folderUsage(app.getPath("userData"), databasePath()),

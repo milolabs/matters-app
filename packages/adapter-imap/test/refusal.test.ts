@@ -52,6 +52,31 @@ describe("imapRefusal (ADR 0114)", () => {
       expect(imapRefusal(ms, "UNAVAILABLE", "A2 NO [UNAVAILABLE] Server busy")).toBe("unavailable");
     }
   });
+
+  it("calls a bare refusal of a token on Microsoft's servers not allowed (ADR 0133, rule 10)", () => {
+    for (const ms of ["outlook.office365.com", "imap-mail.outlook.com"]) {
+      expect(imapRefusal(ms, undefined, "A2 NO AUTHENTICATE failed.", "token")).toBe("notAllowed");
+      expect(imapRefusal(ms, "AUTHENTICATIONFAILED", "A2 NO AUTHENTICATE failed.", "token")).toBe(
+        "notAllowed",
+      );
+      expect(imapRefusal(ms, undefined, "A2 NO BasicAuthBlocked", "token")).toBe("notAllowed");
+      // A sentence that names the reason still wins, and a temporary refusal stays temporary.
+      expect(
+        imapRefusal(
+          ms,
+          undefined,
+          "A2 NO [ALERT] Your account is not enabled for IMAP use.",
+          "token",
+        ),
+      ).toBe("imapOff");
+      expect(imapRefusal(ms, "UNAVAILABLE", "A2 NO [UNAVAILABLE] Server busy", "token")).toBe(
+        "unavailable",
+      );
+      expect(imapRefusal(ms, "LIMIT", "A2 NO [LIMIT] Too many", "token")).toBe("throttled");
+    }
+    // Elsewhere a token's refusal reads as any other.
+    expect(imapRefusal(host, "AUTHENTICATIONFAILED", "A2 NO Invalid", "token")).toBe("credentials");
+  });
 });
 
 describe("refusedSignIn", () => {

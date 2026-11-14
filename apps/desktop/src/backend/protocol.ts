@@ -4,7 +4,6 @@ import type {
   AccountInfo,
   AttachmentInfo,
   SendAction,
-  ServerInput,
   StorageSampleInfo,
 } from "@matters/contracts";
 import type {
@@ -21,6 +20,7 @@ import type {
   Draft,
   DraftContent,
   DraftFor,
+  FailureDetail,
   FetchOutcome,
   GapSuggestion,
   GeneralImages,
@@ -52,18 +52,12 @@ import type {
   UndoMoveResult,
   UndoResult,
 } from "@matters/core";
-import type { PasswordChanged } from "./handler.ts";
+import type { NewAccountInput, PasswordChanged } from "./handler.ts";
 
 /** Account changes: they write, so they run in the worker. */
 export type WorkerCommand =
-  | {
-      readonly name: "addAccount";
-      readonly address: string;
-      readonly displayName: string;
-      readonly password: string;
-      readonly imap: ServerInput;
-      readonly smtp?: ServerInput;
-    }
+  /** With a password, or the handle of a browser sign-in main holds (ADR 0133, rule 6). */
+  | ({ readonly name: "addAccount" } & NewAccountInput)
   | { readonly name: "removeAccount"; readonly accountId: string }
   | { readonly name: "setSeen"; readonly keys: readonly number[]; readonly seen: boolean }
   | ({ readonly name: "moveThread" } & MoveThreadInput)
@@ -72,6 +66,8 @@ export type WorkerCommand =
   | { readonly name: "syncNow"; readonly accountId: string }
   /** A new password, verified before it replaces the saved one (ADR 0113). */
   | { readonly name: "changePassword"; readonly accountId: string; readonly password: string }
+  /** A new browser sign-in, verified before it replaces the stored one (ADR 0133, rule 11). */
+  | { readonly name: "signInAgain"; readonly accountId: string; readonly signIn: string }
   | { readonly name: "saveDraft"; readonly id?: string; readonly content: DraftContent }
   | { readonly name: "deleteDraft"; readonly draftId: string }
   | { readonly name: "requestSend"; readonly draftId: string }
@@ -247,6 +243,7 @@ export interface CommandResults {
   readonly syncNow: boolean;
   /** Null when there is no such account. */
   readonly changePassword: PasswordChanged | null;
+  readonly signInAgain: PasswordChanged | null;
   readonly saveDraft: Draft;
   readonly deleteDraft: boolean;
   readonly requestSend: SendOperation;
@@ -321,11 +318,15 @@ export interface CommandResults {
 
 export type CommandResult<C extends WorkerCommand> = CommandResults[C["name"]];
 
-/** Enough of an error for the router to classify it again (`name` and `kind`, see handler.ts). */
+/**
+ * Enough of an error for the router to classify it again (`name` and `kind`, see handler.ts),
+ * and what the adapter could tell about it (ADR 0114), so the screen can say why.
+ */
 export interface WireError {
   readonly name: string;
   readonly message: string;
   readonly kind?: string;
+  readonly detail?: FailureDetail;
 }
 
 export type ToWorker =
@@ -417,4 +418,10 @@ export interface WorkerConfig {
   readonly attachmentWorker: string;
   /** Where downloaded copies of received files live (ADR 0043, rule 6). */
   readonly receivedDir: string;
+  /**
+   * Window tests of a dev build only: a stand-in Graph service on this machine in place of
+   * Microsoft's (ADR 0136, rule 12). The adapter refuses anything that is not loopback; main
+   * passes it only in a dev build. Null: Microsoft Graph.
+   */
+  readonly graphBase?: string | null;
 }

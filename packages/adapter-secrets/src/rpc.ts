@@ -1,10 +1,17 @@
 import type {
   Credential,
   CredentialAvailability,
+  CredentialGetOptions,
   CredentialPort,
+  FailureDetail,
   MailErrorKind,
 } from "@matters/core";
-import { CredentialsUnavailableError, mailErrorKind } from "@matters/core";
+import {
+  CredentialsUnavailableError,
+  failureDetailOf,
+  isOAuthProvider,
+  mailErrorKind,
+} from "@matters/core";
 
 /** The one thing both ends need from a message port; Electron and worker ports differ otherwise. */
 export interface RpcPort {
@@ -14,13 +21,21 @@ export interface RpcPort {
 
 type Request =
   | { readonly id: number; readonly op: "availability" }
-  | { readonly id: number; readonly op: "get" | "delete"; readonly accountId: string }
+  | {
+      readonly id: number;
+      readonly op: "get";
+      readonly accountId: string;
+      /** Renew now (ADR 0136, rule 11); absent is false. */
+      readonly renew?: true;
+    }
+  | { readonly id: number; readonly op: "delete"; readonly accountId: string }
   | {
       readonly id: number;
       readonly op: "set";
       readonly accountId: string;
       readonly credential: Credential;
-    };
+    }
+  | { readonly id: number; readonly op: "move"; readonly fromId: string; readonly toId: string };
 
 type Response =
   | { readonly id: number; readonly ok: true; readonly value?: unknown }
@@ -29,6 +44,8 @@ type Response =
       readonly ok: false;
       readonly kind: MailErrorKind;
       readonly message: string;
+      /** Why a sign-in was refused (`signInAgain`, ADR 0133, rule 8); no server text in it. */
+      readonly detail?: FailureDetail;
     };
 
 const mailKind = (kind: unknown): MailErrorKind => mailErrorKind({ kind });
@@ -41,9 +58,10 @@ export function parseCredential(v: unknown): Credential | null {
   if (v.kind === "password" && typeof v.username === "string" && typeof v.password === "string") {
     return { kind: "password", username: v.username, password: v.password };
   }
-  if (v.kind === "oauth2" && typeof v.accessToken === "string") {
+  if (v.kind === "oauth2" && isOAuthProvider(v.provider) && typeof v.accessToken === "string") {
     return {
       kind: "oauth2",
+      provider: v.provider,
       accessToken: v.accessToken,
       ...(typeof v.refreshToken === "string" ? { refreshToken: v.refreshToken } : {}),
       ...(typeof v.expiresAtMs === "number" ? { expiresAtMs: v.expiresAtMs } : {}),
@@ -56,8 +74,15 @@ function parseRequest(data: unknown): Request | null {
   if (!isRecord(data) || typeof data.id !== "number") return null;
   const { id, op, accountId } = data;
   if (op === "availability") return { id, op };
+  if (op === "move") {
+    const { fromId, toId } = data;
+    return typeof fromId === "string" && fromId !== "" && typeof toId === "string" && toId !== ""
+      ? { id, op, fromId, toId }
+      : null;
+  }
   if (typeof accountId !== "string" || accountId === "") return null;
-  if (op === "get" || op === "delete") return { id, op, accountId };
+  if (op === "get") return { id, op, accountId, ...(data.renew === true ? { renew: true } : {}) };
+  if (op === "delete") return { id, op, accountId };
   if (op === "set") {
     const credential = parseCredential(data.credential);
     return credential ? { id, op, accountId, credential } : null;
@@ -79,20 +104,32 @@ export function serveCredentials(port: RpcPort, store: CredentialPort): void {
         case "availability":
           return reply({ id: request.id, ok: true, value: await store.availability() });
         case "get":
-          return reply({ id: request.id, ok: true, value: await store.get(request.accountId) });
+          return reply({
+            id: request.id,
+            ok: true,
+            value: await (request.renew === true
+              ? store.get(request.accountId, { renew: true })
+              : store.get(request.accountId)),
+          });
         case "set":
           await store.set(request.accountId, request.credential);
           return reply({ id: request.id, ok: true });
         case "delete":
           await store.delete(request.accountId);
           return reply({ id: request.id, ok: true });
+        case "move":
+          await store.move(request.fromId, request.toId);
+          return reply({ id: request.id, ok: true });
       }
     } catch (error) {
+      // Only the reason crosses: a vault's error has no server text, and none is sent if it did.
+      const refusal = failureDetailOf(error)?.refusal;
       reply({
         id: request.id,
         ok: false,
         kind: mailErrorKind(error),
         message: error instanceof Error ? error.message : "The credential store failed",
+        ...(refusal === undefined ? {} : { detail: { refusal } }),
       });
     }
   });
@@ -124,8 +161,9 @@ export class RemoteCredentialPort implements CredentialPort {
     return this.call({ op: "availability" }) as Promise<CredentialAvailability>;
   }
 
-  async get(accountId: string): Promise<Credential | null> {
-    return ((await this.call({ op: "get", accountId })) as Credential | null) ?? null;
+  async get(accountId: string, options?: CredentialGetOptions): Promise<Credential | null> {
+    const body = { op: "get", accountId, ...(options?.renew === true ? { renew: true } : {}) };
+    return ((await this.call(body)) as Credential | null) ?? null;
   }
 
   async set(accountId: string, credential: Credential): Promise<void> {
@@ -134,6 +172,10 @@ export class RemoteCredentialPort implements CredentialPort {
 
   async delete(accountId: string): Promise<void> {
     await this.call({ op: "delete", accountId });
+  }
+
+  async move(fromId: string, toId: string): Promise<void> {
+    await this.call({ op: "move", fromId, toId });
   }
 
   /** Fails whatever is still waiting; the port is gone. */
@@ -168,10 +210,14 @@ export class RemoteCredentialPort implements CredentialPort {
     if (data.ok === true) waiting.resolve(data.value);
     else {
       const message = typeof data.message === "string" ? data.message : "Credential error";
+      const detail = failureDetailOf(data);
       waiting.reject(
         data.kind === "credentials"
           ? new CredentialsUnavailableError(message)
-          : Object.assign(new Error(message), { kind: mailKind(data.kind) }),
+          : Object.assign(new Error(message), {
+              kind: mailKind(data.kind),
+              ...(detail?.refusal === undefined ? {} : { detail: { refusal: detail.refusal } }),
+            }),
       );
     }
   }

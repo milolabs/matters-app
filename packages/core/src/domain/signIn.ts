@@ -15,6 +15,9 @@
  * - `encryptionRequired`: no password over this connection (`PRIVACYREQUIRED`, SMTP 530 / 538).
  * - `unavailable`: the server could not check just now (`UNAVAILABLE`, SMTP 454).
  * - `throttled`: too many attempts or connections for now (`LIMIT`, provider wordings).
+ * - `signInAgain`: a browser sign-in has ended: the provider refused the refresh token
+ *   (withdrawn, a changed password, unused for too long). Only a new sign-in in the browser
+ *   ends it (ADR 0133, rule 8).
  * - `unknown`: nothing above could be told from the answer.
  */
 export type SignInRefusal =
@@ -28,6 +31,7 @@ export type SignInRefusal =
   | "encryptionRequired"
   | "unavailable"
   | "throttled"
+  | "signInAgain"
   | "unknown";
 
 const REFUSALS: ReadonlySet<string> = new Set<SignInRefusal>([
@@ -41,6 +45,7 @@ const REFUSALS: ReadonlySet<string> = new Set<SignInRefusal>([
   "encryptionRequired",
   "unavailable",
   "throttled",
+  "signInAgain",
   "unknown",
 ]);
 
@@ -228,7 +233,8 @@ export function refusalIsTemporary(refusal: SignInRefusal | undefined): boolean 
  * app password (`appPassword`), one that expired (`expired`, changed on the host first), and a
  * refusal nothing could be told about (`unknown`, or no reason at all), which is most often a
  * wrong password. The others want something done elsewhere (webmail, an admin, the server
- * settings) or cannot be fixed by any password (`browserOnly`).
+ * settings) or cannot be fixed by any password (`browserOnly`, `signInAgain`: those want a sign-in
+ * in the browser, ADR 0133).
  */
 export function newPasswordCanFix(refusal: SignInRefusal | undefined): boolean {
   return (

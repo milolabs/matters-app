@@ -2,11 +2,14 @@ import { Resolver } from "node:dns/promises";
 import { domainToASCII } from "node:url";
 import type {
   DiscoveredServers,
+  Discovery,
   DiscoverySource,
+  FoundProvider,
   ServerDiscoveryPort,
   ServerEndpoint,
   TransportSecurity,
 } from "@matters/core";
+import { providerFromSigns } from "@matters/core";
 import { isHostname, parseConfig } from "./config.ts";
 import { type Prober, probeServer } from "./probe.ts";
 
@@ -36,11 +39,17 @@ export type SrvResolver = (name: string) => Promise<readonly SrvRecord[]>;
 export type MxResolver = (
   domain: string,
 ) => Promise<readonly { readonly exchange: string; readonly priority: number }[]>;
+/** `TXT` records of a name, each as the strings it is made of (Node's `resolveTxt`). */
+export type TxtResolver = (name: string) => Promise<readonly (readonly string[])[]>;
+/** Where a name points as a CNAME (Node's `resolveCname`). */
+export type CnameResolver = (name: string) => Promise<readonly string[]>;
 
 export interface AutoconfigOptions {
   readonly fetch?: FetchLike;
   readonly resolveSrv?: SrvResolver;
   readonly resolveMx?: MxResolver;
+  readonly resolveTxt?: TxtResolver;
+  readonly resolveCname?: CnameResolver;
   readonly probe?: Prober;
   /** Per request; default 3 s. */
   readonly timeoutMs?: number;
@@ -74,11 +83,17 @@ export function mxDomains(exchange: string): string[] {
  * timeout and a failure just moves on to the next one; the first usable IMAP server wins.
  * Everything is HTTPS, a redirect to plain HTTP is refused, and plaintext sockets are never
  * offered.
+ *
+ * Beside it, who runs the mail is read from DNS about the domain only (ADR 0135, rules 1 and 2):
+ * the MX records, which the lookup reads anyway and now asks once, the `TXT` records and the
+ * CNAME of `autodiscover.<domain>`, each with the same timeout. Nothing is asked of a provider.
  */
 export class AutoconfigDiscovery implements ServerDiscoveryPort {
   private readonly fetchFn: FetchLike;
   private readonly resolveSrv: SrvResolver;
   private readonly resolveMx: MxResolver;
+  private readonly resolveTxt: TxtResolver;
+  private readonly resolveCname: CnameResolver;
   private readonly probe: Prober;
   private readonly timeoutMs: number;
 
@@ -88,12 +103,26 @@ export class AutoconfigDiscovery implements ServerDiscoveryPort {
     const resolver = new Resolver({ timeout: this.timeoutMs, tries: 1 });
     this.resolveSrv = options.resolveSrv ?? ((name) => resolver.resolveSrv(name));
     this.resolveMx = options.resolveMx ?? ((name) => resolver.resolveMx(name));
+    this.resolveTxt = options.resolveTxt ?? ((name) => resolver.resolveTxt(name));
+    this.resolveCname = options.resolveCname ?? ((name) => resolver.resolveCname(name));
     this.probe = options.probe ?? probeServer;
   }
 
-  async discover(domainInput: string): Promise<DiscoveredServers | null> {
+  async discover(domainInput: string): Promise<Discovery> {
     const domain = normalizeDomain(domainInput);
-    if (!domain) return null;
+    if (!domain) return { servers: null };
+    // The three questions about who runs the mail run beside the lookup (ADR 0135, rule 2).
+    const exchangers = this.exchangers(domain);
+    const provider = this.provider(domain, exchangers);
+    const servers = await this.servers(domain, exchangers);
+    const found = await provider;
+    return { servers, ...(found ? { provider: found } : {}) };
+  }
+
+  private async servers(
+    domain: string,
+    exchangersOf: Promise<string[]>,
+  ): Promise<DiscoveredServers | null> {
     const urls: readonly [DiscoverySource, string][] = [
       ["provider", `https://autoconfig.${domain}/mail/config-v1.1.xml`],
       ["ispdb", `${ISPDB}${domain}`],
@@ -104,8 +133,34 @@ export class AutoconfigDiscovery implements ServerDiscoveryPort {
     }
     const dns = await this.fromDns(domain);
     if (dns) return dns;
-    const exchangers = await this.exchangers(domain);
+    const exchangers = await exchangersOf;
     return (await this.fromMx(domain, exchangers)) ?? this.fromProbing(domain, exchangers);
+  }
+
+  /** Who runs the domain's mail, from the signs of ADR 0135, rule 1; DNS failures are no sign. */
+  private async provider(
+    domain: string,
+    exchangersOf: Promise<string[]>,
+  ): Promise<FoundProvider | undefined> {
+    const [exchangers, autodiscover, txt] = await Promise.all([
+      exchangersOf,
+      this.within(
+        this.resolveCname(`autodiscover.${domain}`).then((names) =>
+          names.map((n) => n.replace(/\.$/, "").toLowerCase()).filter(isHostname),
+        ),
+      ),
+      this.within(this.resolveTxt(domain).then((records) => records.map((c) => c.join("")))),
+    ]);
+    return providerFromSigns({ exchangers, autodiscover, txt });
+  }
+
+  /** What the question answered within the lookup's wait; nothing when it failed or was late. */
+  private within(question: Promise<string[]>): Promise<string[]> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<string[]>((resolve) => {
+      timer = setTimeout(() => resolve([]), this.timeoutMs);
+    });
+    return Promise.race([question.catch(() => []), late]).finally(() => clearTimeout(timer));
   }
 
   private async exchangers(domain: string): Promise<string[]> {

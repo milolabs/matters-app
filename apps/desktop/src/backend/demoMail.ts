@@ -165,7 +165,7 @@ export class DemoMail {
 
   /** The demo account has no password and no server: the downloads of its mail come from here. */
   serves(account: Pick<StoredAccount, "id" | "imap">): boolean {
-    return account.id === DEMO_ACCOUNT_ID && account.imap.host === DEMO_HOST;
+    return account.id === DEMO_ACCOUNT_ID && account.imap?.host === DEMO_HOST;
   }
 
   connection(): DownloadConnection {

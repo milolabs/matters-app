@@ -252,6 +252,10 @@ describe("ImapFlags against the in-process server", () => {
       const batches = [];
       for await (const b of imap.syncFolder(ACCOUNT, folder, null, {
         knownProviderIds: async () => new Set(),
+        // Graph's numbering (ADR 0136, rule 6); IMAP never asks.
+        itemUids: async () => new Map(),
+        knownItemUids: async () => new Map(),
+        itemIdsOf: async () => new Map(),
         storedUids: async () => [],
         unknownReplyToUids: async () => [],
         unknownAutomatedUids: async () => [],

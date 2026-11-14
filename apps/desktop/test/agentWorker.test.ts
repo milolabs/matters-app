@@ -66,7 +66,7 @@ async function boot(options: { agent: boolean }) {
     storage,
     connector,
     channel,
-    discovery: { discover: async () => null },
+    discovery: { discover: async () => ({ servers: null }) },
     registrableDomain: imageDeps.registrableDomain,
     files: new FakeFileWork(),
     sending: {

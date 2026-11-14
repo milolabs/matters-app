@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
   DraftContent,
+  ImapStoredAccount,
   ProcessDeps,
   SendOperation,
   StoredAccount,
@@ -47,7 +48,7 @@ const PASSWORD = "s3cret-pw-value";
 const account = (
   id: string,
   address: string,
-  over: Partial<StoredAccount> = {},
+  over: Partial<ImapStoredAccount> = {},
 ): StoredAccount => ({
   id,
   address,

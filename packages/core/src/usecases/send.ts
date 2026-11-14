@@ -42,7 +42,6 @@ import type {
   FileWorkPort,
   MailConnectorPort,
   MailSubmitPort,
-  MailTarget,
   MessageComposerPort,
   MessageStorePort,
   MimeSource,
@@ -51,7 +50,7 @@ import type {
   SentFolderPort,
   SubmitWatch,
 } from "../ports/index.ts";
-import { toAccount } from "./accounts.ts";
+import { incomingTarget, outgoingTarget, toAccount } from "./accounts.ts";
 import {
   type AttachmentDeps,
   bytesSource,
@@ -319,8 +318,10 @@ async function filedByServer(
   return null;
 }
 
-function passwordOf(credential: Credential | null): string | null {
-  return credential?.kind === "password" ? credential.password : null;
+/** The secret a credential carries, scrubbed from every error: a password or a token. */
+function secretOf(credential: Credential | null): string | null {
+  if (!credential) return null;
+  return credential.kind === "password" ? credential.password : credential.accessToken;
 }
 
 const reasonOf = (error: unknown, secrets: readonly string[]): string =>
@@ -348,7 +349,7 @@ async function keepSentCopy(
     try {
       const credential = await deps.credentials.get(op.accountId);
       if (credential) {
-        const connection = await deps.connector.connect({ server: account.imap, credential });
+        const connection = await deps.connector.connect(incomingTarget(account, credential));
         try {
           // Gmail saves sent mail itself; an APPEND would leave a duplicate. Other servers may
           // too, so their copy is looked for first (ADR 0092).
@@ -555,19 +556,20 @@ async function handOff(deps: ProcessDeps, claimed: SendOperation): Promise<HandO
     }
 
     if (!account) throw new Error("The account no longer exists");
-    if (!account.smtp) throw new Error("No outgoing mail server is set up for this account");
+    if (account.transport !== "graph" && !account.smtp) {
+      throw new Error("No outgoing mail server is set up for this account");
+    }
     const credential = await deps.credentials.get(op.accountId);
-    password = passwordOf(credential);
+    password = secretOf(credential);
     if (!credential || password === null) throw new Error("The saved password is missing");
+    // A password, or the token the vault keeps fresh (ADR 0133, rule 9; ADR 0136, rule 9).
+    const target = outgoingTarget(account, credential);
+    if (!target) throw new Error("No outgoing mail server is set up for this account");
 
     const message = await messageFor(deps, op, draft, rows);
     op = { ...op, mimeBytes: message.source.size };
     if (op.messageId !== message.messageId) await save(withMessageId(op, message.messageId));
 
-    const target: MailTarget = {
-      server: account.smtp,
-      credential: { kind: "password", username: account.smtp.username, password },
-    };
     const envelope = {
       from: draft.from.address,
       recipients: [...draft.to, ...draft.cc, ...draft.bcc]
@@ -761,7 +763,15 @@ export async function reconcileUnknown(
   let waiting = 0;
   for (const op of await deps.outbox.listByState(["unknown"])) {
     const account = await deps.accounts.get(op.accountId);
-    const credential = await deps.credentials.get(op.accountId);
+    // A credential that cannot be had now (a renewal that failed, ADR 0133 rules 7 and 8) is
+    // this operation's to wait out; the others are still checked.
+    let credential: Awaited<ReturnType<typeof deps.credentials.get>>;
+    try {
+      credential = await deps.credentials.get(op.accountId);
+    } catch {
+      waiting++;
+      continue;
+    }
     if (!account || !credential || !op.messageId) {
       leftToUser++;
       continue;
@@ -769,7 +779,7 @@ export async function reconcileUnknown(
     let found: string | null = null;
     let canSettle = false;
     try {
-      const connection = await deps.connector.connect({ server: account.imap, credential });
+      const connection = await deps.connector.connect(incomingTarget(account, credential));
       try {
         canSettle = connection.sync.capabilities.has("savesSent");
         if (canSettle) {

@@ -108,7 +108,7 @@ describe("prepareReply (ADR 0042)", () => {
       counts: noCounts,
       ...imageDeps,
       accounts: {
-        discover: async () => null,
+        discover: async () => ({ servers: null }),
         list: async () => [],
         add: async () => {
           throw new Error("not used");
@@ -116,6 +116,7 @@ describe("prepareReply (ADR 0042)", () => {
         remove: async () => false,
         syncNow: async () => false,
         changePassword: async () => null,
+        signInAgain: async () => null,
       },
     } satisfies BackendDeps;
     const ask = () =>

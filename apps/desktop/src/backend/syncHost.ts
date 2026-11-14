@@ -1,4 +1,4 @@
-import type { MoveKind, PromptProgress, SyncStatus } from "@matters/core";
+import type { FailureDetail, MoveKind, PromptProgress, SyncStatus } from "@matters/core";
 import { backoffDelay } from "@matters/core";
 import type { CommandResult, FromWorker, ToWorker, WireError, WorkerCommand } from "./protocol.ts";
 
@@ -64,10 +64,13 @@ export interface SyncHostOptions {
 /** A command failed in the worker; carries what the error classification needs. */
 export class WorkerCommandError extends Error {
   readonly kind: string | undefined;
+  /** Why a server refused, and its own words (ADR 0114); checked again where it is read. */
+  readonly detail?: FailureDetail;
   constructor(wire: WireError) {
     super(wire.message);
     this.name = wire.name;
     this.kind = wire.kind;
+    if (wire.detail !== undefined) this.detail = wire.detail;
   }
 }
 

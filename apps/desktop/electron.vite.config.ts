@@ -12,8 +12,10 @@ const bundleWorkspace = {
     "@matters/adapter-compose",
     "@matters/adapter-files",
     "@matters/adapter-filetext",
+    "@matters/adapter-graph",
     "@matters/adapter-imap",
     "@matters/adapter-mime",
+    "@matters/adapter-oauth",
     "@matters/adapter-ollama",
     "@matters/adapter-publicsuffix",
     "@matters/adapter-secrets",
@@ -29,6 +31,13 @@ export default defineConfig(({ command }) => ({
   // main also builds the backend: `import "../backend/main.ts?modulePath"` emits it as a
   // separate entry and yields its file path for utilityProcess.fork (ADR 0005).
   main: {
+    // The client id of the Microsoft registration is given to the build, not kept in the source
+    // (ADR 0133, rule 4): the release workflow passes Matters' own, a build without it has none.
+    define: {
+      __MATTERS_MICROSOFT_CLIENT_ID__: JSON.stringify(
+        (process.env.MATTERS_MICROSOFT_CLIENT_ID ?? "").trim(),
+      ),
+    },
     build: {
       externalizeDeps: bundleWorkspace,
       // node:sqlite is a prefix-only builtin; never let the bundler try to resolve it.

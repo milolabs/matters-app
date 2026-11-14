@@ -60,6 +60,11 @@ class FlakyVault implements CredentialPort {
   delete(accountId: string) {
     return this.inner.delete(accountId);
   }
+  async move(fromId: string, toId: string) {
+    this.writes++;
+    if (this.failWrites) throw new Error("could not write the vault file");
+    return this.inner.move(fromId, toId);
+  }
 }
 
 function setup() {
@@ -102,7 +107,7 @@ function setup() {
       now: () => 1000,
     },
     remove: { ...storage, credentials },
-    discovery: { discover: async () => null },
+    discovery: { discover: async () => ({ servers: null }) },
     scheduler,
     rejected,
     onChanged: () => changes++,

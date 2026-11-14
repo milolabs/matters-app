@@ -1417,6 +1417,63 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX agent_ledger_recent ON agent_ledger (at_ms DESC, id DESC);
     `,
   },
+  {
+    version: 57,
+    // ADR 0136, rules 2 and 6. An account has a transport, and one on Graph stores no server
+    // settings: SQLite cannot drop NOT NULL in place, so `accounts` is rebuilt as in 25, with the
+    // same rows and values, `transport` 'imap' for each, and the incoming server's columns
+    // nullable but required of an IMAP account. Nothing refers to the table. Like 53, it can run
+    // again on a database that has it.
+    // `location_items` keeps a Graph copy's handle with its location: the number the store gave
+    // each item id within its folder. Numbers only grow and are not given again, so a stale
+    // location can never reach another message. No row of an IMAP account is written.
+    sql: `
+      CREATE TABLE IF NOT EXISTS location_items (
+        account_id TEXT NOT NULL,
+        folder_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        uid INTEGER NOT NULL,
+        PRIMARY KEY (account_id, folder_id, item_id)
+      ) WITHOUT ROWID;
+      CREATE UNIQUE INDEX IF NOT EXISTS location_items_uid
+        ON location_items (account_id, folder_id, uid);
+    `,
+    run: (db) => {
+      const columns = db.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
+      if (columns.some((c) => c.name === "transport")) return;
+      db.exec(`
+        CREATE TABLE accounts_new (
+          id TEXT PRIMARY KEY,
+          address TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          transport TEXT NOT NULL DEFAULT 'imap' CHECK (transport IN ('imap', 'graph')),
+          imap_host TEXT,
+          imap_port INTEGER,
+          imap_security TEXT,
+          imap_username TEXT,
+          created_at_ms INTEGER NOT NULL,
+          smtp_host TEXT,
+          smtp_port INTEGER,
+          smtp_security TEXT,
+          smtp_username TEXT,
+          max_message_bytes INTEGER,
+          CHECK (transport = 'graph' OR (imap_host IS NOT NULL AND imap_port IS NOT NULL
+                                         AND imap_security IS NOT NULL
+                                         AND imap_username IS NOT NULL))
+        ) WITHOUT ROWID;
+        INSERT INTO accounts_new (id, address, display_name, transport, imap_host, imap_port,
+                                  imap_security, imap_username, created_at_ms, smtp_host,
+                                  smtp_port, smtp_security, smtp_username, max_message_bytes)
+          SELECT id, address, display_name, 'imap', imap_host, imap_port, imap_security,
+                 imap_username, created_at_ms, smtp_host, smtp_port, smtp_security,
+                 smtp_username, max_message_bytes
+            FROM accounts;
+        DROP TABLE accounts;
+        ALTER TABLE accounts_new RENAME TO accounts;
+        CREATE UNIQUE INDEX accounts_address ON accounts (lower(address));
+      `);
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

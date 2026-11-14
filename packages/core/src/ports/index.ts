@@ -26,6 +26,7 @@ import type {
   SendLane,
   StoredAttachment,
 } from "../domain/attachment.ts";
+import type { BrowserSignInResult, OAuthProvider, TokenRenewal } from "../domain/browserSignIn.ts";
 import type { Draft } from "../domain/draft.ts";
 import type {
   Account,
@@ -48,6 +49,7 @@ import type {
   WholeMediaType,
 } from "../domain/fileText.ts";
 import type { GeneralImages, ImageRule, ImageRuleScope } from "../domain/imageRules.ts";
+import type { FoundProvider } from "../domain/mailProviders.ts";
 import type {
   MoveAction,
   MoveOperation,
@@ -72,7 +74,10 @@ import type { SavedView } from "../domain/views.ts";
 import type { CandidateThread } from "../usecases/agentRequests.ts";
 import type { ParsedQuery } from "../usecases/parseQuery.ts";
 
-/** Opaque, adapter-defined JSON (e.g. UIDVALIDITY / UID / MODSEQ for IMAP). */
+/**
+ * Opaque, adapter-defined JSON (e.g. UIDVALIDITY / UID / MODSEQ for IMAP; the delta or next-page
+ * link and the epoch for Graph, ADR 0136, rule 5).
+ */
 export type SyncCursor = Readonly<Record<string, string | number | boolean | null>>;
 
 /** A message the provider announced for the first time, with the place it was found. */
@@ -118,6 +123,12 @@ export interface AutomatedAnswer {
 
 export interface SyncBatch {
   readonly documents: readonly SyncedDocument[];
+  /**
+   * Copies of stored messages, with their flags. An adapter may also report a changed read state
+   * or flag here, as a known location at the place the store already has (the Graph adapter does:
+   * a delta row does not say whether the copy moved or only changed, ADR 0136, rule 5); the store
+   * then writes the flags, as for `flagUpdates`.
+   */
   readonly knownLocations: readonly KnownLocation[];
   readonly flagUpdates: readonly FlagUpdate[];
   /** Locations that no longer exist on the server. */
@@ -125,6 +136,9 @@ export interface SyncBatch {
   /**
    * UIDVALIDITY of the folder changed: its locations from other UIDVALIDITY values are dropped
    * (those this batch announces again survive), messages left without a location are deleted.
+   * A provider without UIDVALIDITY (Graph, ADR 0136) says the same when it lists a folder anew
+   * (its change link expired): its locations carry a new epoch in `uidValidity`, and the copies
+   * it still has are announced again at that epoch with the numbers they had.
    */
   readonly resetFolder?: true;
   /**
@@ -149,7 +163,11 @@ export interface SyncBatch {
   readonly pending?: number;
 }
 
-/** What the use case lends an adapter while it syncs one folder. */
+/**
+ * What the use case lends an adapter while it syncs one folder. The `uidValidity` and UIDs it
+ * speaks of are a Graph adapter's epoch and the numbers the store gave its item ids (ADR 0136,
+ * rule 6; see `MessageLocation`).
+ */
 export interface FolderSyncContext {
   /** The subset of `ids` the store already has for this account. Ask before downloading sources. */
   knownProviderIds(ids: readonly string[]): Promise<ReadonlySet<string>>;
@@ -171,6 +189,18 @@ export interface FolderSyncContext {
    * to learn.
    */
   unknownAttachmentUids(uidValidity: string, limit: number): Promise<readonly number[]>;
+  /**
+   * The number of each of these provider item ids in this folder (ADR 0136, rule 6), giving an id
+   * that has none a number of its own: larger than any the folder had, never given to another
+   * id, and kept while the account is. Written at once, outside the batch's unit of work, so a
+   * batch that is never applied leaves only an unused number. For providers whose handle is not
+   * a UID (Graph); an IMAP adapter never calls it.
+   */
+  itemUids(itemIds: readonly string[]): Promise<ReadonlyMap<string, number>>;
+  /** The numbers these item ids already have in this folder; ids without one are absent. */
+  knownItemUids(itemIds: readonly string[]): Promise<ReadonlyMap<string, number>>;
+  /** The item id behind each of these numbers in this folder; unknown numbers are absent. */
+  itemIdsOf(uids: readonly number[]): Promise<ReadonlyMap<number, string>>;
 }
 
 export interface MailSyncPort {
@@ -343,7 +373,10 @@ export interface MessageStorePort {
    */
   allocateKeys(dateMs: readonly number[]): Promise<readonly number[]>;
 
-  /** Idempotent. Adding an existing location again points it at the given key. */
+  /**
+   * Idempotent. Adding an existing location again points it at the given key. A location with an
+   * `itemId` also keeps that id under its number, when the folder has not given either yet.
+   */
   addLocations(entries: readonly LocationEntry[]): Promise<void>;
   /**
    * Removes these locations (unknown ones are skipped). A message left without any location is
@@ -366,7 +399,29 @@ export interface MessageStorePort {
     folderId: string,
     uidValidity: string,
   ): Promise<readonly number[]>;
+  /** With the provider's `itemId` on every copy that has one (ADR 0136, rule 6). */
   getLocations(key: number): Promise<readonly MessageLocation[]>;
+  /**
+   * Gives each item id a number of its own in this folder, keeping the one it has (ADR 0136,
+   * rule 6; `FolderSyncContext.itemUids`). Commits by itself when called outside a unit of work.
+   */
+  numberItems(
+    accountId: string,
+    folderId: string,
+    itemIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>>;
+  /** The numbers these item ids have in this folder; ids without one are absent. */
+  itemNumbers(
+    accountId: string,
+    folderId: string,
+    itemIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>>;
+  /** The item id behind each of these numbers in this folder; unknown numbers are absent. */
+  itemIdsOf(
+    accountId: string,
+    folderId: string,
+    uids: readonly number[],
+  ): Promise<ReadonlyMap<number, string>>;
   /**
    * Sets flags (and labels when given) of the messages at these locations; unknown locations
    * are skipped, unchanged messages are not touched. Returns the keys that changed.
@@ -905,7 +960,11 @@ export interface ImageRuleStorePort {
 export interface SubmitEnvelope {
   /** Address of the sender (SMTP MAIL FROM). */
   readonly from: string;
-  /** To, Cc and Bcc together (SMTP RCPT TO). */
+  /**
+   * To, Cc and Bcc together (SMTP RCPT TO). A provider that reads the recipients from the MIME
+   * itself (Graph's `sendMail`, ADR 0136, rule 9) has to put those missing from its headers, the
+   * Bcc, into the message it hands over; the message of `MimeSource` has no Bcc header.
+   */
   readonly recipients: readonly string[];
   /** Bytes of the message. Sent with MAIL FROM, so a server that will refuse says so before the data. */
   readonly size?: number;
@@ -931,7 +990,10 @@ export interface SubmitWatch {
    * more is sent and the submission is `rejected`.
    */
   beforeDataEnd?(): Promise<void>;
-  /** What the server announced as its largest message (`SIZE`); null when it announced none. */
+  /**
+   * What the server announced as its largest message (`SIZE`); null when it announced none. A
+   * provider that announces nothing (Graph) does not call it.
+   */
   onServerLimit?(bytes: number | null): void;
 }
 
@@ -939,7 +1001,8 @@ export interface SubmitWatch {
  * How the server answered a submission. `rejected` is definite: the message was not accepted
  * (5xx or 4xx reply, login refused, refused before the message data), a retry is safe.
  * `unknown`: the connection broke or timed out after the message data was sent, so the server
- * may or may not have accepted it.
+ * may or may not have accepted it. Over Graph (ADR 0136, rule 9) `202` is `accepted`, a refusal
+ * before the body was sent is `rejected`, a broken connection after it is `unknown`.
  */
 export type SubmitResult =
   | {
@@ -983,7 +1046,11 @@ export interface MailSubmitPort {
     source: MimeSource,
     watch?: SubmitWatch,
   ): Promise<SubmitResult>;
-  /** Connects and logs in without sending anything. Same promises as `submit`. */
+  /**
+   * Connects and logs in without sending anything. Same promises as `submit`. Where there is no
+   * login to test (Graph, ADR 0136, rule 9) it asks the service for something only the token can
+   * read, the Sent Items folder, and `limitBytes` is left out.
+   */
   verify(target: MailTarget): Promise<OutgoingCheck>;
 }
 
@@ -1034,7 +1101,11 @@ export interface SentMatch {
   readonly location?: MessageLocation;
 }
 
-/** The mailbox's Sent folder. Works on the connection it came from. */
+/**
+ * The mailbox's Sent folder. Works on the connection it came from. A provider that keeps the Sent
+ * copy itself has the capability `savesSent` (Gmail, Graph: ADR 0136, rule 9): `append` is never
+ * called there, and `findByMessageId` finds the copy.
+ */
 export interface SentFolderPort {
   /** Appends the raw message to the Sent folder, marked as read. Throws when there is none. */
   append(account: Account, raw: Uint8Array): Promise<SentCopy>;
@@ -1046,7 +1117,13 @@ export type Credential =
   | { readonly kind: "password"; readonly username: string; readonly password: string }
   | {
       readonly kind: "oauth2";
+      /** Whose token endpoint renews it (ADR 0133, rule 5). */
+      readonly provider: OAuthProvider;
       readonly accessToken: string;
+      /**
+       * Kept in main's vault only. `CredentialPort.get` in the backend never has it (rule 5): the
+       * vault renews the access token itself (rule 7).
+       */
       readonly refreshToken?: string;
       readonly expiresAtMs?: number;
     };
@@ -1055,12 +1132,61 @@ export type CredentialAvailability =
   | { readonly available: true }
   | { readonly available: false; readonly reason: string };
 
+export interface CredentialGetOptions {
+  readonly renew?: boolean;
+}
+
 export interface CredentialPort {
   /** Whether secrets can be stored safely here; `set` refuses (and says why) when they cannot. */
   availability(): Promise<CredentialAvailability>;
-  get(accountId: string): Promise<Credential | null>;
+  /**
+   * The credential, or null when there is none. For a browser sign-in this is a token that
+   * still works (ADR 0133, rule 7): one that ends within minutes is renewed first. A renewal
+   * the provider refused rejects with `SignInEndedError` (`kind` "auth", refusal `signInAgain`,
+   * rule 8); one that could not reach it rejects with `kind` "unreachable".
+   *
+   * `renew`: a browser sign-in is renewed now, whenever its token ends, joined with a renewal
+   * already running. The backend asks for it when the service refused the token it would hand
+   * out (ADR 0136, rule 11). A password, or a sign-in still held for its test, ignores it.
+   */
+  get(accountId: string, options?: CredentialGetOptions): Promise<Credential | null>;
   set(accountId: string, credential: Credential): Promise<void>;
   delete(accountId: string): Promise<void>;
+  /**
+   * Moves what `fromId` holds to `toId` in one atomic write: afterwards `toId` holds it (an
+   * entry there is replaced) and `fromId` holds nothing. A tested browser sign-in, held under
+   * a handle, becomes the account's credential this way (ADR 0133, rule 6). Rejects with
+   * `SignInEndedError` when `fromId` holds nothing (a held sign-in ended after 10 minutes).
+   */
+  move(fromId: string, toId: string): Promise<void>;
+}
+
+/**
+ * Sign-in in the person's own browser (ADR 0133, rules 1 to 3 and 12). Runs in main, the only
+ * place that opens the browser. One sign-in runs at a time: a second one ends the first, which
+ * answers `notFinished`. Never throws for the provider's or the network's trouble; the result
+ * says what happened. Nothing it returns or throws contains a code or a verifier.
+ */
+export interface BrowserSignInPort {
+  /** Whether this build can offer the provider's sign-in at all (rule 4: it has a client id). */
+  offers(provider: OAuthProvider): boolean;
+  signIn(request: BrowserSignInRequest): Promise<BrowserSignInResult>;
+}
+
+export interface BrowserSignInRequest {
+  readonly provider: OAuthProvider;
+  /** The address typed: the sign-in page's hint, and who must sign in (rule 3). */
+  readonly address: string;
+  /** The person cancelled, or the window that asked closed (rule 2). */
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Trades a refresh token for a new access token at the provider's token endpoint (rule 7).
+ * Never throws for the provider's or the network's trouble.
+ */
+export interface TokenRenewalPort {
+  renew(provider: OAuthProvider, refreshToken: string): Promise<TokenRenewal>;
 }
 
 /** Accounts the user added (ADR 0018). Secrets never pass through this port. */
@@ -1076,26 +1202,53 @@ export interface AccountStorePort {
 }
 
 /**
- * Finds the servers of an email domain. Only the domain is ever passed in: never an address,
- * never a password.
+ * What lookup found for a domain (ADR 0135, rule 1): the servers, and who runs the mail when DNS
+ * shows it. Either can be there without the other: a domain on Microsoft 365 behind a mail
+ * gateway has a provider and often no servers.
  */
-export interface ServerDiscoveryPort {
-  /** Null when no source knew the domain (the user then types the settings). */
-  discover(domain: string): Promise<DiscoveredServers | null>;
+export interface Discovery {
+  /** Null when no source knew the servers (the person then chooses or types them). */
+  readonly servers: DiscoveredServers | null;
+  readonly provider?: FoundProvider;
 }
 
-export interface MailTarget {
-  readonly server: MailServerSettings;
-  readonly credential: Credential;
+/**
+ * Finds the servers of an email domain, and who runs its mail. Only the domain is ever passed in:
+ * never an address, never a password; and only DNS is asked about who runs it (ADR 0135, rule 2).
+ */
+export interface ServerDiscoveryPort {
+  discover(domain: string): Promise<Discovery>;
 }
+
+/**
+ * Where an adapter reaches one account's mail, and with what (ADR 0136, rule 4: the backend picks
+ * the adapter by `transport`). An IMAP or SMTP target names its server; a Graph target has none,
+ * and its credential is a Graph token (provider `microsoftGraph`). Build it with `incomingTarget`
+ * or `outgoingTarget`.
+ */
+export type MailTarget =
+  | {
+      /** Absent reads as `imap`. */
+      readonly transport?: "imap";
+      readonly server: MailServerSettings;
+      readonly credential: Credential;
+    }
+  | {
+      readonly transport: "graph";
+      readonly server?: undefined;
+      readonly credential: Credential;
+    };
 
 /** How the server took the flag at one copy of a message. */
 export type FlagOutcome =
   /** The flag is set (or cleared) there. */
   | "done"
-  /** The copy is gone or the folder was rebuilt (UIDVALIDITY): sync will tell what is there now. */
+  /**
+   * The copy is gone or the folder was rebuilt (UIDVALIDITY): sync will tell what is there now.
+   * Graph's `404` (ADR 0136, rule 7).
+   */
   | "stale"
-  /** The server refused (read-only folder, no permission): a retry will not help. */
+  /** The server refused (read-only folder, no permission; Graph's `403`): a retry will not help. */
   | "rejected";
 
 export interface FlagResult {
@@ -1104,7 +1257,9 @@ export interface FlagResult {
 }
 
 /**
- * Writes flags to the server (ADR 0039). Works on the connection it came from. A server that
+ * Writes flags to the server (ADR 0039). Works on the connection it came from. Each location
+ * carries the provider's `itemId` where it has one (Graph: one `PATCH` per copy, ADR 0136,
+ * rule 7). A server that
  * says no is an outcome; trouble with the connection throws an error with a `kind`
  * (`mailErrorKind`) and never contains the password, and a repeat is safe.
  */
@@ -1115,7 +1270,11 @@ export interface MailFlagsPort {
 
 /** How the server took the move of one copy of a message. */
 export type MoveOutcome =
-  /** The copy is in the target now. `location` is where, when the server said (`uidMap`, rule 13). */
+  /**
+   * The copy is in the target now. `location` is where, when the server said (`uidMap`, rule 13);
+   * a provider that cannot tell the number the store gives it there leaves it out, and the next
+   * sync finds the copy as a known message (ADR 0136, rule 5).
+   */
   | { readonly kind: "moved"; readonly location?: MessageLocation }
   /** The copy is gone or the folder was rebuilt (UIDVALIDITY): sync will tell what is there now. */
   | { readonly kind: "stale" }
@@ -1136,7 +1295,9 @@ export interface ExpungeResult {
 }
 
 /**
- * Moves mail on the server (ADR 0044, rule 13). Works on the connection it came from. A server
+ * Moves mail on the server (ADR 0044, rule 13). Works on the connection it came from. Over Graph
+ * a move is `POST /me/messages/{itemId}/move`, to a well-known folder for Archive, Trash and Junk,
+ * and an expunge is `DELETE`, only in Deleted Items (ADR 0136, rule 7). A server
  * that says no is an outcome; trouble with the connection throws an error with a `kind`
  * (`mailErrorKind`) and never contains the password, and a repeat is safe. All the locations of
  * one call are of one account.
@@ -1173,7 +1334,9 @@ export type PartDownload =
   | { readonly kind: "gone" };
 
 /**
- * Fetches the file parts of messages the server holds (ADR 0043). Works on the connection it came
+ * Fetches the file parts of messages the server holds (ADR 0043). `partId` is the parser's: over
+ * Graph the part is cut out of the message's MIME, fetched again by its `itemId` (ADR 0136,
+ * rule 8). Works on the connection it came
  * from, so a download that takes minutes never holds up a sync. It reads without marking the
  * message as read. Trouble with the connection throws an error with a `kind` (`mailErrorKind`),
  * never containing the password.
@@ -1201,17 +1364,24 @@ export interface MailWatchHandlers {
   onClosed(error?: unknown): void;
 }
 
+/** Ends with `close()`; closing it twice is harmless. */
 export interface MailWatch {
   close(): Promise<void>;
 }
 
 /**
  * Opens connections to an account's mail server. Failures carry a `kind`
- * (`mailErrorKind`) and never contain the password.
+ * (`mailErrorKind`) and never contain the password or the token. A "connection" over Graph is a
+ * token and a client of the service, nothing held open (ADR 0136, rule 4); a connector given a
+ * target of another transport throws.
  */
 export interface MailConnectorPort {
   connect(target: MailTarget): Promise<MailConnection>;
-  /** A dedicated connection that waits on the inbox (IMAP IDLE) and reports changes. */
+  /**
+   * A dedicated connection that waits on the inbox (IMAP IDLE) and reports changes. Over Graph it
+   * asks the inbox's delta link every 30 seconds instead and calls `onChange` when the answer is
+   * not empty (ADR 0136, rule 10).
+   */
   watchInbox(target: MailTarget, handlers: MailWatchHandlers): Promise<MailWatch>;
 }
 

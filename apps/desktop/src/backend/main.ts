@@ -44,6 +44,7 @@ import { RemoteSend } from "./remoteSend.ts";
 import { RemoteViews } from "./remoteViews.ts";
 import { StorageService } from "./storageService.ts";
 import { SyncHost } from "./syncHost.ts";
+import { DNS_VARIABLE, GRAPH_BASE_VARIABLE, testDiscovery } from "./testSeams.ts";
 import { mark } from "./trace.ts";
 
 interface MessagePortLike {
@@ -159,6 +160,8 @@ async function createBackend(): Promise<Backend> {
     spoolDir,
     attachmentWorker,
     receivedDir,
+    // Set by main in a dev build's window tests only (testSeams.ts).
+    graphBase: process.env[GRAPH_BASE_VARIABLE] || null,
   };
   // A grant that ended (copy done, or never used) lets main delete a pasted image's temp file.
   const grants = new GrantBook({
@@ -391,7 +394,7 @@ async function createBackend(): Promise<Backend> {
   void notices.start();
   const accounts = new RemoteAccounts({
     accounts: reader.read.accounts,
-    discovery: new AutoconfigDiscovery(),
+    discovery: testDiscovery(process.env[DNS_VARIABLE]) ?? new AutoconfigDiscovery(),
     host,
     statuses,
     onChanged: () => {

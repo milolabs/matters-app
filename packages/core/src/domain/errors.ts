@@ -26,6 +26,22 @@ export class CredentialsUnavailableError extends Error {
   }
 }
 
+/**
+ * A browser sign-in has ended (ADR 0133, rule 8): the provider refused the refresh token, or a
+ * sign-in held for testing was not used within its 10 minutes. It is a refused sign-in like the
+ * servers' (`kind` "auth"), with the reason `signInAgain`, so it is marked and not tried again
+ * on its own (ADR 0113, rule 4).
+ */
+export class SignInEndedError extends Error {
+  readonly kind = "auth";
+  readonly detail: { readonly refusal: "signInAgain" };
+  constructor(message = "The sign-in has ended. Sign in again in the browser.") {
+    super(message);
+    this.name = "SignInEndedError";
+    this.detail = { refusal: "signInAgain" };
+  }
+}
+
 export class AccountExistsError extends Error {
   constructor(address: string) {
     super(`An account for ${address} already exists`);

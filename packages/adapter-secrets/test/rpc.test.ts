@@ -68,6 +68,7 @@ describe("credential RPC", () => {
         throw new Error("disk full");
       },
       delete: async () => {},
+      move: async () => {},
     };
     serveCredentials(ports.a, store);
     ports.b.onMessage((m) => seen.push(m));
@@ -87,6 +88,7 @@ describe("credential RPC", () => {
       },
       set: async (id) => void calls.push(`set:${id}`),
       delete: async (id) => void calls.push(`delete:${id}`),
+      move: async (from, to) => void calls.push(`move:${from}:${to}`),
     };
     const { client, ports } = pair(store);
     for (const junk of [
@@ -115,6 +117,7 @@ describe("credential RPC", () => {
       get: async () => cred,
       set: async () => {},
       delete: async () => {},
+      move: async () => {},
     });
     const answer = client.get("a");
     deliver(ports.b);

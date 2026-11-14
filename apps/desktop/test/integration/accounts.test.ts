@@ -86,7 +86,7 @@ function rig(connectorOptions: { allowInsecure?: boolean } = { allowInsecure: tr
       now: () => Date.now(),
     },
     remove: { ...storage, credentials: vault },
-    discovery: { discover: async () => null },
+    discovery: { discover: async () => ({ servers: null }) },
     scheduler,
     rejected,
     onChanged: () => {},

@@ -37,8 +37,12 @@ export class FakeMailConnector implements MailConnectorPort {
   readonly watchErrors: unknown[] = [];
   /** Passwords the server accepts; any when empty. */
   readonly acceptedPasswords = new Set<string>();
+  /** Access tokens of a browser sign-in the server accepts; any when empty. */
+  readonly acceptedTokens = new Set<string>();
   /** What a refused sign-in says, as an adapter's `detail` (ADR 0114); none when undefined. */
   refusal: FailureDetail | undefined = undefined;
+  /** Every target `connect` was given, in order: which transport and server each asked for. */
+  readonly targets: MailTarget[] = [];
   connects = 0;
   aborts = 0;
   open = 0;
@@ -53,17 +57,17 @@ export class FakeMailConnector implements MailConnectorPort {
   }
 
   private check(target: MailTarget): void {
-    if (
-      this.acceptedPasswords.size > 0 &&
-      (target.credential.kind !== "password" ||
-        !this.acceptedPasswords.has(target.credential.password))
-    ) {
-      throw new FakeMailError("auth", "authentication failed", this.refusal);
-    }
+    const { credential } = target;
+    const refused =
+      credential.kind === "password"
+        ? this.acceptedPasswords.size > 0 && !this.acceptedPasswords.has(credential.password)
+        : this.acceptedTokens.size > 0 && !this.acceptedTokens.has(credential.accessToken);
+    if (refused) throw new FakeMailError("auth", "authentication failed", this.refusal);
   }
 
   async connect(target: MailTarget): Promise<MailConnection> {
     this.connects++;
+    this.targets.push(target);
     if (this.gate) await this.gate;
     const failure = this.connectErrors.shift();
     if (failure) throw failure;

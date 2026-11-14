@@ -39,7 +39,7 @@ async function start() {
       recapture: async () => null,
     },
     accounts: {
-      discover: async () => null,
+      discover: async () => ({ servers: null }),
       list: async () => [],
       add: async () => {
         throw new Error("not used");
@@ -47,6 +47,7 @@ async function start() {
       remove: async () => false,
       syncNow: async () => false,
       changePassword: async () => null,
+      signInAgain: async () => null,
     },
   } as unknown as BackendDeps;
   async function message(over: Parameters<typeof makeMessage>[0]) {

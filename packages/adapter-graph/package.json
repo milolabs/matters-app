@@ -1,0 +1,17 @@
+{
+  "name": "@matters/adapter-graph",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@matters/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@matters/adapter-mime": "workspace:*",
+    "@matters/adapter-sqlite": "workspace:*",
+    "@matters/testkit": "workspace:*"
+  }
+}

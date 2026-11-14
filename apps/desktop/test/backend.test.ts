@@ -8,7 +8,7 @@ import { imageDeps, noCounts, noSend, noViewWrites } from "./support/noSend.ts";
 const SMALL = { messages: 400, threads: 100 };
 
 const noAccounts: BackendDeps["accounts"] = {
-  discover: async () => null,
+  discover: async () => ({ servers: null }),
   list: async () => [],
   add: async () => {
     throw new Error("not used");
@@ -16,6 +16,7 @@ const noAccounts: BackendDeps["accounts"] = {
   remove: async () => false,
   syncNow: async () => false,
   changePassword: async () => null,
+  signInAgain: async () => null,
 };
 
 function emptyDeps() {

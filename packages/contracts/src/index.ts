@@ -9,6 +9,7 @@ import type {
   AgentStatus,
   AgentWorkKind,
   AttachmentState,
+  BrowserSignInFailure,
   DeleteForeverResult,
   DiscoveredServers,
   Draft,
@@ -16,6 +17,7 @@ import type {
   DraftFor,
   FailureDetail,
   FileHit,
+  FoundProvider,
   GapSuggestion,
   GeneralImages,
   HtmlKind,
@@ -25,6 +27,7 @@ import type {
   ImageRuleScope,
   JournalEntry,
   Label,
+  MailTransport,
   Message,
   MoveAction,
   MoveKind,
@@ -160,14 +163,26 @@ export interface ServerInput {
 /**
  * Tests the login (and lists folders), then stores the account and its password. The password
  * travels here once and is never sent back.
+ *
+ * An account on servers that take only a browser sign-in (ADR 0133) has `signIn` in place of
+ * the password: the handle of a sign-in main holds for 10 minutes (rule 6). The handle is no
+ * token; the backend reads the access token by it from main's vault. Exactly one of the two. A
+ * Graph account always has `signIn` (ADR 0136, rule 3).
  */
 export interface AddAccountRequest {
   readonly type: "addAccount";
   readonly requestId: RequestId;
   readonly address: string;
   readonly displayName?: string;
-  readonly password: string;
-  readonly imap: ServerInput;
+  /**
+   * `graph`: a Microsoft mailbox over Microsoft Graph (ADR 0136, rules 2 and 13), with `signIn`
+   * and no servers. Absent is `imap`.
+   */
+  readonly transport?: MailTransport;
+  readonly password?: string;
+  readonly signIn?: string;
+  /** The incoming server; required for `imap`, absent for `graph`. */
+  readonly imap?: ServerInput;
   /** The outgoing server; without it the account can read but not send. */
   readonly smtp?: ServerInput;
 }
@@ -194,6 +209,19 @@ export interface ChangePasswordRequest {
   readonly requestId: RequestId;
   readonly accountId: string;
   readonly password: string;
+}
+
+/**
+ * *Sign in again* for an account that signs in through the browser (ADR 0133, rule 11; the
+ * counterpart of `changePassword`). `signIn` is the handle main gave for the new sign-in; the
+ * backend logs in with its token first and replaces the stored sign-in only when the servers
+ * take it.
+ */
+export interface SignInAgainRequest {
+  readonly type: "signInAgain";
+  readonly requestId: RequestId;
+  readonly accountId: string;
+  readonly signIn: string;
 }
 
 /** The starting point of a new message. Nothing is stored until the first `saveDraft`. */
@@ -1123,7 +1151,8 @@ export type BackendRequest =
   | AddAccountRequest
   | RemoveAccountRequest
   | SyncNowRequest
-  | ChangePasswordRequest;
+  | ChangePasswordRequest
+  | SignInAgainRequest;
 
 export interface ListNewestResponse {
   readonly type: "listNewest";
@@ -1667,8 +1696,13 @@ export interface DiscoverServersResponse {
   readonly type: "discoverServers";
   readonly requestId: RequestId;
   readonly ok: true;
-  /** Null: nothing knew the domain; the user types the settings. */
+  /** Null: nothing knew the servers; the user chooses who runs the mail or types the settings. */
   readonly found: DiscoveredServers | null;
+  /**
+   * Who runs the domain's mail, when DNS shows it (ADR 0135, rule 1): it decides, or with
+   * `decides` false it only puts that provider first in the list of rule 3.
+   */
+  readonly provider?: FoundProvider;
 }
 
 /** An account for display: no secrets. */
@@ -1676,6 +1710,12 @@ export interface AccountInfo {
   readonly id: string;
   readonly address: string;
   readonly displayName: string;
+  /** How its mail moves (ADR 0136, rule 2); absent is `imap`. */
+  readonly transport?: MailTransport;
+  /**
+   * The incoming server. A Graph account has none: `host` and `username` are empty, `port` is 0
+   * (ADR 0136, rule 2).
+   */
   readonly host: string;
   readonly port: number;
   readonly security: TransportSecurity;
@@ -1723,6 +1763,25 @@ export interface ChangePasswordResponse {
    */
   readonly outgoing: "verified" | "none" | "unchecked";
   readonly outgoingNote?: string;
+}
+
+/** What *Sign in again* answers (ADR 0133, rule 11): as a new password's answer, never a token. */
+export interface SignInAgainResponse extends Omit<ChangePasswordResponse, "type"> {
+  readonly type: "signInAgain";
+}
+
+/**
+ * What main answers a page that asked for a browser sign-in (ADR 0133, rules 5 and 6): the handle
+ * of what it holds and the address the provider says signed in, or why there is nothing. Never a
+ * token.
+ */
+export type BrowserSignInAnswer =
+  | { readonly ok: true; readonly handle: string; readonly address: string }
+  | BrowserSignInFailure;
+
+/** Whether this build offers a provider's browser sign-in at all (ADR 0133, rule 4). */
+export interface BrowserSignInOffer {
+  readonly offered: boolean;
 }
 
 /**
@@ -2395,6 +2454,7 @@ export type BackendResponse =
   | RemoveAccountResponse
   | SyncNowResponse
   | ChangePasswordResponse
+  | SignInAgainResponse
   | ErrorResponse;
 
 /** Pushed by the backend after the store changed; the renderer refetches what it shows. */

@@ -119,7 +119,7 @@ async function openRuntime(
     storage,
     connector: new ImapConnector({ parser: new PostalMimeParser(), allowInsecure: true }),
     channel,
-    discovery: { discover: async () => null },
+    discovery: { discover: async () => ({ servers: null }) },
     registrableDomain,
     clock,
     files: new ThreadedFileWork({

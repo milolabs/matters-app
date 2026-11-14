@@ -78,7 +78,7 @@ async function openRuntime(dbPath: string, vault: InMemoryCredentialStore): Prom
     storage,
     connector: new ImapConnector({ parser: new PostalMimeParser(), allowInsecure: true }),
     channel,
-    discovery: { discover: async () => null },
+    discovery: { discover: async () => ({ servers: null }) },
     registrableDomain,
     clock: systemClock,
     files: new FakeFileWork(),

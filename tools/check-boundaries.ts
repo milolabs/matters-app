@@ -89,6 +89,22 @@ const rules: readonly Rule[] = [
     allowNode: true,
     checkManifest: true,
   },
+  // Browser sign-in (ADR 0133, rule 13): node:crypto, node:http and fetch, no package of its own.
+  // Main wires it; the vault gets its renewal injected, so neither knows the other.
+  {
+    pkg: "packages/adapter-oauth",
+    allowed: ["@matters/core"],
+    allowNode: true,
+    checkManifest: true,
+  },
+  // Microsoft mail over Graph (ADR 0136, rule 4): fetch, node:http(s) and node:crypto, no SDK
+  // and no package of its own. The MIME parser is injected, as for the IMAP adapter.
+  {
+    pkg: "packages/adapter-graph",
+    allowed: ["@matters/core"],
+    allowNode: true,
+    checkManifest: true,
+  },
   // Credential file and RPC; the Electron-side encryptor lives in apps/desktop/src/main.
   {
     pkg: "packages/adapter-secrets",
@@ -138,6 +154,8 @@ const rules: readonly Rule[] = [
       "@matters/adapter-compose",
       "@matters/adapter-files",
       "@matters/adapter-filetext",
+      // Microsoft mail over Graph, picked by the account's transport (ADR 0136, rule 4).
+      "@matters/adapter-graph",
       "@matters/adapter-imap",
       "@matters/adapter-mime",
       "@matters/adapter-ollama",

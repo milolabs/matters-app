@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  browserSignInProvider,
   failureDetailOf,
   HOST_RULES,
   hostRule,
   needsBrowserSignIn,
+  newPasswordCanFix,
   refusalFromWording,
   SERVER_TEXT_MAX,
   serverSentence,
@@ -118,6 +120,13 @@ describe("failureDetailOf", () => {
     expect(failureDetailOf(new Error("x"))).toBeUndefined();
     expect(failureDetailOf(null)).toBeUndefined();
   });
+
+  it("knows a browser sign-in that has ended (ADR 0133, rule 8), which no password mends", () => {
+    expect(failureDetailOf({ detail: { refusal: "signInAgain" } })).toEqual({
+      refusal: "signInAgain",
+    });
+    expect(newPasswordCanFix("signInAgain")).toBe(false);
+  });
 });
 
 describe("host rules", () => {
@@ -148,5 +157,39 @@ describe("host rules", () => {
       true,
     );
     expect(takesPassword({ imap: { host: "imap.example.pl", auth: ["oauth2"] } })).toBe(false);
+  });
+
+  it("ask an account's transport first: a Graph account signs in with Graph's entry (ADR 0136, rule 2)", () => {
+    expect(browserSignInProvider({ transport: "graph" })).toBe("microsoftGraph");
+    expect(needsBrowserSignIn({ transport: "graph" })).toBe(true);
+    // An IMAP account on Microsoft's servers keeps the IMAP entry; elsewhere, none.
+    expect(
+      browserSignInProvider({ transport: "imap", imap: { host: "outlook.office365.com" } }),
+    ).toBe("microsoft");
+    expect(browserSignInProvider({ transport: "imap", imap: { host: "imap.example.com" } })).toBe(
+      undefined,
+    );
+  });
+
+  it("say whose browser sign-in an account's servers take (ADR 0133, rule 11)", () => {
+    expect(browserSignInProvider({ imap: { host: "outlook.office365.com" } })).toBe("microsoft");
+    expect(
+      browserSignInProvider({
+        imap: { host: "IMAP-MAIL.outlook.com." },
+        smtp: { host: "smtp-mail.outlook.com" },
+      }),
+    ).toBe("microsoft");
+    expect(
+      browserSignInProvider({
+        imap: { host: "imap.example.com" },
+        smtp: { host: "smtp.office365.com" },
+      }),
+    ).toBe("microsoft");
+    expect(browserSignInProvider({ imap: { host: "imap.gmail.com" } })).toBeUndefined();
+    expect(browserSignInProvider({ imap: { host: "imap.example.com" } })).toBeUndefined();
+    // Every host that takes only browser sign-in names its provider.
+    for (const rule of HOST_RULES) {
+      expect(rule.signIn === "browserOnly").toBe(rule.provider !== undefined);
+    }
   });
 });

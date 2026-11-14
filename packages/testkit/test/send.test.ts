@@ -600,6 +600,33 @@ describe("unknown outcome", () => {
     expect((await r.op(op.id)).state.kind).toBe("succeeded");
   });
 
+  it("a credential that cannot be had waits for that send only; the others are still checked", async () => {
+    const r = await rig({ capabilities: ["savesSent"] });
+    await unknownSend(r);
+    await unknownSend(r);
+    const unknown = await r.storage.outbox.listByState(["unknown"]);
+    expect(unknown).toHaveLength(2);
+    const second = unknown[1]?.messageId as string;
+    let calls = 0;
+    const credentials = r.deps.credentials;
+    const deps: ProcessDeps = {
+      ...r.deps,
+      credentials: {
+        ...credentials,
+        get: async (id: string) => {
+          if (calls++ === 0) throw new Error("renewal failed");
+          return credentials.get(id);
+        },
+      } as ProcessDeps["credentials"],
+    };
+    expect(await reconcileUnknown(deps, { graceMs: 60_000 })).toEqual({
+      resolved: 0,
+      leftToUser: 0,
+      waiting: 2,
+    });
+    expect(r.connector.sent.searches).toEqual([second]);
+  });
+
   it("Gmail: a copy found by search settles it as sent, with no APPEND", async () => {
     const r = await rig({ capabilities: ["savesSent"] });
     const { d, op } = await unknownSend(r);

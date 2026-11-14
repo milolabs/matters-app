@@ -1,8 +1,9 @@
-import type { AccountInfo, ServerInput } from "@matters/contracts";
+import type { AccountInfo } from "@matters/contracts";
 import type {
   AccountStorePort,
   AddAccountDeps,
-  DiscoveredServers,
+  Discovery,
+  NewPasswordResult,
   RejectedPasswords,
   RemoveAccountDeps,
   ServerDiscoveryPort,
@@ -10,8 +11,8 @@ import type {
   SyncScheduler,
   SyncStatus,
 } from "@matters/core";
-import { addAccount, removeAccount, setNewPassword } from "@matters/core";
-import type { AccountsApi, PasswordChanged } from "./handler.ts";
+import { addAccount, canSendFrom, removeAccount, setNewPassword, signInAgain } from "@matters/core";
+import type { AccountsApi, NewAccountInput, PasswordChanged } from "./handler.ts";
 
 /** What the renderer sees of an account; no secrets are in a `StoredAccount`. */
 export function accountInfo(a: StoredAccount, status: SyncStatus): AccountInfo {
@@ -19,11 +20,13 @@ export function accountInfo(a: StoredAccount, status: SyncStatus): AccountInfo {
     id: a.id,
     address: a.address,
     displayName: a.displayName,
-    host: a.imap.host,
-    port: a.imap.port,
-    security: a.imap.security,
-    username: a.imap.username,
-    canSend: a.smtp !== undefined,
+    // A Graph account has no servers to show (ADR 0136, rule 2).
+    ...(a.transport === "graph" ? { transport: "graph" as const } : {}),
+    host: a.imap?.host ?? "",
+    port: a.imap?.port ?? 0,
+    security: a.imap?.security ?? "tls",
+    username: a.imap?.username ?? "",
+    canSend: canSendFrom(a),
     status,
   };
 }
@@ -54,7 +57,7 @@ export class AccountService implements AccountsApi {
     this.deps = deps;
   }
 
-  discover(domain: string): Promise<DiscoveredServers | null> {
+  discover(domain: string): Promise<Discovery> {
     return this.deps.discovery.discover(domain);
   }
 
@@ -62,13 +65,8 @@ export class AccountService implements AccountsApi {
     return (await this.deps.accounts.list()).map((a) => this.info(a));
   }
 
-  async add(input: {
-    address: string;
-    displayName: string;
-    password: string;
-    imap: ServerInput;
-    smtp?: ServerInput;
-  }): Promise<{ account: AccountInfo; folderCount: number }> {
+  /** With a password, or with the handle of a browser sign-in main holds (ADR 0133, rule 6). */
+  async add(input: NewAccountInput): Promise<{ account: AccountInfo; folderCount: number }> {
     const { account, folderCount } = await addAccount(this.deps.add, input);
     this.deps.scheduler.add(account);
     this.deps.onChanged();
@@ -88,10 +86,32 @@ export class AccountService implements AccountsApi {
   async changePassword(accountId: string, password: string): Promise<PasswordChanged | null> {
     if (!(await this.deps.accounts.get(accountId))) return null;
     // Throws with the stored password untouched when a server refuses or the vault fails.
-    const { account, outgoing } = await setNewPassword(this.deps.add, { accountId, password });
+    const result = await setNewPassword(this.deps.add, { accountId, password });
     this.deps.rejected?.clear(accountId);
-    // The work that waited for a password may log in again, the sync first and at once.
-    void this.deps.scheduler.reconnect(accountId).catch(() => {});
+    return this.mended(result);
+  }
+
+  /**
+   * *Sign in again* (ADR 0133, rule 11), with the after-effects of a verified new password (ADR
+   * 0113, rules 4 and 5): the refusal's mark ends and the account's work logs in again.
+   */
+  async signInAgain(accountId: string, signIn: string): Promise<PasswordChanged | null> {
+    if (!(await this.deps.accounts.get(accountId))) {
+      // The held sign-in is of no use now; it is dropped rather than left for 10 minutes.
+      await this.deps.add.credentials.delete(signIn).catch(() => {});
+      return null;
+    }
+    // Throws with the stored sign-in untouched when a server refuses or the vault fails.
+    const result = await signInAgain(
+      { ...this.deps.add, ...(this.deps.rejected ? { rejected: this.deps.rejected } : {}) },
+      { accountId, signIn },
+    );
+    return this.mended(result);
+  }
+
+  /** What follows a verified new password or sign-in: the sync first, and at once. */
+  private mended({ account, outgoing }: NewPasswordResult): PasswordChanged {
+    void this.deps.scheduler.reconnect(account.id).catch(() => {});
     this.deps.onChanged();
     return {
       // What the window shows until the sync reports: the old refusal is over.

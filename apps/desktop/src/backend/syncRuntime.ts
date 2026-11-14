@@ -30,6 +30,8 @@ import {
   countMatches,
   createFileReader,
   draftFor,
+  failureDetailOf,
+  incomingTarget,
   ReceivedDownloads,
   RejectedPasswords,
   receivedId,
@@ -66,6 +68,7 @@ import {
 import { SeenService } from "./seenService.ts";
 import { SendService } from "./sendService.ts";
 import { TransferBook } from "./transfers.ts";
+import { type RefusedTokenBook, renewingRefused } from "./transports.ts";
 import { ViewService } from "./viewService.ts";
 
 const STOP_WAIT_MS = 2500;
@@ -90,7 +93,13 @@ export interface MailSendAdapters {
 export interface SyncRuntimeOptions {
   /** Opened with `reader: false`; this thread is the only one that writes. */
   readonly storage: SqliteStorage;
+  /** Picks the adapter by the target's transport (ADR 0136, rule 4; see transports.ts). */
   readonly connector: MailConnectorPort;
+  /**
+   * The tokens Graph refused, shared with the Graph adapters: a refused one is renewed before it
+   * is handed out again (ADR 0136, rule 11). Without it the vault is read as it is.
+   */
+  readonly refusedTokens?: RefusedTokenBook;
   readonly channel: WorkerChannel;
   readonly discovery: ServerDiscoveryPort;
   readonly sending: MailSendAdapters;
@@ -137,12 +146,15 @@ export interface SyncRuntime {
   stop(): Promise<void>;
 }
 
-function wireError(error: unknown): WireError {
+/** An error as it crosses to the router: what classifies it, and what the adapter could tell. */
+export function wireError(error: unknown): WireError {
   const e = error as { name?: unknown; message?: unknown; kind?: unknown } | null;
+  const detail = failureDetailOf(error);
   return {
     name: typeof e?.name === "string" ? e.name : "Error",
     message: typeof e?.message === "string" ? e.message : String(error),
     ...(typeof e?.kind === "string" ? { kind: e.kind } : {}),
+    ...(detail === undefined ? {} : { detail }),
   };
 }
 
@@ -169,13 +181,14 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
     await seedMoveDemo(writers);
   }
 
-  const credentials = new RemoteCredentialPort({
+  const vault = new RemoteCredentialPort({
     postMessage: (data) => post({ type: "credentials", data }),
     onMessage: (handler) =>
       channel.onMessage((m) => {
         if (m.type === "credentials") handler(m.data);
       }),
   });
+  const credentials = options.refusedTokens ? renewingRefused(vault, options.refusedTokens) : vault;
   // A password the server refused is not used again by work that logs in on its own; the
   // scheduler and the account requests read the vault itself (ADR 0113, rule 4).
   const rejected = new RejectedPasswords();
@@ -343,7 +356,7 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
     const credential = await vaultUnlessRejected.get(accountId);
     if (!credential)
       throw new CredentialsUnavailableError("No password is stored for this account");
-    return connector.connect({ server: account.imap, credential });
+    return connector.connect(incomingTarget(account, credential));
   };
   const downloads = options.received
     ? new ReceivedDownloads(
@@ -538,10 +551,21 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
   ): Promise<CommandResults[WorkerCommand["name"]]> => {
     switch (command.name) {
       case "addAccount":
+        // Over Graph: the handle and no servers (ADR 0136, rules 2, 13).
+        if (command.transport === "graph") {
+          return accounts.add({
+            transport: "graph",
+            address: command.address,
+            displayName: command.displayName,
+            signIn: command.signIn,
+          });
+        }
         return accounts.add({
           address: command.address,
           displayName: command.displayName,
-          password: command.password,
+          ...(command.signIn === undefined
+            ? { password: command.password }
+            : { signIn: command.signIn }),
           imap: command.imap,
           ...(command.smtp === undefined ? {} : { smtp: command.smtp }),
         });
@@ -551,6 +575,8 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         return accounts.syncNow(command.accountId);
       case "changePassword":
         return accounts.changePassword(command.accountId, command.password);
+      case "signInAgain":
+        return accounts.signInAgain(command.accountId, command.signIn);
       case "setSeen":
         return seen.setSeen(command.keys, command.seen);
       case "moveThread":
@@ -786,7 +812,7 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         ]),
         new Promise((r) => setTimeout(r, STOP_WAIT_MS)),
       ]);
-      credentials.dispose();
+      vault.dispose();
       storage.close();
       // After the writer: a build cut off now finds the database closed and writes nothing.
       await options.files.dispose?.().catch(() => {});

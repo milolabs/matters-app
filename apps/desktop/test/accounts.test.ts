@@ -45,7 +45,7 @@ function setup() {
   const discovery: ServerDiscoveryPort = {
     discover: async (domain) => {
       asked.push(domain);
-      return domain === "example.com" ? found : null;
+      return { servers: domain === "example.com" ? found : null };
     },
   };
   const scheduler = new SyncScheduler({

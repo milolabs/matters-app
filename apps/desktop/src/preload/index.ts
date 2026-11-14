@@ -13,6 +13,7 @@ import {
 import { createFileBridge } from "./fileBridge.ts";
 import { createNoticeBridge } from "./noticeBridge.ts";
 import { createReceivedBridge } from "./receivedBridge.ts";
+import { createSignInBridge } from "./signInBridge.ts";
 import { createStorageBridge } from "./storageBridge.ts";
 
 ipcRenderer.on("matters:port", (event) => {
@@ -159,6 +160,16 @@ ipcRenderer.on(CHANNEL_APPEARANCE_CHANGED, (_event, data: unknown) =>
     paintTheme();
   }),
 );
+
+// Browser sign-in (ADR 0133): main opens the browser and keeps the tokens; the page gets a handle.
+const signIn = createSignInBridge(
+  {
+    invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+    post: (message) => window.postMessage(message, "*"),
+  },
+  window,
+);
+window.addEventListener("message", (event) => signIn.message(event));
 
 // Smoke mode only: let the page hand its timings to main.
 if (process.argv.includes("--matters-smoke")) {
