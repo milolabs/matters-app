@@ -300,10 +300,16 @@ export class GraphSubmitter implements MailSubmitPort {
             throw error;
           }
           if (next.done) break;
-          // One piece is always held back: the last one goes after `beforeDataEnd`.
-          await Promise.race([write(held), answer]);
-          if (early !== null) throw ANSWERED;
-          held = encoder.push(next.value);
+          // One piece is always held back: the last one goes after `beforeDataEnd`. A chunk
+          // that gives the encoder nothing to put out (an empty one, or one too short to fill
+          // three bytes) changes nothing: what is held stays held, or the body could be whole
+          // on the wire with only nothing left to send.
+          const piece = encoder.push(next.value);
+          if (piece.length > 0) {
+            await Promise.race([write(held), answer]);
+            if (early !== null) throw ANSWERED;
+            held = piece;
+          }
           sent += next.value.byteLength;
           watch?.onProgress?.(sent, source.size);
         }

@@ -33,6 +33,14 @@ function source(text: string, chunk = 64): MimeSource {
   };
 }
 
+/** Resolves when the stand-in has taken a message, or after `ms` when it has taken none. */
+async function taken(server: { readonly sent: readonly unknown[] }, ms: number): Promise<void> {
+  const until = Date.now() + ms;
+  while (server.sent.length === 0 && Date.now() < until) {
+    await new Promise((done) => setTimeout(done, 5));
+  }
+}
+
 const message = mail("out-1", {
   to: "Ann <ann@example.org>, bob@example.org",
   body: "x".repeat(5000),
@@ -132,16 +140,28 @@ describe("sending over Graph's sendMail (ADR 0136, rule 9)", () => {
       const head = text.slice(0, text.indexOf("\r\n\r\n") + 2);
       const bcc = Buffer.byteLength(bccHeader(head, envelope.recipients));
       if ((bcc + Buffer.byteLength(text)) % 3 !== 0) continue;
-      const result = await submitter.submit(target(), envelope, source(text), {
-        beforeDataEnd: async () => {
-          throw new Error("the mark could not be written");
+      // The same when the source ends with a chunk of nothing, which a source may give.
+      const plain = source(text);
+      const endingEmpty: MimeSource = {
+        size: plain.size,
+        async *open() {
+          yield* plain.open();
+          yield new Uint8Array(0);
         },
-      });
-      expect(result).toMatchObject({ kind: "rejected" });
-      // Not a wait of some length: the stand-in says when the dropped connection is closed and
-      // what it carried has been handled, so a whole body taken would be in `sent` by now.
-      await server.settled();
-      expect(server.sent).toEqual([]);
+      };
+      for (const from of [plain, endingEmpty]) {
+        const result = await submitter.submit(target(), envelope, from, {
+          beforeDataEnd: async () => {
+            // A body that is whole on the wire is taken by the stand-in while this waits, and
+            // the wait ends the moment it is; only a body held back waits the time out.
+            await taken(server, 300);
+            throw new Error("the mark could not be written");
+          },
+        });
+        expect(result).toMatchObject({ kind: "rejected" });
+        await server.settled();
+        expect(server.sent).toEqual([]);
+      }
       return;
     }
     throw new Error("no length divisible by three");

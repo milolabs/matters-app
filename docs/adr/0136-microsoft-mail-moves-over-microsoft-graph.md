@@ -140,7 +140,10 @@
   - the largest message `sendMail` takes as MIME (the documentation gives no number);
   - that `Bcc` recipients in the MIME are delivered and the header is not shown to others;
   - how delta query orders and pages a large personal mailbox;
-  - how often a normal day's use meets `429`.
+  - how often a normal day's use meets `429`;
+  - whether `DELETE /me/mailFolders/{id}/messages/{id}` refuses a message that has left that
+    folder when ids are immutable. If it does, delete-for-good should use it: today a message
+    restored between the question of rule 7 and the `DELETE` is still deleted.
 - Not covered: Exchange on a company's own servers (IMAP), shared mailboxes, archive
   mailboxes, national clouds, calendars and contacts, categories and the Focused inbox.
 - Search stays local, as for every account.
