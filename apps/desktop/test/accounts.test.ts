@@ -360,6 +360,9 @@ describe("accounts store colours", () => {
     const store = createRoot(() => createAccountsStore(backend));
     await store.refresh();
     await expect(store.remove("a")).resolves.toEqual(compaction);
+    // The row is gone although the list could not be read again.
+    expect(store.accounts().map((a) => a.id)).toEqual([]);
+    expect("a" in store.statuses()).toBe(false);
   });
 
   it("does not shift the other colours when an account is removed", async () => {

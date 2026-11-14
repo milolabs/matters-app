@@ -68,7 +68,12 @@ export function createAccountsStore(backend: Backend) {
         setChosenColors(rest);
         writeAccountColors(rest);
       }
-      // The removal is done: a list that fails to load now must not hide what became of it.
+      // The removal is done: the row goes now, so a list that fails to load cannot leave it shown,
+      // and must not hide what became of the removal.
+      batch(() => {
+        setAccounts((list) => list.filter((a) => a.id !== id));
+        setStatuses(({ [id]: _status, ...rest }) => rest);
+      });
       await refresh().catch((error: unknown) =>
         console.error("the accounts could not be listed after a removal", error),
       );
