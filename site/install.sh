@@ -33,12 +33,25 @@ fail() {
 
 tmp=""
 volume=""
+dest=""
+lock=""     # a folder in $dest that says an install is under way there; ours once we made it
+incoming="" # the new app, copied beside the old one
+previous="" # the old app, moved aside until the new one is in place
 cleanup() {
   if [ -n "$volume" ] && [ -d "$volume" ]; then
     hdiutil detach "$volume" -quiet 2>/dev/null || hdiutil detach "$volume" -force -quiet 2>/dev/null || true
   fi
   if [ -n "$tmp" ]; then rm -rf "$tmp"; fi
+  # Stopped half way: the old app goes back where it was.
+  if [ -n "$previous" ] && [ -e "$previous" ] && [ ! -e "$dest/Matters.app" ]; then
+    mv "$previous" "$dest/Matters.app" || true
+  fi
+  if [ -n "$incoming" ]; then rm -rf "$incoming"; fi
+  if [ -n "$lock" ]; then rmdir "$lock" 2>/dev/null || true; fi
 }
+
+# Is the copy in $dest running? Only that copy: a Matters started from somewhere else is left alone.
+running() { ps -axo comm= | grep -qF "$dest/Matters.app/Contents/"; }
 
 fetch() { # fetch <url> <file> [curl options]
   local url="$1" file="$2"
@@ -55,6 +68,7 @@ main() {
 
   tmp="$(mktemp -d)"
   trap cleanup EXIT
+  trap 'exit 130' INT TERM HUP # a stop from outside still goes through cleanup
 
   # Which version: the one named, or the one the site's download button offers.
   local tag="${MATTERS_VERSION:-}"
@@ -72,13 +86,20 @@ main() {
   local image="Matters-$version-arm64.dmg"
   local base="https://github.com/$REPO/releases/download/$tag"
 
-  local dest="${MATTERS_INSTALL_DIR:-/Applications}"
+  dest="${MATTERS_INSTALL_DIR:-/Applications}"
   [ -d "$dest" ] || fail "$dest is not a folder."
+  # The folder as the system names it: no "..", no trailing slash, no link. The check for a
+  # running copy compares paths, so it needs the same spelling the system uses.
+  dest="$(cd "$dest" && pwd -P)" || fail "could not open the install folder."
   [ -w "$dest" ] || fail "you cannot write to $dest. Set MATTERS_INSTALL_DIR to a folder of your own, such as ~/Applications."
-  # Only the copy this would replace: a Matters started from somewhere else is left alone.
-  if ps -axo comm= | grep -qF "$dest/Matters.app/Contents/"; then
-    fail "Matters is running. Quit it, then run this again."
+  if running; then fail "Matters is running. Quit it, then run this again."; fi
+
+  # One install into a folder at a time. mkdir either makes the folder or fails: there is no
+  # moment in which two runs both have it.
+  if ! mkdir "$dest/.Matters.app.lock" 2> /dev/null; then
+    fail "another install into $dest is under way. If none is, remove $dest/.Matters.app.lock and run this again."
   fi
+  lock="$dest/.Matters.app.lock"
 
   say "Downloading Matters $version"
   fetch "$base/$image" "$tmp/$image" --progress-bar || fail "could not download $base/$image"
@@ -113,19 +134,31 @@ main() {
 
   say "Installing into $dest"
   # Copied beside the old one and checked first, so a failure leaves the old one in place.
-  local incoming="$dest/.Matters.app.installing"
   local replaced=""
-  rm -rf "$incoming"
-  ditto "$volume/Matters.app" "$incoming" || fail "could not copy the app to $dest."
-  if ! codesign --verify --deep --strict "$incoming" 2> /dev/null; then
-    rm -rf "$incoming"
-    fail "the app's signature does not hold. Nothing was installed."
+  # What a run that was killed outright may have left: its old app goes back first.
+  if [ -e "$dest/.Matters.app.previous" ] && [ ! -e "$dest/Matters.app" ]; then
+    mv "$dest/.Matters.app.previous" "$dest/Matters.app"
   fi
+  rm -rf "$dest/.Matters.app.installing" "$dest/.Matters.app.previous"
+  incoming="$dest/.Matters.app.installing"
+  ditto "$volume/Matters.app" "$incoming" || fail "could not copy the app to $dest."
+  codesign --verify --deep --strict "$incoming" 2> /dev/null ||
+    fail "the app's signature does not hold. Nothing was installed."
+  # Again, now: Matters may have been started while this was downloading.
+  if running; then fail "Matters is running. Quit it, then run this again. Nothing was installed."; fi
+  # The old app is moved aside, not deleted, until the new one is in its place. If this stops
+  # in between, cleanup moves it back.
   if [ -e "$dest/Matters.app" ]; then
     replaced=1
-    rm -rf "$dest/Matters.app"
+    previous="$dest/.Matters.app.previous"
+    mv "$dest/Matters.app" "$previous" || fail "could not move the old Matters aside. Nothing was installed."
   fi
-  mv "$incoming" "$dest/Matters.app"
+  mv "$incoming" "$dest/Matters.app" || fail "could not put the new Matters in place. The old one is back."
+  incoming=""
+  if [ -n "$previous" ]; then
+    rm -rf "$previous"
+    previous=""
+  fi
 
   if [ -n "${MATTERS_NO_OPEN:-}" ]; then
     ok "Installed $dest/Matters.app"

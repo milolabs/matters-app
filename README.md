@@ -106,8 +106,11 @@ On a Mac with Apple silicon, in Terminal:
 curl -fsSL https://getmatters.app/install.sh | bash
 ```
 
-It downloads the newest release, checks it, puts Matters in Applications and opens it. Running
-it again installs a newer version over the old one.
+It downloads the release the [download page](https://getmatters.app/download.html) offers,
+checks it, puts Matters in Applications and opens it. That is the newest stable release, or,
+while there is none, the newest alpha. It replaces the Matters that is in Applications without
+comparing versions, so running it again is how you get a newer one. To choose a version
+yourself, name it: `curl -fsSL https://getmatters.app/install.sh | MATTERS_VERSION=0.1.0-alpha.5 bash`.
 
 An alpha is not notarized by Apple yet. A copy downloaded in a browser is refused by macOS until
 you allow it in System Settings; a file fetched with curl is not marked as downloaded, so macOS

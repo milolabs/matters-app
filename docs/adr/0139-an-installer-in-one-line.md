@@ -52,8 +52,12 @@ kind of unmarked ad-hoc build on every run.
 4. **It does not touch the quarantine mark or any setting.** It never runs `xattr`, `spctl` or
    `sudo`. If a later macOS starts marking such files, the script will not work around it.
 5. **It replaces only what it installed over, and only when that copy is not running.** The new
-   app is copied beside the old one and checked first; a failure leaves the old one. The target
-   is `/Applications`, or `MATTERS_INSTALL_DIR`.
+   app is copied beside the old one and checked first. The old one is then moved aside, not
+   deleted, until the new one is in its place, and moved back if the run stops in between. It
+   looks for a running copy twice: at the start, and again just before the swap. One install
+   runs in a folder at a time. Versions are not compared: what the site offers replaces what is
+   there, also a newer alpha once there is a stable release. The target is `/Applications`, or
+   `MATTERS_INSTALL_DIR`.
 6. **A cut-off download runs nothing**: the script is one function called on its last line.
 7. **The installer is the way offered first, and the disk image stays.** On the download page
    the line is at the top and the disk image is a link under it; the buttons of the first page
