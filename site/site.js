@@ -3,6 +3,27 @@
 // a release it says so. Without scripts the page keeps the words it was served with, which are
 // true before and after a release.
 
+// A Copy button beside a command. It is hidden in the page and shown here, so without scripts
+// there is no button that does nothing.
+for (const button of document.querySelectorAll("[data-copy]")) {
+  if (!navigator.clipboard) continue;
+  button.hidden = false;
+  button.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(button.dataset.copy);
+      button.textContent = "Copied";
+    } catch {
+      // The browser said no: the command is selected instead, for ⌘C.
+      const code = button.parentElement.querySelector("code");
+      if (code) getSelection().selectAllChildren(code);
+      button.textContent = "Press ⌘C";
+    }
+    setTimeout(() => {
+      button.textContent = "Copy";
+    }, 1600);
+  });
+}
+
 try {
   const res = await fetch("release.json", { cache: "no-cache" });
   const r = res.ok ? await res.json() : {};
@@ -20,11 +41,13 @@ try {
       month: "long",
       year: "numeric",
     });
-    for (const el of document.querySelectorAll("[data-download]")) {
-      el.href = r.url;
+    // The installer is the way we offer first (ADR 0139): a button leads to the download page,
+    // and only a link marked "file" goes to the disk image.
+    for (const el of document.querySelectorAll('[data-download="file"]')) el.href = r.url;
+    for (const el of document.querySelectorAll('[data-download]:not([data-download="file"])')) {
       el.textContent = r.stage
-        ? `Download the ${r.stage} (Apple silicon)` // short enough for one line on a phone
-        : "Download for macOS (Apple silicon)";
+        ? `Get the ${r.stage} (Apple silicon)` // short enough for one line on a phone
+        : "Get it for macOS (Apple silicon)";
     }
     for (const el of document.querySelectorAll("[data-version]")) {
       el.textContent = `${r.version} · ${day}`;
