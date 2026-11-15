@@ -286,3 +286,7 @@ and an error is never read as "gone" or "absent".
   live.com, msn.com), compared on the whole domain without case. A pattern such as `outlook.*`
   also took `outlook.example.com`, whose work accounts would have been shown the personal page
   alone. A domain missing from the list gets both pages, which is the safe side.
+- **The file of the look for a newer version is a declared holding (ADR 0137).**
+  `newer-version.json`, added to the data folder while this decision was in review, goes with the
+  settings. It holds the switch, the last answer and its ETag: nothing of the mail. The request's
+  session is in memory only and leaves nothing to erase. An erase never gets as far as the look.

@@ -1,0 +1,415 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matters: a newer version</title>
+<style>
+/* Layout: one column of three studies (the window, Settings, what it never does). Each shows a
+   mock of the real app (view tabs + query bar + list) with the app's own tokens
+   (renderer/styles.css): dark first, as the brand defaults to dark. */
+:root {
+  color-scheme: dark;
+  --bg: #1e1e20; --chrome: #242426; --ink: #f5f5f7; --mid: #c3c3c8; --secondary: #98989f;
+  --fill: #2c2c30; --soft: #252528; --selected: #323236; --button: #3a3a3f; --hairline: #34343a;
+  --edge: #4c4c52; --late: #ff7e57; --good: #6bcb93; --agent: #b9aef7; --page: #161618; --acct-blue: #7f9ee0; --acct-ochre: #c9a664;
+  --mark-m: #f5f1ea; --mark-ball: #9a88f5;
+  --pop: 0 1px 2px rgb(0 0 0 / 0.4), 0 18px 50px rgb(0 0 0 / 0.45);
+  --sans: -apple-system, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
+  --serif: ui-serif, "New York", "Iowan Old Style", Georgia, serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #ffffff; --chrome: #fafaf9; --ink: #1d1d1f; --mid: #55555a; --secondary: #6e6e73;
+    --fill: #f3f3f1; --soft: #f7f7f5; --selected: #f0f0ee; --button: #eaeae7; --hairline: #ededeb;
+    --edge: #c9c9c4; --late: #c4401a; --good: #1f6b40; --agent: #5b45c9; --page: #ecebe8; --acct-blue: #3a5ba0; --acct-ochre: #8a6d3b;
+    --mark-m: #1d1d1f; --mark-ball: #5b45c9;
+    --pop: 0 1px 2px rgb(0 0 0 / 0.05), 0 18px 50px rgb(0 0 0 / 0.1);
+  }
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff; --chrome: #fafaf9; --ink: #1d1d1f; --mid: #55555a; --secondary: #6e6e73;
+  --fill: #f3f3f1; --soft: #f7f7f5; --selected: #f0f0ee; --button: #eaeae7; --hairline: #ededeb;
+  --edge: #c9c9c4; --late: #c4401a; --good: #1f6b40; --agent: #5b45c9; --page: #ecebe8; --acct-blue: #3a5ba0; --acct-ochre: #8a6d3b;
+  --mark-m: #1d1d1f; --mark-ball: #5b45c9;
+  --pop: 0 1px 2px rgb(0 0 0 / 0.05), 0 18px 50px rgb(0 0 0 / 0.1);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--ink); font: 13px/1.4 var(--sans);
+  -webkit-font-smoothing: antialiased; padding: 40px 16px 80px;
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: default; }
+button:focus-visible { outline: 1px solid var(--edge); outline-offset: 2px; border-radius: 6px; }
+.wrap { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px; }
+
+.intro { display: flex; flex-direction: column; gap: 8px; max-width: 720px; }
+.intro h1 { margin: 0; font: 600 28px/1.2 var(--serif); letter-spacing: -0.01em; text-wrap: balance; }
+.intro p { margin: 0; color: var(--mid); font-size: 15px; line-height: 1.5; }
+.themes { display: flex; gap: 4px; margin-top: 8px; }
+.themes button { height: 22px; padding: 0 8px; border-radius: 6px; font-size: 12px; color: var(--mid); }
+.themes button[aria-pressed="true"] { background: var(--button); color: var(--ink); font-weight: 500; }
+
+.study { display: flex; flex-direction: column; gap: 16px; }
+.study > h2 { margin: 0; font: 600 22px/1.2 var(--serif); }
+.study > p { margin: -8px 0 0; color: var(--secondary); max-width: 720px; }
+.pair { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 24px; align-items: start; }
+@media (max-width: 860px) { .pair { grid-template-columns: minmax(0, 1fr); } }
+.notes { display: flex; flex-direction: column; gap: 12px; font-size: 12px; color: var(--mid); }
+.notes h3 { margin: 0 0 2px; font-size: 11px; font-weight: 600; color: var(--secondary);
+  text-transform: uppercase; letter-spacing: 0.04em; }
+.notes ul { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; }
+.cap { font-size: 11px; color: var(--secondary); margin: 0 0 6px; }
+
+/* The mock window */
+.win { position: relative; border: 1px solid var(--edge); border-radius: 12px; background: var(--bg);
+  box-shadow: var(--pop); overflow: hidden; }
+.win + .cap { margin-top: 16px; }
+.hdr { display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 14px 0 96px;
+  border-bottom: 1px solid var(--hairline); background: var(--chrome); position: relative; }
+.lights { position: absolute; left: 20px; top: 20px; display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--edge); }
+.views { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow: hidden; }
+.vt { flex: none; display: inline-flex; align-items: baseline; gap: 5px; height: 26px; line-height: 26px;
+  padding: 0 9px; border-radius: 7px; color: var(--mid); white-space: nowrap; }
+.vt[aria-selected="true"] { background: var(--selected); color: var(--ink); font-weight: 500; }
+.vt small { font-size: 11.5px; color: var(--secondary); font-weight: 400; }
+.tool { display: inline-flex; width: 30px; height: 30px; flex: none; align-items: center;
+  justify-content: center; border-radius: 7px; color: var(--mid); }
+.tool:hover { background: var(--button); color: var(--ink); }
+.qbar { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px;
+  border-bottom: 1px solid var(--hairline); color: var(--secondary); }
+.row { display: grid; grid-template-columns: 150px minmax(0, 1fr) 56px; gap: 12px; align-items: baseline;
+  height: 34px; line-height: 34px; padding: 0 14px; border-bottom: 1px solid var(--hairline); }
+.row b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row span { color: var(--mid); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row time { color: var(--secondary); font-size: 12px; text-align: right; }
+.row.read b { font-weight: 400; color: var(--mid); }
+
+.act { height: 22px; padding: 0 8px; font-size: 12px; border-radius: 6px; color: var(--mid); white-space: nowrap; }
+.act:hover { background: var(--fill); }
+.act.main { background: var(--button); color: var(--ink); font-weight: 500; }
+.ext { color: var(--secondary); margin-left: 2px; }
+
+/* The window with its two panes, for the studies of section 1 */
+.body2 { display: grid; grid-template-columns: 340px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+  height: 286px; overflow: hidden; }
+@media (max-width: 620px) { .body2 { grid-template-columns: minmax(0, 1fr); } .reader { display: none; } }
+.lcol { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--hairline); }
+.lrows { flex: 1; min-height: 0; overflow: hidden; }
+.lrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 8px; padding: 7px 14px;
+  border-bottom: 1px solid var(--hairline); }
+.lrow.sel { background: var(--selected); }
+.lrow b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow time { font-size: 12px; color: var(--secondary); }
+.lrow span { grid-column: 1 / -1; font-size: 12px; color: var(--mid); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.lrow.read b { font-weight: 400; color: var(--mid); }
+.reader { padding: 24px 28px; min-width: 0; }
+.reader h4 { margin: 0; font: 600 22px/1.2 var(--serif); }
+.reader .from { margin: 6px 0 16px; font-size: 12px; color: var(--secondary); }
+.reader p { margin: 0 0 10px; font: 15px/1.55 var(--serif); max-width: 520px; }
+
+.study .pair + .pair { margin-top: 16px; }
+
+/* The list's foot row, as the app has it (app.tsx): accounts and sync, the reading, the gear. */
+.foot { position: relative; flex: none; display: flex; height: 44px; border-top: 1px solid var(--hairline); background: var(--chrome); }
+.foot.alone { border: 1px solid var(--hairline); border-radius: 8px; }
+.facct { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 0 16px; font-size: 12px; color: var(--mid); }
+.avs { display: flex; flex: none; }
+.av { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10.5px; font-weight: 600; color: var(--bg); box-shadow: 0 0 0 2px var(--chrome); }
+.av + .av { margin-left: -6px; }
+.sdot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--good); }
+.fsay { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fseg { display: flex; align-items: center; gap: 8px; padding: 0 12px; border-left: 1px solid var(--hairline);
+  font-size: 12px; color: var(--agent); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ring { width: 12px; height: 12px; flex: none; border-radius: 50%; border: 1.5px solid var(--edge); border-top-color: var(--agent); }
+.fgear { position: relative; margin: 0 6px; align-self: center; }
+.fgear.hover { background: var(--button); color: var(--ink); }
+/* THE NEW PART: the dot. */
+.pip { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--ink);
+  box-shadow: 0 0 0 2px var(--chrome); }
+.fgear.hover .pip { box-shadow: 0 0 0 2px var(--button); }
+.tip { position: absolute; right: 6px; bottom: 100%; margin-bottom: 6px; padding: 4px 8px; border-radius: 6px;
+  background: var(--button); color: var(--ink); font-size: 12px; white-space: nowrap; box-shadow: var(--pop); }
+.navpip { float: right; width: 6px; height: 6px; margin-top: 12px; border-radius: 50%; background: var(--ink); }
+
+/* Settings */
+.set { display: flex; min-height: 392px; }
+.set nav { width: 188px; flex: none; display: flex; flex-direction: column; gap: 2px; padding: 52px 10px 12px;
+  border-right: 1px solid var(--hairline); background: var(--chrome); position: relative; }
+.set nav span { height: 30px; line-height: 30px; padding: 0 10px; border-radius: 7px; color: var(--mid); }
+.set nav span[aria-current] { background: var(--selected); color: var(--ink); font-weight: 500; }
+.set main { flex: 1; min-width: 0; }
+.set .top { display: flex; align-items: center; height: 52px; padding: 0 20px; border-bottom: 1px solid var(--hairline); }
+.set .top h3 { margin: 0; font: 600 17px var(--serif); }
+.blk { padding: 16px 20px; border-bottom: 1px solid var(--hairline); }
+.blk legend, .blk h5 { margin: 0 0 8px; padding: 0; font-size: 13px; font-weight: 600; }
+.blk p { margin: 0; }
+.blk .sub { margin-top: 6px; font-size: 12px; color: var(--secondary); max-width: 520px; }
+.who { display: flex; align-items: center; gap: 12px; }
+.who svg { flex: none; }
+.who strong { display: block; font: 600 15px var(--serif); }
+.who small { font-size: 12px; color: var(--secondary); }
+.line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 12px; }
+.line .say { flex: 1 1 200px; }
+.pill { height: 32px; padding: 0 14px; border-radius: 8px; background: var(--button); font-size: 13px; }
+.pill.primary { background: var(--ink); color: var(--bg); font-weight: 600; }
+.check { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.box { width: 14px; height: 14px; flex: none; border-radius: 4px; background: var(--ink); color: var(--bg);
+  display: inline-flex; align-items: center; justify-content: center; }
+.box.off { background: none; border: 1px solid var(--edge); }
+
+.states.wide { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.states { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.state { border: 1px solid var(--hairline); border-radius: 10px; background: var(--bg); padding: 12px; }
+.state .tag { font-size: 11px; color: var(--secondary); margin-bottom: 6px; }
+.state p { margin: 0; }
+.state .sub { font-size: 12px; color: var(--secondary); margin-top: 4px; }
+
+/* The app menu */
+.menu { width: 248px; padding: 5px; border: 1px solid var(--edge); border-radius: 8px; background: var(--bg);
+  box-shadow: var(--pop); }
+.menu div { height: 22px; line-height: 22px; padding: 0 9px; border-radius: 5px; }
+.menu div.on { background: var(--selected); }
+.menu hr { border: 0; border-top: 1px solid var(--hairline); margin: 5px 9px; }
+.menu .dim { color: var(--secondary); }
+
+.never { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.never div { border-top: 1px solid var(--edge); padding-top: 8px; }
+.never b { display: block; font-weight: 600; }
+.never span { font-size: 12px; color: var(--secondary); }
+code { font: 12px var(--mono); }
+</style>
+
+<div class="wrap">
+  <header class="intro">
+    <h1>A newer version: the app says so, once, and waits</h1>
+    <p>
+      Stage 2 of releases, its first half. Matters learns that a newer release exists and says it in
+      one quiet place, away from the controls. It installs nothing: the download opens in the browser, as it does from the
+      site. A newer version is a state of the app, not a message to the person, so there is no
+      banner, no badge and no dialog.
+    </p>
+    <div class="themes" role="group" aria-label="Theme">
+      <button type="button" data-theme-set="dark" aria-pressed="true">Dark</button>
+      <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
+    </div>
+  </header>
+
+  <section class="study">
+    <h2>1. In the window: a dot on the Settings gear</h2>
+    <p>
+      The list already has a foot row: the accounts and their sync, the agent's reading, the gear.
+      Nothing is added to it. When a newer version is known the gear carries a dot, and it opens
+      Settings on About.
+    </p>
+    <div class="pair">
+      <div>
+        <p class="cap">A newer version is known</p>
+        <div class="win">
+          <div class="hdr">
+            <div class="lights"><i></i><i></i><i></i></div>
+            <div class="views">
+              <span class="vt" aria-selected="true">Matters <small>3</small></span>
+              <span class="vt">All mail <small>12</small></span>
+              <span class="vt">Waiting on me</span>
+              <span class="vt">Invoices</span>
+            </div>
+            <span class="tool" title="New message  c">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8.5v4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h4" /><path d="M12 2l2 2-5.5 5.5L6 10l.5-2.5z" /></svg>
+            </span>
+          </div>
+          <div class="qbar">Search, or filter: <code>from:anna is:unread</code></div>
+          <div class="body2">
+            <div class="lcol">
+              <div class="lrows">
+                <div class="lrow sel"><b>Anna Kowalska</b><time>09:12</time><span>Contract draft, second pass</span></div>
+                <div class="lrow"><b>Tom Becker</b><time>08:40</time><span>Re: Offsite dates</span></div>
+                <div class="lrow read"><b>Stripe</b><time>Thu</time><span>Your invoice for November is ready</span></div>
+                <div class="lrow read"><b>Li Wei</b><time>Thu</time><span>Notes from the call</span></div>
+                <div class="lrow read"><b>Marta Nowak</b><time>Wed</time><span>Re: Keys for the new office</span></div>
+              </div>
+              <div class="foot"><span class="facct"><span class="avs"><span class="av" style="background:var(--acct-blue)">M</span><span class="av" style="background:var(--acct-ochre)">W</span></span><i class="sdot"></i><span class="fsay">Synced 09:14</span></span><span class="tool fgear"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="2.2" /><path d="M8 1.6v1.7M8 12.7v1.7M1.6 8h1.7M12.7 8h1.7M3.5 3.5l1.2 1.2M11.3 11.3l1.2 1.2M3.5 12.5l1.2-1.2M11.3 4.7l1.2-1.2" /></svg><i class="pip"></i></span></div>
+            </div>
+            <div class="reader">
+              <h4>Contract draft, second pass</h4>
+              <p class="from">Anna Kowalska · today at 09:12</p>
+              <p>Hi, I went through the draft again. Two clauses still read as if the notice period were thirty days; we agreed on sixty.</p>
+              <p>Can you look by Friday? I would like to send it on Monday.</p>
+            </div>
+          </div>
+        </div>
+        <p class="cap" style="margin-top:20px">The foot row in each state</p>
+        <div class="states wide">
+          <div class="state"><div class="tag">Today, nothing newer, the check off or failed</div><div class="foot alone"><span class="facct"><span class="avs"><span class="av" style="background:var(--acct-blue)">M</span><span class="av" style="background:var(--acct-ochre)">W</span></span><i class="sdot"></i><span class="fsay">Synced 09:14</span></span><span class="tool fgear"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="2.2" /><path d="M8 1.6v1.7M8 12.7v1.7M1.6 8h1.7M12.7 8h1.7M3.5 3.5l1.2 1.2M11.3 11.3l1.2 1.2M3.5 12.5l1.2-1.2M11.3 4.7l1.2-1.2" /></svg></span></div></div>
+          <div class="state"><div class="tag">A newer version is known</div><div class="foot alone"><span class="facct"><span class="avs"><span class="av" style="background:var(--acct-blue)">M</span><span class="av" style="background:var(--acct-ochre)">W</span></span><i class="sdot"></i><span class="fsay">Synced 09:14</span></span><span class="tool fgear"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="2.2" /><path d="M8 1.6v1.7M8 12.7v1.7M1.6 8h1.7M12.7 8h1.7M3.5 3.5l1.2 1.2M11.3 11.3l1.2 1.2M3.5 12.5l1.2-1.2M11.3 4.7l1.2-1.2" /></svg><i class="pip"></i></span></div></div>
+          <div class="state"><div class="tag">Under the pointer</div><div style="height:30px"></div><div class="foot alone"><span class="facct"><span class="avs"><span class="av" style="background:var(--acct-blue)">M</span><span class="av" style="background:var(--acct-ochre)">W</span></span><i class="sdot"></i><span class="fsay">Synced 09:14</span></span><span class="tool fgear hover"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="2.2" /><path d="M8 1.6v1.7M8 12.7v1.7M1.6 8h1.7M12.7 8h1.7M3.5 3.5l1.2 1.2M11.3 11.3l1.2 1.2M3.5 12.5l1.2-1.2M11.3 4.7l1.2-1.2" /></svg><i class="pip"></i></span><span class="tip" role="tooltip">Settings · Matters 0.1.0-alpha.5 is out</span></div></div>
+          <div class="state"><div class="tag">The agent is reading too: nothing gives way</div><div class="foot alone"><span class="facct"><span class="avs"><span class="av" style="background:var(--acct-blue)">M</span><span class="av" style="background:var(--acct-ochre)">W</span></span><i class="sdot"></i><span class="fsay">Synced 09:14</span></span><span class="fseg"><i class="ring"></i>Needs you 292 / 754</span><span class="tool fgear"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="2.2" /><path d="M8 1.6v1.7M8 12.7v1.7M1.6 8h1.7M12.7 8h1.7M3.5 3.5l1.2 1.2M11.3 11.3l1.2 1.2M3.5 12.5l1.2-1.2M11.3 4.7l1.2-1.2" /></svg><i class="pip"></i></span></div></div>
+        </div>
+      </div>
+      <aside class="notes">
+        <div>
+          <h3>The dot</h3>
+          <ul>
+            <li>7 px, the colour of the text. Green is "sent", red is "late", violet is the agent's.</li>
+            <li>Its words are in the tooltip, in the gear's name for a screen reader, in the menu and in Settings.</li>
+            <li>With the dot the gear opens About. Without it, Settings as today.</li>
+            <li>The same dot marks About in the list of sections.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>When it goes</h3>
+          <ul>
+            <li>Once About has been shown, both dots go for this version, in every window.</li>
+            <li>The next version brings them back. About keeps saying what is out.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>What it costs</h3>
+          <ul>
+            <li>The window says it without words, and a dot on a gear is easy to miss. If testers stay on old versions, the next step is a segment in the foot row.</li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="study">
+    <h2>2. In Settings: About</h2>
+    <p>
+      A new section, last in the list. It is where the version is read and where the check is turned off.
+    </p>
+    <div class="pair">
+      <div>
+        <div class="win set">
+          <nav>
+            <div class="lights"><i></i><i></i><i></i></div>
+            <span>Accounts</span><span>Agents</span><span>Notifications</span><span>Appearance</span>
+            <span>Images</span><span>Storage</span><span aria-current="page">About<i class="navpip"></i></span>
+          </nav>
+          <main>
+            <div class="top"><h3>About</h3></div>
+            <div class="blk">
+              <div class="who">
+                <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true">
+                  <rect width="40" height="40" rx="9" fill="var(--fill)" />
+                  <path d="M10 28V13l7 9 7-9v15" fill="none" stroke="var(--mark-m)" stroke-width="3"
+                    stroke-linecap="round" stroke-linejoin="round" />
+                  <circle cx="30" cy="27" r="2.6" fill="var(--mark-ball)" />
+                </svg>
+                <div>
+                  <strong>Matters</strong>
+                  <small>Version 0.1.0-alpha.4 · an alpha</small>
+                </div>
+              </div>
+              <div class="line">
+                <p class="say" role="status"><b>0.1.0-alpha.5 is out.</b> Published on 14 November.</p>
+                <button type="button" class="pill">Release notes<span class="ext">↗</span></button>
+                <button type="button" class="pill primary">Download ↗</button>
+              </div>
+              <p class="sub">Matters does not install it. The download opens in your browser.</p>
+            </div>
+            <div class="blk">
+              <h5>Newer versions</h5>
+              <div class="check">
+                <span class="box" role="checkbox" aria-checked="true">
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor"
+                    stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.2l2 2 4-4.4" /></svg>
+                </span>
+                Check for a newer version
+              </div>
+              <div class="line">
+                <p class="say sub" style="margin:0">Checked today at 09:14.</p>
+                <button type="button" class="pill">Check now</button>
+              </div>
+            </div>
+            <div class="blk" style="border-bottom:0">
+              <p class="sub" style="margin:0">
+                AGPL-3.0-only · <u>Source</u> ↗ · <u>Report a problem</u> ↗
+              </p>
+            </div>
+          </main>
+        </div>
+
+        <p class="cap" style="margin-top:20px">The line under the version, in each state</p>
+        <div class="states">
+          <div class="state">
+            <div class="tag">Newest</div>
+            <p>This is the newest version.</p>
+            <p class="sub">Checked today at 09:14.</p>
+          </div>
+          <div class="state">
+            <div class="tag">Newer one known</div>
+            <p><b>0.1.0-alpha.5 is out.</b> Published on 14 November.</p>
+            <p class="sub">Release notes ↗ · Download ↗</p>
+          </div>
+          <div class="state">
+            <div class="tag">Could not check</div>
+            <p>Could not check: getmatters.app did not answer.</p>
+            <p class="sub">Last checked on 12 November. Matters tries again when it next starts.</p>
+          </div>
+          <div class="state">
+            <div class="tag">Check turned off</div>
+            <p>Matters does not check for newer versions.</p>
+            <p class="sub">Releases are listed at getmatters.app ↗</p>
+          </div>
+          <div class="state">
+            <div class="tag">Built from source</div>
+            <p>This build does not check for newer versions.</p>
+            <p class="sub">It was not made by the release workflow.</p>
+          </div>
+        </div>
+      </div>
+
+      <aside class="notes">
+        <div>
+          <h3>From the menu</h3>
+          <div class="menu" aria-hidden="true">
+            <div>About Matters</div>
+            <div class="on">Check for a Newer Version…</div>
+            <hr>
+            <div>Settings… <span class="dim" style="float:right">⌘,</span></div>
+            <div>Notifications <span class="dim" style="float:right">›</span></div>
+          </div>
+          <ul style="margin-top:10px">
+            <li>Opens Settings on About and checks now. The answer is the line there, in words, also when it is "newest" or "could not check".</li>
+            <li>A failed check is said only here, never in the mail window: it is not the person's problem to solve.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Words</h3>
+          <ul>
+            <li>"is out", "newest": the app's plain register. No "update available", no exclamation mark.</li>
+            <li>The stage is always named for a pre-release, as on the site (ADR 0129).</li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="study">
+    <h2>3. What it never does</h2>
+    <div class="never">
+      <div><b>No system banner</b><span>Banners are for mail (ADR 0071). A version is not mail.</span></div>
+      <div><b>No Dock badge</b><span>The badge counts unread mail and nothing else.</span></div>
+      <div><b>No dialog at start</b><span>Nothing stands between the person and their mail.</span></div>
+      <div><b>No install, no download by the app</b><span>That is the second half of stage 2, with its own record: it needs a checked signature.</span></div>
+      <div><b>No "skip forever"</b><span>Seeing About clears the dot for that version only. Turning the check off is in Settings.</span></div>
+    </div>
+  </section>
+</div>
+
+<script>
+  const root = document.documentElement;
+  for (const b of document.querySelectorAll("[data-theme-set]")) {
+    b.addEventListener("click", () => {
+      root.dataset.theme = b.dataset.themeSet;
+      for (const o of document.querySelectorAll("[data-theme-set]"))
+        o.setAttribute("aria-pressed", String(o === b));
+    });
+  }
+</script>

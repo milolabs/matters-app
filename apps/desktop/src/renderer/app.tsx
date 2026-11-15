@@ -85,6 +85,7 @@ import { createMatchNavigator, type MatchNavigator } from "./matchNavigator.ts";
 import { MovePicker } from "./movePicker.tsx";
 import type { MoveLine, MovesStore } from "./moves.ts";
 import { movePlaces } from "./moveView.ts";
+import { createReleaseStore, gearLabel } from "./newerVersion.ts";
 import { NoticeStack } from "./noticeStack.tsx";
 import type { OutboxStore } from "./outbox.ts";
 import { OVERLAY_BELOW } from "./paneWidth.ts";
@@ -226,6 +227,8 @@ export function App(props: Stores) {
 
 function Mail(props: Stores) {
   const { store, accounts, outbox, moves, folders, compose, views, agent } = props;
+  // What main knows of newer versions, for the gear's dot (ADR 0137, rule 9).
+  const release = createReleaseStore();
   // A reply is written under its thread; everything else covers the reader (ADR 0100).
   // Only where the thread itself is shown: with another thread open, it covers the reader.
   const inlineReply = () => {
@@ -1327,14 +1330,23 @@ function Mail(props: Stores) {
                 onPause={(paused) => (paused ? agent.pauseReading() : agent.resumeReading())}
               />
             </Show>
+            {/* With a newer version unseen the gear carries a dot in the text's colour, says it in
+                its name and tooltip, and opens About (ADR 0137, rule 9). Nothing in the row moves. */}
             <button
               type="button"
-              aria-label="Settings"
-              title="Settings  ⌘,"
-              class={`${toolButton} mx-1.5 shrink-0 self-center`}
-              onClick={() => showSettings()}
+              aria-label={gearLabel(release.info())}
+              title={release.info()?.dot ? gearLabel(release.info()) : "Settings  ⌘,"}
+              class={`${toolButton} group/gear relative mx-1.5 shrink-0 self-center`}
+              onClick={() => showSettings(release.info()?.dot ? "about" : undefined)}
             >
               <SettingsIcon />
+              <Show when={release.info()?.dot}>
+                <span
+                  data-newer-dot
+                  aria-hidden="true"
+                  class="absolute top-1 right-1 size-[7px] rounded-full bg-ink ring-2 ring-chrome group-hover/gear:ring-button"
+                />
+              </Show>
             </button>
           </div>
         </section>

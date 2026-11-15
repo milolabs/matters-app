@@ -32,8 +32,16 @@ import {
   THEMES_FULL,
   type ThemeAddAnswer,
 } from "@matters/contracts";
-import type { CredentialPort } from "@matters/core";
-import { isPermissionPageId, permissionPageUrl } from "@matters/core";
+import {
+  type CredentialPort,
+  checkDue,
+  isPermissionPageId,
+  isReleaseLink,
+  msUntilCheck,
+  permissionPageUrl,
+  RELEASE_DOWNLOAD_PAGE,
+  RELEASE_FILE_URL,
+} from "@matters/core";
 import {
   app,
   BrowserWindow,
@@ -43,7 +51,10 @@ import {
   MessageChannelMain,
   Notification,
   nativeTheme,
+  net,
+  powerMonitor,
   screen,
+  session,
   shell,
   utilityProcess,
 } from "electron";
@@ -66,6 +77,11 @@ import {
 import { CHANNEL_DROP, CHANNEL_PASTE, CHANNEL_PICK } from "../preload/fileBridge.ts";
 import { CHANNEL_NOTICE_SYSTEM } from "../preload/noticeBridge.ts";
 import { CHANNEL_RECEIVED } from "../preload/receivedBridge.ts";
+import {
+  CHANNEL_RELEASE,
+  CHANNEL_RELEASE_CHANGED,
+  CHANNEL_SETTINGS_SECTION,
+} from "../preload/releaseBridge.ts";
 import { CHANNEL_SIGN_IN } from "../preload/signInBridge.ts";
 import { CHANNEL_STORAGE } from "../preload/storageBridge.ts";
 import {
@@ -150,6 +166,22 @@ import { NOTIFICATION_SETTINGS_URL, noticeSystem } from "./noticeSystem.ts";
 import { NoticeShower, noticeFrom, type PauseState, pauseMenu, pauseTarget } from "./notices.ts";
 import { createQuarantine } from "./quarantine.ts";
 import { ReceivedFiles } from "./received.ts";
+import {
+  ABOUT_LINKS,
+  afterCheck,
+  etagToSend,
+  markSeen,
+  parseStoredRelease,
+  RELEASE_STATE_FILE,
+  type ReleaseOutcome,
+  releaseInfo,
+  releaseLinkFor,
+  releaseMenuLabel,
+  type StoredRelease,
+  serializeStoredRelease,
+} from "./release.ts";
+import { requestReleaseFile } from "./releaseRequest.ts";
+import { isReleaseOpen } from "./releaseShapes.ts";
 import { revealDeadline } from "./revealPolicy.ts";
 import { SafeStorageEncryptor } from "./safeStorage.ts";
 import {
@@ -712,6 +744,69 @@ function removeTheme(id: string): AppearanceInfo | null {
 let appearanceChanged = () => {};
 
 /**
+ * Where the check for a newer version reads (ADR 0137, rules 2 and 5). A packaged app reads the
+ * site's file; a build that is not packaged never asks, unless a window test of it points the
+ * check at a stand-in on this machine (`MATTERS_TEST_RELEASE_URL`, loopback only), which then
+ * also turns it on. A packaged app reads no such variable.
+ */
+const releaseUrl: string | null = app.isPackaged
+  ? RELEASE_FILE_URL
+  : (() => {
+      const standIn = process.env.MATTERS_TEST_RELEASE_URL;
+      return standIn !== undefined && isLoopbackUrl(standIn) ? standIn : null;
+    })();
+const releasePath = () => join(app.getPath("userData"), RELEASE_STATE_FILE);
+
+/** What `newer-version.json` holds; read when first needed, after userData is final. */
+function readStoredRelease(): StoredRelease {
+  let text: string | null = null;
+  try {
+    text = readFileSync(releasePath(), "utf8");
+  } catch {
+    // No file yet: the check is on, and nothing is known (ADR 0137, rule 6).
+  }
+  return parseStoredRelease(text);
+}
+
+/**
+ * The request's own session, in memory only: no cookie jar, no cache and nothing of the mail's
+ * pages is shared with it (ADR 0137, rule 3). A corpus run watches it as it watches the windows.
+ */
+let releaseSessionMade: Electron.Session | null = null;
+function releaseSession(): Electron.Session {
+  if (releaseSessionMade) return releaseSessionMade;
+  releaseSessionMade = session.fromPartition("matters-release", { cache: false });
+  if (securityRun) {
+    releaseSessionMade.webRequest.onBeforeRequest((details, done) => {
+      securityEvent("request", { url: details.url, type: "release" });
+      done({});
+    });
+  }
+  return releaseSessionMade;
+}
+
+/** One GET of the file (ADR 0137, rules 3, 4 and 8): no cookie, no credentials, no redirect. */
+function fetchRelease(url: string, etag: string | null): Promise<ReleaseOutcome> {
+  return requestReleaseFile(
+    {
+      open: (target) =>
+        net.request({
+          method: "GET",
+          url: target,
+          session: releaseSession(),
+          credentials: "omit",
+          useSessionCookies: false,
+          redirect: "error",
+          cache: "no-store",
+          referrerPolicy: "no-referrer",
+        }),
+    },
+    url,
+    etag,
+  );
+}
+
+/**
  * The window's side of startup (ADR 0103): the backend's stage, which the preload puts on the page
  * for the loading screen, and when to show the window if the page does not say it is ready.
  */
@@ -880,8 +975,11 @@ function captureLoader(win: BrowserWindow): void {
   );
 }
 
-/** The settings window (ADR 0036): shown once painted, so it never opens blank. */
-function createSettingsWindow(): BrowserWindow {
+/**
+ * The settings window (ADR 0036): shown once painted, so it never opens blank. `section` is the
+ * one it opens on, when main asks for one (the menu's newer-version item opens About, ADR 0137).
+ */
+function createSettingsWindow(section?: string): BrowserWindow {
   const win = new BrowserWindow({
     width: 760,
     height: 560,
@@ -904,9 +1002,14 @@ function createSettingsWindow(): BrowserWindow {
   win.once("ready-to-show", () => win.show());
   const page = process.env.ELECTRON_RENDERER_URL;
   if (page && !app.isPackaged) {
-    void win.loadURL(new URL("settings.html", page).href);
+    const url = new URL("settings.html", page);
+    if (section !== undefined) url.searchParams.set("section", section);
+    void win.loadURL(url.href);
   } else {
-    void win.loadFile(join(import.meta.dirname, "../renderer/settings.html"));
+    void win.loadFile(
+      join(import.meta.dirname, "../renderer/settings.html"),
+      section === undefined ? undefined : { query: { section } },
+    );
   }
   return win;
 }
@@ -1038,6 +1141,7 @@ function startBackend(
     MATTERS_TEST_OAUTH_BROWSER: _browser,
     MATTERS_TEST_GRAPH_BASE: graphBase,
     MATTERS_TEST_DNS: testDns,
+    MATTERS_TEST_RELEASE_URL: _releaseUrl,
     ...inherited
   } = process.env;
   trace("backend-fork");
@@ -1351,6 +1455,17 @@ if (!identityHelper && !erasing)
     const boot = createWindow();
     const { win, stage } = boot;
     mailWindow = boot;
+    // The mail window showed its mail (ADR 0137, rule 4). Heard from here, before anything below
+    // is awaited: the page loads meanwhile, and a listener added later could miss it.
+    let mailShown = false;
+    let whenMailShown: (() => void) | null = null;
+    const onMailShown = (event: Electron.IpcMainEvent) => {
+      if (event.sender !== win.webContents) return;
+      ipcMain.removeListener("matters:first-screen", onMailShown);
+      mailShown = true;
+      whenMailShown?.();
+    };
+    ipcMain.on("matters:first-screen", onMailShown);
     trace("window-created");
     connectToBackend(win, backend);
     // The backend's stage, for the loading screen (ADR 0103, rule 1): a name and two integers.
@@ -1451,13 +1566,14 @@ if (!identityHelper && !erasing)
 
     // One settings window at most; asking again brings it forward.
     let settings: BrowserWindow | null = null;
-    function openSettings() {
+    function openSettings(section?: string) {
       if (settings) {
+        if (section !== undefined) settings.webContents.send(CHANNEL_SETTINGS_SECTION, section);
         settings.show();
         settings.focus();
         return;
       }
-      settings = createSettingsWindow();
+      settings = createSettingsWindow(section);
       connectToBackend(settings, backend);
       settings.once("closed", () => {
         settings = null;
@@ -1507,6 +1623,128 @@ if (!identityHelper && !erasing)
         }
       },
     );
+    // Newer versions (ADR 0137). The state is main's: the switch, the last answer and its ETag, and
+    // the version About was last shown with, in a file under userData (rule 14). Every window
+    // hears when it changed (ADR 0115), and the menu follows it.
+    let releaseStored: StoredRelease | null = null;
+    const releaseState = (): StoredRelease => {
+      releaseStored ??= readStoredRelease();
+      return releaseStored;
+    };
+    const releaseOn = () => releaseUrl !== null && releaseState().enabled;
+    let releaseChecking = false;
+    /** When this run last tried, for the day between checks (rules 4 and 12); null before the first. */
+    let releaseTriedMs: number | null = null;
+    let releaseTimer: ReturnType<typeof setTimeout> | undefined;
+    const currentRelease = () =>
+      releaseInfo(releaseState(), app.getVersion(), releaseUrl !== null, releaseChecking);
+    const tellRelease = () => {
+      const info = currentRelease();
+      for (const open of BrowserWindow.getAllWindows()) {
+        if (!open.isDestroyed()) open.webContents.send(CHANNEL_RELEASE_CHANGED, info);
+      }
+      rebuildMenu();
+    };
+    const keepRelease = (next: StoredRelease) => {
+      const before = serializeStoredRelease(releaseState());
+      releaseStored = next;
+      const text = serializeStoredRelease(next);
+      if (text !== before) {
+        try {
+          writeFileSync(releasePath(), text, { mode: 0o600 });
+        } catch (error) {
+          // It holds for this run; the next start asks again.
+          console.error("could not save what is known of newer versions", error);
+        }
+      }
+      tellRelease();
+    };
+    /**
+     * The next check once a day has passed since the last try (rules 4 and 12). The timer is
+     * capped at an hour and the time read again when it fires, so a Mac that slept checks when it
+     * wakes and the day has passed, not on a calendar.
+     */
+    const armRelease = () => {
+      clearTimeout(releaseTimer);
+      if (!releaseOn()) return;
+      const wait = Math.min(msUntilCheck(releaseTriedMs, Date.now()), 60 * 60 * 1000);
+      releaseTimer = setTimeout(() => {
+        if (checkDue(releaseTriedMs, Date.now())) void checkRelease();
+        else armRelease();
+      }, wait);
+    };
+    /** One check, now. Off, or a build that does not ask, makes no request at all (rules 5, 6). */
+    const checkRelease = async (): Promise<void> => {
+      if (!releaseOn() || releaseUrl === null || releaseChecking) return;
+      releaseChecking = true;
+      releaseTriedMs = Date.now();
+      tellRelease();
+      try {
+        const outcome = await fetchRelease(releaseUrl, etagToSend(releaseState()));
+        releaseChecking = false;
+        // Turned off while it was on its way: what came back is not kept.
+        if (releaseOn()) keepRelease(afterCheck(releaseState(), outcome, Date.now()));
+        else tellRelease();
+      } finally {
+        releaseChecking = false;
+        armRelease();
+      }
+    };
+    // The check of a start comes after the mail window has shown its mail, never before: it is
+    // not on the path of the launch (rule 4; ADR 0012). The mail may have been shown while this
+    // function was waiting, so the listener above heard it and this only asks whether it did.
+    whenMailShown = armRelease;
+    if (mailShown) armRelease();
+    powerMonitor.on("resume", () => {
+      if (mailShown) armRelease();
+    });
+    /** The menu's item: About, and a check when the switch is on (rule 11). */
+    const checkFromMenu = () => {
+      openSettings("about");
+      void checkRelease();
+    };
+    // Either window may read the state; only the settings window may change it, ask for a check,
+    // say About was shown, or open a link, and a link only by name (rule 8): main picks the URL
+    // from what it checked, so nothing a page says is opened.
+    ipcMain.handle(CHANNEL_RELEASE, async (event, action: unknown, arg: unknown) => {
+      const fromSettings = !!settings && event.sender === settings.webContents;
+      if (!fromSettings && event.sender !== win.webContents) return null;
+      if (action === "get") return currentRelease();
+      if (!fromSettings) return null;
+      if (action === "enable" && typeof arg === "boolean") {
+        keepRelease({ ...releaseState(), enabled: arg });
+        armRelease();
+        return currentRelease();
+      }
+      if (action === "check") {
+        void checkRelease();
+        return currentRelease();
+      }
+      if (action === "seen") {
+        keepRelease(markSeen(releaseState(), app.getVersion(), releaseUrl !== null));
+        return currentRelease();
+      }
+      if (action === "open" && isReleaseOpen(arg)) {
+        const href =
+          arg === "download" || arg === "notes"
+            ? releaseOn()
+              ? releaseLinkFor(releaseState(), app.getVersion(), arg)
+              : null
+            : ABOUT_LINKS[arg];
+        // Checked again where it is opened: the file's links only under the release pages.
+        const allowed =
+          href !== null &&
+          (href === RELEASE_DOWNLOAD_PAGE ||
+            isReleaseLink(href) ||
+            (Object.values(ABOUT_LINKS) as string[]).includes(href));
+        if (allowed) {
+          if (securityRun) securityEvent("open-external", { href });
+          else void shell.openExternal(href);
+        }
+        return currentRelease();
+      }
+      return null;
+    });
     // Settings › Storage (ADR 0089, rule 5): only the settings window may ask; sizes, never paths.
     const mainStorage = async (): Promise<MainStorage> => ({
       folders: await folderUsage(app.getPath("userData"), databasePath()),
@@ -1636,8 +1874,10 @@ if (!identityHelper && !erasing)
             label: "Matters",
             submenu: [
               { role: "about" },
+              // Opens About and checks; with the check off it only opens About (ADR 0137, rule 11).
+              { label: releaseMenuLabel(currentRelease()), click: checkFromMenu },
               { type: "separator" },
-              { label: "Settings…", accelerator: "CmdOrCtrl+,", click: openSettings },
+              { label: "Settings…", accelerator: "CmdOrCtrl+,", click: () => openSettings() },
               { label: "Notifications", submenu: notificationItems() },
               { type: "separator" },
               { role: "services" },

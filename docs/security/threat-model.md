@@ -59,6 +59,15 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
    [standards.md, A7](standards.md#a7-mail-read-by-a-model)).
 7. **Nothing is sent without you.** A message leaves only after you approved it
    ([ADR 0020](../adr/0020-sending-outbox-and-compose.md)).
+8. **One request to the project, and it says nothing about you.** A release build asks the site
+   for one small file to learn whether a newer version is out: a `GET` with no cookie, no
+   identifier and not the version it runs; the comparison is made on the Mac. The site's host
+   (GitHub Pages) sees the address the request comes from, at each start and once a day. The file
+   is not trusted: whoever could change the site could make the app say a version is out, but not
+   install anything, and the only links it can send you to are the project's release pages. The
+   check can be turned off in Settings › About, and then nothing is asked
+   ([ADR 0137](../adr/0137-the-app-says-when-a-newer-version-is-out.md),
+   [standards.md, A6](standards.md#a6-the-electron-checklist)).
 
 ## How we know
 
@@ -80,8 +89,10 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
   rehearsed, but the first one waits for the project's Developer ID. Before that, alphas are
   signed ad hoc and not notarized, and a published one is offered on the site
   ([ADR 0129](../adr/0129-the-site-offers-pre-releases.md)): macOS does not vouch for them, and
-  the build attestation is the only proof of where one comes from. There is no update channel:
-  a person with an old version is not told about a new one.
+  the build attestation is the only proof of where one comes from. A release build says when a
+  newer version is out ([ADR 0137](../adr/0137-the-app-says-when-a-newer-version-is-out.md)), but
+  it installs nothing: the download opens in the browser, and the four alphas published before
+  that are never told.
 - **An independent audit.** Nobody outside the project has reviewed the code yet.
 - **OAuth sign-in, PGP and S/MIME** are not built
   ([standards.md, Part C](standards.md#part-c-out-of-scope-for-now)).

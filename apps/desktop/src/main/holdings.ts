@@ -7,6 +7,7 @@ import { CODEX_HOLDINGS } from "@matters/adapter-codex/holdings";
 import { SECRETS_HOLDINGS } from "@matters/adapter-secrets/holdings";
 import { SQLITE_FILE_HOLDINGS } from "@matters/adapter-sqlite/holdings";
 import { type Holding, type HoldingGroup, holdingsOf } from "@matters/core";
+import { RELEASE_STATE_FILE } from "./release.ts";
 
 /** The erase order (ADR 0138, rule 3): in the data folder, gone last. */
 export const ERASE_ORDER_FILE = "erase-order.json";
@@ -77,6 +78,8 @@ export const DESKTOP_HOLDINGS: readonly Holding[] = [
   data("desktop.appearance", "settings", "settings", "appearance.json"),
   data("desktop.themes", "settings", "settings", "themes"),
   data("desktop.window", "settings", "settings", "window.json"),
+  // What the last look for a newer version found, and whether the look is on (ADR 0137).
+  data("desktop.newerVersion", "settings", "settings", RELEASE_STATE_FILE),
   data("desktop.identityMarker", "settings", "settings", IDENTITY_MARKER),
   {
     id: "desktop.notificationsState",
