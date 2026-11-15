@@ -38,6 +38,7 @@ lock=""     # a folder in $dest that says an install is under way there; ours on
 incoming="" # the new app, copied beside the old one
 previous="" # the old app, moved aside until the new one is in place
 cleanup() {
+  set +e # every step below runs, whatever the one before it did
   if [ -n "$volume" ] && [ -d "$volume" ]; then
     hdiutil detach "$volume" -quiet 2>/dev/null || hdiutil detach "$volume" -force -quiet 2>/dev/null || true
   fi
@@ -51,7 +52,9 @@ cleanup() {
 }
 
 # Is the copy in $dest running? Only that copy: a Matters started from somewhere else is left alone.
-running() { ps -axo comm= | grep -qF "$dest/Matters.app/Contents/"; }
+# grep reads the whole list (no -q): stopping at the first match could break the pipe under ps,
+# and with pipefail that would read as "not running".
+running() { ps -axo comm= | grep -F "$dest/Matters.app/Contents/" > /dev/null; }
 
 fetch() { # fetch <url> <file> [curl options]
   local url="$1" file="$2"

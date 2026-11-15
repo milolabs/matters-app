@@ -53,7 +53,10 @@ kind of unmarked ad-hoc build on every run.
    `sudo`. If a later macOS starts marking such files, the script will not work around it.
 5. **It replaces only what it installed over, and only when that copy is not running.** The new
    app is copied beside the old one and checked first. The old one is then moved aside, not
-   deleted, until the new one is in its place, and moved back if the run stops in between. It
+   deleted, until the new one is in its place, and moved back if the run fails or is stopped
+   (INT, TERM, HUP) in between. A run that is killed outright (KILL, a power cut) cleans nothing
+   up: the old app stays in `.Matters.app.previous` and the lock stays, so the next run stops and
+   names the lock folder; once the person removes it, that run moves the old app back first. It
    looks for a running copy twice: at the start, and again just before the swap. One install
    runs in a folder at a time. Versions are not compared: what the site offers replaces what is
    there, also a newer alpha once there is a stable release. The target is `/Applications`, or
