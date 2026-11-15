@@ -1325,6 +1325,14 @@ pre {
   color: var(--faint);
 }
 
+.version + .version {
+  margin-top: 10px;
+}
+
+.version a:hover {
+  color: var(--cream);
+}
+
 /* ---- Footer ---- */
 
 .foot {
@@ -1424,6 +1432,37 @@ pre {
   padding: 0;
 }
 
+.copy {
+  position: relative;
+}
+
+.copy pre {
+  padding-right: 92px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.copy + p {
+  margin-top: 18px;
+}
+
+.copy button {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--plate);
+  color: var(--cream);
+  font: 500 13px / 1 var(--sans);
+  cursor: pointer;
+}
+
+.copy button:hover {
+  border-color: var(--faint);
+}
+
 .doc pre i {
   font-style: normal;
   color: var(--faint);
@@ -1519,6 +1558,25 @@ pre {
 .release p {
   color: var(--dim);
   font-size: 15px;
+}
+
+/* `.btn` sets a display of its own, which would win over the attribute. */
+.release [hidden] {
+  display: none;
+}
+
+.release [data-released] {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.release .alt {
+  margin-top: 14px;
+}
+
+.release .alt a {
+  color: var(--cream);
+  border-bottom: 1px solid var(--faint);
 }
 
 .lost {

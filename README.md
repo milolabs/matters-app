@@ -31,15 +31,16 @@ and shows you what is still on you: what you promised, who waits for an answer, 
 </a>
 
 > [!NOTE]
-> Matters is early. There is no download yet: today you build it from source, and it is developed
-> and tested on macOS. [What it does not do yet](#what-it-does-not-do-yet) is listed below, and
-> [docs/release.md](docs/release.md) says how the first release will be made.
+> Matters is early. There are alphas for Macs with Apple silicon: [install one](#install) in one
+> line, or build it from source. [What it does not do yet](#what-it-does-not-do-yet) is listed
+> below, and [docs/release.md](docs/release.md) says what an alpha is and how releases are made.
 
 ## Contents
 
 - [What it does](#what-it-does)
 - [The agent runs on your own plan](#the-agent-runs-on-your-own-plan)
 - [What it does not do yet](#what-it-does-not-do-yet)
+- [Install](#install)
 - [Build and run](#build-and-run)
 - [How it is built](#how-it-is-built)
 - [Documentation](#documentation)
@@ -93,8 +94,34 @@ Matters has no server of its own. The agent runs on what you already have
 - **With Ollama, attachments depend on the model.** One that takes tools searches in a loop and
   reads the text of attached files, one that sees images gets images whole, and a scan in a PDF is
   not sent whole.
-- **No download, no updates, no Windows or Linux build.** How the first release will be made is in
+- **Alphas only, no updates that install themselves, no Windows or Linux build.** An alpha is not
+  notarized by Apple, and a newer one is a new install. The plan is in
   [docs/release.md](docs/release.md).
+
+## Install
+
+On a Mac with Apple silicon, in Terminal:
+
+```sh
+curl -fsSL https://getmatters.app/install.sh | bash
+```
+
+It downloads the release the [download page](https://getmatters.app/download.html) offers,
+checks it, puts Matters in Applications and opens it. That is the newest stable release, or,
+while there is none, the newest alpha. It replaces the Matters that is in Applications without
+comparing versions, so running it again is how you get a newer one. To choose a version
+yourself, name it: `curl -fsSL https://getmatters.app/install.sh | MATTERS_VERSION=0.1.0-alpha.5 bash`.
+
+An alpha is not notarized by Apple yet. A copy downloaded in a browser is refused by macOS until
+you allow it in System Settings; a file fetched with curl is not marked as downloaded, so macOS
+does not check it and shows no warning. The script checks it instead: the SHA-256 of the
+download, the signature seal of the app and, when the [GitHub CLI](https://cli.github.com) is
+installed, the record that it was built by this repository's release workflow
+([ADR 0139](docs/adr/0139-an-installer-in-one-line.md)). It is a short script:
+[read it](site/install.sh) before you run it.
+
+The disk image itself is on the [download page](https://getmatters.app/download.html) and in
+[Releases](https://github.com/milolabs/matters-app/releases).
 
 ## Build and run
 

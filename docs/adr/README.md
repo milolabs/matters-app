@@ -146,3 +146,4 @@ Format: copy [`template.md`](template.md).
 | [0136](0136-microsoft-mail-moves-over-microsoft-graph.md) | Microsoft mail moves over Microsoft Graph (amends 0008, 0016, 0133) | Accepted |
 | [0137](0137-the-app-says-when-a-newer-version-is-out.md) | The app says when a newer version is out (builds on 0123, 0129) | Accepted |
 | [0138](0138-erasing-what-matters-keeps.md) | Erasing what Matters keeps: one account, or everything (amends 0089, 0105, 0110) | Accepted |
+| [0139](0139-an-installer-in-one-line.md) | An installer in one line (amends 0123, 0129; builds on 0125, 0127) | Accepted |

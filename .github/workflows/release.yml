@@ -8,7 +8,7 @@
 #   (0.1.0-alpha.1 → 0.1.0-alpha.2, 0.1.0 → 0.1.1). A version given is taken as it is.
 # - A version with `-alpha.` makes an alpha, an early build from before the project has a
 #   Developer ID: signed ad hoc, not notarized, on a draft pre-release whose notes say so and say
-#   how to open it. It uses no secret.
+#   how to install it (site/install.sh, ADR 0139) or open it by hand. It uses no secret.
 # - Any other version makes a real one: signed with the Developer ID, notarized by Apple, with a
 #   list of what is inside it and a record of where it was built, on a draft release for a person
 #   to read and publish.
@@ -236,8 +236,17 @@ jobs:
           notarized by Apple, so macOS will refuse to open it until you allow it. Apple Silicon only.
           There are no updates: a newer alpha is a new download.
 
-          Check the download first. This shows the workflow and the commit on main the run started
-          from; the tag is that commit with only the version changed:
+          **Install it in one line**, in Terminal:
+
+              curl -fsSL https://getmatters.app/install.sh | MATTERS_VERSION=$VERSION bash
+
+          The script downloads this build, checks its SHA-256 and, when the GitHub CLI is
+          installed, where it was built, then puts Matters in Applications and opens it. A file
+          fetched with curl is not marked as downloaded, so macOS shows no warning. It is a short
+          script; [read it](https://github.com/$GITHUB_REPOSITORY/blob/main/site/install.sh) first.
+
+          **Or by hand.** Check the download first. This shows the workflow and the commit on main
+          the run started from; the tag is that commit with only the version changed:
 
               gh attestation verify Matters-$VERSION-arm64.dmg --repo $GITHUB_REPOSITORY
 

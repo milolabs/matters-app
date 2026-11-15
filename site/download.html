@@ -47,12 +47,25 @@
             <h2 data-release-title>Releases</h2>
             <p data-release-note>Every version and its files are on GitHub. Until the first one, you build it from source.</p>
           </div>
+          <a class="btn" href="https://github.com/milolabs/matters-app/releases" data-unreleased>View releases</a>
           <div data-released hidden>
             <h2>Matters for macOS</h2>
             <p data-version></p>
+            <div class="copy">
+              <pre><b>$</b> <code>curl -fsSL https://getmatters.app/install.sh | bash</code></pre>
+              <button type="button" data-copy="curl -fsSL https://getmatters.app/install.sh | bash" hidden>Copy</button>
+            </div>
+            <p class="alt">Paste it into Terminal. Or <a href="https://github.com/milolabs/matters-app/releases" data-download="file">download the disk image</a> (.dmg, Apple silicon), which macOS refuses to open until you allow it.</p>
           </div>
-          <a class="btn" href="https://github.com/milolabs/matters-app/releases" data-download>View releases</a>
         </div>
+
+        <section>
+          <h2>Install in one line</h2>
+          <p>In Terminal, <code>curl -fsSL https://getmatters.app/install.sh | bash</code> downloads the release this page offers, checks it, puts Matters in Applications and opens it. It replaces the Matters that is there. This is the way we recommend.</p>
+          <p>Until Matters is notarized by Apple, a copy downloaded in a browser is refused by macOS until you allow it in System Settings. A file fetched with curl is not marked as downloaded, so macOS does not check it and shows no warning. The script checks it instead: the SHA-256 of the download, the signature seal of the app and, when the GitHub CLI is installed, the record that it was built by our release workflow.</p>
+          <p>It is a short script. <a href="https://github.com/milolabs/matters-app/blob/main/site/install.sh">Read it</a> before you run it.</p>
+          <p>The disk image holds the same build. Open it, drag Matters to Applications and start it once; then open System Settings → Privacy &amp; Security and choose Open Anyway.</p>
+        </section>
 
         <section>
           <h2>Build from source</h2>

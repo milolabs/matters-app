@@ -11,6 +11,8 @@
   (a release also carries its build record as a file)
 - Amended by: [0129](0129-the-site-offers-pre-releases.md) (a published alpha is offered on the
   site, and named as one)
+- Amended by: [0139](0139-an-installer-in-one-line.md) (an alpha can be installed with a script
+  that macOS does not stop, and that checks the download itself)
 
 ## Context
 

@@ -32,6 +32,19 @@ one-time setup below.
 
 **What a tester does**
 
+The short way, in Terminal ([ADR 0139](adr/0139-an-installer-in-one-line.md)):
+
+```sh
+curl -fsSL https://getmatters.app/install.sh | bash
+```
+
+The script (`site/install.sh`) downloads the release the site offers, checks its SHA-256 against
+`SHA256SUMS.txt`, checks the attestation when `gh` is installed, copies Matters to Applications
+and opens it. macOS shows no warning: a file fetched with curl is not marked as downloaded, so
+Gatekeeper does not look at it. `MATTERS_VERSION=<version>` before `bash` installs that version.
+
+By hand, from the disk image:
+
 1. Checks the download: `gh attestation verify Matters-<version>-arm64.dmg --repo milolabs/matters-app`.
    With no Developer ID this is the only proof that the file is ours.
 2. Opens the disk image, drags Matters to Applications, and starts it once. macOS says it cannot
@@ -164,3 +177,6 @@ release build has no dev switches and opens your real data folder.
 - The `.intoto.jsonl` file is that same record as a file: add `--bundle <file>.intoto.jsonl` to
   check it without asking GitHub.
 - The `.spdx.json` file lists every package inside the app.
+- `site/install.sh` does the checksum and, with `gh` installed, the attestation, and stops before
+  installing when either fails. It is served from `main` with the site, so a change to it reaches
+  people when it is merged, not with a release.
