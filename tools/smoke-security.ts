@@ -7,7 +7,7 @@
 // is then judged by the ratchet. Needs Docker and `electron-vite build` first; the root
 // `smoke:security` script does both.
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -224,6 +224,11 @@ try {
   await admin.close();
   console.error(`server filled with ${cases.length} corpus messages; canary on ${ORIGIN}`);
 
+  // ADR 0137, rule 15: the check for a newer version is pointed at the canary and turned off, as a
+  // person turns it off. With the check off, and in a build that is not packaged, nothing may ask
+  // the canary for it, and nothing may leave for the site.
+  mkdirSync(join(dir, "userData"), { recursive: true });
+  writeFileSync(join(dir, "userData", "newer-version.json"), JSON.stringify({ enabled: false }));
   const { ELECTRON_RUN_AS_NODE: _drop, MATTERS_SEED: _seed, ...env } = process.env;
   const child = spawn(process.execPath, [join(root, "apps/desktop")], {
     env: {
@@ -243,6 +248,7 @@ try {
         username: server.user,
       }),
       MATTERS_TEST_PASSWORD: server.password,
+      MATTERS_TEST_RELEASE_URL: `http://${ORIGIN}/__release/release.json`,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -319,6 +325,25 @@ try {
   if (!refreshControl)
     failures.push(
       "control: the page sending the frame to one of our own pages was not seen as an allowed navigation (the navigation wall tests could pass without testing anything)",
+    );
+
+  // ---- the check for a newer version, turned off (ADR 0137, rules 5, 6 and 15) ----
+  const releaseHits = hits.filter((h) => h.path.startsWith("/__release")).length;
+  const releaseRequests = events.filter(
+    (e) =>
+      e.kind === "request" &&
+      (/^https?:\/\/(?:[^/]*\.)?getmatters\.app(?:[:/]|$)/i.test(e.url ?? "") ||
+        (e.url ?? "").includes("/__release")),
+  );
+  if (releaseHits > 0)
+    failures.push(
+      `newer version: the check was off, yet the canary was asked ${releaseHits} times`,
+    );
+  if (releaseRequests.length > 0)
+    failures.push(
+      `newer version: the check was off, yet main saw requests for it: ${releaseRequests
+        .map((e) => e.url)
+        .join(", ")}`,
     );
 
   // ---- judge every check ----

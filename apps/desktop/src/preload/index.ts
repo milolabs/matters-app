@@ -13,6 +13,11 @@ import {
 import { createFileBridge } from "./fileBridge.ts";
 import { createNoticeBridge } from "./noticeBridge.ts";
 import { createReceivedBridge } from "./receivedBridge.ts";
+import {
+  CHANNEL_RELEASE_CHANGED,
+  CHANNEL_SETTINGS_SECTION,
+  createReleaseBridge,
+} from "./releaseBridge.ts";
 import { createSignInBridge } from "./signInBridge.ts";
 import { createStorageBridge } from "./storageBridge.ts";
 
@@ -160,6 +165,19 @@ ipcRenderer.on(CHANNEL_APPEARANCE_CHANGED, (_event, data: unknown) =>
     paintTheme();
   }),
 );
+
+// Newer versions (ADR 0137): kept by main; every window hears when the state changed, and the
+// settings window hears which section the menu asked for.
+const release = createReleaseBridge(
+  {
+    invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+    post: (message) => window.postMessage(message, "*"),
+  },
+  window,
+);
+window.addEventListener("message", (event) => release.message(event));
+ipcRenderer.on(CHANNEL_RELEASE_CHANGED, (_event, data: unknown) => release.changed(data));
+ipcRenderer.on(CHANNEL_SETTINGS_SECTION, (_event, data: unknown) => release.section(data));
 
 // Browser sign-in (ADR 0133): main opens the browser and keeps the tokens; the page gets a handle.
 const signIn = createSignInBridge(
