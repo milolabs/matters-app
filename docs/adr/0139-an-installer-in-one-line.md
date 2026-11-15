@@ -56,7 +56,8 @@ kind of unmarked ad-hoc build on every run.
    deleted, until the new one is in its place, and moved back if the run fails or is stopped
    (INT, TERM, HUP) in between. A run that is killed outright (KILL, a power cut) cleans nothing
    up: the old app stays in `.Matters.app.previous` and the lock stays, so the next run stops and
-   names the lock folder; once the person removes it, that run moves the old app back first. It
+   names the lock folder. The person removes that folder and runs the script again; the new run
+   moves the old app back as soon as it holds the lock, before it downloads anything. It
    looks for a running copy twice: at the start, and again just before the swap. One install
    runs in a folder at a time. Versions are not compared: what the site offers replaces what is
    there, also a newer alpha once there is a stable release. The target is `/Applications`, or

@@ -103,6 +103,12 @@ main() {
     fail "another install into $dest is under way. If none is, remove $dest/.Matters.app.lock and run this again."
   fi
   lock="$dest/.Matters.app.lock"
+  # What a run that was killed outright may have left. Its old app goes back now, before
+  # anything is downloaded, so it is back also if this run fails later.
+  if [ -e "$dest/.Matters.app.previous" ] && [ ! -e "$dest/Matters.app" ]; then
+    mv "$dest/.Matters.app.previous" "$dest/Matters.app" || fail "could not move the old Matters back from $dest/.Matters.app.previous."
+  fi
+  rm -rf "$dest/.Matters.app.installing" "$dest/.Matters.app.previous"
 
   say "Downloading Matters $version"
   fetch "$base/$image" "$tmp/$image" --progress-bar || fail "could not download $base/$image"
@@ -138,11 +144,6 @@ main() {
   say "Installing into $dest"
   # Copied beside the old one and checked first, so a failure leaves the old one in place.
   local replaced=""
-  # What a run that was killed outright may have left: its old app goes back first.
-  if [ -e "$dest/.Matters.app.previous" ] && [ ! -e "$dest/Matters.app" ]; then
-    mv "$dest/.Matters.app.previous" "$dest/Matters.app"
-  fi
-  rm -rf "$dest/.Matters.app.installing" "$dest/.Matters.app.previous"
   incoming="$dest/.Matters.app.installing"
   ditto "$volume/Matters.app" "$incoming" || fail "could not copy the app to $dest."
   codesign --verify --deep --strict "$incoming" 2> /dev/null ||
