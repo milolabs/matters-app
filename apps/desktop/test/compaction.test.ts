@@ -6,11 +6,12 @@ function rig(overrides: Partial<CompactionDeps> = {}) {
   const compact = vi.fn(async () => ({ freedBytes: 321, ms: 10 }));
   const freeBytes = vi.fn(async (): Promise<number | null> => 200);
   const databaseBytes = vi.fn(async () => 100);
+  // Only the two calls the compaction makes are stood in for.
   const port = databaseCompaction({
     storage: {
       accountData: { mergeIndexes },
       storageSamples: { compact },
-    } as CompactionDeps["storage"],
+    } as unknown as CompactionDeps["storage"],
     dbPath: "/test/matters.db",
     freeBytes,
     databaseBytes,
