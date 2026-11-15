@@ -781,7 +781,10 @@ export async function runErase(
   let kept: Keep | null = null;
   let ownerKeep: Keep | null = null;
   let refused: LeftReason | null = null;
-  const keep = () => (held !== null || refused !== null ? kept : null);
+  // No folder to claim in at the start: nothing of the database's is deleted without a claim, and
+  // what another run may create there meanwhile is kept like a held database's.
+  let unclaimed = false;
+  const keep = () => (held !== null || refused !== null || unclaimed ? kept : null);
   const settle = () => {
     const h = held;
     held = null;
@@ -793,18 +796,25 @@ export async function runErase(
     const family = holdings.flatMap((h) =>
       h.place.kind === "database" ? [{ h, path: t.databasePath + h.place.suffix }] : [],
     );
-    const start = claimAtStart(deps);
-    refused = start.refused;
-    if (start.claim !== null) {
-      const owners = plan.flatMap((s) => (s.step === "database" ? s.holdings : [])).filter(isOwner);
-      held = { claim: start.claim, owners };
-    }
-    if (held !== null || refused !== null) {
-      const around = new Map<string, string>();
-      const target = (p: string) => targetOf(p, real);
+    const around = new Map<string, string>();
+    const target = (p: string) => targetOf(p, real);
+    /** Takes the claim, or records why not; true when there was still no folder to claim in. */
+    const claimNow = (): boolean => {
+      const got = claimAtStart(deps);
+      refused = got.refused;
+      if (got.claim !== null) {
+        const owners = plan
+          .flatMap((s) => (s.step === "database" ? s.holdings : []))
+          .filter(isOwner);
+        held = { claim: got.claim, owners };
+        const owner = target(t.databasePath + OWNER_SUFFIX);
+        ownerKeep = { files: new Set([owner]), real, around };
+      }
+      return got.claim === null && got.refused === null;
+    };
+    if (deps.claimDatabase) {
       kept = { files: new Set(family.map((f) => target(f.path))), real, around };
-      const owner = target(t.databasePath + OWNER_SUFFIX);
-      ownerKeep = held === null ? null : { files: new Set([owner]), real, around };
+      unclaimed = claimNow();
     }
     for (const { step, holdings: inStep } of plan) {
       deps.progress?.({ kind: "step", step });
@@ -864,6 +874,16 @@ export async function runErase(
         continue;
       }
       if (step === "database") {
+        // A folder another run made since the start: claimed now, or that run's and kept.
+        if (unclaimed) unclaimed = claimNow();
+        if (unclaimed) {
+          // Still nothing to claim in, so nothing to delete: what is there after all is not ours.
+          for (const h of inStep) {
+            const paths = h.place.kind === "database" ? [t.databasePath + h.place.suffix] : [];
+            note(h, leaveAll(paths, "inUse", deps));
+          }
+          continue;
+        }
         eraseDatabase(inStep, t, deps, note, held !== null, refused, ownerKeep);
         continue;
       }

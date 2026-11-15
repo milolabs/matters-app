@@ -268,6 +268,10 @@ and an error is never read as "gone" or "absent".
   until the release, and for the whole run when another live run holds it, whose files are then
   each left once as in use and nothing is swept. Otherwise a sign-ins holding, or a declared
   folder such as `<data>/attachments/` holding a database another run owns, would take it.
+  When there is no folder to claim in at the start, the family and the folders above it are kept
+  all the same and the claim is asked for again at the database step: no database file is ever
+  deleted without the erase's own claim, so a run that made the folder meanwhile keeps its
+  database, which is then left as in use.
 - **Rule 7's words on a refused key are not on the screens.** The key protects nothing only once
   `credentials.json` is gone, and that file can be left in the same run; the result names the
   key and where to delete it, and promises nothing about it.

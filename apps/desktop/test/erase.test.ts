@@ -868,6 +868,57 @@ describe("running the erase", () => {
       });
     });
 
+    it("no folder to claim in at the start: a run that makes it meanwhile keeps its database", async () => {
+      fill();
+      const database = join(dataDir, "shared", "mail.db");
+      const owner = ownerPath(database);
+      const t = { ...targets(), databasePath: database, earlierDir: null };
+      const guard = eraseGuard({
+        folders: [dataDir],
+        files: ["", "-wal", "-shm", "-journal", ".owner"].map((s) => database + s),
+        tempDir,
+        tempPrefixes: ["matters-agent-"],
+      });
+      let arrived = false;
+      const fs: EraseFs = {
+        ...nodeEraseFs,
+        // Another run, with its own data folder, makes the folder and claims the database
+        // just before the erase's first deletion.
+        remove(path) {
+          if (!arrived) {
+            arrived = true;
+            file(database, "their pages");
+            writeFileSync(owner, JSON.stringify(me("other")));
+          }
+          nodeEraseFs.remove(path);
+        },
+      };
+      const result = await runErase(order(false), ALL_HOLDINGS, t, {
+        fs,
+        keychain: new FakeKeychain(),
+        guard,
+        now: () => 0,
+        claimDatabase: () =>
+          claimDatabase({
+            path: owner,
+            me: me("erase"),
+            fs: nodeOwnerFs,
+            judge: (o) =>
+              o?.token === "other"
+                ? { kind: "held", owner: o, why: "process 99" }
+                : { kind: "stale", why: "process gone" },
+            nowMs: () => Date.now(),
+          }),
+      });
+      expect(arrived).toBe(true);
+      expect(readFileSync(database, "utf8")).toBe("their pages");
+      expect(JSON.parse(readFileSync(owner, "utf8")).token).toBe("other");
+      expect(readEraseOrder(dataDir).kind).toBe("order");
+      const left = eraseReport(result).left;
+      expect(left.filter((l) => l.where === database)).toHaveLength(1);
+      expect(left.every((l) => l.reason === "inUse")).toBe(true);
+    });
+
     it("not held, in a declared folder: claimed before the first deletion, then all of it goes", async () => {
       const { database, t, guard } = inAttachments();
       const base = recordingFs();
