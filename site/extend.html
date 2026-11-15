@@ -51,6 +51,8 @@
             </thead>
             <tbody>
               <tr><td><code>adapter-imap</code> <code>adapter-smtp</code></td><td>Reading and sending mail</td></tr>
+              <tr><td><code>adapter-graph</code></td><td>Microsoft mailboxes, over Microsoft Graph</td></tr>
+              <tr><td><code>adapter-oauth</code></td><td>Signing in in the browser</td></tr>
               <tr><td><code>adapter-sqlite</code></td><td>The local database and search</td></tr>
               <tr><td><code>adapter-claude-code</code> <code>adapter-codex</code> <code>adapter-ollama</code></td><td>Where the agent runs</td></tr>
               <tr><td><code>adapter-secrets</code></td><td>Passwords, in the system keychain</td></tr>
@@ -98,8 +100,8 @@
               <tr><th>Adapter</th><th>Why</th></tr>
             </thead>
             <tbody>
-              <tr><td><strong>Browser sign-in (OAuth)</strong></td><td>Microsoft 365 and Outlook.com do not work without it.</td></tr>
-              <tr><td><strong>Gmail API, JMAP, Microsoft Graph</strong></td><td>Faster sync than IMAP where a provider offers it.</td></tr>
+              <tr><td><strong>Browser sign-in for Gmail</strong></td><td>Gmail needs an app password today. Microsoft already signs in this way.</td></tr>
+              <tr><td><strong>Gmail API, JMAP</strong></td><td>Faster sync than IMAP where a provider offers it.</td></tr>
               <tr><td><strong>API keys</strong></td><td>A runtime for any provider's API.</td></tr>
               <tr><td><strong>Linux and Windows</strong></td><td>Builds, a keychain for each, and people to test them.</td></tr>
             </tbody>
