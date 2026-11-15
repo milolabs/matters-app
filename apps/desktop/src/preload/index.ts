@@ -10,6 +10,7 @@ import {
   CHANNEL_APPEARANCE_COLORS,
   createAppearanceBridge,
 } from "./appearanceBridge.ts";
+import { CHANNEL_ERASE_PROGRESS, createEraseBridge } from "./eraseBridge.ts";
 import { createFileBridge } from "./fileBridge.ts";
 import { createNoticeBridge } from "./noticeBridge.ts";
 import { createReceivedBridge } from "./receivedBridge.ts";
@@ -108,6 +109,17 @@ const storage = createStorageBridge(
   window,
 );
 window.addEventListener("message", (event) => storage.message(event));
+
+// The erase window (ADR 0138, rule 11): its state and buttons; main answers only that window.
+const erase = createEraseBridge(
+  {
+    invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+    post: (message) => window.postMessage(message, "*"),
+  },
+  window,
+);
+window.addEventListener("message", (event) => erase.message(event));
+ipcRenderer.on(CHANNEL_ERASE_PROGRESS, (_event, data: unknown) => erase.progress(data));
 
 // Settings › Notifications (ADR 0108): how the app runs, and System Settings opened by main.
 const noticeSystem = createNoticeBridge(

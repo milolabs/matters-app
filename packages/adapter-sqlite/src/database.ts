@@ -83,6 +83,17 @@ function addInboxView(db: Database): void {
 
 /** ADR 0028: every participant of every message, in key order, folded into `people`. */
 function backfillPeople(db: Database): void {
+  tallyAllPeople(db);
+  // After the rows: building an index once is cheaper than keeping it while they go in.
+  db.exec("CREATE INDEX people_rank ON people (count DESC, last_ms DESC, address)");
+}
+
+/**
+ * Folds every participant of the stored mail into `people`, which must be empty: the backfill,
+ * and an account's removal, which builds the table again from the mail that stays (ADR 0138,
+ * rule 5). Call inside a write transaction.
+ */
+export function tallyAllPeople(db: Database): void {
   const tally = new PeopleTally();
   const rows = db
     .prepare("SELECT date_ms, from_json, to_json, cc_json FROM messages ORDER BY key")
@@ -100,8 +111,6 @@ function backfillPeople(db: Database): void {
     ]);
   }
   peopleWriter(db).apply(tally);
-  // After the rows: building an index once is cheaper than keeping it while they go in.
-  db.exec("CREATE INDEX people_rank ON people (count DESC, last_ms DESC, address)");
 }
 
 /** Append only. Each migration runs in its own transaction together with its version row. */

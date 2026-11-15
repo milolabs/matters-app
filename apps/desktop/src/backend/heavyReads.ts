@@ -1,6 +1,11 @@
 // The reads that walk a lot of mail to answer (ADR 0070, rule 2). They run on the read thread so that
 // no list or thread waits behind them; if that thread is gone the router runs the same code itself.
-import type { SqliteStorageUsage, StorageOverview, StorageSample } from "@matters/adapter-sqlite";
+import type {
+  EraseMeasure,
+  SqliteStorageUsage,
+  StorageOverview,
+  StorageSample,
+} from "@matters/adapter-sqlite";
 import type { ThreadAgentView } from "@matters/core";
 import { type AgentReadDeps, readThreadAgent } from "./agentReads.ts";
 
@@ -9,12 +14,14 @@ export type HeavyRead =
   /** Settings › Storage (ADR 0089): the cheap numbers with the kept measurements. */
   | { readonly name: "storageOverview" }
   /** The breakdown by table: reads the whole database once. */
-  | { readonly name: "storageMeasure" };
+  | { readonly name: "storageMeasure" }
+  /** What Erase everything takes out of the database, by group (ADR 0138, rule 9). */
+  | { readonly name: "eraseMeasure" };
 
 /** What the heavy reads need: the agent's reads and the database's own numbers. */
 export type HeavyReadDeps = AgentReadDeps & {
   /** Absent where nothing asks for storage (agent tests). */
-  readonly storage?: Pick<SqliteStorageUsage, "overview" | "measure" | "samples">;
+  readonly storage?: Pick<SqliteStorageUsage, "overview" | "measure" | "samples" | "eraseMeasure">;
 };
 
 export interface StorageOverviewAnswer {
@@ -27,7 +34,9 @@ export type HeavyAnswer<R extends HeavyRead> = R extends { name: "threadAgent" }
   ? ThreadAgentView
   : R extends { name: "storageOverview" }
     ? StorageOverviewAnswer
-    : StorageSample;
+    : R extends { name: "eraseMeasure" }
+      ? EraseMeasure
+      : StorageSample;
 
 export function serveHeavyRead(
   deps: HeavyReadDeps,
@@ -43,6 +52,8 @@ export function serveHeavyRead(
     }
     case "storageMeasure":
       return Promise.resolve(needStorage(deps).measure(nowMs));
+    case "eraseMeasure":
+      return Promise.resolve(needStorage(deps).eraseMeasure());
   }
 }
 

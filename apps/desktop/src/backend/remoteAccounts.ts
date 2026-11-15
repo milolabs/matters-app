@@ -1,4 +1,4 @@
-import type { AccountInfo } from "@matters/contracts";
+import type { AccountInfo, RemovalCompaction } from "@matters/contracts";
 import type { AccountStorePort, Discovery, ServerDiscoveryPort, SyncStatus } from "@matters/core";
 import { accountInfo } from "./accounts.ts";
 import type { AccountsApi, NewAccountInput, PasswordChanged } from "./handler.ts";
@@ -45,13 +45,15 @@ export class RemoteAccounts implements AccountsApi {
     return added;
   }
 
-  async remove(accountId: string): Promise<boolean> {
-    const removed = await this.deps.host.command({ name: "removeAccount", accountId });
-    if (removed) {
-      this.deps.statuses.delete(accountId);
-      this.deps.onChanged();
-    }
-    return removed;
+  async remove(accountId: string): Promise<boolean | { readonly compaction?: RemovalCompaction }> {
+    const { removed, compaction } = await this.deps.host.command({
+      name: "removeAccount",
+      accountId,
+    });
+    if (!removed) return false;
+    this.deps.statuses.delete(accountId);
+    this.deps.onChanged();
+    return compaction === undefined ? true : { compaction };
   }
 
   /** The password goes to the worker, which verifies it and writes the vault; it comes back to no one. */

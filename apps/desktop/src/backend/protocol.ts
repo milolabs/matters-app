@@ -3,6 +3,7 @@
 import type {
   AccountInfo,
   AttachmentInfo,
+  RemovalCompaction,
   SendAction,
   StorageSampleInfo,
 } from "@matters/contracts";
@@ -232,10 +233,18 @@ export type WorkerCommand =
   /** Read-only: a ranked order after `↵` (ADR 0116, rule 4b), over a bounded pool. */
   | { readonly name: "sortRanked"; readonly query: string };
 
+/**
+ * An account's removal: `removed` false when there is no such account; `compaction` what became of
+ * the freed pages (ADR 0138, rule 6), absent where nothing compacts (tests).
+ */
+export interface RemovedAccount {
+  readonly removed: boolean;
+  readonly compaction?: RemovalCompaction;
+}
+
 export interface CommandResults {
   readonly addAccount: { readonly account: AccountInfo; readonly folderCount: number };
-  /** False when there is no such account. */
-  readonly removeAccount: boolean;
+  readonly removeAccount: RemovedAccount;
   readonly setSeen: SetSeenResult;
   readonly moveThread: MoveThreadResult;
   readonly undoMove: UndoMoveResult;

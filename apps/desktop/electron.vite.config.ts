@@ -65,6 +65,8 @@ export default defineConfig(({ command }) => ({
           index: resolve(import.meta.dirname, "src/renderer/index.html"),
           // The settings window (ADR 0036).
           settings: resolve(import.meta.dirname, "src/renderer/settings.html"),
+          // The window of a start that erases (ADR 0138, rule 11).
+          erase: resolve(import.meta.dirname, "src/renderer/erase.html"),
           preview: resolve(import.meta.dirname, "src/renderer/preview.html"),
           // A message as sent, with images blocked or allowed (ADR 0024).
           mail: resolve(import.meta.dirname, "src/renderer/mail.html"),

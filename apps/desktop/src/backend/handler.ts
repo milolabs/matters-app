@@ -4,7 +4,9 @@ import type {
   BackendRequest,
   BackendResponse,
   ChangePasswordResponse,
+  EraseReviewInfo,
   ErrorCode,
+  RemovalCompaction,
   SendAction,
   ServerInput,
   StorageReport,
@@ -87,7 +89,11 @@ export interface AccountsApi {
   list(): Promise<readonly AccountInfo[]>;
   add(input: NewAccountInput): Promise<{ account: AccountInfo; folderCount: number }>;
   /** False when there is no such account. */
-  remove(accountId: string): Promise<boolean>;
+  /**
+   * False when there is no such account; otherwise true, or what became of the freed pages
+   * (ADR 0138, rule 6).
+   */
+  remove(accountId: string): Promise<boolean | { readonly compaction?: RemovalCompaction }>;
   syncNow(accountId: string): Promise<boolean>;
   /** Verifies the password, then replaces the saved one (ADR 0113). Null when there is no such account. */
   changePassword(accountId: string, password: string): Promise<PasswordChanged | null>;
@@ -295,6 +301,8 @@ export interface BackendDeps {
 export interface StorageApi {
   get(): Promise<StorageReport>;
   measure(): Promise<StorageReport>;
+  /** The database's part of the erase review (ADR 0138, rule 9), on the read thread. */
+  eraseReview(): Promise<EraseReviewInfo>;
   compact(): Promise<{ readonly freedBytes: number; readonly ms: number }>;
   /** Empties the text read from attached files (ADR 0087); returns how many files it held. */
   clearFileText(): Promise<number>;
@@ -1001,6 +1009,7 @@ function parseRequest(raw: unknown): BackendRequest | string {
     case "listImageRules":
     case "getStorage":
     case "measureStorage":
+    case "eraseReview":
     case "compactStorage":
     case "clearFileText":
       return { type, requestId };
@@ -1546,6 +1555,13 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           ok: true,
           storage: await needStorage(deps).measure(),
         };
+      case "eraseReview":
+        return {
+          type: "eraseReview",
+          requestId,
+          ok: true,
+          review: await needStorage(deps).eraseReview(),
+        };
       case "compactStorage":
         return {
           type: "compactStorage",
@@ -1662,10 +1678,19 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
         );
         return { type: "addAccount", requestId, ok: true, ...added };
       }
-      case "removeAccount":
-        return (await deps.accounts.remove(request.accountId))
-          ? { type: "removeAccount", requestId, ok: true }
+      case "removeAccount": {
+        const removed = await deps.accounts.remove(request.accountId);
+        return removed
+          ? {
+              type: "removeAccount",
+              requestId,
+              ok: true,
+              ...(removed === true || removed.compaction === undefined
+                ? {}
+                : { compaction: removed.compaction }),
+            }
           : { type: "error", requestId, ok: false, code: "notFound", message: "no such account" };
+      }
       case "syncNow":
         return (await deps.accounts.syncNow(request.accountId))
           ? { type: "syncNow", requestId, ok: true }

@@ -1,4 +1,15 @@
+import type { HoldingGroup } from "@matters/core";
 import { type Database, exclusive, write } from "./database.ts";
+import { measureTableGroups } from "./holdings.ts";
+
+/** The database's part of the erase review (ADR 0138, rule 9). */
+export interface EraseMeasure {
+  readonly groups: Readonly<Record<HoldingGroup, number>>;
+  readonly accounts: number;
+  readonly messages: number;
+  /** Messages waiting to be sent, which an erase drops (rule 10). */
+  readonly unsent: number;
+}
 
 /** What the database's pages hold, grouped the way Settings shows them (ADR 0089). */
 export interface DatabaseParts {
@@ -114,6 +125,23 @@ export class SqliteStorageUsage {
     };
   }
 
+  /**
+   * What erasing everything would take out of the database, by the review's groups, measured now
+   * (ADR 0138, rule 9); reads every page once, like `measure`. With the accounts and the mail
+   * still waiting to be sent, which the review names (rule 10).
+   */
+  eraseMeasure(): EraseMeasure {
+    const count = (sql: string) => (this.db.prepare(sql).get() as { n: number }).n;
+    return {
+      groups: measureTableGroups(this.db),
+      accounts: count("SELECT COUNT(*) AS n FROM accounts"),
+      messages: count("SELECT COUNT(*) AS n FROM messages"),
+      unsent: count(
+        "SELECT COUNT(*) AS n FROM send_operations WHERE state IN ('pending', 'held', 'running')",
+      ),
+    };
+  }
+
   /** Kept measurements, oldest first. */
   samples(): StorageSample[] {
     return this.db
@@ -170,14 +198,26 @@ export class SqliteStorageSamples {
    * Rewrites the database without its free pages (`VACUUM`), on the writer. It waits for any
    * write in flight and holds every other write until it ends. Returns the bytes given back.
    */
-  compact(): Promise<{ readonly freedBytes: number; readonly ms: number }> {
+  compact(options?: {
+    /**
+     * Throws when a reader kept the log from being truncated (ADR 0138, rule 6): the log then
+     * still holds the pages that were removed. SQLite says so in the checkpoint's `busy`, not
+     * with an error.
+     */
+    readonly requireCheckpoint?: boolean;
+  }): Promise<{ readonly freedBytes: number; readonly ms: number }> {
     // VACUUM cannot run inside a transaction: an exclusive step of its own, not `write`.
     return exclusive(this.db, () => {
       const pageSize = pragma(this.db, "page_size");
       const before = pragma(this.db, "page_count");
       const started = performance.now();
       this.db.exec("VACUUM");
-      this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      const checkpoint = this.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as
+        | { busy: number }
+        | undefined;
+      if (options?.requireCheckpoint && (checkpoint?.busy ?? 0) !== 0) {
+        throw new Error("a reader kept the log from being truncated; it still holds removed pages");
+      }
       return {
         freedBytes: (before - pragma(this.db, "page_count")) * pageSize,
         ms: Math.round(performance.now() - started),

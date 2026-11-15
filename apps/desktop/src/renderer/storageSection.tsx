@@ -3,6 +3,7 @@ import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-j
 import { accountMarks } from "./accountMarks.ts";
 import type { AccountsStore } from "./accounts.ts";
 import type { Backend } from "./client.ts";
+import { EraseReview } from "./eraseReview.tsx";
 import { askMainStorage } from "./files.ts";
 import { Ring } from "./icons.tsx";
 import {
@@ -29,9 +30,36 @@ const CHART_H = 72;
 
 /**
  * Settings › Storage (ADR 0089): what the app keeps on this Mac and holds in memory, where the
- * space goes, and the two things that give some back.
+ * space goes, and the two things that give some back. Erase everything stays at the bottom while
+ * the rest scrolls; its review takes the pane (ADR 0138, rule 1).
  */
 export function StorageSection(props: { backend: Backend; accounts: AccountsStore }) {
+  const [reviewing, setReviewing] = createSignal(false);
+  return (
+    <Show
+      when={!reviewing()}
+      fallback={
+        <EraseReview
+          backend={props.backend}
+          accounts={props.accounts}
+          onBack={() => setReviewing(false)}
+        />
+      }
+    >
+      <StorageOverview
+        backend={props.backend}
+        accounts={props.accounts}
+        onErase={() => setReviewing(true)}
+      />
+    </Show>
+  );
+}
+
+function StorageOverview(props: {
+  backend: Backend;
+  accounts: AccountsStore;
+  onErase: () => void;
+}) {
   const [report, setReport] = createSignal<StorageReport | null>(null);
   const [main, setMain] = createSignal<MainStorageInfo | null>(null);
   const [now, setNow] = createSignal(Date.now());
@@ -518,6 +546,23 @@ export function StorageSection(props: { backend: Backend; accounts: AccountsStor
             </>
           )}
         </Show>
+      </div>
+
+      <div
+        data-erase-bar
+        class="flex shrink-0 items-center gap-4 border-t border-hairline bg-chrome px-5 py-3"
+      >
+        <div class="min-w-0 flex-1">
+          <h3 class="mb-1 font-semibold">Erase everything</h3>
+          <p class={hint}>
+            Takes all mail, the search index, saved passwords, what agents wrote and every setting
+            off this Mac, then starts Matters empty. Mail on your servers stays. To drop one account
+            only, use Accounts.
+          </p>
+        </div>
+        <button type="button" class={small} onClick={() => props.onErase()}>
+          Erase…
+        </button>
       </div>
     </section>
   );

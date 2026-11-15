@@ -14,6 +14,7 @@ import type {
   PlanLimits,
 } from "@matters/core";
 import { AGENT_EFFORTS, AgentRunError, wholeFilesProblem } from "@matters/core";
+import { AGENT_TEMP_PREFIX } from "./holdings.ts";
 import {
   checkInit,
   checkToolInit,
@@ -277,7 +278,7 @@ export class ClaudeCodeRuntime implements AgentRuntimePort {
     } catch {
       throw new AgentRunError("failed", "The schema cannot be serialized.");
     }
-    const cwd = await mkdtemp(join(this.tmpRoot, "matters-agent-"));
+    const cwd = await mkdtemp(join(this.tmpRoot, AGENT_TEMP_PREFIX));
     try {
       let configPath: string | undefined;
       if (tools !== undefined) {
@@ -381,7 +382,7 @@ export class ClaudeCodeRuntime implements AgentRuntimePort {
     file: string,
     args: readonly string[],
   ): Promise<{ stdout: string; code: number | null } | null> {
-    const cwd = await mkdtemp(join(this.tmpRoot, "matters-agent-"));
+    const cwd = await mkdtemp(join(this.tmpRoot, AGENT_TEMP_PREFIX));
     try {
       return await new Promise((resolve, reject) => {
         const child = this.spawn(file, args, {

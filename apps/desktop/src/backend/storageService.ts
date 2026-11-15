@@ -1,4 +1,4 @@
-import type { StorageReport } from "@matters/contracts";
+import type { EraseReviewInfo, StorageReport } from "@matters/contracts";
 import type { StorageApi } from "./handler.ts";
 import type { HeavyAnswer, HeavyRead } from "./heavyReads.ts";
 import type { SyncHost } from "./syncHost.ts";
@@ -46,6 +46,11 @@ export class StorageService implements StorageApi {
       }
     })();
     return this.measuring;
+  }
+
+  /** Reads every page once; asked when the erase review opens (ADR 0138, rule 9). */
+  eraseReview(): Promise<EraseReviewInfo> {
+    return this.reads.ask({ name: "eraseMeasure" });
   }
 
   compact(): Promise<{ readonly freedBytes: number; readonly ms: number }> {

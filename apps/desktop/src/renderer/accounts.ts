@@ -60,9 +60,24 @@ export function createAccountsStore(backend: Backend) {
     summary: createMemo(() => summarize(accounts(), statuses())),
     statusOf: (id: string): SyncStatus => statuses()[id] ?? { state: "idle" },
     syncNow: (id: string) => backend.syncNow(id),
+    /** What became of the freed pages comes back (ADR 0138, rule 6); the colour goes too. */
     async remove(id: string) {
-      await backend.removeAccount(id);
-      await refresh();
+      const compaction = await backend.removeAccount(id);
+      if (id in chosenColors()) {
+        const { [id]: _gone, ...rest } = chosenColors();
+        setChosenColors(rest);
+        writeAccountColors(rest);
+      }
+      // The removal is done: the row goes now, so a list that fails to load cannot leave it shown,
+      // and must not hide what became of the removal.
+      batch(() => {
+        setAccounts((list) => list.filter((a) => a.id !== id));
+        setStatuses(({ [id]: _status, ...rest }) => rest);
+      });
+      await refresh().catch((error: unknown) =>
+        console.error("the accounts could not be listed after a removal", error),
+      );
+      return compaction;
     },
   };
 }

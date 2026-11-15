@@ -43,6 +43,8 @@ import type {
   CountMatchesResponse,
   DeleteForeverResponse,
   DiscoverServersResponse,
+  EraseReviewInfo,
+  EraseReviewResponse,
   ErrorCode,
   GetDraftResponse,
   GetImageChoiceResponse,
@@ -65,6 +67,8 @@ import type {
   OpenThreadResponse,
   PrepareResponse,
   RecaptureAttachmentResponse,
+  RemovalCompaction,
+  RemoveAccountResponse,
   RemoveImageRuleResponse,
   RenderPreviewResponse,
   RequestSendResponse,
@@ -199,6 +203,8 @@ export interface Backend {
   getStorage(): Promise<StorageReport>;
   /** Measures the database by table now (seconds, on the read thread) and keeps it. */
   measureStorage(): Promise<StorageReport>;
+  /** The database's part of the erase review, measured now (ADR 0138, rule 9). */
+  eraseReview(): Promise<EraseReviewInfo>;
   /** `VACUUM`: seconds, and sync waits for it. */
   compactStorage(): Promise<{ freedBytes: number; ms: number }>;
   /** Empties the text the agent read from attached files; returns how many files it held (ADR 0087). */
@@ -231,7 +237,8 @@ export interface Backend {
   discoverServers(domain: string): Promise<DiscoverServersResponse>;
   listAccounts(): Promise<ListAccountsResponse>;
   addAccount(args: Omit<AddAccountRequest, "type" | "requestId">): Promise<AddAccountResponse>;
-  removeAccount(accountId: string): Promise<void>;
+  /** What became of the freed pages (ADR 0138, rule 6); undefined where nothing compacts. */
+  removeAccount(accountId: string): Promise<RemovalCompaction | undefined>;
   syncNow(accountId: string): Promise<void>;
   /** Verifies a new password, then replaces the saved one (ADR 0113). */
   changePassword(accountId: string, password: string): Promise<ChangePasswordResponse>;
@@ -515,6 +522,7 @@ export function createBackend(port: MessagePort): Backend {
       await request({ type: "testNotification" });
     },
     getStorage: async () => (await request<GetStorageResponse>({ type: "getStorage" })).storage,
+    eraseReview: async () => (await request<EraseReviewResponse>({ type: "eraseReview" })).review,
     measureStorage: async () =>
       (await request<MeasureStorageResponse>({ type: "measureStorage" })).storage,
     compactStorage: async () => {
@@ -557,7 +565,8 @@ export function createBackend(port: MessagePort): Backend {
     listAccounts: () => request<ListAccountsResponse>({ type: "listAccounts" }),
     addAccount: (args) => request<AddAccountResponse>({ type: "addAccount", ...args }),
     removeAccount: async (accountId) => {
-      await request({ type: "removeAccount", accountId });
+      const r = await request<RemoveAccountResponse>({ type: "removeAccount", accountId });
+      return r.compaction;
     },
     syncNow: async (accountId) => {
       await request({ type: "syncNow", accountId });

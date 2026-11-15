@@ -772,6 +772,28 @@ export interface UnitOfWorkPort {
   run<T>(work: () => Promise<T>): Promise<T>;
 }
 
+/**
+ * One account's rows in every store the holdings list declares, and what no remaining mail
+ * supports any more (ADR 0138, rule 5). Runs inside the unit of work of `removeAccount`, after the
+ * account's messages have gone; every step can run again.
+ */
+export interface AccountDataPort {
+  discardAccount(accountId: string): Promise<void>;
+}
+
+/** Gives the database's free pages back after an account's removal (ADR 0138, rule 6). */
+export interface CompactionPort {
+  /**
+   * Merges the indexes, checkpoints and compacts. `lowDisk` when the disk has less free space than
+   * the database needs to be rewritten: nothing is compacted, the removal still holds.
+   */
+  compactAfterRemoval(): Promise<
+    | { readonly kind: "compacted"; readonly freedBytes: number }
+    | { readonly kind: "lowDisk"; readonly neededBytes: number; readonly freeBytes: number }
+    | { readonly kind: "failed"; readonly message: string }
+  >;
+}
+
 export interface CursorPort {
   get(accountId: string, folderId: string): Promise<SyncCursor | null>;
   set(accountId: string, folderId: string, cursor: SyncCursor): Promise<void>;
