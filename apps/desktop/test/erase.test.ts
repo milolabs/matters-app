@@ -809,6 +809,157 @@ describe("running the erase", () => {
       expect(readEraseOrder(dataDir).kind).toBe("none");
     });
 
+    /** A database in a declared folder of the data folder: <data>/attachments/mail.db. */
+    function inAttachments() {
+      fill();
+      const database = join(dataDir, "attachments", "mail.db");
+      file(database, "shared pages");
+      file(`${database}-wal`, "shared log");
+      file(`${database}-shm`, "shared memory");
+      const t = { ...targets(), databasePath: database, earlierDir: null };
+      const guard = eraseGuard({
+        folders: [dataDir],
+        files: ["", "-wal", "-shm", "-journal", ".owner"].map((s) => database + s),
+        tempDir,
+        tempPrefixes: ["matters-agent-"],
+      });
+      return { database, t, guard };
+    }
+
+    it("held by another live run, in a declared folder: its files and folder are kept all run", async () => {
+      const { database, t, guard } = inAttachments();
+      const owner = ownerPath(database);
+      writeFileSync(owner, JSON.stringify(me("other")));
+      const result = await runErase(order(false), ALL_HOLDINGS, t, {
+        fs: nodeEraseFs,
+        keychain: new FakeKeychain(),
+        guard,
+        now: () => 0,
+        claimDatabase: () =>
+          claimDatabase({
+            path: owner,
+            me: me("erase"),
+            fs: nodeOwnerFs,
+            judge: (o) =>
+              o?.token === "other"
+                ? { kind: "held", owner: o, why: "process 99" }
+                : { kind: "stale", why: "process gone" },
+            nowMs: () => Date.now(),
+          }),
+      });
+      expect(readFileSync(database, "utf8")).toBe("shared pages");
+      expect(readFileSync(`${database}-wal`, "utf8")).toBe("shared log");
+      expect(readFileSync(`${database}-shm`, "utf8")).toBe("shared memory");
+      expect(JSON.parse(readFileSync(owner, "utf8")).token).toBe("other");
+      expect(existsSync(join(dataDir, "attachments", "a1"))).toBe(false);
+      expect(readdirSync(join(dataDir, "attachments")).sort()).toEqual(
+        ["mail.db", "mail.db-shm", "mail.db-wal", "mail.db.owner"].sort(),
+      );
+      expect(readEraseOrder(dataDir).kind).toBe("order");
+      const left = eraseReport(result).left;
+      expect(left.every((l) => l.reason === "inUse")).toBe(true);
+      for (const path of [database, `${database}-wal`, `${database}-shm`, owner]) {
+        expect(left.filter((l) => l.where === path)).toHaveLength(1);
+      }
+      // The folder kept only around them is not left; what it held besides is gone.
+      expect(result.outcomes.find((o) => o.holding.id === "desktop.attachments")?.outcome).toEqual({
+        kind: "gone",
+        bytes: "pdf".length,
+      });
+    });
+
+    it("not held, in a declared folder: claimed before the first deletion, then all of it goes", async () => {
+      const { database, t, guard } = inAttachments();
+      const base = recordingFs();
+      const attempts: string[] = [];
+      let released = false;
+      const compete = () => {
+        if (released) return;
+        const c = claimAs("second", database)();
+        attempts.push(c.kind);
+        if (c.kind === "claimed") c.release();
+      };
+      const fs: EraseFs = {
+        ...base,
+        remove(path) {
+          compete();
+          base.remove(path);
+        },
+        removeEmptyDir(path) {
+          compete();
+          base.removeEmptyDir(path);
+        },
+      };
+      const result = await runErase(order(false), ALL_HOLDINGS, t, {
+        fs,
+        keychain: new FakeKeychain(),
+        guard,
+        now: () => 0,
+        claimDatabase: () =>
+          claimDatabase({
+            path: ownerPath(database),
+            me: me("erase"),
+            fs: {
+              ...nodeOwnerFs,
+              remove(path) {
+                released = true;
+                nodeOwnerFs.remove(path);
+              },
+            },
+            judge: (o) =>
+              o?.token === "erase"
+                ? { kind: "held", owner: o, why: "the erase" }
+                : { kind: "stale", why: "process gone" },
+            nowMs: () => Date.now(),
+          }),
+      });
+      expect(attempts.length).toBeGreaterThan(0);
+      expect(attempts.every((a) => a === "held")).toBe(true);
+      expect(eraseReport(result).ok).toBe(true);
+      expect(existsSync(dataDir)).toBe(false);
+    });
+
+    it("in a folder a sign-ins holding names: that step does not take it", async () => {
+      fill();
+      const database = join(dataDir, "vault", "mail.db");
+      file(database, "shared pages");
+      file(join(dataDir, "vault", "other.txt"), "other");
+      const vault: Holding = {
+        id: "test.vault",
+        group: "signIns",
+        step: "signIns",
+        place: { kind: "data", name: "vault", match: "exact" },
+      };
+      const seen: string[] = [];
+      const result = await runErase(
+        order(false),
+        [...ALL_HOLDINGS, vault],
+        { ...targets(), databasePath: database, earlierDir: null },
+        {
+          fs: nodeEraseFs,
+          keychain: new FakeKeychain(),
+          guard: eraseGuard({
+            folders: [dataDir],
+            files: ["", "-wal", "-shm", "-journal", ".owner"].map((s) => database + s),
+            tempDir,
+            tempPrefixes: ["matters-agent-"],
+          }),
+          now: () => 0,
+          claimDatabase: claimAs("erase", database),
+          progress: (e) => {
+            if (e.kind === "step" && e.step === "database") {
+              seen.push(
+                `${existsSync(database) && readFileSync(database, "utf8")} ${existsSync(ownerPath(database))} ${existsSync(join(dataDir, "vault", "other.txt"))}`,
+              );
+            }
+          },
+        },
+      );
+      expect(seen).toEqual(["shared pages true false"]);
+      expect(eraseReport(result).ok).toBe(true);
+      expect(existsSync(dataDir)).toBe(false);
+    });
+
     it("is released when something is left; an owner file that cannot be looked for is left", async () => {
       fill();
       const database = join(dataDir, "matters.db");

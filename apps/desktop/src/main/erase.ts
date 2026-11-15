@@ -470,12 +470,14 @@ async function eraseKey(h: Holding, t: EraseTargets, deps: EraseDeps): Promise<H
 }
 
 /**
- * The held claim's owner file (ADR 0110), while the claim is held: no delete takes it, nor a folder
- * above it. `file` is its real path; `around` the folders emptied around it, by real path, each
- * with the path it was reached by, removed once the claim is released and the file is gone.
+ * The database's own files (ADR 0110), which no delete of another holding nor the sweep takes,
+ * nor a folder above them, from the first deletion of the run to the release of the claim (or to
+ * its end, when the claim was refused). `files` are their real paths, as the guard resolves them;
+ * `around` the folders emptied around them, by real path, each with the path it was reached by,
+ * removed once the claim is released and the files are gone.
  */
 interface Keep {
-  readonly file: string;
+  readonly files: ReadonlySet<string>;
   readonly real: (path: string) => string;
   readonly around: Map<string, string>;
 }
@@ -502,17 +504,18 @@ function erasePaths(
 
 /**
  * One path, removed and looked for again. The one chokepoint every delete of a holding and of the
- * sweep goes through: while a claim is held, its owner file is passed over (it goes by the
- * release), and a folder above it is emptied around it instead of removed. Neither is left.
+ * sweep goes through: while the database is kept, its files are passed over (they go in the
+ * database step, the owner file by the release), and a folder above them is emptied around them
+ * instead of removed. Neither is left.
  */
 function erasePath(path: string, deps: EraseDeps, keep: Keep | null, tally: Tally): void {
   const leave = (reason: LeftReason, where: string, bytes: number) => {
     tally.left = { reason, where };
     tally.leftBytes += bytes;
   };
-  // The held owner file is not even looked at here: it is looked for once, by the release.
+  // A kept file is not even looked at here: the database step and the release look for them.
   const target = keep === null ? null : targetOf(path, keep.real);
-  if (keep !== null && target === keep.file) return;
+  if (keep !== null && target !== null && keep.files.has(target)) return;
   let entry: ReturnType<EraseFs["entry"]>;
   try {
     entry = deps.fs.entry(path);
@@ -524,7 +527,7 @@ function erasePath(path: string, deps: EraseDeps, keep: Keep | null, tally: Tall
   }
   if (entry === null) return;
   if (keep !== null && target !== null) {
-    if (entry.kind === "dir" && inside(keep.file, target)) {
+    if (entry.kind === "dir" && [...keep.files].some((f) => inside(f, target))) {
       tally.any = true;
       if (!deps.guard(path)) {
         leave("outsideReach", path, deps.fs.size(path));
@@ -566,7 +569,7 @@ function erasePath(path: string, deps: EraseDeps, keep: Keep | null, tally: Tall
 }
 
 /**
- * The folders emptied around the owner file, once the claim is released and the file is gone:
+ * The folders emptied around the database's files, once the claim is released and they are gone:
  * deepest first, each only while it is empty and the guard allows it. What a run started since
  * has written keeps its folder; an empty folder that cannot be removed holds nothing.
  */
@@ -597,50 +600,56 @@ function eraseHolding(
   return erasePaths(paths, deps, keep);
 }
 
-/** The erase's own claim on the database, held from the database step to the end of the sweep. */
+/** The erase's own claim on the database, held from before the first deletion to the end of the sweep. */
 interface HeldClaim {
   readonly claim: { release(): void };
   /** The owner file's holdings, noted when the claim is released and the file looked for again. */
   readonly owners: readonly Holding[];
 }
 
+const isOwner = (h: Holding) => h.place.kind === "database" && h.place.suffix === OWNER_SUFFIX;
+
 /**
- * The database's files, under the database's own claim (ADR 0110): when a live run owns the
- * database, none of them is touched and each is left. The claim is not released here: it is
- * handed to `hold`, and held until the data folder has been swept (no other run can claim the database and
- * write files the sweep would take). Its owner file goes last, by `settleClaim`.
+ * The database's claim (ADR 0110), taken before the first deletion of the run (taking it deletes
+ * nothing). `refused` is why the database's files may not be touched: another live run holds it,
+ * or whether one does could not be told. Neither: no folder to claim in, or nothing to claim with.
+ */
+function claimAtStart(deps: EraseDeps): {
+  readonly claim: { release(): void } | null;
+  readonly refused: LeftReason | null;
+} {
+  if (!deps.claimDatabase) return { claim: null, refused: null };
+  try {
+    const c = deps.claimDatabase();
+    return c.kind === "held" ? { claim: null, refused: "inUse" } : { claim: c, refused: null };
+  } catch (error) {
+    // No folder to claim in: no database in it either, which the deletes confirm.
+    return { claim: null, refused: missing(error) ? null : reasonOf(error) };
+  }
+}
+
+/**
+ * The database's files. When the claim was refused, none of them is touched and each is left with
+ * the reason. Under the erase's own claim they are erased; the claim is not released here but at
+ * the end of the sweep (no other run can claim the database and write files the sweep would
+ * take), and its owner file goes last, by `settleClaim`. `ownerKeep` keeps only the owner file.
  */
 function eraseDatabase(
   inStep: readonly Holding[],
   t: EraseTargets,
   deps: EraseDeps,
   note: (h: Holding, o: HoldingOutcome) => void,
-  hold: (held: HeldClaim) => void,
-  keep: () => Keep | null,
+  claimed: boolean,
+  refused: LeftReason | null,
+  ownerKeep: Keep | null,
 ): void {
-  let claim: { release(): void } | null = null;
-  let refused: LeftReason | null = null;
-  if (deps.claimDatabase) {
-    try {
-      const c = deps.claimDatabase();
-      if (c.kind === "held") refused = "inUse";
-      else claim = c;
-    } catch (error) {
-      // No folder to claim in: no database in it either, which the deletes below confirm.
-      if (!missing(error)) refused = reasonOf(error);
-    }
-  }
-  const isOwner = (h: Holding) => h.place.kind === "database" && h.place.suffix === OWNER_SUFFIX;
-  const owners = inStep.filter(isOwner);
-  // Handed over before anything else: the caller releases it on every path, a throw included.
-  if (claim !== null) hold({ claim, owners });
-  for (const h of [...inStep.filter((h) => !isOwner(h)), ...(claim === null ? owners : [])]) {
+  for (const h of claimed ? inStep.filter((h) => !isOwner(h)) : inStep) {
     if (refused !== null) {
       const paths = h.place.kind === "database" ? [t.databasePath + h.place.suffix] : [];
       note(h, leaveAll(paths, refused, deps));
       continue;
     }
-    note(h, eraseHolding(h, t, deps, keep()));
+    note(h, eraseHolding(h, t, deps, ownerKeep));
   }
 }
 
@@ -744,10 +753,12 @@ export function leaveErase(
  * known and nothing was left: a start after a partial erase tries again. A look that fails is a
  * thing left, never one gone. When the earlier copy stays, the identity move's "done" marker is
  * written before the order goes, so that the move never brings it back (rule 4). The database's
- * claim (ADR 0110) is held from the database step until the sweep is done, and while it is held no
- * delete takes its owner file nor a folder above it; the file goes last, by releasing it, then the
- * folders emptied around it, before the order. On every other way out the claim is released too. It
- * does not throw: what it could not do is in the result.
+ * claim (ADR 0110) is taken before the first deletion and held until the sweep is done. From the
+ * first deletion on, no delete but the database step's takes the database's files, nor a folder
+ * above them: under the erase's own claim until the release (the owner file goes last, by
+ * releasing it, then the folders emptied around them, before the order); when the claim is
+ * refused, for the whole run. On every other way out the claim is released too. It does not
+ * throw: what it could not do is in the result.
  */
 export async function runErase(
   order: EraseOrder,
@@ -762,25 +773,46 @@ export async function runErase(
     outcomes.push({ holding, outcome });
     deps.progress?.({ kind: "holding", holding, outcome });
   };
-  // The database's claim, from the database step until the sweep is done (ADR 0110): while it is
-  // held no other run can claim the database and write files the sweep would take.
+  // The database's claim, from before the first deletion until the sweep is done (ADR 0110):
+  // while it is held no other run can claim the database and write files the sweep would take.
   let held: HeldClaim | null = null;
-  // Its owner file and the folders above it, which no delete takes while it is held.
+  // The database's files and the folders above them, which no other delete takes while the
+  // claim is held, or for the whole run when it was refused.
   let kept: Keep | null = null;
-  const keep = () => (held === null ? null : kept);
+  let ownerKeep: Keep | null = null;
+  let refused: LeftReason | null = null;
+  const keep = () => (held !== null || refused !== null ? kept : null);
   const settle = () => {
     const h = held;
     held = null;
     if (h !== null) settleClaim(h, t, deps, note);
   };
   try {
-    for (const { step, holdings: inStep } of erasePlan(holdings, { earlierCopy })) {
+    const plan = erasePlan(holdings, { earlierCopy });
+    const real = deps.real ?? realpathSync;
+    const family = holdings.flatMap((h) =>
+      h.place.kind === "database" ? [{ h, path: t.databasePath + h.place.suffix }] : [],
+    );
+    const start = claimAtStart(deps);
+    refused = start.refused;
+    if (start.claim !== null) {
+      const owners = plan.flatMap((s) => (s.step === "database" ? s.holdings : [])).filter(isOwner);
+      held = { claim: start.claim, owners };
+    }
+    if (held !== null || refused !== null) {
+      const around = new Map<string, string>();
+      const target = (p: string) => targetOf(p, real);
+      kept = { files: new Set(family.map((f) => target(f.path))), real, around };
+      const owner = target(t.databasePath + OWNER_SUFFIX);
+      ownerKeep = held === null ? null : { files: new Set([owner]), real, around };
+    }
+    for (const { step, holdings: inStep } of plan) {
       deps.progress?.({ kind: "step", step });
       if (step === "order") {
         // Something left: the sweep below would take it too, a database another run owns included.
         if (outcomes.some((o) => o.outcome.kind === "left")) break;
         // What no holding claimed: the folder is removed whole, not file by file (rule 3). The
-        // claim's own owner file, and any folder above it, are passed over: the file goes by
+        // database's files, and any folder above them, are passed over: the owner file goes by
         // releasing the claim, below, and the folders after it.
         const undeclared: Holding = {
           id: "desktop.undeclared",
@@ -817,7 +849,7 @@ export async function runErase(
         // The owner file last of all the erase deletes; the order only once it is known gone.
         settle();
         if (outcomes.some((o) => o.outcome.kind === "left")) break;
-        // The folders kept only for the owner file, now that it is gone.
+        // The folders kept only for the database's files, now that they are gone.
         const around = kept as Keep | null;
         if (around !== null) removeAround(around, deps);
         for (const h of inStep) note(h, eraseHolding(h, t, deps));
@@ -832,21 +864,7 @@ export async function runErase(
         continue;
       }
       if (step === "database") {
-        eraseDatabase(
-          inStep,
-          t,
-          deps,
-          note,
-          (h) => {
-            kept = {
-              file: targetOf(t.databasePath + OWNER_SUFFIX, deps.real ?? realpathSync),
-              real: deps.real ?? realpathSync,
-              around: new Map(),
-            };
-            held = h;
-          },
-          keep,
-        );
+        eraseDatabase(inStep, t, deps, note, held !== null, refused, ownerKeep);
         continue;
       }
       for (const h of inStep) {

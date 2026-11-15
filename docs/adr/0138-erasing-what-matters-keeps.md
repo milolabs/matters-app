@@ -262,6 +262,12 @@ and an error is never read as "gone" or "absent".
   as the guard compares: such a folder (a database at `<data>/shared/mail.db`) is emptied around
   the file instead, is not counted as left, and goes after the release, deepest first, only while
   empty and through the guard.
+  The claim is taken before the first deletion of the run (taking it deletes nothing; sign-ins
+  still go first), and the rule covers the database's whole family (the database and every
+  declared suffix, the owner file included) and the folders above it: under the erase's own claim
+  until the release, and for the whole run when another live run holds it, whose files are then
+  each left once as in use and nothing is swept. Otherwise a sign-ins holding, or a declared
+  folder such as `<data>/attachments/` holding a database another run owns, would take it.
 - **Rule 7's words on a refused key are not on the screens.** The key protects nothing only once
   `credentials.json` is gone, and that file can be left in the same run; the result names the
   key and where to delete it, and promises nothing about it.
