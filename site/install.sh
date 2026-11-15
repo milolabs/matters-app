@@ -73,22 +73,6 @@ main() {
   trap cleanup EXIT
   trap 'exit 130' INT TERM HUP # a stop from outside still goes through cleanup
 
-  # Which version: the one named, or the one the site's download button offers.
-  local tag="${MATTERS_VERSION:-}"
-  if [ -z "$tag" ]; then
-    fetch "$SITE/release.json" "$tmp/release.json" || fail "could not read $SITE/release.json."
-    tag="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$tmp/release.json" | head -n 1)"
-    [ -n "$tag" ] || fail "there is no release to install yet. See https://github.com/$REPO/releases"
-  fi
-  tag="v${tag#v}"
-  # The version becomes part of an address and a file name: it must look like a version.
-  printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?$' ||
-    fail "\"$tag\" is not a version."
-
-  local version="${tag#v}"
-  local image="Matters-$version-arm64.dmg"
-  local base="https://github.com/$REPO/releases/download/$tag"
-
   dest="${MATTERS_INSTALL_DIR:-/Applications}"
   [ -d "$dest" ] || fail "$dest is not a folder."
   # The folder as the system names it: no "..", no trailing slash, no link. The check for a
@@ -109,6 +93,22 @@ main() {
     mv "$dest/.Matters.app.previous" "$dest/Matters.app" || fail "could not move the old Matters back from $dest/.Matters.app.previous."
   fi
   rm -rf "$dest/.Matters.app.installing" "$dest/.Matters.app.previous"
+
+  # Which version: the one named, or the one the site's download button offers.
+  local tag="${MATTERS_VERSION:-}"
+  if [ -z "$tag" ]; then
+    fetch "$SITE/release.json" "$tmp/release.json" || fail "could not read $SITE/release.json."
+    tag="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$tmp/release.json" | head -n 1)"
+    [ -n "$tag" ] || fail "there is no release to install yet. See https://github.com/$REPO/releases"
+  fi
+  tag="v${tag#v}"
+  # The version becomes part of an address and a file name: it must look like a version.
+  printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?$' ||
+    fail "\"$tag\" is not a version."
+
+  local version="${tag#v}"
+  local image="Matters-$version-arm64.dmg"
+  local base="https://github.com/$REPO/releases/download/$tag"
 
   say "Downloading Matters $version"
   fetch "$base/$image" "$tmp/$image" --progress-bar || fail "could not download $base/$image"
