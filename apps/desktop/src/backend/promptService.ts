@@ -1026,9 +1026,12 @@ export class PromptService {
             isAgentRunError(error) &&
             (error.code === "notSignedIn" ||
               error.code === "notPlan" ||
+              error.code === "refused" ||
               error.code === "effortRefused" ||
               error.code === "tooLong")
           ) {
+            // A key the provider refused sets the runtime's state with the adapter's sentence
+            // (ADR 0141, rule 5), as every other turn's refusal does.
             problem ??= on.askFailure(error, FAILED).message;
           } else problem ??= FAILED;
           halt.abort();
