@@ -79,12 +79,30 @@ Read from the code on 2026-11-16:
    - The subject is one line: line breaks and tabs become a space, other control characters go.
      `subject=a%0d%0aBcc:%20x` is the subject `a Bcc: x`, and nobody is in Bcc.
    - The body is text: line ends become `\n`, control characters other than the line feed and the
-     tab go, and it is made Markdown that reads as that text (`plainBodyMarkdown`): `[` and `]` are
-     escaped (no link with other text, no reference, no image), a `>` that starts a line is escaped
-     (no quote), a `--` line is escaped (no signature), and a backslash before punctuation is
-     doubled so it cannot cancel an escape. A bare web address is still linked, to itself, as text
-     the person sees. Raw HTML needs nothing: it is shown as text. The escapes are visible in the
-     editor and in the text part, the cost ADR 0045 accepted for forwards.
+     tab go, and it is made Markdown that reads as that text (`plainBodyMarkdown`). The rule is one
+     property: the app's renderer turns it into HTML whose text is the body's text (white space
+     aside) in paragraphs and line breaks, with no element but a link a bare address makes to
+     itself. So no markup is made at all, rather than markup the escapes would show inside: a
+     backslash goes before `[` and `]` (no link with other text, no reference, no image); before
+     every `` ` `` (no code span and no fence, in which a backslash would show: `` `array[0]` ``
+     would read `array\[0\]`); before every `*`, every `_` that is not between two letters or
+     digits, and a run of two or more `~` (no emphasis, struck text, list, rule or fence); before
+     a `<` that an autolink would take (`<https://…>`, `<a@b.example>`) and an `&` that an entity
+     would (`&amp;`); before a line's first character when the line would start a heading, a list
+     item, a setext underline, a thematic break, a table's delimiter row, a quote (`>` after any
+     white space, which is also what the reply's fold and the agent's split read) or the
+     signature (`--`); and a backslash before punctuation or at the end of a line is doubled, so
+     it cannot cancel an escape or make a hard break. A line indented by a tab or four spaces or
+     more would be a code block, in which the escapes would show: its indent becomes three spaces
+     (the HTML part drops a line's indent either way; the text part keeps three). Raw HTML needs
+     nothing: it is shown as text. A bare web address is still linked, to itself, as text the
+     person sees; the renderer ends an address before its first backslash, so it never takes an
+     escape in and never leaves the escaped character outside it, and an address with a character
+     escaped in it (`/_next/`, `*`) links up to that character. The exception to the property:
+     the renderer shows an address's percent-escapes decoded and a punycode host in Unicode in
+     the link's text (`https://x.example/%41` reads `https://x.example/A`). The escapes are
+     visible in the editor and in the text part, the cost ADR 0045 accepted for forwards; they
+     stand only where the text would otherwise be read as markup.
 
 4. **A link only opens a draft.** The mail window opens a new message as `c` does (the account of
    the open thread, else the first), with the fields filled, the account's signature under the
@@ -144,8 +162,9 @@ Read from the code on 2026-11-16:
 
 - Matters can be the person's mail app for links everywhere, and a mail link in a message stays in
   Matters.
-- A body with `[`, `]`, a line starting with `>` or a `--` line shows backslashes in the editor
-  and in the text part.
+- A body with `[`, `]`, `` ` ``, `*`, an `_` outside a word, `~~`, or a line that would start a
+  block (`>`, `#`, `-`, `1.`, `--`, `===`) shows backslashes in the editor and in the text part,
+  and a line indented by four spaces or a tab is indented by three.
 - While a composer is open, a link waits, and nothing says so until the composer closes.
 - The last address of a field shows as text still being typed, as for every message the composer
   opens filled in; the others are chips.
@@ -153,7 +172,8 @@ Read from the code on 2026-11-16:
   executable keeps Electron's name), so it never offers the button; macOS may still list it among
   the mail programs once it has seen the bundle.
 - Tested: core unit and property tests (`mailtoLink.test.ts`, `mailtoLink.property.test.ts`), the
-  rendered HTML of a link's body (`adapter-compose/test/render.test.ts`), the queue, the client
+  rendered HTML of a link's body (`adapter-compose/test/render.test.ts`) and the property that it
+  reads as the body's text (`adapter-compose/test/mailtoBody.property.test.ts`), the queue, the client
   and the bridge (`apps/desktop/test/mailtoLinks.test.ts`), window tests on the demo mailbox
   (`apps/desktop/e2e/mailto.e2e.ts`: a link delivered as Electron's `open-url`, links in a row, a
   link that starts the app, a link from a message, both states of the row), a second start's

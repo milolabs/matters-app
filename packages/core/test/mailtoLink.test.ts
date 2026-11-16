@@ -242,9 +242,51 @@ describe("parseMailto: limits", () => {
 
 describe("plainBodyMarkdown: the body stays the text the link carried", () => {
   it("leaves ordinary text alone", () => {
-    expect(plainBodyMarkdown("Hi, I'd like to *subscribe* (please) — thanks!\n\nAnna")).toBe(
-      "Hi, I'd like to *subscribe* (please) — thanks!\n\nAnna",
+    expect(plainBodyMarkdown("Hi, I'd like to subscribe (please) — thanks!\n\nAnna")).toBe(
+      "Hi, I'd like to subscribe (please) — thanks!\n\nAnna",
     );
+    // An `_` between letters or digits, one `~`, a `<` or an `&` that starts nothing: as they are.
+    expect(plainBodyMarkdown("snake_case_2 ~10 a < b, R&D, <b>, a # b, 3.5 + 1 = x")).toBe(
+      "snake_case_2 ~10 a < b, R&D, <b>, a # b, 3.5 + 1 = x",
+    );
+  });
+
+  it("makes no code span or fence, so the text inside shows no escapes", () => {
+    expect(plainBodyMarkdown("`array[0]`")).toBe("\\`array\\[0\\]\\`");
+    expect(plainBodyMarkdown("```\nx\n```\n~~~\ny")).toBe("\\`\\`\\`\nx\n\\`\\`\\`\n\\~\\~\\~\ny");
+  });
+
+  it("makes no indented code block: an indent of a tab or four spaces becomes three spaces", () => {
+    expect(plainBodyMarkdown("    a[0]\n\tb\n  \tc\n   d")).toBe("   a\\[0\\]\n   b\n   c\n   d");
+  });
+
+  it("makes no emphasis and no struck text", () => {
+    expect(plainBodyMarkdown("*subscribe* _now_ **x** __y__ ~~z~~")).toBe(
+      "\\*subscribe\\* \\_now\\_ \\*\\*x\\*\\* \\_\\_y\\_\\_ \\~\\~z\\~\\~",
+    );
+  });
+
+  it("makes no heading, list, rule or table", () => {
+    expect(
+      plainBodyMarkdown(
+        "# a\n###### b\n- c\n+ d\n* e\n12. f\n3) g\nh\n===\ni\n---\n- - -\n___\n| j | k |\n|---|:-:|\n-",
+      ),
+    ).toBe(
+      "\\# a\n\\###### b\n\\- c\n\\+ d\n\\* e\n12\\. f\n3\\) g\nh\n\\===\ni\n\\---\n\\- - -\n" +
+        "\\_\\_\\_\n| j | k |\n\\|---|:-:|\n\\-",
+    );
+    // What starts no block stays: a hashtag, a number in a sentence, a dash in a word.
+    expect(plainBodyMarkdown("#tag\n2.5 kg\n-x")).toBe("#tag\n2.5 kg\n-x");
+  });
+
+  it("makes no autolink and no entity", () => {
+    expect(plainBodyMarkdown("<https://a.example> <a@b.example> &amp; &#38; &#x26;")).toBe(
+      "\\<https://a.example> \\<a@b.example> \\&amp; \\&#38; \\&#x26;",
+    );
+  });
+
+  it("makes no hard break of a backslash at the end of a line", () => {
+    expect(plainBodyMarkdown("a\\\nb\\")).toBe("a\\\\\nb\\\\");
   });
 
   it("escapes what would make a link or an image", () => {

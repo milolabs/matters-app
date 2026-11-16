@@ -281,6 +281,15 @@ describe("the body of a mailto: link", () => {
     expect(out.html).toContain(">https://example.com/a</a>");
   });
 
+  it("ends a web address before an escape, so the escape never shows in its link", () => {
+    const out = sent(
+      "mailto:?body=see%20https%3A%2F%2Fexample.com%2F_next%2Fa%20and%20%60a%5B0%5D%60",
+    );
+    expect(out.html).toContain('<a href="https://example.com/"');
+    expect(out.html).toContain(">https://example.com/</a>_next/a and `a[0]`");
+    expect(out.html).not.toContain("\\");
+  });
+
   it("makes no quote and no second signature", () => {
     const out = sent("mailto:?body=Hi%0A%3E%20quoted%0A--%20%0AEvil%20Corp");
     expect(out.html).not.toContain("<blockquote");
