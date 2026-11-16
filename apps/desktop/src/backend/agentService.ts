@@ -460,6 +460,8 @@ export class AgentService implements AgentApi {
   private readonly deps: AgentServiceDeps;
   /** What was last seen of each runtime, by id (ADR 0119, rule 2). */
   private readonly infos = new Map<string, AgentRuntimeInfo>();
+  /** The ticket of the look, test or turn whose finding of each runtime is shown. */
+  private readonly infoTickets = new Map<string, KeyTicket>();
   /** The runtime of each kind of work, as last read; every read of the settings keeps it. */
   private kinds: KindRuntimes = {};
   private progress: ReadingProgress = { state: "off", reason: "disabled" };
@@ -583,8 +585,23 @@ export class AgentService implements AgentApi {
   private setInfo(ticket: KeyTicket, info: AgentRuntimeInfo): AgentRuntimeInfo {
     const id = ticket.runtimeId;
     if (id === "") return info;
-    if (this.runtimeKeys.holds(ticket)) this.infos.set(id, info);
+    if (this.runtimeKeys.holds(ticket)) {
+      this.infos.set(id, info);
+      this.infoTickets.set(id, ticket);
+    }
     return this.infos.get(id) ?? info;
+  }
+
+  /**
+   * What is shown of the runtime of `ticket`, only when it was found on that key and the key
+   * holds: what was found on a key before says nothing of it (ADR 0141, rule 5).
+   */
+  private infoFor(ticket: KeyTicket): AgentRuntimeInfo | null {
+    const found = this.infoTickets.get(ticket.runtimeId);
+    if (found === undefined || !this.runtimeKeys.holds(ticket) || !this.runtimeKeys.holds(found)) {
+      return null;
+    }
+    return this.infoOf(ticket.runtimeId);
   }
 
   /**
@@ -647,6 +664,16 @@ export class AgentService implements AgentApi {
    */
   private turnOf(kind: AgentWorkKind, runtimeId: string): Turn {
     return { signal: this.signalOf(kind, runtimeId), ticket: this.runtimeKeys.ticket(runtimeId) };
+  }
+
+  /**
+   * A request of a turn the person asked for goes only on the key its gate passed for: asked with
+   * nothing awaited between it and the request (ADR 0141, rule 5).
+   */
+  private goes(turn: Turn): void {
+    if (turn.signal.aborted || !this.runtimeKeys.holds(turn.ticket)) {
+      throw new AgentUnavailableError("Stopped.");
+    }
   }
 
   /**
@@ -741,7 +768,7 @@ export class AgentService implements AgentApi {
           this.deps.insights.putPromptVerdicts(verdicts),
         )) !== null,
       limits: (s) => this.limitsOf(id, s),
-      gate: (s) => this.gateRuntime(runtime, s),
+      gate: (s, ticket) => this.gateRuntime(runtime, s, ticket),
       afterTurn: (ticket, limits, before) => this.afterTurn(ticket, limits, before),
       effortOf: (kind, s) => {
         try {
@@ -810,7 +837,11 @@ export class AgentService implements AgentApi {
     for (;;) {
       const ticket = this.runtimeKeys.ticket(runtime.id);
       const info = await this.lookAt(runtime);
-      if (!this.runtimeKeys.holds(ticket)) continue;
+      if (!this.runtimeKeys.holds(ticket)) {
+        // A key being saved or removed: the runtime is looked at again once that has ended.
+        await this.runtimeKeys.quiet(runtime.id);
+        continue;
+      }
       this.setInfo(ticket, info);
       if (info.noPlan !== true && info.limits !== undefined) {
         // None of a change since the last seen is counted as ours, since no turn of ours ran.
@@ -1560,6 +1591,7 @@ export class AgentService implements AgentApi {
       this.roomFor(runtime, model),
     );
     const before = this.limitsOf(runtime.id, await settings.get());
+    this.goes(turn);
     try {
       const run = await runtime.run(
         { model, ...request, ...withEffort(effort) },
@@ -2057,9 +2089,9 @@ export class AgentService implements AgentApi {
 
   /**
    * The runtime has a new key, or none: every turn, look and test on the key before stops, and
-   * nothing it found is kept (ADR 0141, rules 4 and 5); the pass stops when it reads there. Twice
-   * per command, before the vault is written and once it is, so what began while it was written
-   * holds for neither key.
+   * nothing it found is kept (ADR 0141, rules 4 and 5); the pass stops when it reads there. Once
+   * before the vault is written, and once more as its write ends (`change`), so what began before
+   * or while it was written holds for neither key.
    */
   private async nextKey(runtimeId: string): Promise<void> {
     this.runtimeKeys.next(runtimeId);
@@ -2095,21 +2127,21 @@ export class AgentService implements AgentApi {
     }
     // Turns that run on the old key stop: nothing new goes on it, and nothing they find is kept
     // for this one. A test that ran on it is not kept either; its stored record names the old
-    // key's id.
+    // key's id. A look or a test that began while the vault was written may have read the key
+    // before: its ticket holds for neither key.
     await this.nextKey(runtime.id);
-    try {
-      await keys.set(runtime.id, { key: trimmed, savedAtMs: this.now, id: randomUUID() });
-    } catch (error) {
-      // The vault's reasons never hold the key; a refusal there says why secrets cannot be kept.
-      throw new InvalidAgentSettingError(
-        error instanceof CredentialsUnavailableError
-          ? error.message
-          : "The key could not be saved. Try again.",
-      );
-    } finally {
-      // A look or a test that began while the vault was written may have read the key before.
-      this.runtimeKeys.next(runtime.id);
-    }
+    await this.runtimeKeys.change(runtime.id, async () => {
+      try {
+        await keys.set(runtime.id, { key: trimmed, savedAtMs: this.now, id: randomUUID() });
+      } catch (error) {
+        // The vault's reasons never hold the key; a refusal there says why secrets cannot be kept.
+        throw new InvalidAgentSettingError(
+          error instanceof CredentialsUnavailableError
+            ? error.message
+            : "The key could not be saved. Try again.",
+        );
+      }
+    });
     this.blocked.delete(runtime.id);
     await this.inspectRuntime(runtime).catch(() => {});
     this.deps.onChanged();
@@ -2132,12 +2164,8 @@ export class AgentService implements AgentApi {
     const keys = this.deps.keys as AgentKeyVaultPort;
     const { settings, insights } = this.deps;
     await this.nextKey(runtime.id);
-    try {
-      await keys.delete(runtime.id);
-    } finally {
-      // A look or a test that began while the vault was written may have read the key.
-      this.runtimeKeys.next(runtime.id);
-    }
+    // A look or a test that began while the vault was written may have read the key.
+    await this.runtimeKeys.change(runtime.id, () => keys.delete(runtime.id));
     const had = (await settings.listConsents()).filter((c) => c.runtimeId === runtime.id);
     for (const c of had) await settings.revokeConsent(c.accountId, c.runtimeId);
     if (had.length > 0) {
@@ -2211,16 +2239,16 @@ export class AgentService implements AgentApi {
   /**
    * The gates of a turn of `kind` the person asked for about a thread (ADR 0063), in order: AI on,
    * the thread exists, its account agreed to the runtime of the turn (ADR 0121, rule 4), that
-   * runtime ready, its plan has room. Gives the settings and the runtime; the one turn works from
-   * the thread alone.
+   * runtime ready, its plan has room. Gives the settings, the runtime and the turn the gates
+   * passed for; the one turn works from the thread alone.
    */
   private async gateForAsk(threadId: string, kind: AgentWorkKind, runtime?: AgentRuntime) {
-    const { s, on } = await this.gateOn(kind, runtime);
+    const { s, on, turn } = await this.gateOn(kind, runtime);
     const view = await this.deps.store.getThread(threadId, { visibleOnly: true });
     if (view === null) throw new ThingNotFoundError();
     const accountId = view.thread.accountId;
-    await this.gateAccount(accountId, on, s);
-    return { s, accountId, runtime: on };
+    await this.gateAccount(accountId, on, s, turn);
+    return { s, accountId, runtime: on, turn };
   }
 
   /**
@@ -2228,9 +2256,9 @@ export class AgentService implements AgentApi {
    * account the message goes out from instead of a thread's account.
    */
   private async gateForAccount(accountId: string, kind: AgentWorkKind) {
-    const { s, on } = await this.gateOn(kind);
-    await this.gateAccount(accountId, on, s);
-    return { s, accountId, runtime: on };
+    const { s, on, turn } = await this.gateOn(kind);
+    await this.gateAccount(accountId, on, s, turn);
+    return { s, accountId, runtime: on, turn };
   }
 
   /** The gates of help with a message: by its thread when it answers one, else by its account. */
@@ -2240,35 +2268,46 @@ export class AgentService implements AgentApi {
       : this.gateForAccount(about.accountId, kind);
   }
 
-  /** The first gates of a turn the person asked for: AI on, and a runtime for the work. */
+  /**
+   * The first gates of a turn the person asked for: AI on, and a runtime for the work. The turn is
+   * taken as soon as the runtime is known, before any gate after it waits, so every gate is about
+   * the key of that turn and the turn goes on no other (ADR 0141, rule 5).
+   */
   private async gateOn(kind: AgentWorkKind, runtime?: AgentRuntime) {
     const s = await this.currentSettings();
     const on = runtime ?? this.runtimeFor(kind, s);
     if (!s.enabled) throw new AgentUnavailableError(NOT_READY);
     if (on === NO_RUNTIME) throw new AgentUnavailableError(NOT_READY);
-    return { s, on };
+    return { s, on, turn: this.turnOf(kind, on.id) };
   }
 
   /** The account agreed to the runtime (ADR 0121, rule 4), then the runtime's own gates. */
-  private async gateAccount(accountId: string, on: AgentRuntime, s: AgentSettings) {
+  private async gateAccount(accountId: string, on: AgentRuntime, s: AgentSettings, turn: Turn) {
     if (!(await consentedAccounts(this.deps, on.id)).has(accountId)) {
       throw new AgentUnavailableError(noConsent(on));
     }
-    await this.gateRuntime(on, s);
+    await this.gateRuntime(on, s, turn.ticket);
   }
 
   /**
    * The last gates of a turn the person asked for: the runtime is ready and its plan has room. A
    * runtime not tested yet is tested first, with the made-up message only: the person agreed to it
-   * and asked for this turn.
+   * and asked for this turn. Each is decided for the key of `ticket`, the turn's, taken before
+   * the gates: what was found on a key before is not looked at, and a key saved or removed while
+   * they wait stops the turn (ADR 0141, rule 5).
    */
-  private async gateRuntime(runtime: AgentRuntime, s: AgentSettings): Promise<void> {
+  private async gateRuntime(
+    runtime: AgentRuntime,
+    s: AgentSettings,
+    ticket: KeyTicket,
+  ): Promise<void> {
     if (runtime === NO_RUNTIME) throw new AgentUnavailableError(NOT_READY);
-    if (this.infoOf(runtime.id) === null) await this.inspectRuntime(runtime);
-    if (this.infoOf(runtime.id)?.status === "found" && !this.blocked.has(runtime.id)) {
+    if (this.infoFor(ticket) === null) await this.inspectRuntime(runtime);
+    if (this.infoFor(ticket)?.status === "found" && !this.blocked.has(runtime.id)) {
       await this.sharedTest(runtime);
     }
-    if (this.infoOf(runtime.id)?.status !== "ready") {
+    if (!this.runtimeKeys.holds(ticket)) throw new AgentUnavailableError("Stopped.");
+    if (this.infoFor(ticket)?.status !== "ready") {
       throw new AgentUnavailableError(notReady(runtime));
     }
     if (!this.planGate(runtime.id, "P0", s).ok) throw new AgentUnavailableError(USED_UP);
@@ -2338,8 +2377,7 @@ export class AgentService implements AgentApi {
   }
 
   async prepare(threadId: string, guidance?: PreparedGuidance): Promise<PrepareResult> {
-    const { s, runtime } = await this.gateForAsk(threadId, "write");
-    const turn = this.turnOf("write", runtime.id);
+    const { s, runtime, turn } = await this.gateForAsk(threadId, "write");
     try {
       const model = this.modelFor("write", s, runtime);
       return await this.prepareFor(
@@ -2399,6 +2437,7 @@ export class AgentService implements AgentApi {
    * worked; `threads` is 0 when no mail went (a rewrite gets only the person's lines).
    */
   private async helpTurn(
+    turn: Turn,
     runtime: AgentRuntime,
     accountId: string,
     threads: number,
@@ -2407,7 +2446,9 @@ export class AgentService implements AgentApi {
   ): Promise<unknown> {
     const { insights, settings } = this.deps;
     const before = this.limitsOf(runtime.id, await settings.get());
-    const turn = this.turnOf("write", runtime.id);
+    // The turn its gate passed for, handed down: a key saved since stops it here, before anything
+    // went, so no line in the ledger.
+    this.goes(turn);
     let value: unknown;
     try {
       const result = await runtime.run(
@@ -2443,13 +2484,14 @@ export class AgentService implements AgentApi {
       throw new InvalidAgentSettingError("The draft can be made shorter, formal or English.");
     }
     const parts = this.ownLines(text, true);
-    const { s, accountId, runtime } = await this.gateForDraft(about, "write");
+    const { s, accountId, runtime, turn } = await this.gateForDraft(about, "write");
     const standing = {
       list: await this.deps.insights.listInstructions(),
       threadId: threadOf(about),
     };
     const model = this.writeModel(s, runtime);
     const value = await this.helpTurn(
+      turn,
       runtime,
       accountId,
       0,
@@ -2477,7 +2519,7 @@ export class AgentService implements AgentApi {
       throw new InvalidAgentSettingError("That is too long to ask the agent. Say it shorter.");
     }
     const parts = this.ownLines(text, false);
-    const { s, accountId, runtime } = await this.gateForDraft(about, "write");
+    const { s, accountId, runtime, turn } = await this.gateForDraft(about, "write");
     const threadId = threadOf(about);
     const model = this.writeModel(s, runtime);
     // Only a reply sends its thread with it; a new message sends no mail.
@@ -2492,6 +2534,7 @@ export class AgentService implements AgentApi {
           };
     const standing = { list: await this.deps.insights.listInstructions(), threadId };
     const value = await this.helpTurn(
+      turn,
       runtime,
       accountId,
       thread === undefined ? 0 : 1,
@@ -2549,11 +2592,10 @@ export class AgentService implements AgentApi {
     let stop = AbortSignal.any([this.signalOf("appearance", ""), mine.signal]);
     let ticket = this.runtimeKeys.ticket("");
     try {
-      const { s, on } = await this.gateOn("appearance");
-      const turn = this.turnOf("appearance", on.id);
+      const { s, on, turn } = await this.gateOn("appearance");
       ticket = turn.ticket;
       stop = AbortSignal.any([stop, turn.signal]);
-      await this.gateRuntime(on, s);
+      await this.gateRuntime(on, s, ticket);
       const model = this.modelFor("appearance", s, on);
       const effort = this.effortOn("appearance", s, on, model);
       const request = buildThemeRequest(
@@ -2564,9 +2606,10 @@ export class AgentService implements AgentApi {
         },
         THEME_FORMAT,
       );
+      const before = this.limitsOf(on.id, await this.deps.settings.get());
       // Stopped before anything left: no turn, so no line in the ledger.
       if (stop.aborted) throw new AgentUnavailableError("Stopped.");
-      const before = this.limitsOf(on.id, await this.deps.settings.get());
+      this.goes(turn);
       let value: unknown;
       try {
         const run = await on.run({ model, ...request, ...withEffort(effort) }, { signal: stop });
@@ -2603,7 +2646,7 @@ export class AgentService implements AgentApi {
     missing: readonly string[] = [],
   ): Promise<{ text: string }> {
     const parts = this.ownLines(text, false);
-    const { s, accountId, runtime } = await this.gateForAsk(threadId, "write");
+    const { s, accountId, runtime, turn } = await this.gateForAsk(threadId, "write");
     const thread = await this.helpThread(threadId, runtime);
     const last = lastFromThem(thread);
     // Nobody else wrote, or a list or a program did: there is nothing to answer, and no turn.
@@ -2611,6 +2654,7 @@ export class AgentService implements AgentApi {
     const standing = { list: await this.deps.insights.listInstructions(), threadId };
     const model = this.writeModel(s, runtime);
     const value = await this.helpTurn(
+      turn,
       runtime,
       accountId,
       1,
@@ -2638,7 +2682,7 @@ export class AgentService implements AgentApi {
 
   async checkReply(threadId: string, text: string): Promise<ReplyCheck> {
     const parts = this.ownLines(text, false);
-    const { s, accountId, runtime } = await this.gateForAsk(threadId, "write");
+    const { s, accountId, runtime, turn } = await this.gateForAsk(threadId, "write");
     const last = lastFromThem(await this.helpThread(threadId, runtime));
     // Mail from a list or a program asks nothing of the person (ADR 0098 addendum): no turn.
     if (last === null || last.text === "" || last.message.automated === true) {
@@ -2646,6 +2690,7 @@ export class AgentService implements AgentApi {
     }
     const model = this.readingModel(s, runtime);
     const value = await this.helpTurn(
+      turn,
       runtime,
       accountId,
       1,
@@ -2663,13 +2708,14 @@ export class AgentService implements AgentApi {
 
   async fillGaps(threadId: string, text: string): Promise<readonly GapSuggestion[]> {
     const parts = this.ownLines(text, false);
-    const { s, accountId, runtime } = await this.gateForAsk(threadId, "write");
+    const { s, accountId, runtime, turn } = await this.gateForAsk(threadId, "write");
     const tokens = draftGaps(parts.own).slice(0, MAX_GAPS);
     // No gap to fill: no turn.
     if (tokens.length === 0) return [];
     const thread = await this.helpThread(threadId, runtime);
     const model = this.readingModel(s, runtime);
     const value = await this.helpTurn(
+      turn,
       runtime,
       accountId,
       1,
@@ -2715,11 +2761,12 @@ export class AgentService implements AgentApi {
       const first = this.talkOn("write", await this.currentSettings(), choice);
       // The gates may look at the runtime and test it: what they find there they keep themselves.
       ticket = this.runtimeKeys.ticket(first.runtime.id);
-      const { s } = await this.gateForAsk(threadId, "write", first.runtime);
-      // Once the runtime is looked at, its model is checked against what it lists now.
-      const picked = this.talkOn("write", s, choice);
-      const turn = this.turnOf("write", picked.runtime.id);
+      const { s, turn } = await this.gateForAsk(threadId, "write", first.runtime);
       ticket = turn.ticket;
+      // Once the runtime is looked at, its model is checked against what it lists now. The turn
+      // goes on the runtime its gates passed for, or on none.
+      const picked = this.talkOn("write", s, choice);
+      if (picked.runtime !== first.runtime) throw new AgentUnavailableError("Stopped.");
       return await this.talkNow(
         threadId,
         typed,
@@ -2766,9 +2813,10 @@ export class AgentService implements AgentApi {
       open?.kind === "needs" ? open : null,
       this.roomFor(runtime, model),
     );
+    const before = this.limitsOf(runtime.id, await settings.get());
     // Stopped before anything left: no mail went, so no line in the ledger.
     if (stop.aborted) throw new AgentUnavailableError("Stopped.");
-    const before = this.limitsOf(runtime.id, await settings.get());
+    this.goes(turn);
     try {
       // The service's own signal still cuts the turn short when AI is turned off or consent goes.
       const run = await runtime.run(
@@ -3007,20 +3055,19 @@ export class AgentService implements AgentApi {
       // Questions run on the runtime for questions, or on the one chosen in this talk (ADR 0121,
       // rules 1 and 8), with the accounts that agreed to it (rule 4).
       const { runtime } = this.talkOn("answer", s, choice);
-      // The gates may look at the runtime and test it: what they find there they keep themselves.
-      ticket = this.runtimeKeys.ticket(runtime.id);
+      // The turn is taken before the gates, which are decided for its key (ADR 0141, rule 5).
+      const turn = this.turnOf("answer", runtime.id);
+      ticket = turn.ticket;
       if ((await consentedAccounts(this.deps, runtime.id)).size === 0) {
         throw new AgentUnavailableError(noAccount(runtime));
       }
-      await this.gateRuntime(runtime, s);
+      await this.gateRuntime(runtime, s, ticket);
       // Once the runtime is looked at, its model is checked against what it lists now.
       const { model } = this.talkOn("answer", s, choice);
       // The talk it is asked in; one that is gone, or none, is started now (ADR 0086).
       const known = talkId === null ? null : await this.deps.insights.getTalk(talkId);
       const talk = known ?? (await this.deps.insights.createTalk(this.now));
       this.talkingAllIn = talk.id;
-      const turn = this.turnOf("answer", runtime.id);
-      ticket = turn.ticket;
       const result = await this.talkAllNow(typed, s, mine.signal, talk.id, runtime, model, turn);
       const named = await this.deps.insights.getTalk(talk.id);
       if (named !== null) void this.nameTalkSoon(named);
@@ -3177,6 +3224,7 @@ export class AgentService implements AgentApi {
     /** One turn of the understanding model: counted against the plan, stopped by Stop. */
     const understand = async (request: AgentRequestBody): Promise<unknown> => {
       const before = this.limitsOf(runtime.id, await settings.get());
+      this.goes(turn);
       const run = await runtime.run(
         { model: modelOf("understand"), ...request, ...withEffort(efforts.understand) },
         { signal },
@@ -3272,6 +3320,7 @@ export class AgentService implements AgentApi {
       });
       try {
         const before = this.limitsOf(runtime.id, await settings.get());
+        this.goes(turn);
         let run: AgentRunResult;
         try {
           run = await withTools.call(
@@ -3455,8 +3504,10 @@ export class AgentService implements AgentApi {
     );
     check();
     if (sent.length > 0) this.deps.onTalkStep?.(trail.firstQuery, sent.length);
+    const answerBefore = this.limitsOf(runtime.id, await settings.get());
+    // Nothing went yet: a key saved since stops the turn with no line in the ledger.
+    this.goes(turn);
     try {
-      const answerBefore = this.limitsOf(runtime.id, await settings.get());
       const run = await runtime.run(
         {
           model: answerModel,
