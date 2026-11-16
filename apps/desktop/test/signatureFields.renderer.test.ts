@@ -3,10 +3,14 @@
 import { describe, expect, it } from "vitest";
 import {
   closeSignatureField,
+  NO_SAVED_SIGNATURES,
   NO_SIGNATURE_FIELD,
   openSignatureField,
+  recordSavedSignature,
   savedSignatureField,
   signatureAlert,
+  signaturesCaughtUp,
+  signatureUnchanged,
   typeInSignatureField,
 } from "../src/renderer/signatureFields.ts";
 
@@ -51,5 +55,60 @@ describe("the signature fields", () => {
     // What is wrong with the text now comes first; with neither, nothing is said.
     expect(signatureAlert("Too long.", failure, "Anna")).toBe("Too long.");
     expect(signatureAlert(null, null, "Anna")).toBeNull();
+  });
+
+  describe("what Save takes for unchanged: what the store holds", () => {
+    it("the reviewer's case: a save of One ended, the list still shows Old, the field holds Old", () => {
+      // Old; One is saved; Old is put back while the save is on its way; the save ends.
+      let fields = typeInSignatureField(openSignatureField("a"), "a", "One");
+      fields = typeInSignatureField(fields, "a", "Old");
+      fields = savedSignatureField(fields, "a", "One");
+      expect(fields.open).toBe("a");
+      const saved = recordSavedSignature(NO_SAVED_SIGNATURES, "a", "One", 1);
+      // Before the list is read again, Save of Old saves it: the store holds One.
+      expect(signatureUnchanged(saved, "a", "Old", "Old")).toBe(false);
+      expect(signatureUnchanged(saved, "a", "Old", "One")).toBe(false);
+      // The list caught up: it shows One, the saved text is let go, and One is unchanged.
+      const caught = signaturesCaughtUp(saved, [{ id: "a", signature: "One" }]);
+      expect(caught).toEqual(NO_SAVED_SIGNATURES);
+      expect(signatureUnchanged(caught, "a", "One", "One")).toBe(true);
+      expect(signatureUnchanged(caught, "a", "One", "Old")).toBe(false);
+    });
+
+    it("with no save of its own, the account as the list shows it is the baseline", () => {
+      expect(signatureUnchanged(NO_SAVED_SIGNATURES, "a", "Old", "Old")).toBe(true);
+      expect(signatureUnchanged(NO_SAVED_SIGNATURES, "a", "", "")).toBe(true);
+      expect(signatureUnchanged(NO_SAVED_SIGNATURES, "a", "Old", "New")).toBe(false);
+    });
+
+    it("two saves on their way: the one pressed later is what the store holds, whichever ends first", () => {
+      const later = recordSavedSignature(NO_SAVED_SIGNATURES, "a", "Two", 2);
+      expect(recordSavedSignature(later, "a", "One", 1)).toBe(later);
+      const inOrder = recordSavedSignature(
+        recordSavedSignature(NO_SAVED_SIGNATURES, "a", "One", 1),
+        "a",
+        "Two",
+        2,
+      );
+      expect(inOrder).toEqual(later);
+      expect(signatureUnchanged(later, "a", "Old", "One")).toBe(false);
+      // Another account's save is its own.
+      const both = recordSavedSignature(later, "b", "Ben", 3);
+      expect(both).toEqual({ a: { text: "Two", order: 2 }, b: { text: "Ben", order: 3 } });
+    });
+
+    it("a list read before the save landed does not let the saved text go", () => {
+      const saved = recordSavedSignature(NO_SAVED_SIGNATURES, "a", "One", 1);
+      // Read before the write, or changed elsewhere since: either way not caught up.
+      expect(signaturesCaughtUp(saved, [{ id: "a", signature: "Old" }])).toBe(saved);
+      expect(signaturesCaughtUp(saved, [{ id: "b", signature: "One" }])).toBe(saved);
+      // The list shows Zed (from elsewhere, or not yet One): Save of One saves it again, and so
+      // does a Save of Zed; neither is taken for unchanged while the two disagree.
+      expect(signatureUnchanged(saved, "a", "Zed", "One")).toBe(false);
+      expect(signatureUnchanged(saved, "a", "Zed", "Zed")).toBe(false);
+      // A signature saved as none caught up when the list shows none.
+      const none = recordSavedSignature(NO_SAVED_SIGNATURES, "a", "", 1);
+      expect(signaturesCaughtUp(none, [{ id: "a" }])).toEqual(NO_SAVED_SIGNATURES);
+    });
   });
 });
