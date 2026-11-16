@@ -63,10 +63,14 @@ its list gives an id, a date and an owner, and nothing about schemas, tools or e
    Console to use it"); a key not tested yet; a key the provider refuses, by the class of its
    reason: a wrong key, no credit, no permission, no access to the model, or rate limited for now;
    ready. Ready only after the same test every runtime passes (ADR 0051, rule 5). The test is for
-   the key: a test from before the key was saved does not hold, so a replaced key is tested again,
-   and a test that was running on the old key when the new one was saved is not kept.
-   A refusal during a turn sets the state too. The sentences are ours; the provider's words never
-   reach the person.
+   the key: a key is kept in the vault with a random id made when it is saved (never made from its
+   text), the stored test names the id of the key it ran on, and it holds only for that key, not
+   by time, which two saves in one millisecond or a clock set back would get wrong. So a replaced
+   key, or the same text saved again, is tested again; a test record that names no key (one from
+   before the id, or a key kept before it) holds for none; and a test that was running on the old
+   key when the new one was saved is not kept. The id is not told to a window; the database keeps
+   it with the test record. A refusal during a turn sets the state too, a verdict turn of a prompt
+   among them. The sentences are ours; the provider's words never reach the person.
 6. **Money is said plainly.** The card and the consent question each say in one sentence that
    every turn is billed by Anthropic to the person's key. The runtime has no plan, so no windows
    or shares show (ADR 0119, rule 7). What bounds the cost is what the person does:
@@ -75,7 +79,8 @@ its list gives an id, a date and an owner, and nothing about schemas, tools or e
      bill reads every match at once.
    - **Background work runs on a billed runtime only once the person turns it on**, with the
      switch `Read in the background` on the runtime's card in Settings. It is off when a key is
-     saved, and off again when the key is removed. Off, nothing in the background is sent: views
+     saved, a replaced key or the same one saved again too (a saved key is a new key, agreed to
+     again), and off when the key is removed. Off, nothing in the background is sent: views
      with a prompt do not read new mail, no talk is named by itself, and the reading says why
      (`Waits: reading in the background on Anthropic API is off`).
    - On, a pass reads as much as on a plan (a batch at a time), not a whole view at once as a

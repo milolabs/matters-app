@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 // Agents in the sync worker (ADR 0051, rule 10). Everything here is injected, so a test
 // runs it over `FakeAgentRuntime` and the in-memory stores. Nothing logs mail text, subjects or
 // addresses: errors carry fixed sentences only.
@@ -422,6 +423,13 @@ function withInput(inputChars: number | undefined): { readonly inputChars?: numb
   return inputChars === undefined ? {} : { inputChars };
 }
 
+/** What a window is told of a runtime: the id of its key is for the test record only. */
+function shownInfo(info: AgentRuntimeInfo): AgentRuntimeInfo {
+  if (info.keyId === undefined) return info;
+  const { keyId: _keyId, ...shown } = info;
+  return shown;
+}
+
 /** A runtime the person can do something with now: it is there, and nothing waits on them. */
 function usable(info: AgentRuntimeInfo | null): boolean {
   const status = info?.status;
@@ -726,9 +734,11 @@ export class AgentService implements AgentApi {
     // chosen now.
     const model = this.testModel(runtime.id, s, info);
     const sameModel = record?.model === undefined || record.model === model;
-    // A test from before the key it ran on was saved does not hold for a new key (ADR 0141).
+    // A test holds for the key it ran on and no other, by the id the key was saved with: not by
+    // time, which two saves in one millisecond or a clock set back would get wrong (ADR 0141,
+    // rule 5). A record that names no key holds for no key.
     const sameKey =
-      info.keySavedAtMs === undefined || (record?.testedAtMs ?? 0) >= info.keySavedAtMs;
+      info.billed !== true || (info.keyId !== undefined && record?.keyId === info.keyId);
     if (
       info.status === "found" &&
       record !== null &&
@@ -953,6 +963,7 @@ export class AgentService implements AgentApi {
       ...(info.plan === undefined ? {} : { plan: info.plan }),
       model,
       ...(problem === undefined ? {} : { problem }),
+      ...(info.keyId === undefined ? {} : { keyId: info.keyId }),
       testedAtMs: clock.now(),
     });
     const { problem: _old, ...rest } = this.infoOf(runtime.id) ?? info;
@@ -1507,10 +1518,11 @@ export class AgentService implements AgentApi {
         const info = this.infoOf(r.id);
         // A runtime on a plan carries the windows kept for it (ADR 0121, rule 6).
         const limits = info?.noPlan === true ? undefined : planUseOf(after, r.id).limits;
+        const told = info === null ? null : shownInfo(info);
         return {
           id: r.id,
           name: r.name,
-          info: info === null || limits === undefined ? info : { ...info, limits },
+          info: told === null || limits === undefined ? told : { ...told, limits },
         };
       }),
       unlisted: unlistedKinds(after, (id) => this.infoOf(id)),
@@ -1881,11 +1893,11 @@ export class AgentService implements AgentApi {
     const problem = apiKeyProblem(trimmed);
     if (problem !== null) throw new InvalidAgentSettingError(problem);
     // Turns that run on the old key stop: what they started is kept, nothing new goes. A test
-    // that ran on it is not kept for this one.
+    // that ran on it is not kept for this one, and its stored record names the old key's id.
     await this.stopRuntime(runtime.id);
     this.nextKey(runtime.id);
     try {
-      await keys.set(runtime.id, { key: trimmed, savedAtMs: this.now });
+      await keys.set(runtime.id, { key: trimmed, savedAtMs: this.now, id: randomUUID() });
     } catch (error) {
       // The vault's reasons never hold the key; a refusal there says why secrets cannot be kept.
       throw new InvalidAgentSettingError(
@@ -1895,9 +1907,17 @@ export class AgentService implements AgentApi {
       );
     }
     this.blocked.delete(runtime.id);
+    // A saved key is a new key, the same text saved again too: nothing reads on it in the
+    // background until the person turns that on for it (rule 6).
+    const s = await this.deps.settings.get();
+    if (keyReadingOn(s, runtime.id)) {
+      await this.deps.settings.update({
+        keyReading: (s.keyReading ?? []).filter((id) => id !== runtime.id),
+      });
+    }
     await this.inspectRuntime(runtime).catch(() => {});
     this.deps.onChanged();
-    if ((await this.deps.settings.get()).enabled) this.kick();
+    if (s.enabled) this.kick();
     return this.status();
   }
 

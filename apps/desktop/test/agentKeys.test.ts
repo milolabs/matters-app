@@ -79,6 +79,7 @@ class Keyed {
       defaultModel: "claude-opus-5-5",
       defaultModels: { understand: "claude-haiku-5-5", titles: "claude-haiku-5-5" },
       keySavedAtMs: key.savedAtMs,
+      ...(key.id === undefined ? {} : { keyId: key.id }),
     };
   }
   async run(
@@ -128,7 +129,7 @@ async function build() {
   const vault = new Vault();
   const keyed = new Keyed(vault);
   const told: string[] = [];
-  const service = new AgentService({
+  const deps: ConstructorParameters<typeof AgentService>[0] = {
     runtimes: [keyed, new Plain()],
     keys: vault,
     store: storage.store,
@@ -145,7 +146,8 @@ async function build() {
     visibleText,
     onChanged: () => {},
     onError: (message) => told.push(message),
-  });
+  };
+  const service = new AgentService(deps);
   const message = makeMessage({
     seq: 1,
     accountId: "acc1",
@@ -167,7 +169,7 @@ async function build() {
     await service.idle();
     await settle();
   };
-  return { service, vault, keyed, settings, insights, clock, pass, told };
+  return { service, deps, vault, keyed, settings, insights, clock, pass, told };
 }
 
 describe("the person's own API key (ADR 0141)", () => {
@@ -184,12 +186,20 @@ describe("the person's own API key (ADR 0141)", () => {
     const before = await h.service.inspect();
     expect(runtimeInfo(before, "anthropic-api")?.status).toBe("noKey");
     const after = await h.service.saveKey("anthropic-api", `  ${KEY}\n`);
-    expect(h.vault.kept.get("anthropic-api")).toEqual({ key: KEY, savedAtMs: NOW });
+    expect(h.vault.kept.get("anthropic-api")).toEqual({
+      key: KEY,
+      savedAtMs: NOW,
+      id: expect.any(String),
+    });
+    // The id the key is kept with is random: nothing of the key's text is in it.
+    const id = h.vault.kept.get("anthropic-api")?.id ?? "";
+    expect(id).not.toContain(KEY.slice(-8));
     expect(runtimeInfo(after, "anthropic-api")?.status).toBe("found");
-    // Nothing a window is told holds the key, nor a part of it.
+    // Nothing a window is told holds the key, nor a part of it, nor the id it is kept with.
     const told = JSON.stringify([after, await h.service.status(), h.told]);
     expect(told).not.toContain(KEY);
     expect(told).not.toContain(KEY.slice(-8));
+    expect(told).not.toContain(id);
     // A key of a shape no provider gives is not kept, and the sentence does not repeat it.
     const error = await h.service.saveKey("anthropic-api", "not a key!").catch((e) => e);
     expect(error).toBeInstanceOf(InvalidAgentSettingError);
@@ -212,6 +222,50 @@ describe("the person's own API key (ADR 0141)", () => {
     await h.clock.advance(1000);
     const replaced = await h.service.saveKey("anthropic-api", `${KEY}-2`);
     expect(runtimeInfo(replaced, "anthropic-api")?.status).toBe("found");
+  });
+
+  it("does not take the test of the key before for one saved in the same millisecond (rule 5)", async () => {
+    const h = await build();
+    await h.service.saveKey("anthropic-api", KEY);
+    expect(runtimeInfo(await h.service.testRuntime("anthropic-api"), "anthropic-api")?.status).toBe(
+      "ready",
+    );
+    // The clock does not move: the new key is saved at the time the old one was tested.
+    const replaced = await h.service.saveKey("anthropic-api", `${KEY}-2`);
+    expect(runtimeInfo(replaced, "anthropic-api")?.status).toBe("found");
+    expect(runtimeInfo(await h.service.inspect(), "anthropic-api")?.status).toBe("found");
+    // Nor for the same text saved again: a saved key is a new key, tested again.
+    await h.service.testRuntime("anthropic-api");
+    const again = await h.service.saveKey("anthropic-api", `${KEY}-2`);
+    expect(runtimeInfo(again, "anthropic-api")?.status).toBe("found");
+  });
+
+  it("holds no stored test for a key kept before keys had an id (rule 5)", async () => {
+    const h = await build();
+    await h.service.saveKey("anthropic-api", KEY);
+    await h.service.testRuntime("anthropic-api");
+    // What an older build kept: the key without an id, and a record that names none.
+    h.vault.kept.set("anthropic-api", { key: KEY, savedAtMs: NOW - 1 });
+    await h.settings.putRuntimeRecord({
+      runtimeId: "anthropic-api",
+      status: "ready",
+      model: "claude-haiku-5-5",
+      testedAtMs: NOW,
+    });
+    const fresh = new AgentService(h.deps);
+    expect(runtimeInfo(await fresh.inspect(), "anthropic-api")?.status).toBe("found");
+  });
+
+  it("turns reading in the background off when a key is saved, the same key again too (rule 6)", async () => {
+    const h = await build();
+    await h.service.saveKey("anthropic-api", KEY);
+    await h.service.setKeyReading("anthropic-api", true);
+    await h.settings.update({ keyReading: ["anthropic-api", "other"] });
+    const replaced = await h.service.saveKey("anthropic-api", `${KEY}-2`);
+    expect(replaced.settings.keyReading).toEqual(["other"]);
+    await h.service.setKeyReading("anthropic-api", true);
+    const again = await h.service.saveKey("anthropic-api", `${KEY}-2`);
+    expect(again.settings.keyReading).toEqual(["other"]);
   });
 
   it("does not keep a test that ran on the key before the one saved while it ran (rule 5)", async () => {

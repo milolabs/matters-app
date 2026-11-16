@@ -56,11 +56,13 @@ export function agentKeyEntry(runtimeId: string): string {
 
 /** A kept key of a known shape, or null: what is read back or crosses a process is checked. */
 export function parseAgentKey(v: unknown): AgentKey | null {
-  const r = v as { kind?: unknown; key?: unknown; savedAtMs?: unknown } | null;
+  const r = v as { kind?: unknown; key?: unknown; savedAtMs?: unknown; id?: unknown } | null;
   if (typeof r !== "object" || r === null) return null;
   if (typeof r.key !== "string" || r.key.length === 0 || r.key.length > 512) return null;
   if (typeof r.savedAtMs !== "number" || !Number.isFinite(r.savedAtMs)) return null;
-  return { key: r.key, savedAtMs: r.savedAtMs };
+  // A key kept before ids were made has none: no test holds for it until it is tested again.
+  const id = typeof r.id === "string" && r.id.length > 0 && r.id.length <= 64 ? r.id : undefined;
+  return { key: r.key, savedAtMs: r.savedAtMs, ...(id === undefined ? {} : { id }) };
 }
 
 export class EncryptedFileCredentialStore implements CredentialPort {

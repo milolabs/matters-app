@@ -264,6 +264,11 @@ describe("AnthropicApiRuntime: the models (ADR 0141, rule 7)", () => {
     const info = await runtime().inspect();
     expect(info.status).toBe("found");
     expect(info.keySavedAtMs).toBe(1000);
+    // A key kept without an id (from before ids) gives none: no test record holds for it.
+    expect(info.keyId).toBeUndefined();
+    expect((await runtime({ key: { key: KEY, savedAtMs: 1000, id: "k-1" } }).inspect()).keyId).toBe(
+      "k-1",
+    );
     expect(info.models).toEqual([
       "claude-opus-5-5",
       "claude-opus-4-8",
