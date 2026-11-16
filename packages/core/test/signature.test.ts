@@ -309,7 +309,7 @@ describe("the agent and the signature (rule 6)", () => {
     );
     // With none of the person's, the model's first block goes, as with no text before.
     expect(keepOwnBlocks("Thanks.", "Thank you.\n\n--\nBot")).toBe("Thank you.");
-    expect(joinDraft(keepOwnBlocks(before, "Thank you.\n\n--\nAnna") ?? "", "", "")).toBe(
+    expect(joinDraft(keepOwnBlocks(before, "Thank you.\n\n--\nAnna"), "", "")).toBe(
       "Thank you.\n\n--\nAnna",
     );
   });
