@@ -166,6 +166,7 @@ import {
   wholeTypesFor,
   withEffort,
   withFiles,
+  withoutSignature,
 } from "@matters/core";
 import {
   type AgentApi,
@@ -2372,7 +2373,7 @@ export class AgentService implements AgentApi {
     );
     const got = acceptRewrite(value, parts.own);
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
-    return { text: joinDraft(got.value, parts.quote, parts.signature, parts.own) };
+    return { text: joinDraft(got.value, parts.quote, parts.signature) };
   }
 
   async writeDraft(
@@ -2424,9 +2425,7 @@ export class AgentService implements AgentApi {
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
     return {
       text:
-        got.value === parts.own.trim()
-          ? text
-          : joinDraft(got.value, parts.quote, parts.signature, parts.own),
+        got.value === parts.own.trim() ? text : joinDraft(got.value, parts.quote, parts.signature),
     };
   }
 
@@ -2544,10 +2543,7 @@ export class AgentService implements AgentApi {
     const got = acceptAnswers(value, parts.own);
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
     return {
-      text:
-        got.value === parts.own
-          ? text
-          : joinDraft(got.value, parts.quote, parts.signature, parts.own),
+      text: got.value === parts.own ? text : joinDraft(got.value, parts.quote, parts.signature),
     };
   }
 
@@ -3743,9 +3739,11 @@ export class AgentService implements AgentApi {
     // A draft the person already started is theirs: the composer opens it, nothing is overwritten.
     if (prepared.existing !== null) return { draftId: prepared.existing.id, existing: true };
     // The agent's words above the account's signature and the quote, as the composer starts a
-    // reply; a signature block the agent wrote anyway goes (ADR 0142, rule 6).
+    // reply; the words are all the agent's, so every signature block in them goes (ADR 0142,
+    // rule 6).
     const start = splitDraft(prepared.content.bodyMarkdown);
-    const joined = joinDraft(body.replace(/\r\n?/g, "\n"), start.quote, start.signature);
+    const words = withoutSignature(body.replace(/\r\n?/g, "\n"));
+    const joined = joinDraft(words, start.quote, start.signature);
     const draft = await this.deps.saveDraft({
       ...prepared.content,
       bodyMarkdown: start.quote === "" && start.signature === "" ? `${joined}\n` : joined,

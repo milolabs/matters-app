@@ -9,6 +9,7 @@ import {
   InvalidSignatureError,
   joinDraft,
   joinSections,
+  keepOwnBlocks,
   messageKey,
   normalizeSignature,
   ownWords,
@@ -278,8 +279,12 @@ describe("the agent and the signature (rule 6)", () => {
     const parts = splitDraft(`Old words\n\n${BLOCK}\n\nOn 3 Nov, Anna wrote:\n> When?`);
     const joined = joinDraft("New words", parts.quote, parts.signature);
     expect(joined).toBe(`New words\n\n${BLOCK}\n\nOn 3 Nov, Anna wrote:\n> When?`);
-    // A model that signed anyway: its block is cut, the person's own stays, once.
-    const signed = joinDraft("New words\n\n-- \nAI Assistant", parts.quote, parts.signature);
+    // A model that signed anyway: its block is cut before the join, the person's own stays, once.
+    const signed = joinDraft(
+      withoutSignature("New words\n\n-- \nAI Assistant"),
+      parts.quote,
+      parts.signature,
+    );
     expect(signed).toBe(joined);
     expect(signed.split(SIGNATURE_DELIMITER)).toHaveLength(2);
     // `--` without its space, on a line of its own, is a delimiter too.
@@ -287,22 +292,26 @@ describe("the agent and the signature (rule 6)", () => {
     expect(withoutSignature("--\nBot")).toBe("");
     // Right under a line of text it underlines a Markdown heading: nothing goes.
     expect(withoutSignature("Summary\n--\nTotal: [amount].")).toBe("Summary\n--\nTotal: [amount].");
-    expect(joinDraft("Summary\n--\nTotal: [amount].", "")).toBe("Summary\n--\nTotal: [amount].");
+    expect(joinDraft(withoutSignature("Summary\n--\nTotal: [amount]."), "")).toBe(
+      "Summary\n--\nTotal: [amount].",
+    );
     expect(withoutSignature("No block here")).toBe("No block here");
   });
 
   it("a block the person had before the model's turn stays; only one new in its answer goes", () => {
     const before = "Thanks.\n\n--\nAnna";
     // The model gave the person's text back as it was, or wrote its words again: Anna stays.
-    expect(withoutSignature(before, before)).toBe(before);
-    expect(withoutSignature("Thank you.\n\n--\nAnna", before)).toBe("Thank you.\n\n--\nAnna");
+    expect(keepOwnBlocks(before, before)).toBe(before);
+    expect(keepOwnBlocks(before, "Thank you.\n\n--\nAnna")).toBe("Thank you.\n\n--\nAnna");
     // A block the model added after the person's goes, from its delimiter on.
-    expect(withoutSignature("Thank you.\n\n--\nAnna\n\n-- \nBot", before)).toBe(
+    expect(keepOwnBlocks(before, "Thank you.\n\n--\nAnna\n\n-- \nBot")).toBe(
       "Thank you.\n\n--\nAnna",
     );
     // With none of the person's, the model's first block goes, as with no text before.
-    expect(withoutSignature("Thank you.\n\n--\nBot", "Thanks.")).toBe("Thank you.");
-    expect(joinDraft("Thank you.\n\n--\nAnna", "", "", before)).toBe("Thank you.\n\n--\nAnna");
+    expect(keepOwnBlocks("Thanks.", "Thank you.\n\n--\nBot")).toBe("Thank you.");
+    expect(joinDraft(keepOwnBlocks(before, "Thank you.\n\n--\nAnna") ?? "", "", "")).toBe(
+      "Thank you.\n\n--\nAnna",
+    );
   });
 
   it("a new message the agent filled in gets the signature from the code", () => {
