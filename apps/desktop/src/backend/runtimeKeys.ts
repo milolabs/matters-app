@@ -17,7 +17,8 @@
  *   and is sent only while `mayGoInBackground` says so, with nothing awaited between: the key
  *   holds, and the reading switch was not turned off since (`readingOff`, before the switch is
  *   written and once it is). What it read of the switch was then the switch of that key, as it
- *   still is.
+ *   still is. Its turns also run on `backgroundSignal`, which the same stop aborts, so one already
+ *   sent stops too; no turn the person asked for runs on it, so the switch never stops theirs.
  *
  * A runtime with no key never gets a new one, so its tickets always hold.
  */
@@ -38,6 +39,8 @@ export class RuntimeKeys {
   private readonly readingOffs = new Map<string, number>();
   /** Aborted with every new key: what runs on the key before stops. */
   private readonly stops = new Map<string, AbortController>();
+  /** Aborted with every stop of the background: what runs there and no press started stops. */
+  private readonly backgroundStops = new Map<string, AbortController>();
   /** The last command of each runtime, settled: the next one starts after it. */
   private readonly queues = new Map<string, Promise<void>>();
   /** The save or removal of a key under way for a runtime, settled when it ends. */
@@ -74,9 +77,33 @@ export class RuntimeKeys {
     );
   }
 
-  /** The runtime's reading switch goes off: no background work of a ticket taken before goes. */
+  /** The runtime's reading switch goes off: the background stops (`stopBackground`). */
   readingOff(runtimeId: string): void {
+    this.stopBackground(runtimeId);
+  }
+
+  /**
+   * The background on the runtime stops: no work of a ticket taken before goes, and what runs on
+   * `backgroundSignal` stops. A turn the person asked for goes on.
+   */
+  stopBackground(runtimeId: string): void {
     this.readingOffs.set(runtimeId, (this.readingOffs.get(runtimeId) ?? 0) + 1);
+    this.backgroundStops.get(runtimeId)?.abort();
+    this.backgroundStops.set(runtimeId, new AbortController());
+  }
+
+  /**
+   * A signal aborted when the background on the runtime stops. Taken at the same moment as a
+   * ticket, it is aborted whenever `mayGoInBackground` stops saying yes for that ticket while the
+   * key holds. Only work no press of the person's started runs on it.
+   */
+  backgroundSignal(runtimeId: string): AbortSignal {
+    let stop = this.backgroundStops.get(runtimeId);
+    if (stop === undefined) {
+      stop = new AbortController();
+      this.backgroundStops.set(runtimeId, stop);
+    }
+    return stop.signal;
   }
 
   /**

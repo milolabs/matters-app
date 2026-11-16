@@ -20,6 +20,9 @@
 //    entry, prepared work, a verdict or a talk's name is checked as it begins.
 // 5. A turn the person asked for is sent only on the key its gate passed for: each ask carries
 //    the key of what the gate found ready, and a request of that ask that leaves names the same.
+// 6. A turn the person asked for is ended only by a key change, AI off, a revoked consent or its
+//    own Stop, never by the reading switch: the switch governs only what the background starts.
+//    A signal is aborted as its stop is called, so what called it is on the stack then.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { visibleText } from "@matters/adapter-mime";
 import type {
@@ -160,6 +163,29 @@ class Keyed {
   ): Promise<AgentRunResult> {
     const deaf = this.turns++ % 2 === 1;
     const stopped = () => options?.signal?.aborted === true;
+    // 6. What stops a turn of the person's, as it stops it.
+    if (asks.getStore() !== undefined && inBackground(request) === "never") {
+      options?.signal?.addEventListener(
+        "abort",
+        () => {
+          const limit = Error.stackTraceLimit;
+          Error.stackTraceLimit = Number.POSITIVE_INFINITY;
+          const stack = new Error().stack ?? "";
+          Error.stackTraceLimit = limit;
+          // A key saved or removed, AI off, a consent taken back, or the run's own end (a
+          // refusal of another of its turns); here no Stop is pressed and no kind moves.
+          const switched = /\bsetKeyReading|\bsetReading\b/.test(stack);
+          const allowed =
+            /\b(saveKeyNow|removeKeyNow|disable|revokeConsent)\b|promptService\.ts/.test(stack);
+          if (switched || !allowed) {
+            this.broken.push(
+              `${kindOf(request)} of the person's stopped by ${switched ? "the reading switch" : "something else"}`,
+            );
+          }
+        },
+        { once: true },
+      );
+    }
     // As the service hands the request over: the key in the vault and its switch.
     const handed = this.vault.kept.get(this.id)?.id;
     const handedOn = this.switchOn();
