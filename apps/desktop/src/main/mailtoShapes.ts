@@ -33,3 +33,21 @@ export function readDefaultMailInfo(v: unknown): DefaultMailInfo | null {
   }
   return { offered: v.offered, isDefault: v.offered && v.isDefault };
 }
+
+/** The id main gives a waiting link: its shape only; main alone knows which ids it gave. */
+export function readLinkId(v: unknown): string | null {
+  return typeof v === "string" && v.length > 0 && v.length <= 100 ? v : null;
+}
+
+/** The first link that waits, with its id, as it crosses to the page; null for anything else. */
+export function readWaitingLink(v: unknown): { id: string; link: MailtoPrefill } | null {
+  if (!isRecord(v)) return null;
+  const id = readLinkId(v.id);
+  const link = readMailtoPrefill(v.link);
+  return id === null || link === null ? null : { id, link };
+}
+
+/** How many links main says still wait; 0 for anything else. */
+export function readWaitingCount(v: unknown): number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 100 ? v : 0;
+}

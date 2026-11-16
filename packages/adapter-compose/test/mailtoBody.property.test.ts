@@ -115,12 +115,35 @@ const asUrl = (address: string) => new MarkdownIt().normalizeLink(address);
 /** Markdown shows a web address in its link decoded (percent-escapes, punycode): not the text. */
 const ADDRESS_DECODED = /:\/\/\S*(?:%[0-9a-f]{2}|xn--)/i;
 
+/**
+ * The same holds for any address Markdown shows other than as written: an e-mail address is
+ * decoded too ("%0a@b.example" shows a line break), and a host with a character no host has is
+ * put together again ("a.example~:7" shows as "a.example:7~"). Such a link is Markdown's reading
+ * of an address that is in the text, and still shows where it goes; it is not the text, so the
+ * body is not checked against it.
+ */
+function readFromText(text: string, shown: string): boolean {
+  const md = new MarkdownIt();
+  for (let i = 0; i < text.length; i++) {
+    for (let j = i + 1; j <= Math.min(text.length, i + shown.length + 8); j++) {
+      const raw = text.slice(i, j);
+      if (md.normalizeLinkText(raw) === shown) return true;
+      if (md.normalizeLinkText(`mailto:${raw}`) === `mailto:${shown}`) return true;
+    }
+  }
+  return false;
+}
+
 describe("the body of a mailto: link, rendered (ADR 0143)", () => {
   it("reads as its text, in paragraphs and line breaks, with only bare addresses linked", () => {
     fc.assert(
       fc.property(body, (text) => {
         fc.pre(!ADDRESS_DECODED.test(text));
         const html = inner(renderer.render(plainBodyMarkdown(text)).html);
+        for (const link of html.matchAll(/<a href="[^"]*"[^>]*>([^<]*)<\/a>/g)) {
+          const shown = decode(link[1] as string);
+          fc.pre(text.includes(shown) || !readFromText(text, shown));
+        }
         for (const tag of html.matchAll(/<\/?([a-zA-Z][a-zA-Z0-9]*)/g)) {
           expect(["p", "br", "a"], `<${tag[1]}> for ${JSON.stringify(text)}`).toContain(tag[1]);
         }

@@ -48,3 +48,23 @@ export function savedSignatureField(
   if (now !== undefined && now !== submitted) return fields;
   return NO_SIGNATURE_FIELD;
 }
+
+/** A save of the field that failed: why, and the text it tried to save. */
+export interface SignatureFailure {
+  readonly why: string;
+  readonly text: string;
+}
+
+/**
+ * The line under the field: what is wrong with the text, else why its last save failed, only
+ * while the field still holds the text that failed. A change makes that reason stale: the person
+ * may be fixing what it said.
+ */
+export function signatureAlert(
+  problem: string | null,
+  failure: SignatureFailure | null,
+  text: string,
+): string | null {
+  if (problem !== null) return problem;
+  return failure !== null && failure.text === text ? failure.why : null;
+}
