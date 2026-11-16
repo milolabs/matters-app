@@ -11,7 +11,7 @@ How a version of Matters gets from `main` to a download. The decision and its re
 | 0 | A release build, `bun run release:macos`, the `Release` workflow, a rehearsal that needs no secret | done, not yet run on GitHub |
 | Alpha | `v0.1.0-alpha.1` and on, early builds to try and report on: signed ad hoc, not notarized, with an SBOM and an attestation | ready; needs nothing from Apple |
 | 1 | The first pre-release, `v0.1.0-beta.1`: signed, notarized, with an SBOM and an attestation | waits on the one-time setup below |
-| 2 | Updates: the app says when a newer release exists, later installs it | not started; needs its own ADR |
+| 2 | Updates: the app says when a newer release exists, and installs it when asked | done: saying ([ADR 0137](adr/0137-the-app-says-when-a-newer-version-is-out.md)), installing from Settings › About with the checks of `install.sh` ([ADR 0140](adr/0140-the-app-installs-a-newer-version-when-asked.md)); not yet run end to end on a real release |
 | 3 | Before 1.0: asar with integrity fuses, an Intel or universal build, Windows and Linux, an independent audit | not started |
 
 ## Alpha
@@ -55,8 +55,10 @@ By hand, from the disk image:
 **What to tell testers**
 
 - An Apple Silicon Mac only.
-- There are no updates. A newer alpha is a new download, and after installing it macOS may ask
-  for the login password once, so the new build can read the stored mail passwords.
+- Nothing updates by itself. From the first alpha that has ADR 0140, Settings › About says when a
+  newer one is out and Install and Restart installs it, with the checks of `install.sh`; before
+  that, a newer alpha is a new install. After a new build is in place macOS may ask for the login
+  password once, so it can read the stored mail passwords.
 - It is an alpha of a mail client: sign in with an account whose mail they can afford to see
   handled wrongly, or with an app password they can revoke.
 - Problems go to the issue tracker; a security problem goes the private way of

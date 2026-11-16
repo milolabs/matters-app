@@ -13,6 +13,9 @@
   site, and named as one)
 - Amended by: [0139](0139-an-installer-in-one-line.md) (an alpha can be installed with a script
   that macOS does not stop, and that checks the download itself)
+- Amended by: [0140](0140-the-app-installs-a-newer-version-when-asked.md) (stage 2's second half:
+  the app installs a newer release when asked, with the checks of the script, not a Developer ID
+  signature)
 
 ## Context
 

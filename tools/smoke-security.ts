@@ -229,6 +229,9 @@ try {
   // the canary for it, and nothing may leave for the site.
   mkdirSync(join(dir, "userData"), { recursive: true });
   writeFileSync(join(dir, "userData", "newer-version.json"), JSON.stringify({ enabled: false }));
+  // ADR 0140, rule 7: installing is pointed at the canary too, with a stand-in folder of apps.
+  // Nobody presses Install in this run, so no download may leave, for the canary or for GitHub.
+  mkdirSync(join(dir, "apps", "Matters.app"), { recursive: true });
   const { ELECTRON_RUN_AS_NODE: _drop, MATTERS_SEED: _seed, ...env } = process.env;
   const child = spawn(process.execPath, [join(root, "apps/desktop")], {
     env: {
@@ -249,6 +252,8 @@ try {
       }),
       MATTERS_TEST_PASSWORD: server.password,
       MATTERS_TEST_RELEASE_URL: `http://${ORIGIN}/__release/release.json`,
+      MATTERS_TEST_INSTALL_URL: `http://${ORIGIN}/__install/`,
+      MATTERS_TEST_INSTALL_DIR: join(dir, "apps"),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -342,6 +347,24 @@ try {
   if (releaseRequests.length > 0)
     failures.push(
       `newer version: the check was off, yet main saw requests for it: ${releaseRequests
+        .map((e) => e.url)
+        .join(", ")}`,
+    );
+
+  // ---- installing a newer version, never pressed (ADR 0140, rules 1 and 7) ----
+  const installHits = hits.filter((h) => h.path.startsWith("/__install")).length;
+  const installRequests = events.filter(
+    (e) =>
+      e.kind === "request" &&
+      (/^https?:\/\/github\.com\/milolabs\/matters-app\/releases\/download\//i.test(e.url ?? "") ||
+        /^https?:\/\/release-assets\.githubusercontent\.com(?:[:/]|$)/i.test(e.url ?? "") ||
+        (e.url ?? "").includes("/__install")),
+  );
+  if (installHits > 0)
+    failures.push(`install: nobody pressed Install, yet the canary was asked ${installHits} times`);
+  if (installRequests.length > 0)
+    failures.push(
+      `install: nobody pressed Install, yet main saw downloads: ${installRequests
         .map((e) => e.url)
         .join(", ")}`,
     );

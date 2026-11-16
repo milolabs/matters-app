@@ -2,7 +2,16 @@
 // dot on the gear, About taking it away, and the lines of Settings › About. On the demo mailbox, so
 // no server and no Docker. A build that is not packaged asks only when a test points it at a
 // stand-in (`MATTERS_TEST_RELEASE_URL`); without one it never asks, and says so.
+//
+// Installing it (ADR 0140, rule 7): with a stand-in for the release downloads
+// (`MATTERS_TEST_INSTALL_URL`) and a stand-in folder with a stand-in Matters.app
+// (`MATTERS_TEST_INSTALL_DIR`), nothing is downloaded before the press, a wrong checksum stops it
+// with nothing installed, and Cancel stops a download. The real install (a disk image, the swap,
+// the restart) is not run here: it would replace a real app.
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, type Running, test } from "./fixtures.ts";
 
@@ -16,8 +25,23 @@ interface Asked {
 async function standIn() {
   const asked: Asked[] = [];
   let answer: { status: number; body: string; etag: string } = { status: 200, body: "", etag: "" };
+  /** The release downloads: a file's body by name, or "slow" for an image that never ends. */
+  const files = new Map<string, string>();
   const server: Server = createServer((req, res) => {
     asked.push({ method: req.method ?? "", url: req.url ?? "", headers: req.headers });
+    if (req.url?.startsWith("/download/")) {
+      const body = files.get(req.url.split("/").at(-1) ?? "");
+      if (body === undefined) {
+        res.writeHead(404).end();
+      } else if (body === "slow") {
+        res.writeHead(200, { "content-length": String(100_000_000) });
+        const tick = setInterval(() => res.write(Buffer.alloc(64 * 1024)), 100);
+        res.on("close", () => clearInterval(tick));
+      } else {
+        res.writeHead(200, { "content-length": String(Buffer.byteLength(body)) }).end(body);
+      }
+      return;
+    }
     if (answer.status !== 200) {
       res.writeHead(answer.status).end();
       return;
@@ -32,6 +56,8 @@ async function standIn() {
   const port = (server.address() as { port: number }).port;
   return {
     url: `http://127.0.0.1:${port}/release.json`,
+    downloads: `http://127.0.0.1:${port}/download/`,
+    files,
     asked,
     serve(version: string | null, etag: string, status = 200) {
       answer = {
@@ -48,7 +74,12 @@ async function standIn() {
         }),
       };
     },
-    stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    stop: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        // A download that was cancelled may leave its connection open.
+        server.closeAllConnections();
+      }),
   };
 }
 
@@ -122,9 +153,13 @@ test("a newer version puts a dot on the gear, and About takes it away", async ({
     );
     await expect(about.getByRole("button", { name: "Release notes" })).toBeVisible();
     await expect(about.getByRole("button", { name: "Download" })).toBeVisible();
+    // A build that is not packaged installs nothing, and says why in one phrase (ADR 0140, rule 2).
     await expect(
-      about.getByText("Matters does not install it. The download opens in your browser."),
+      about.getByText(
+        "Matters cannot install it here: this build was not made by the release workflow. The download opens in your browser.",
+      ),
     ).toBeVisible();
+    await expect(about.getByRole("button", { name: "Install and Restart" })).toHaveCount(0);
     await expect(about.getByLabel("Check for a newer version")).toBeChecked();
     await expect(about.getByText(/^Checked today at \d\d:\d\d\.$/)).toBeVisible();
     await settings.screenshot({ path: test.info().outputPath("about-newer.png") });
@@ -194,4 +229,88 @@ test("a build that is not packaged and has no stand-in never asks, and says so",
   await expect(about.getByText("It was not made by the release workflow.")).toBeVisible();
   await expect(about.getByLabel("Check for a newer version")).toBeDisabled();
   await expect(about.getByRole("button", { name: "Check now" })).toBeDisabled();
+});
+
+/** Installs only on macOS with Apple silicon (ADR 0140, rule 2). */
+const installsHere = process.platform === "darwin" && process.arch === "arm64";
+
+test("Install downloads only when pressed, stops at a wrong checksum, and can be cancelled", async ({
+  start,
+}) => {
+  const site = await standIn();
+  // A stand-in folder of apps, with a stand-in Matters.app: never /Applications.
+  const apps = mkdtempSync(join(tmpdir(), "matters-e2e-apps-"));
+  mkdirSync(join(apps, "Matters.app"));
+  try {
+    site.serve("v0.1.0-alpha.5", '"one"');
+    const image = "Matters-0.1.0-alpha.5-arm64.dmg";
+    site.files.set(image, "not a disk image");
+    site.files.set("SHA256SUMS.txt", `${"0".repeat(64)}  ${image}\n`);
+    const running = await start(
+      demo({
+        MATTERS_TEST_RELEASE_URL: site.url,
+        MATTERS_TEST_INSTALL_URL: site.downloads,
+        MATTERS_TEST_INSTALL_DIR: apps,
+      }),
+    );
+    const { window } = running;
+    await expect(window.getByRole("listbox", { name: "Messages" })).toBeVisible();
+    const settings = await openSettingsFrom(running, "Settings · Matters 0.1.0-alpha.5 is out");
+    const about = settings.getByRole("region", { name: "About" });
+    await expect(about.getByRole("status")).toHaveText(/0\.1\.0-alpha\.5 is out\./);
+    const downloads = () => site.asked.filter((a) => a.url.startsWith("/download/"));
+
+    if (!installsHere) {
+      await expect(
+        about.getByText(
+          "Matters cannot install it here: it installs only on a Mac with Apple silicon. The download opens in your browser.",
+        ),
+      ).toBeVisible();
+      await expect(about.getByRole("button", { name: "Install and Restart" })).toHaveCount(0);
+      expect(downloads()).toHaveLength(0);
+      return;
+    }
+
+    // Offered, and nothing downloaded before the press (rule 1).
+    const install = about.getByRole("button", { name: "Install and Restart" });
+    await expect(install).toBeVisible();
+    await expect(
+      about.getByText(/^Install and Restart downloads it from GitHub, checks it as the installer/),
+    ).toBeVisible();
+    await window.waitForTimeout(500);
+    expect(downloads()).toHaveLength(0);
+    await settings.screenshot({ path: test.info().outputPath("about-install.png") });
+
+    // A wrong checksum: stopped, said, nothing in the folder, and Download stays.
+    await install.click();
+    const line = about.locator("[data-install-line]");
+    await expect(line).toHaveText(
+      "The download does not match its checksum. Nothing was installed.",
+    );
+    expect(downloads().map((a) => a.url)).toEqual([
+      `/download/v0.1.0-alpha.5/${image}`,
+      "/download/v0.1.0-alpha.5/SHA256SUMS.txt",
+    ]);
+    expect(downloads()[0]?.headers["user-agent"]).toBe("Matters");
+    expect(downloads()[0]?.headers.cookie).toBeUndefined();
+    expect(readdirSync(apps)).toEqual(["Matters.app"]);
+    expect(existsSync(join(apps, ".Matters.app.lock"))).toBe(false);
+    await expect(about.getByRole("button", { name: "Download" })).toBeVisible();
+    await expect(install).toBeVisible();
+    await settings.screenshot({ path: test.info().outputPath("about-install-failed.png") });
+
+    // A download that takes its time: said with how much has come, and Cancel stops it.
+    site.files.set(image, "slow");
+    await install.click();
+    await expect(line).toHaveText(/^Downloading 0\.1\.0-alpha\.5: \d+ of 100 MB…$/);
+    await expect(about.getByLabel("Check for a newer version")).toBeDisabled();
+    await settings.screenshot({ path: test.info().outputPath("about-install-downloading.png") });
+    await about.getByRole("button", { name: "Cancel" }).click();
+    await expect(line).toHaveText("Cancelled. Nothing was installed.");
+    await expect(about.getByRole("button", { name: "Cancel" })).toHaveCount(0);
+    expect(readdirSync(apps)).toEqual(["Matters.app"]);
+  } finally {
+    await site.stop();
+    rmSync(apps, { recursive: true, force: true });
+  }
 });

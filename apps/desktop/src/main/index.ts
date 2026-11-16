@@ -151,6 +151,7 @@ import {
   nodeFs,
   OLD_APP_NAME,
 } from "./identityMigration.ts";
+import { Installer, placeOfThisCopy, systemInstallDeps } from "./installer.ts";
 import {
   bringForward,
   type Claim,
@@ -171,6 +172,7 @@ import {
   afterCheck,
   etagToSend,
   markSeen,
+  newerRelease,
   parseStoredRelease,
   RELEASE_STATE_FILE,
   type ReleaseOutcome,
@@ -756,6 +758,22 @@ const releaseUrl: string | null = app.isPackaged
       return standIn !== undefined && isLoopbackUrl(standIn) ? standIn : null;
     })();
 const releasePath = () => join(app.getPath("userData"), RELEASE_STATE_FILE);
+
+/**
+ * Where an install downloads from and which copy it replaces (ADR 0140, rules 2 and 3). A packaged
+ * app uses the release downloads and the bundle it runs from. A build that is not packaged never
+ * installs, unless a window test points it at a stand-in on this machine
+ * (`MATTERS_TEST_INSTALL_URL`, loopback only) and names the folder of a stand-in Matters.app
+ * (`MATTERS_TEST_INSTALL_DIR`). A packaged app reads neither.
+ */
+const installTest: { readonly base: string; readonly folder: string } | null = app.isPackaged
+  ? null
+  : (() => {
+      const base = process.env.MATTERS_TEST_INSTALL_URL;
+      const folder = process.env.MATTERS_TEST_INSTALL_DIR;
+      if (base === undefined || folder === undefined || !isLoopbackUrl(base)) return null;
+      return { base: base.endsWith("/") ? base : `${base}/`, folder };
+    })();
 
 /** What `newer-version.json` holds; read when first needed, after userData is final. */
 function readStoredRelease(): StoredRelease {
@@ -1551,12 +1569,50 @@ if (!identityHelper && !erasing)
       },
     );
 
+    // Installing a newer version (ADR 0140): made here so that quitting can wait for an install
+    // to clean up; wired to the release state below.
+    let installTold = (_progress: boolean) => {};
+    const installer = new Installer({
+      place: () =>
+        placeOfThisCopy({
+          packaged: app.isPackaged,
+          executable: process.execPath,
+          testFolder: installTest?.folder ?? null,
+        }),
+      deps: (step) =>
+        systemInstallDeps(
+          (target) =>
+            net.request({
+              method: "GET",
+              url: target,
+              session: releaseSession(),
+              credentials: "omit",
+              useSessionCookies: false,
+              redirect: "manual",
+              cache: "no-store",
+              referrerPolicy: "no-referrer",
+            }),
+          app.getPath("temp"),
+          step,
+          installTest !== null,
+        ),
+      running: () => app.getVersion(),
+      pid: () => process.pid,
+      told: (progress) => installTold(progress),
+      // The helper waits for this process to end before it swaps (ADR 0110: one copy at a time),
+      // so the words have a moment on screen first.
+      quit: () => setTimeout(() => app.quit(), 600),
+      ...(installTest ? { base: installTest.base } : {}),
+    });
+
     // Every way out (window closed, Cmd+Q, smoke finished) passes through here once.
     let stopped = false;
     app.on("before-quit", (event) => {
       if (stopped) return;
       event.preventDefault();
-      void stopBackend(backend)
+      void installer
+        .settle(10_000)
+        .then(() => stopBackend(backend))
         .then(() => mint.releaseAll())
         .then(() => {
           stopped = true;
@@ -1573,6 +1629,8 @@ if (!identityHelper && !erasing)
         settings.focus();
         return;
       }
+      // Where this copy runs from, once, for Settings › About (ADR 0140, rule 2).
+      installer.knowPlace();
       settings = createSettingsWindow(section);
       connectToBackend(settings, backend);
       settings.once("closed", () => {
@@ -1637,14 +1695,22 @@ if (!identityHelper && !erasing)
     let releaseTriedMs: number | null = null;
     let releaseTimer: ReturnType<typeof setTimeout> | undefined;
     const currentRelease = () =>
-      releaseInfo(releaseState(), app.getVersion(), releaseUrl !== null, releaseChecking);
-    const tellRelease = () => {
+      releaseInfo(
+        releaseState(),
+        app.getVersion(),
+        releaseUrl !== null,
+        releaseChecking,
+        installer.view(),
+      );
+    /** Every window hears the state; the menu is rebuilt unless only a download's bytes moved. */
+    const tellRelease = (menu = true) => {
       const info = currentRelease();
       for (const open of BrowserWindow.getAllWindows()) {
         if (!open.isDestroyed()) open.webContents.send(CHANNEL_RELEASE_CHANGED, info);
       }
-      rebuildMenu();
+      if (menu) rebuildMenu();
     };
+    installTold = (progress) => tellRelease(!progress);
     const keepRelease = (next: StoredRelease) => {
       const before = serializeStoredRelease(releaseState());
       releaseStored = next;
@@ -1712,6 +1778,8 @@ if (!identityHelper && !erasing)
       if (action === "get") return currentRelease();
       if (!fromSettings) return null;
       if (action === "enable" && typeof arg === "boolean") {
+        // While an install runs the switch stays: turning it off would hide what is under way.
+        if (installer.busy()) return currentRelease();
         keepRelease({ ...releaseState(), enabled: arg });
         armRelease();
         return currentRelease();
@@ -1722,6 +1790,16 @@ if (!identityHelper && !erasing)
       }
       if (action === "seen") {
         keepRelease(markSeen(releaseState(), app.getVersion(), releaseUrl !== null));
+        return currentRelease();
+      }
+      // Install only on the person's press (ADR 0140, rule 1), and only the version main knows
+      // of: the page names none.
+      if (action === "install") {
+        if (releaseOn()) installer.start(newerRelease(releaseState(), app.getVersion()));
+        return currentRelease();
+      }
+      if (action === "cancel") {
+        installer.cancel();
         return currentRelease();
       }
       if (action === "open" && isReleaseOpen(arg)) {

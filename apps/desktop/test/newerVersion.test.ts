@@ -99,6 +99,8 @@ describe("what main says", () => {
       dot: true,
       checkedMs: NOW,
       failure: null,
+      // Before Settings has opened, where this copy is is not known: no Install yet (ADR 0140).
+      install: { offered: false, cannot: null, step: "idle", line: null, note: null },
     });
     expect(releaseMenuLabel(info)).toBe("New Version: 0.1.0-alpha.5…");
     const seen = markSeen(kept, RUNNING, true);

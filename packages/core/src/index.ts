@@ -17,6 +17,7 @@ export * from "./domain/forward.ts";
 export * from "./domain/holdings.ts";
 export * from "./domain/hosts.ts";
 export * from "./domain/imageRules.ts";
+export * from "./domain/install.ts";
 export * from "./domain/mailbox.ts";
 export * from "./domain/mailProviders.ts";
 export * from "./domain/messageKey.ts";

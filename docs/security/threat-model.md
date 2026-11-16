@@ -63,11 +63,16 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
    for one small file to learn whether a newer version is out: a `GET` with no cookie, no
    identifier and not the version it runs; the comparison is made on the Mac. The site's host
    (GitHub Pages) sees the address the request comes from, at each start and once a day. The file
-   is not trusted: whoever could change the site could make the app say a version is out, but not
-   install anything, and the only links it can send you to are the project's release pages. The
+   is not trusted: whoever could change the site could make the app say a version is out, but the
+   only links it can send you to are the project's release pages, and the only thing Install can
+   fetch is a release of this repository on GitHub. The
    check can be turned off in Settings › About, and then nothing is asked
    ([ADR 0137](../adr/0137-the-app-says-when-a-newer-version-is-out.md),
-   [standards.md, A6](standards.md#a6-the-electron-checklist)).
+   [standards.md, A6](standards.md#a6-the-electron-checklist)). Installing the newer version
+   happens only when you press Install and Restart: it downloads that release from the project's
+   releases on GitHub and checks it as the installer does (the checksum always, the build record
+   when `gh` is installed, the app's signature seal) before anything is replaced
+   ([ADR 0140](../adr/0140-the-app-installs-a-newer-version-when-asked.md)).
 
 ## How we know
 
@@ -90,9 +95,11 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
   signed ad hoc and not notarized, and a published one is offered on the site
   ([ADR 0129](../adr/0129-the-site-offers-pre-releases.md)): macOS does not vouch for them, and
   the build attestation is the only proof of where one comes from. A release build says when a
-  newer version is out ([ADR 0137](../adr/0137-the-app-says-when-a-newer-version-is-out.md)), but
-  it installs nothing: the download opens in the browser, and the four alphas published before
-  that are never told.
+  newer version is out ([ADR 0137](../adr/0137-the-app-says-when-a-newer-version-is-out.md)) and
+  installs it when the person asks, with the checks of the installer
+  ([ADR 0140](../adr/0140-the-app-installs-a-newer-version-when-asked.md)); the whole install of
+  a real release has not been run end to end yet, and the alphas published before these are never
+  told.
 - **An independent audit.** Nobody outside the project has reviewed the code yet.
 - **OAuth sign-in, PGP and S/MIME** are not built
   ([standards.md, Part C](standards.md#part-c-out-of-scope-for-now)).

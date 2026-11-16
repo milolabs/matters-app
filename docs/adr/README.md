@@ -147,3 +147,4 @@ Format: copy [`template.md`](template.md).
 | [0137](0137-the-app-says-when-a-newer-version-is-out.md) | The app says when a newer version is out (builds on 0123, 0129) | Accepted |
 | [0138](0138-erasing-what-matters-keeps.md) | Erasing what Matters keeps: one account, or everything (amends 0089, 0105, 0110) | Accepted |
 | [0139](0139-an-installer-in-one-line.md) | An installer in one line (amends 0123, 0129; builds on 0125, 0127) | Accepted |
+| [0140](0140-the-app-installs-a-newer-version-when-asked.md) | The app installs a newer version when asked (amends 0137; builds on 0110, 0123, 0139) | Accepted |
