@@ -1,6 +1,14 @@
 // The reply editor's live Markdown (ADR 0100): where the quote starts, and how a line is marked.
+import { EditorState, type Transaction, type TransactionSpec } from "@codemirror/state";
+import type { EditorView } from "@codemirror/view";
 import { describe, expect, it } from "vitest";
-import { lineRanges, ownText, quoteStart } from "../src/renderer/liveMarkdown.ts";
+import {
+  acceptSuggestion,
+  lineRanges,
+  ownText,
+  quoteStart,
+  suggestionsField,
+} from "../src/renderer/liveMarkdown.ts";
 
 describe("quoteStart", () => {
   it("starts at the attribution line above the quoted lines", () => {
@@ -46,5 +54,47 @@ describe("lineRanges", () => {
 
   it("does not take a bullet's star for italics", () => {
     expect(classes("* one").map(([, c]) => c)).toEqual(["cm-md-syntax"]);
+  });
+});
+
+describe("acceptSuggestion", () => {
+  /** Just what the function uses of a view: its state, and a dispatch that moves it on. */
+  function viewOf(doc: string) {
+    let state = EditorState.create({ doc, extensions: [suggestionsField] });
+    return {
+      get state() {
+        return state;
+      },
+      dispatch(spec: TransactionSpec) {
+        state = (state.update(spec) as Transaction).state;
+      },
+    };
+  }
+
+  it("fills the gap in the person's lines and leaves the signature and the quote as they are", () => {
+    const view = viewOf(
+      "Meet on [date], then [date].\n\n-- \nAway until [date]\n\nAnna wrote:\n> On [date]?",
+    );
+    const done = acceptSuggestion(view as unknown as EditorView, {
+      token: "[date]",
+      value: "Friday",
+      source: "thread",
+    });
+    expect(done).toBe(true);
+    expect(view.state.doc.toString()).toBe(
+      "Meet on Friday, then Friday.\n\n-- \nAway until [date]\n\nAnna wrote:\n> On [date]?",
+    );
+  });
+
+  it("changes nothing when the gap is only in the signature", () => {
+    const view = viewOf("Hello\n\n-- \nAway until [date]");
+    expect(
+      acceptSuggestion(view as unknown as EditorView, {
+        token: "[date]",
+        value: "x",
+        source: "thread",
+      }),
+    ).toBe(false);
+    expect(view.state.doc.toString()).toBe("Hello\n\n-- \nAway until [date]");
   });
 });

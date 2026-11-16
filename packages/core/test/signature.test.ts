@@ -282,7 +282,12 @@ describe("the agent and the signature (rule 6)", () => {
     const signed = joinDraft("New words\n\n-- \nAI Assistant", parts.quote, parts.signature);
     expect(signed).toBe(joined);
     expect(signed.split(SIGNATURE_DELIMITER)).toHaveLength(2);
-    expect(withoutSignature("Words\n--\nBot")).toBe("Words");
+    // `--` without its space, on a line of its own, is a delimiter too.
+    expect(withoutSignature("Words\n\n--\nBot")).toBe("Words");
+    expect(withoutSignature("--\nBot")).toBe("");
+    // Right under a line of text it underlines a Markdown heading: nothing goes.
+    expect(withoutSignature("Summary\n--\nTotal: [amount].")).toBe("Summary\n--\nTotal: [amount].");
+    expect(joinDraft("Summary\n--\nTotal: [amount].", "")).toBe("Summary\n--\nTotal: [amount].");
     expect(withoutSignature("No block here")).toBe("No block here");
   });
 

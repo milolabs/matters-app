@@ -22,10 +22,13 @@ const counted = (n: number) =>
 export function SignatureForm(props: {
   backend: Pick<Backend, "setSignature">;
   account: AccountInfo;
+  /** What was typed in the field before its row was made anew; none when it was just opened. */
+  typed?: string | undefined;
+  onType?: (text: string) => void;
   onClose: () => void;
   onSaved: (note: string) => void;
 }) {
-  const [text, setText] = createSignal(props.account.signature ?? "");
+  const [text, setText] = createSignal(props.typed ?? props.account.signature ?? "");
   const [saving, setSaving] = createSignal(false);
   const [failure, setFailure] = createSignal("");
   const kept = () => normalizeSignature(text());
@@ -69,7 +72,10 @@ export function SignatureForm(props: {
           label={`Signature for ${props.account.address}`}
           placeholder="Your name, and what people need to reach you"
           grow={{ min: 72, max: "220px" }}
-          onChange={setText}
+          onChange={(value) => {
+            setText(value);
+            props.onType?.(value);
+          }}
           onSend={() => void save()}
           // After the key has gone by: the section must still see it came from here, and keep the
           // window open.

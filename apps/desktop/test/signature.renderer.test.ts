@@ -51,7 +51,7 @@ function fakeBackend() {
   return { backend: backend as unknown as Backend, saved };
 }
 
-function newMessage(fake = fakeBackend()) {
+function newMessage(fake = fakeBackend(), over: Partial<DraftContent> = {}) {
   const outbox = createRoot(() => createOutboxStore(fake.backend));
   const signature = SIGNATURES.a1 ?? "";
   const session = createRoot(() =>
@@ -60,7 +60,11 @@ function newMessage(fake = fakeBackend()) {
       outbox,
       {
         title: "New message",
-        content: { ...emptyDraftContent(work), bodyMarkdown: placeSignature("", signature) },
+        content: {
+          ...emptyDraftContent(work),
+          bodyMarkdown: placeSignature("", signature),
+          ...over,
+        },
         existing: null,
         signature,
       },
@@ -104,6 +108,46 @@ describe("the signature follows the sender while untouched (rule 5)", () => {
     expect(await t.session.setSender(home)).toBeNull();
     expect(t.session.body()).toBe("Only words");
   });
+});
+
+describe("send and close wait for the new sender's signature (rule 5)", () => {
+  /** A backend whose next `prepareNew` waits until `release`. */
+  function slowBackend() {
+    const fake = fakeBackend();
+    const backend = fake.backend as unknown as Record<string, unknown>;
+    const prepare = backend.prepareNew as (id?: string) => Promise<unknown>;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    backend.prepareNew = async (id?: string) => {
+      await gate;
+      return prepare(id);
+    };
+    const sent: string[] = [];
+    backend.requestSend = async (id: string) => {
+      sent.push(id);
+      return { id: "op1" };
+    };
+    return { ...fake, release, sent };
+  }
+
+  for (const how of ["send", "close"] as const) {
+    it(`${how} while the new sender is being prepared saves it with its own signature`, async () => {
+      const fake = slowBackend();
+      const t = newMessage(fake, { to: [{ address: "anna@example.org" }], subject: "Tuesday" });
+      t.session.setBody(`Hello Anna,${t.session.body()}`);
+      const following = t.session.setSender(home);
+      const done = how === "send" ? t.session.send() : t.session.close();
+      fake.release();
+      await following;
+      await done;
+      const last = t.saved.at(-1);
+      expect(last?.accountId).toBe("a2");
+      expect(last?.bodyMarkdown).toBe("Hello Anna,\n\n-- \nMe, at home");
+      if (how === "send") expect(fake.sent).toEqual(["d1"]);
+    });
+  }
 });
 
 describe("a new message the agent offered (rule 6)", () => {

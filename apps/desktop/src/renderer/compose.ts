@@ -218,6 +218,8 @@ export function createComposerSession(
 
   // The signature the text was given, so it can follow the sender while untouched (ADR 0142).
   let inserted = input.signature ?? "";
+  /** The preparation of the last sender chosen, while its signature may still be put in. */
+  let senderReady: Promise<void> = Promise.resolve();
   let touched = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let saving: Promise<void> = Promise.resolve();
@@ -623,30 +625,38 @@ export function createComposerSession(
       setSenderSignal({ accountId, from });
       // Choosing a sender is not writing: a message nobody wrote in still leaves nothing behind.
       if (touched || draft() !== null) touch();
-      const prepared = await backend.prepareNew(accountId).catch(() => null);
-      if (disposed || sender().accountId !== accountId) return null;
-      const limit = prepared?.messageLimitBytes ?? null;
-      setLimitBytes(limit);
-      // The signature follows the account only while it is exactly the one put in (rule 5).
-      const next = prepared?.signature ?? "";
-      const signed = prepared === null ? null : followSignature(body(), inserted, next);
-      if (signed !== null) {
-        inserted = next;
-        setBodySignal(signed);
-        if (touched || draft() !== null) touch();
-        if (view() !== "write") renderPreview();
-      }
-      // A file the last account's server refused has no copy; this one may take it.
-      for (const chip of chips()) {
-        if (
-          chip.added &&
-          chip.state === "tooLarge" &&
-          (limit === null || encodedMessageBytes([chip]) <= limit)
-        ) {
-          void this.recapture(chip.id);
+      // Send and Close wait for this: the new sender never goes with the last one's signature.
+      const following = (async () => {
+        const prepared = await backend.prepareNew(accountId).catch(() => null);
+        if (disposed || sender().accountId !== accountId) return null;
+        const limit = prepared?.messageLimitBytes ?? null;
+        setLimitBytes(limit);
+        // The signature follows the account only while it is exactly the one put in (rule 5).
+        const next = prepared?.signature ?? "";
+        const signed = prepared === null ? null : followSignature(body(), inserted, next);
+        if (signed !== null) {
+          inserted = next;
+          setBodySignal(signed);
+          if (touched || draft() !== null) touch();
+          if (view() !== "write") renderPreview();
         }
-      }
-      return signed;
+        // A file the last account's server refused has no copy; this one may take it.
+        for (const chip of chips()) {
+          if (
+            chip.added &&
+            chip.state === "tooLarge" &&
+            (limit === null || encodedMessageBytes([chip]) <= limit)
+          ) {
+            void this.recapture(chip.id);
+          }
+        }
+        return signed;
+      })();
+      senderReady = following.then(
+        () => {},
+        () => {},
+      );
+      return following;
     },
     async pick() {
       attachPicked(await pickFiles());
@@ -718,6 +728,7 @@ export function createComposerSession(
     flush,
     async send() {
       setError("");
+      await senderReady;
       // The rows first (never the copies: a file still being read does not hold Send back), then
       // the draft with those files in it, then the approval of exactly that version.
       await settleAdds();
@@ -747,6 +758,7 @@ export function createComposerSession(
       }
     },
     async close() {
+      await senderReady;
       await settleAdds();
       // Closing a forward nobody wrote in takes the draft and its copies with it.
       if (unwritten()) return this.discard();
