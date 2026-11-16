@@ -14,6 +14,7 @@
  */
 import { gaps } from "../domain/draft.ts";
 import { withoutRepeats } from "../domain/quotes.ts";
+import { draftSections, joinSections, withoutSignature } from "../domain/signature.ts";
 import {
   type AgentRequestBody,
   COMMON_RULES,
@@ -43,9 +44,14 @@ export function draftFor(from: DraftFor): DraftFor {
   return "threadId" in from ? { threadId: from.threadId } : { accountId: from.accountId };
 }
 
-/** The person's own lines, and the quote below them as it was (empty when there is none). */
+/**
+ * The person's own lines, their signature and the quote below them as they were (each empty when
+ * there is none). The signature is the person's own, placed by the code (ADR 0142, rule 6): it
+ * never goes to the model, as an instruction or otherwise, and is joined back as it was.
+ */
 export interface DraftParts {
   readonly own: string;
+  readonly signature: string;
   readonly quote: string;
 }
 
@@ -55,22 +61,20 @@ const QUOTED = /^\s*>/;
  * Splits a reply at its first quoted line. The line just above it goes with the quote when it ends
  * in a colon ("On 3 Nov 2026, 10:29, Anna wrote:"), so the attribution is never rewritten.
  * Anything below the first quoted line stays with the quote, the person's inline words included:
- * those are kept as they are, never rewritten.
+ * those are kept as they are, never rewritten. Above the quote, the signature from its delimiter
+ * line on is set apart (ADR 0142).
  */
 export function splitDraft(text: string): DraftParts {
-  const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const at = lines.findIndex((l) => QUOTED.test(l));
-  if (at < 0) return { own: lines.join("\n"), quote: "" };
-  const above = lines[at - 1];
-  const start = above !== undefined && above.trim() !== "" && /:\s*$/.test(above) ? at - 1 : at;
-  return { own: lines.slice(0, start).join("\n"), quote: lines.slice(start).join("\n") };
+  return draftSections(text);
 }
 
-/** The person's lines and the quote again, one empty line between them. */
-export function joinDraft(own: string, quote: string): string {
-  const body = own.trimEnd();
-  if (quote === "") return body;
-  return body === "" ? `\n\n${quote}` : `${body}\n\n${quote}`;
+/**
+ * The person's lines (as the model wrote them), the signature and the quote again, one empty line
+ * between each. A signature block the model wrote anyway is cut off, so a draft is never signed
+ * twice (ADR 0142, rule 6).
+ */
+export function joinDraft(own: string, quote: string, signature = ""): string {
+  return joinSections(withoutSignature(own), signature, quote);
 }
 
 /** The gaps of the person's lines, each once, in the order they first appear. */
@@ -186,7 +190,7 @@ function draftBlock(own: string): string {
   return [DRAFT_OPEN, clean(own).trim(), DRAFT_CLOSE].join("\n");
 }
 
-const KEEP_RULES = `Keep the draft's Markdown (lists, emphasis, links). Every token in square brackets, like [date] or [amount], is a gap the person will fill: copy each one exactly as it is. Do not add a subject line, a greeting or a signature the draft does not have, and never write lines that start with ">".`;
+const KEEP_RULES = `Keep the draft's Markdown (lists, emphasis, links). Every token in square brackets, like [date] or [amount], is a gap the person will fill: copy each one exactly as it is. Do not add a subject line or a greeting the draft does not have, and never write lines that start with ">". Do not add a signature or a sign-off block under the text: the app adds the person's own.`;
 
 // --- Rewrite ---
 
@@ -242,7 +246,7 @@ export function writeInstructions(withThread: boolean): string {
 
 ${COMMON_RULES}${thread}
 
-Do what the person's words ask, and nothing more. written is the person's whole text, written or changed as asked; keep what they did not ask to change as it is, word for word. Write in the language of the draft, or of the person's words when the draft is empty, in a plain and brief tone. Use only facts that the person's words, the subject, the draft${withThread ? " or the thread" : ""} state. When the text needs a fact you were not given (a date, an amount, a name, a decision), write a gap in square brackets that says what is missing, like [date] or [amount], and never invent it. Every token in square brackets already in the draft is a gap the person will fill: copy each one exactly as it is. Keep the draft's Markdown (lists, emphasis, links). Never write lines that start with ">", and do not write the subject or a subject line in the text.`;
+Do what the person's words ask, and nothing more. written is the person's whole text, written or changed as asked; keep what they did not ask to change as it is, word for word. Write in the language of the draft, or of the person's words when the draft is empty, in a plain and brief tone. Use only facts that the person's words, the subject, the draft${withThread ? " or the thread" : ""} state. When the text needs a fact you were not given (a date, an amount, a name, a decision), write a gap in square brackets that says what is missing, like [date] or [amount], and never invent it. Every token in square brackets already in the draft is a gap the person will fill: copy each one exactly as it is. Keep the draft's Markdown (lists, emphasis, links). Never write lines that start with ">", and do not write the subject or a subject line in the text. Do not add a signature or a sign-off block under the text: the app adds the person's own.`;
 }
 
 export const WRITE_SCHEMA = {

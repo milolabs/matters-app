@@ -55,6 +55,7 @@ function rig() {
       syncNow: async () => false,
       changePassword: async () => null,
       signInAgain: async () => null,
+      setSignature: async () => null,
     },
     savedViews: { list: async () => [], recentSearches: async () => [] },
     viewWrites: noViewWrites,

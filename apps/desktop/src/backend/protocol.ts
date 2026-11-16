@@ -69,6 +69,8 @@ export type WorkerCommand =
   | { readonly name: "changePassword"; readonly accountId: string; readonly password: string }
   /** A new browser sign-in, verified before it replaces the stored one (ADR 0133, rule 11). */
   | { readonly name: "signInAgain"; readonly accountId: string; readonly signIn: string }
+  /** The account's own signature (ADR 0142); empty takes it away. */
+  | { readonly name: "setSignature"; readonly accountId: string; readonly signature: string }
   | { readonly name: "saveDraft"; readonly id?: string; readonly content: DraftContent }
   | { readonly name: "deleteDraft"; readonly draftId: string }
   | { readonly name: "requestSend"; readonly draftId: string }
@@ -257,6 +259,8 @@ export interface CommandResults {
   /** Null when there is no such account. */
   readonly changePassword: PasswordChanged | null;
   readonly signInAgain: PasswordChanged | null;
+  /** The signature as kept; null when there is no such account. */
+  readonly setSignature: string | null;
   readonly saveDraft: Draft;
   readonly deleteDraft: boolean;
   readonly requestSend: SendOperation;

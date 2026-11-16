@@ -11,7 +11,14 @@ import type {
   SyncScheduler,
   SyncStatus,
 } from "@matters/core";
-import { addAccount, canSendFrom, removeAccount, setNewPassword, signInAgain } from "@matters/core";
+import {
+  addAccount,
+  canSendFrom,
+  removeAccount,
+  saveSignature,
+  setNewPassword,
+  signInAgain,
+} from "@matters/core";
 import type { AccountsApi, NewAccountInput, PasswordChanged } from "./handler.ts";
 
 /** What the renderer sees of an account; no secrets are in a `StoredAccount`. */
@@ -27,6 +34,7 @@ export function accountInfo(a: StoredAccount, status: SyncStatus): AccountInfo {
     security: a.imap?.security ?? "tls",
     username: a.imap?.username ?? "",
     canSend: canSendFrom(a),
+    ...(a.signature === undefined ? {} : { signature: a.signature }),
     status,
   };
 }
@@ -119,6 +127,14 @@ export class AccountService implements AccountsApi {
       outgoing: outgoing.state,
       ...(outgoing.state === "unchecked" ? { outgoingNote: outgoing.reason } : {}),
     };
+  }
+
+  /** Throws `InvalidSignatureError` with words for the field (ADR 0142). */
+  async setSignature(accountId: string, signature: string): Promise<string | null> {
+    // Written with the store accounts are added with: this one only reads.
+    const kept = await saveSignature({ accounts: this.deps.add.accounts }, accountId, signature);
+    if (kept !== null) this.deps.onChanged();
+    return kept;
   }
 
   async syncNow(accountId: string): Promise<boolean> {

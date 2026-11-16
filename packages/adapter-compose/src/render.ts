@@ -1,4 +1,5 @@
 import type { ComposeRendererPort, RenderedMessage } from "@matters/core";
+import { draftSections, SIGNATURE_DELIMITER } from "@matters/core";
 import juice from "juice";
 import MarkdownIt from "markdown-it";
 import { MAIL_CSS } from "./stylesheet.ts";
@@ -38,11 +39,32 @@ export class MarkdownComposeRenderer implements ComposeRendererPort {
   private readonly md = createMarkdown();
 
   render(markdown: string): RenderedMessage {
-    const body = this.md.render(markdown);
+    const body = this.body(markdown);
     const page =
       '<!doctype html><html><head><meta charset="utf-8"></head>' +
       `<body><div class="matters-body">${body}</div></body></html>`;
     const html = juice.inlineContent(page, MAIL_CSS, juiceOptions);
     return { html, text: markdown };
+  }
+
+  /**
+   * The HTML of the text. A signature (ADR 0142, rule 4) is rendered apart from the lines around
+   * it, so a delimiter right under a line of text never makes that line a heading (`-` under a
+   * paragraph is Markdown's other way of writing one), and the signature's own lines never run
+   * into the person's. Its delimiter is a line of its own, as text: never an `<hr>`, never a list
+   * item. The text part keeps the line exactly, its trailing space included.
+   */
+  private body(markdown: string): string {
+    const { own, signature, quote } = draftSections(markdown);
+    if (signature === "") return this.md.render(markdown);
+    const lines = signature.slice(SIGNATURE_DELIMITER.length + 1);
+    return (
+      this.md.render(own) +
+      '<div class="matters-signature">' +
+      `<p class="matters-signature-mark">${SIGNATURE_DELIMITER}</p>` +
+      this.md.render(lines) +
+      "</div>" +
+      this.md.render(quote)
+    );
   }
 }

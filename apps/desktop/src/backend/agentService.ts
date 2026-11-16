@@ -2162,7 +2162,7 @@ export class AgentService implements AgentApi {
     );
     const got = acceptRewrite(value, parts.own);
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
-    return { text: joinDraft(got.value, parts.quote) };
+    return { text: joinDraft(got.value, parts.quote, parts.signature) };
   }
 
   async writeDraft(
@@ -2212,7 +2212,10 @@ export class AgentService implements AgentApi {
     );
     const got = acceptWrite(value, parts.own, subject);
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
-    return { text: got.value === parts.own.trim() ? text : joinDraft(got.value, parts.quote) };
+    return {
+      text:
+        got.value === parts.own.trim() ? text : joinDraft(got.value, parts.quote, parts.signature),
+    };
   }
 
   // --- A theme from a description (ADR 0134, rules 12 to 15) ---
@@ -2326,7 +2329,9 @@ export class AgentService implements AgentApi {
     );
     const got = acceptAnswers(value, parts.own);
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
-    return { text: got.value === parts.own ? text : joinDraft(got.value, parts.quote) };
+    return {
+      text: got.value === parts.own ? text : joinDraft(got.value, parts.quote, parts.signature),
+    };
   }
 
   async checkReply(threadId: string, text: string): Promise<ReplyCheck> {
@@ -3509,9 +3514,13 @@ export class AgentService implements AgentApi {
     if (prepared === null) throw new ThingNotFoundError("There is no message to reply to");
     // A draft the person already started is theirs: the composer opens it, nothing is overwritten.
     if (prepared.existing !== null) return { draftId: prepared.existing.id, existing: true };
+    // The agent's words above the account's signature and the quote, as the composer starts a
+    // reply; a signature block the agent wrote anyway goes (ADR 0142, rule 6).
+    const start = splitDraft(prepared.content.bodyMarkdown);
+    const joined = joinDraft(body.replace(/\r\n?/g, "\n"), start.quote, start.signature);
     const draft = await this.deps.saveDraft({
       ...prepared.content,
-      bodyMarkdown: `${body.replace(/\r\n?/g, "\n").trimEnd()}${prepared.content.bodyMarkdown === "" ? "\n" : prepared.content.bodyMarkdown}`,
+      bodyMarkdown: start.quote === "" && start.signature === "" ? `${joined}\n` : joined,
     });
     return { draftId: draft.id, existing: false };
   }

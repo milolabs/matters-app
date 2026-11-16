@@ -20,7 +20,7 @@ export const GROUP_COPY: readonly {
   {
     id: "mail",
     label: "Mail and the search index",
-    detail: "Messages, drafts, and mail waiting to be sent",
+    detail: "Messages, drafts, your signatures, and mail waiting to be sent",
   },
   {
     id: "files",
@@ -76,7 +76,7 @@ export function reviewRows(
     if (g.id === "mail") {
       return {
         ...g,
-        detail: `${plural(db.messages, "message", "messages")}, drafts, and mail waiting to be sent`,
+        detail: `${plural(db.messages, "message", "messages")}, drafts, your signatures, and mail waiting to be sent`,
         amount: storageSize(bytes(g.id)),
       };
     }

@@ -3,6 +3,7 @@ import type { HtmlKind, Message, Participant } from "./entities.ts";
 import { isHiddenMailbox } from "./mailbox.ts";
 import { escapeAddress, escapeMarkdown } from "./markdownEscape.ts";
 import { formatMessageDate, quoteLines } from "./reply.ts";
+import { signatureBlock } from "./signature.ts";
 
 export { escapeMarkdown } from "./markdownEscape.ts";
 
@@ -92,12 +93,15 @@ export function messageToForward(
 
 /**
  * What the person wrote: the body above the quote. Editing inside the quote does not count, and
- * neither does a quote that was deleted down to nothing (rule 13).
+ * neither does a quote that was deleted down to nothing (rule 13). The account's signature as it
+ * was put in is the app's, not the person's words (ADR 0142); once changed, it counts.
  */
-export function ownWords(body: string): string {
+export function ownWords(body: string, signature = ""): string {
   const lines = body.replace(/\r\n?/g, "\n").split("\n");
   const at = lines.indexOf(FORWARD_MARK);
-  return (at === -1 ? lines : lines.slice(0, at)).join("\n").trim();
+  const above = (at === -1 ? lines : lines.slice(0, at)).join("\n");
+  const block = signatureBlock(signature);
+  return (block === "" ? above : above.replace(block, "")).trim();
 }
 
 /** What the composer needs to know of the forwarded message to say what is not carried. */

@@ -180,3 +180,56 @@ describe("rendering", () => {
     expect((performance.now() - start) / 50).toBeLessThan(10);
   });
 });
+
+describe("the person's signature (ADR 0142, rule 4)", () => {
+  const signed = "Thanks!\n\n-- \nAnna Nowak\n**Matters** · [site](https://matters.example)";
+  const signatureOf = (out: string) =>
+    /<div class="matters-signature"[^>]*>([\s\S]*?)<\/div>/.exec(out)?.[1] ?? "";
+
+  it("keeps the delimiter line exactly in the text part, its space included", () => {
+    expect(renderer.render(signed).text).toBe(signed);
+    expect(renderer.render(signed).text.split("\n")).toContain("-- ");
+  });
+
+  it("renders it as a quiet block: the delimiter as text, never a rule, a heading or a list", () => {
+    const out = html(signed);
+    assertInert(out);
+    const block = signatureOf(out);
+    expect(block).toContain('class="matters-signature-mark"');
+    expect(block).toMatch(/>-- <\/p>/);
+    expect(block).toContain("<strong>Matters</strong>");
+    expect(block).toContain('href="https://matters.example"');
+    expect(out).not.toMatch(/<hr|<h[1-6]|<li/);
+    // The block carries the quiet colour of quotes; the words above keep the body's.
+    expect(out).toMatch(/class="matters-signature" style="[^"]*color: #6e6e73/);
+    expect(out).toMatch(/<p style="[^"]*">Thanks!<\/p>/);
+  });
+
+  it("does not make the line above it a heading when no empty line is between", () => {
+    const out = html("Thanks!\n-- \nAnna");
+    expect(out).not.toMatch(/<h[1-6]/);
+    expect(out).toMatch(/>Thanks!<\/p>/);
+    expect(signatureOf(out)).toContain("Anna");
+  });
+
+  it("ends where the reply's quote begins, which stays a blockquote below it", () => {
+    const out = html("Yes.\n\n-- \nAnna\n\nOn 3 Nov 2026, 10:29, Ben wrote:\n> When?\n");
+    const block = signatureOf(out);
+    expect(block).toContain("Anna");
+    expect(block).not.toContain("Ben");
+    expect(out.indexOf("matters-signature")).toBeLessThan(out.indexOf("<blockquote"));
+    expect(out).toMatch(/<blockquote[^>]*>\s*<p[^>]*>When\?<\/p>/);
+  });
+
+  it("is inert whatever the signature says: no image, no raw HTML", () => {
+    const out = html(
+      'Hi\n\n-- \n<img src="https://evil.example/x.png"> ![logo](https://evil.example/l.png)',
+    );
+    assertInert(out);
+    expect(out).not.toMatch(/<img/);
+  });
+
+  it("without a delimiter line nothing changes", () => {
+    expect(html("Hi\n\n--\nnot a signature")).not.toContain("matters-signature");
+  });
+});

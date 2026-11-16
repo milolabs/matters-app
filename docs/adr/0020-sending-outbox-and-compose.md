@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-11-03
 - Refines: [0007](0007-local-first-sync.md) rule 5, [0011](0011-markdown-compose.md)
+- Amended by: [0142](0142-a-signature-of-the-persons-own.md) (rule 11: a text with a signature is
+  rendered to HTML in parts, the signature as a quiet block under its `-- ` line)
 
 ## Context
 

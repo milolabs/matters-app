@@ -68,7 +68,7 @@ describe("the draft and its quote (ADR 0098)", () => {
   });
 
   it("keeps a reply with no quote whole, and a quote with no words above it", () => {
-    expect(splitDraft("Just this.")).toEqual({ own: "Just this.", quote: "" });
+    expect(splitDraft("Just this.")).toEqual({ own: "Just this.", signature: "", quote: "" });
     const empty = splitDraft(`\n\n${QUOTE}`);
     expect(empty.own.trim()).toBe("");
     expect(joinDraft("", empty.quote)).toBe(`\n\n${QUOTE}`);

@@ -1483,6 +1483,20 @@ export const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 58,
+    // ADR 0142, rule 7: the person's own signature, kept with the account's other settings, so the
+    // composer reads it with the account it already reads and removing the account removes it.
+    // NULL is none, the default; a signature is at most 2,000 characters (checked in the core).
+    // Like 57, it can run again on a database that has it.
+    sql: "",
+    run: (db) => {
+      const columns = db.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
+      if (!columns.some((c) => c.name === "signature")) {
+        db.exec("ALTER TABLE accounts ADD COLUMN signature TEXT");
+      }
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

@@ -599,6 +599,8 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         return accounts.changePassword(command.accountId, command.password);
       case "signInAgain":
         return accounts.signInAgain(command.accountId, command.signIn);
+      case "setSignature":
+        return accounts.setSignature(command.accountId, command.signature);
       case "setSeen":
         return seen.setSeen(command.keys, command.seen);
       case "moveThread":

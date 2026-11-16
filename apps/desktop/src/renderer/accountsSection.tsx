@@ -13,6 +13,7 @@ import { passwordRejected, signInEnded } from "./newPassword.ts";
 import { NewPasswordForm, SignInAgainForm } from "./newPasswordForm.tsx";
 import { accountShare, removalNotice } from "./removal.ts";
 import { Setup } from "./setup.tsx";
+import { SignatureForm } from "./signatureForm.tsx";
 import { mainSignIn, type SignInClient } from "./signIn.ts";
 import { describeStatus } from "./status.ts";
 import { count, storageSize } from "./storageView.ts";
@@ -30,6 +31,8 @@ const smallPrimary =
  * at once (ADR 0113); any other refused sign-in shows its reason and next step instead (ADR 0114).
  * An account on servers that take only a browser sign-in has *Sign in again* in the password
  * form's place, under the same key, and it opens by itself when the sign-in has ended (ADR 0133).
+ * The account's own signature is edited in its row too (ADR 0142); while its field has the focus,
+ * the letters are text, not the section's keys.
  */
 export function AccountsSection(props: {
   backend: Backend;
@@ -70,6 +73,8 @@ export function AccountsSection(props: {
   const [asked, setAsked] = createSignal<ReadonlySet<string>>(new Set());
   const [dismissed, setDismissed] = createSignal<ReadonlySet<string>>(new Set());
   const [saved, setSaved] = createSignal<Readonly<Record<string, string>>>({});
+  // The account whose signature field is open (ADR 0142), one at a time.
+  const [signing, setSigning] = createSignal<string | null>(null);
   const byBrowser = (id: string) => {
     const account = props.accounts.accounts().find((a) => a.id === id);
     return account !== undefined && providerOf(account) !== undefined;
@@ -140,6 +145,15 @@ export function AccountsSection(props: {
       e.preventDefault();
       return;
     }
+    const inSignature =
+      e.target instanceof HTMLElement ? e.target.closest("[data-signature]") !== null : false;
+    if (e.key === "Escape" && inSignature) {
+      // The editor closes the field itself; the window stays.
+      e.preventDefault();
+      return;
+    }
+    // The signature's editor is text: its letters are not the section's keys.
+    if (inSignature) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
@@ -290,6 +304,17 @@ export function AccountsSection(props: {
                           : "no encryption"}
                     </Show>
                   </div>
+                  <Show when={signing() !== account.id && account.signature}>
+                    {(signature) => (
+                      <p
+                        data-signature-line
+                        class="truncate text-[12px] text-secondary"
+                        title={signature()}
+                      >
+                        Signature: {signature().split("\n")[0]}
+                      </p>
+                    )}
+                  </Show>
                   <Show when={saved()[account.id]}>
                     {(note) => (
                       <p class="mt-1 text-[12px] text-secondary" role="status">
@@ -350,6 +375,18 @@ export function AccountsSection(props: {
                       )}
                     </Show>
                   </Show>
+                  <Show when={signing() === account.id && confirming() !== account.id}>
+                    <SignatureForm
+                      backend={props.backend}
+                      account={account}
+                      onClose={() => setSigning(null)}
+                      onSaved={(note) => {
+                        setSigning(null);
+                        setSaved((all) => ({ ...all, [account.id]: note }));
+                        void props.accounts.refresh();
+                      }}
+                    />
+                  </Show>
                   <Show
                     when={confirming() === account.id}
                     fallback={
@@ -380,6 +417,18 @@ export function AccountsSection(props: {
                             >
                               p
                             </span>
+                          </button>
+                        </Show>
+                        <Show when={signing() !== account.id}>
+                          <button
+                            type="button"
+                            class={small}
+                            onClick={() => {
+                              setSaved(({ [account.id]: _, ...rest }) => rest);
+                              setSigning(account.id);
+                            }}
+                          >
+                            Signature
                           </button>
                         </Show>
                         <button

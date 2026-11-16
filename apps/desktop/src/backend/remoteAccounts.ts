@@ -79,4 +79,11 @@ export class RemoteAccounts implements AccountsApi {
   syncNow(accountId: string): Promise<boolean> {
     return this.deps.host.command({ name: "syncNow", accountId });
   }
+
+  /** The worker keeps it; the windows hear that the accounts changed (ADR 0142). */
+  async setSignature(accountId: string, signature: string): Promise<string | null> {
+    const kept = await this.deps.host.command({ name: "setSignature", accountId, signature });
+    if (kept !== null) this.deps.onChanged();
+    return kept;
+  }
 }

@@ -1,3 +1,4 @@
+import type { StoredAccount } from "../domain/accounts.ts";
 import type { Draft, DraftContent } from "../domain/draft.ts";
 import { buildForward, messageToForward } from "../domain/forward.ts";
 import {
@@ -8,6 +9,12 @@ import {
   type ReplyRedirect,
   replyRedirect,
 } from "../domain/reply.ts";
+import {
+  InvalidSignatureError,
+  normalizeSignature,
+  placeSignature,
+  signatureProblem,
+} from "../domain/signature.ts";
 import type {
   AccountStorePort,
   DraftStorePort,
@@ -23,8 +30,13 @@ export interface PrepareDeps {
 }
 
 export interface PreparedDraft {
-  /** What a new draft starts from. */
+  /** What a new draft starts from, the account's signature already in its text (ADR 0142). */
   readonly content: DraftContent;
+  /**
+   * The account's signature as it was put in, without its delimiter; empty when it has none. The
+   * composer keeps it to tell whether the person changed it (ADR 0142, rule 5).
+   */
+  readonly signature: string;
   /** A draft already answering this thread; the composer opens it instead. */
   readonly existing: Draft | null;
   /**
@@ -41,15 +53,51 @@ export class NoAccountError extends Error {
   }
 }
 
-/** A new message from this account (default: the first one). */
+/** The account's signature as kept; empty when it has none. */
+export function signatureOf(account: Pick<StoredAccount, "signature">): string {
+  return account.signature ?? "";
+}
+
+/** What a new message starts from: its content and the signature put in it (ADR 0142). */
+export interface PreparedNew {
+  readonly content: DraftContent;
+  readonly signature: string;
+}
+
+/**
+ * A new message from this account (default: the first one): an empty line to write on, then the
+ * account's signature, when it has one (ADR 0142, rule 3).
+ */
 export async function prepareNewMessage(
   deps: Pick<PrepareDeps, "accounts">,
   accountId?: string,
-): Promise<DraftContent> {
+): Promise<PreparedNew> {
   const accounts = await deps.accounts.list();
   const account = accounts.find((a) => a.id === accountId) ?? accounts[0];
   if (!account) throw new NoAccountError();
-  return emptyDraftContent(account);
+  const signature = signatureOf(account);
+  const content = emptyDraftContent(account);
+  return {
+    content: { ...content, bodyMarkdown: placeSignature(content.bodyMarkdown, signature) },
+    signature,
+  };
+}
+
+/**
+ * Keeps the account's signature (ADR 0142, rules 1 and 7): normalized, at most
+ * `SIGNATURE_MAX_CHARS`, no line that reads as quoted mail. Empty takes it away. Drafts that exist
+ * keep the signature they have. Returns the signature as kept, or null when there is no such
+ * account.
+ */
+export async function saveSignature(
+  deps: { readonly accounts: Pick<AccountStorePort, "setSignature"> },
+  accountId: string,
+  text: string,
+): Promise<string | null> {
+  const signature = normalizeSignature(text);
+  const problem = signatureProblem(signature);
+  if (problem !== null) throw new InvalidSignatureError(problem);
+  return (await deps.accounts.setSignature(accountId, signature)) ? signature : null;
 }
 
 /**
@@ -80,8 +128,11 @@ export async function prepareReplyDraft(
     earlier,
   });
   const existing = await deps.drafts.findByThread(account.id, threadId);
+  const signature = signatureOf(account);
   return {
-    content,
+    // Above the quote, the caret above it (ADR 0142, rule 3). A draft that exists keeps its own.
+    content: { ...content, bodyMarkdown: placeSignature(content.bodyMarkdown, signature) },
+    signature,
     existing,
     redirect: existing ? null : replyRedirect(target, [account.address, ...own]),
   };
@@ -109,8 +160,12 @@ export async function prepareForwardDraft(
   const account = accounts.find((a) => a.id === view.thread.accountId);
   if (!account) throw new NoAccountError();
   const body = (await deps.bodies.getBodies([target.key])).get(target.key) ?? "";
+  const content = buildForward({ account, message: target, bodyText: body });
+  const signature = signatureOf(account);
   return {
-    content: buildForward({ account, message: target, bodyText: body }),
+    // Above the forwarded part (ADR 0142, rule 3).
+    content: { ...content, bodyMarkdown: placeSignature(content.bodyMarkdown, signature) },
+    signature,
     existing: null,
     redirect: null,
     messageKey: target.key,

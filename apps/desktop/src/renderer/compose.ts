@@ -12,10 +12,12 @@ import {
   describeBlocker,
   emptyDraftContent,
   encodedMessageBytes,
+  followSignature,
   formatRecipients,
   notifyIfLarge,
   ownWords,
   parseRecipients,
+  placeSignature,
   sendBlockers,
 } from "@matters/core";
 import { batch, createMemo, createSignal } from "solid-js";
@@ -105,8 +107,12 @@ export interface ComposerSession {
   setView(v: ComposeView): void;
   /** Moves the composer, keeping everything typed (⤢ opens the full composer). */
   setPlacement(p: ComposePlacement): void;
-  /** Sends from this account instead; resolves once its message limit is known and applied. */
-  setSender(account: { id: string; address: string; displayName: string }): Promise<void>;
+  /**
+   * Sends from this account instead; resolves once its message limit is known and applied. The
+   * signature follows the account while the person has not changed it (ADR 0142, rule 5): then
+   * the text with the new one in place is the answer, for the editor to show; else null.
+   */
+  setSender(account: { id: string; address: string; displayName: string }): Promise<string | null>;
   /** The system's file dialog, then the chips. */
   pick(): Promise<void>;
   /** Files whose grants main already minted (a pick). */
@@ -152,6 +158,8 @@ export function createComposerSession(
     forward?: ForwardPlan;
     /** The account's message limit; null while unknown. */
     limitBytes?: number | null;
+    /** The account's signature as the text starts with it (ADR 0142); empty or absent for none. */
+    signature?: string;
   },
   onClosed: () => void,
   sink: ProgressSink = progress,
@@ -208,6 +216,8 @@ export function createComposerSession(
   const grantWaits = new Set<Promise<void>>();
   let statusTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // The signature the text was given, so it can follow the sender while untouched (ADR 0142).
+  let inserted = input.signature ?? "";
   let touched = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let saving: Promise<void> = Promise.resolve();
@@ -546,7 +556,7 @@ export function createComposerSession(
   const unwritten = () =>
     base.forwarded === true &&
     [to(), cc(), bcc()].every((field) => field.trim() === "") &&
-    ownWords(body()) === "" &&
+    ownWords(body(), inserted) === "" &&
     subject() === (start ? base : input.content).subject;
 
   return {
@@ -608,17 +618,24 @@ export function createComposerSession(
       if (v !== "write") renderPreview();
     },
     async setSender(account) {
-      if (!canChangeSender || account.id === sender().accountId) return;
+      if (!canChangeSender || account.id === sender().accountId) return null;
       const { accountId, from } = emptyDraftContent(account);
       setSenderSignal({ accountId, from });
       // Choosing a sender is not writing: a message nobody wrote in still leaves nothing behind.
       if (touched || draft() !== null) touch();
-      const limit = await backend
-        .prepareNew(accountId)
-        .then((p) => p.messageLimitBytes)
-        .catch(() => null);
-      if (disposed || sender().accountId !== accountId) return;
+      const prepared = await backend.prepareNew(accountId).catch(() => null);
+      if (disposed || sender().accountId !== accountId) return null;
+      const limit = prepared?.messageLimitBytes ?? null;
       setLimitBytes(limit);
+      // The signature follows the account only while it is exactly the one put in (rule 5).
+      const next = prepared?.signature ?? "";
+      const signed = prepared === null ? null : followSignature(body(), inserted, next);
+      if (signed !== null) {
+        inserted = next;
+        setBodySignal(signed);
+        if (touched || draft() !== null) touch();
+        if (view() !== "write") renderPreview();
+      }
       // A file the last account's server refused has no copy; this one may take it.
       for (const chip of chips()) {
         if (
@@ -629,6 +646,7 @@ export function createComposerSession(
           void this.recapture(chip.id);
         }
       }
+      return signed;
     },
     async pick() {
       attachPicked(await pickFiles());
@@ -838,12 +856,14 @@ export function createComposeStore(backend: Backend, outbox: OutboxStore) {
                     ...prepared.content,
                     to: prefill.to.map((address) => ({ address })),
                     subject: prefill.subject,
-                    bodyMarkdown: prefill.body,
+                    // The agent wrote the words; the code puts the signature under them (ADR 0142).
+                    bodyMarkdown: placeSignature(prefill.body, prepared.signature ?? ""),
                   }
                 : prepared.content,
             existing: prepared.existing,
             redirect: prepared.redirect ?? null,
             limitBytes: prepared.messageLimitBytes,
+            signature: prepared.signature ?? "",
             ...(plan ? { forward: plan } : {}),
           },
           () => setSession(null),
@@ -863,16 +883,21 @@ export function createComposeStore(backend: Backend, outbox: OutboxStore) {
     setProblem("");
     try {
       const existing = await backend.getDraft(draftId);
-      // The limit is the account's; asking for a fresh message is the way to learn it.
-      const limitBytes = await backend
-        .prepareNew(existing.accountId)
-        .then((p) => p.messageLimitBytes)
-        .catch(() => null);
+      // The limit is the account's; asking for a fresh message is the way to learn it. Its
+      // signature too: the text follows a new sender only while it still has exactly that one.
+      const fresh = await backend.prepareNew(existing.accountId).catch(() => null);
+      const limitBytes = fresh?.messageLimitBytes ?? null;
       setSession(
         createComposerSession(
           backend,
           outbox,
-          { title: titleOfDraft(existing), content: existing, existing, limitBytes },
+          {
+            title: titleOfDraft(existing),
+            content: existing,
+            existing,
+            limitBytes,
+            signature: fresh?.signature ?? "",
+          },
           () => setSession(null),
         ),
       );
