@@ -3,12 +3,23 @@ import { normalizeSignature, SIGNATURE_MAX_CHARS, signatureProblem } from "@matt
 import { createSignal, Show } from "solid-js";
 import { type Backend, BackendError } from "./client.ts";
 import { MarkdownEditor } from "./editor.tsx";
-import { type SignatureFailure, signatureAlert } from "./signatureFields.ts";
+import {
+  type SavedSignatures,
+  type SignatureFailure,
+  signatureAlert,
+  signatureUnchanged,
+} from "./signatureFields.ts";
 
 const small =
   "h-[28px] cursor-default rounded-[8px] bg-button px-3 text-[12px] font-semibold disabled:opacity-40";
 const primary =
   "h-[28px] cursor-default rounded-[8px] bg-ink px-3 text-[12px] font-semibold text-bg disabled:opacity-40";
+
+/**
+ * The order each save is pressed in, across the fields: a row made anew (when the list of accounts
+ * is read again) has a new field, and its save is still later than one the old field started.
+ */
+let saves = 0;
 
 /** "1,234 of 2,000": what the field holds, counted as the core counts it. */
 const counted = (n: number) =>
@@ -27,15 +38,23 @@ export function SignatureForm(props: {
   typed?: string | undefined;
   onType?: (text: string) => void;
   onClose: () => void;
-  /** The save ended, with the text it saved: the field closes only if it still holds that. */
-  onSaved: (note: string, submitted: string) => void;
+  /** What the saves that succeeded left, while the list of accounts has not caught up. */
+  saved: SavedSignatures;
+  /**
+   * The save succeeded: the note, the text it saved (the field closes only if it still holds
+   * that), the signature the store now holds, and the order the save was pressed in.
+   */
+  onSaved: (note: string, submitted: string, signature: string, order: number) => void;
 }) {
   const [text, setText] = createSignal(props.typed ?? props.account.signature ?? "");
   const [saving, setSaving] = createSignal(false);
   const [failure, setFailure] = createSignal<SignatureFailure | null>(null);
   const kept = () => normalizeSignature(text());
   const problem = () => signatureProblem(kept());
-  const unchanged = () => kept() === (props.account.signature ?? "");
+  // Unchanged only when it is what the store holds: the account as the list shows it, and the
+  // last save that succeeded, which the list may not show yet.
+  const unchanged = () =>
+    signatureUnchanged(props.saved, props.account.id, props.account.signature ?? "", kept());
 
   async function save(e?: Event) {
     e?.preventDefault();
@@ -49,6 +68,7 @@ export function SignatureForm(props: {
     // The field stays editable while the save goes, since it can be slow: what is typed meanwhile
     // is newer than what this saves, and keeps the field open.
     const submitted = text();
+    const order = ++saves;
     try {
       const signature = await props.backend.setSignature(props.account.id, submitted);
       props.onSaved(
@@ -56,6 +76,8 @@ export function SignatureForm(props: {
           ? "No signature. New messages from this account start empty."
           : "Signature saved. New messages, replies and forwards from this account start with it.",
         submitted,
+        signature,
+        order,
       );
     } catch (error) {
       setFailure({

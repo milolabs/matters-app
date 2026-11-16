@@ -154,20 +154,103 @@ function delimiterLines(lines: readonly string[]): number[] {
   return at;
 }
 
-/**
- * Text a model wrote, without a signature block of its own: from a delimiter line on, everything
- * goes. The model is asked to write none (ADR 0142, rule 6); this makes sure. A delimiter line is
- * `-- ` with its space, or `--` without it when it does not stand right under a line of text: there
- * `--` underlines a Markdown heading ("Summary" over `--`), which is the person's text and stays.
- *
- * `before` is the person's own text the model was given, when it was given one. A block of theirs
- * is theirs, however the model wrote it again: as many delimiter lines as `before` has are kept,
- * in their order, and only one the model added after them starts the cut.
- */
-export function withoutSignature(text: string, before = ""): string {
+/** A text cut at its delimiter lines: what stands above the first, and each block, as lines. */
+interface Blocks {
+  readonly body: readonly string[];
+  /** Each from its delimiter line to the line before the next one, without empty lines at its end. */
+  readonly blocks: readonly (readonly string[])[];
+}
+
+function blocksOf(text: string): Blocks {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const kept =
-    before === "" ? 0 : delimiterLines(before.replace(/\r\n?/g, "\n").split("\n")).length;
-  const at = delimiterLines(lines)[kept];
-  return at === undefined ? text : lines.slice(0, at).join("\n").trimEnd();
+  const at = delimiterLines(lines);
+  const blocks = at.map((start, i) => {
+    const block = lines.slice(start, at[i + 1] ?? lines.length);
+    let end = block.length;
+    while (end > 1 && (block[end - 1] as string).trim() === "") end--;
+    return block.slice(0, end);
+  });
+  return { body: lines.slice(0, at[0] ?? lines.length), blocks };
+}
+
+/** What two blocks are compared by: their lines without white space at the end. */
+function blockKey(block: readonly string[]): string {
+  return block.map((l) => l.replace(/\s+$/, "")).join("\n");
+}
+
+/**
+ * The blocks of a text (ADR 0142, rule 6), each as it is compared: its delimiter line and the
+ * lines under it up to the next delimiter or the end, without white space at the end of a line or
+ * empty lines at the end of the block.
+ */
+export function signatureBlocks(text: string): string[] {
+  return blocksOf(text).blocks.map(blockKey);
+}
+
+/**
+ * A model's answer with only the person's own signature blocks (ADR 0142, rule 6). The model is
+ * asked to write none; this makes sure, and keeps the person's.
+ *
+ * `before` is the person's own text the model was given; empty when the text is all the model's
+ * (a new message it offered, a reply it prepared). `answer` is what the model wrote.
+ *
+ * - A block is a delimiter line and the lines after it up to the next delimiter line or the end. A
+ *   delimiter line is `-- ` with its space anywhere, or `--` on the first line or after an empty
+ *   line. A `--` right under a line of text underlines a Markdown heading: it is text, never a
+ *   delimiter, and starts no block. What stands above the first delimiter is the answer's body.
+ * - A block of the answer is the person's when its lines are the same as those of one of the
+ *   blocks of `before`, line ends and white space at the end of a line aside. A block the model
+ *   reworded is not the person's. Each block of the person's is matched at most once, in whatever
+ *   order the answer has them: the first one not matched yet that is written exactly the same,
+ *   else the first one not matched yet that is the same but for white space at a line's end.
+ * - Every other block of the answer is the model's. The person's blocks the answer did not match
+ *   are restored in place of the model's blocks: the first not matched, in the person's order, in
+ *   place of the first block of the model's, in the answer's order, and so on, so a sign-off the
+ *   model reworded or moved comes back as the person wrote it, where the model put it. The model's
+ *   blocks left over are cut.
+ * - A block of the person's that the answer has no block of the model's to stand in for is lost
+ *   content: the answer is refused (null), as one that loses a gap is. Text that is all the
+ *   model's is never refused.
+ *
+ * The kept text is the body without white space at its end and then each kept block, the person's
+ * as they wrote it, one empty line between each. An answer with no block, and none in `before`, is
+ * kept as it is. The checks of an answer (`keepsGaps` and the others) run on the kept text.
+ */
+export function keepOwnBlocks(before: string, answer: string): string | null {
+  const mine = before === "" ? [] : blocksOf(before).blocks;
+  const got = blocksOf(answer);
+  if (got.blocks.length === 0 && mine.length === 0) return answer;
+  const raws = mine.map((block) => block.join("\n"));
+  const keys = mine.map(blockKey);
+  const used = mine.map(() => false);
+  // For each block of the answer: the number of the person's block it is, or -1 for the model's.
+  // One written exactly as it is goes first, so blocks that differ only in white space at a line's
+  // end each keep their own.
+  const whose = got.blocks.map((block) => {
+    const raw = block.join("\n");
+    const key = blockKey(block);
+    let j = raws.findIndex((r, i) => !used[i] && r === raw);
+    if (j < 0) j = keys.findIndex((k, i) => !used[i] && k === key);
+    if (j >= 0) used[j] = true;
+    return j;
+  });
+  const missing = keys.flatMap((_, i) => (used[i] ? [] : [i]));
+  if (missing.length > whose.filter((j) => j < 0).length) return null;
+  let next = 0;
+  const kept = whose.flatMap((j) => {
+    if (j >= 0) return [j];
+    const restored = missing[next++];
+    return restored === undefined ? [] : [restored];
+  });
+  return [got.body.join("\n").trimEnd(), ...kept.map((j) => raws[j] as string)]
+    .filter((part) => part !== "")
+    .join("\n\n");
+}
+
+/**
+ * Text that is all a model's, without a signature block: from its first delimiter line on,
+ * everything goes (`keepOwnBlocks` with no text of the person's).
+ */
+export function withoutSignature(text: string): string {
+  return keepOwnBlocks("", text) as string;
 }
