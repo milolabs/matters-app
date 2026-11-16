@@ -5,6 +5,7 @@ import {
   closeSignatureField,
   NO_SIGNATURE_FIELD,
   openSignatureField,
+  savedSignatureField,
   typeInSignatureField,
 } from "../src/renderer/signatureFields.ts";
 
@@ -25,5 +26,19 @@ describe("the signature fields", () => {
     expect(f).toEqual({ open: "b", typed: { b: "Ben, unsaved" } });
     // Its own close ends it, text and all.
     expect(closeSignatureField(f, "b")).toEqual(NO_SIGNATURE_FIELD);
+  });
+
+  it("a save that ends closes the field only while it holds what was saved", () => {
+    // "One" is saved; "Two" is typed while that save is on its way: the field stays, with "Two".
+    let f = openSignatureField("a");
+    f = typeInSignatureField(f, "a", "One");
+    f = typeInSignatureField(f, "a", "Two");
+    expect(savedSignatureField(f, "a", "One")).toEqual({ open: "a", typed: { a: "Two" } });
+    // Saved as it stands, or opened and saved with nothing typed, it closes.
+    expect(savedSignatureField(f, "a", "Two")).toEqual(NO_SIGNATURE_FIELD);
+    expect(savedSignatureField(openSignatureField("a"), "a", "One")).toEqual(NO_SIGNATURE_FIELD);
+    // Another account's open field is left as it is.
+    const b = typeInSignatureField(openSignatureField("b"), "b", "Ben");
+    expect(savedSignatureField(b, "a", "One")).toBe(b);
   });
 });
