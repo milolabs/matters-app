@@ -86,8 +86,9 @@ folders with a stand-in bundle. Not tried: a whole install of a real release int
      version must be `app.getmatters.Matters` and the version asked for. The image is closed
      (`hdiutil detach`, then with `-force`) before the helper starts; an image that stays open is
      a failed install, said as one that could not be opened or closed, and no helper is started.
-   - What a step put down is removed when a later one fails: the image is closed, the copy beside
-     the old app and the lock are removed, and so are the downloads. Every step of that cleanup
+   - What a step put down is removed when a later one fails: first the copy beside the old app
+     and the lock, then the image is closed, then the downloads go. The folder of the app comes
+     first because closing an image can take longer than a quit waits. Every step of that cleanup
      runs even when one before it fails, and the install keeps the failure that stopped it. While
      the image is still open, only the downloaded files are removed, not the folder it is open in.
    - Programs are run by their full path, without a shell, with a fixed PATH of the system's own
@@ -130,8 +131,9 @@ folders with a stand-in bundle. Not tried: a whole install of a real release int
    Cancel even when a check since found no newer version; the install goes on with the version it
    was started with. Quitting during an install stops a download, `gh`, the copy and its checks,
    and waits up to ten seconds for the cleanup of rule 3. Opening or closing the image is never
-   stopped: a stopped `hdiutil` could leave it half done. Once the app has begun to quit, no
-   install starts.
+   stopped: a stopped `hdiutil` could leave it half done. A quit that came while the image was
+   closing still stops the install there: the helper is not started. Once the app has begun to
+   quit, no install starts.
 6. **Where it lives.** The rules are pure functions in `packages/core` (`domain/install.ts`): the
    files of a version, which redirects pass, the checksum line, whether this copy can be replaced,
    the steps of an install and what moves them, and the words. Main has the side effects behind
@@ -187,8 +189,10 @@ folders with a stand-in bundle. Not tried: a whole install of a real release int
 - A quit while the image is being opened or closed does not stop `hdiutil` (it may take two
   minutes to open, one to close), so that step can outlive the ten seconds of rule 5. The app then
   quits without the rest of the cleanup: `hdiutil` finishes on its own, an image it opened stays
-  open in the temporary folder, and a copy and lock already in the folder of the app are left as
-  after a kill. An image that will not close even by force stays open the same way, with its
+  open in the temporary folder. When the install had already failed, the copy and the lock are
+  gone by then, because they are removed before the image is closed; only a quit during the last
+  closing, after every check passed, leaves a copy and a lock in the folder of the app as after a
+  kill. An image that will not close even by force stays open the same way, with its
   downloads removed, until it is ejected or the Mac restarts.
 - Nothing here runs in CI on a Mac: CI's window tests run on Linux, where About says it installs
   only on a Mac with Apple silicon, and the helper's test needs `bash`. A change to the swap is
