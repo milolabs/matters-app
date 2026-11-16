@@ -1959,3 +1959,21 @@ describe("the effort of a prompt's turns (ADR 0118)", () => {
     expect(demo.effortsAsked.every((e) => e === "low")).toBe(true);
   });
 });
+
+describe("a prompt on the person's own API key (ADR 0141)", () => {
+  it("says the provider refused the key when a verdict turn is refused, and the runtime shows it (rule 5)", async () => {
+    const runtime = new Responder();
+    runtime.info = { ...runtime.info, plan: undefined, noPlan: true, billed: true };
+    const refusal = "Anthropic refused the key. Check it in the Anthropic Console.";
+    runtime.answer = async () => {
+      throw new AgentRunError("refused", refusal);
+    };
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"]);
+    await h.ready();
+    const result = await h.service.promptRun(PROMPT);
+    expect(result.problem).toBe(refusal);
+    const info = (await h.service.status()).runtimes.find((r) => r.id === "fake")?.info;
+    expect(info).toMatchObject({ status: "keyRefused", problem: refusal });
+  });
+});

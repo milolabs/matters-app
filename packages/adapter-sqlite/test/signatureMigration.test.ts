@@ -82,3 +82,24 @@ describe("migration 58: the person's own signature (ADR 0142)", () => {
     }
   });
 });
+
+describe("migration 59: the id of the key a test ran on (ADR 0141), and whichever column is missing", () => {
+  it("adds both columns to a database that took the key's column as its own 58", () => {
+    const path = versionFiftySeven();
+    // The branch of the key's id numbered its column 58 too: such a database says 58 and has
+    // the key's column but no signature.
+    const old = new DatabaseSync(path);
+    old.exec("ALTER TABLE agent_runtime_records ADD COLUMN key_id TEXT");
+    old.prepare("INSERT INTO schema_version VALUES (58, 0)").run();
+    old.close();
+    const db = openDatabase(path);
+    try {
+      const names = (table: string) =>
+        (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+      expect(names("accounts")).toContain("signature");
+      expect(names("agent_runtime_records")).toContain("key_id");
+    } finally {
+      db.close();
+    }
+  });
+});

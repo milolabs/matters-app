@@ -1100,10 +1100,12 @@ export class SqliteAgentSettings implements AgentSettingsPort {
     );
     this.selectRecord = db.prepare("SELECT * FROM agent_runtime_records WHERE runtime_id = ?");
     this.upsertRecord = db.prepare(`
-      INSERT INTO agent_runtime_records (runtime_id, status, plan, problem, tested_at_ms, model)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO agent_runtime_records (runtime_id, status, plan, problem, tested_at_ms, model,
+                                         key_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (runtime_id) DO UPDATE SET status = excluded.status, plan = excluded.plan,
-        problem = excluded.problem, tested_at_ms = excluded.tested_at_ms, model = excluded.model`);
+        problem = excluded.problem, tested_at_ms = excluded.tested_at_ms, model = excluded.model,
+        key_id = excluded.key_id`);
   }
 
   private current(): AgentSettings {
@@ -1158,6 +1160,7 @@ export class SqliteAgentSettings implements AgentSettingsPort {
           problem: string | null;
           tested_at_ms: number;
           model: string | null;
+          key_id: string | null;
         }
       | undefined;
     if (r === undefined) return null;
@@ -1167,6 +1170,7 @@ export class SqliteAgentSettings implements AgentSettingsPort {
       ...(r.plan === null ? {} : { plan: r.plan }),
       ...(r.model === null || r.model === undefined ? {} : { model: r.model }),
       ...(r.problem === null ? {} : { problem: r.problem }),
+      ...(r.key_id === null || r.key_id === undefined ? {} : { keyId: r.key_id }),
       testedAtMs: r.tested_at_ms,
     };
   }
@@ -1180,6 +1184,7 @@ export class SqliteAgentSettings implements AgentSettingsPort {
         record.problem ?? null,
         record.testedAtMs,
         record.model ?? null,
+        record.keyId ?? null,
       ),
     );
   }

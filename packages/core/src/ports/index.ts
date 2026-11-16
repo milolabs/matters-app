@@ -1653,8 +1653,14 @@ export interface AgentRuntimePort {
  */
 export interface AgentKey {
   readonly key: string;
-  /** When it was saved: a test from before it does not hold (rule 5). */
+  /** When it was saved, for what is shown (rule 4). */
   readonly savedAtMs: number;
+  /**
+   * Random, made when the key is saved and kept with it: the test record names the key it ran on
+   * by it (rule 5). Never made from the key's text. Absent on a key kept before it existed, which
+   * no test record holds for.
+   */
+  readonly id?: string;
 }
 
 /**

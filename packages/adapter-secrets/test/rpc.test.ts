@@ -159,6 +159,9 @@ describe("the agent's API keys over the same port (ADR 0141, rule 4)", () => {
     await client.set("acc-1", cred);
     expect(await keys.get("anthropic-api")).toEqual({ key: KEY, savedAtMs: 5 });
     expect(await store.countKeys()).toBe(1);
+    // The id a key is saved with is kept with it, through the vault and across the channel.
+    await keys.set("anthropic-api", { key: KEY, savedAtMs: 6, id: "k-1" });
+    expect(await keys.get("anthropic-api")).toEqual({ key: KEY, savedAtMs: 6, id: "k-1" });
     // The key's entry is not an account's: a mail request by its name finds nothing.
     expect(await client.get("agent-key:anthropic-api")).toBeNull();
     const raw = readFileSync(path, "utf8");
