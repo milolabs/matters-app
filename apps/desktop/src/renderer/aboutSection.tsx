@@ -17,10 +17,16 @@ const link = "cursor-default text-secondary underline underline-offset-2 hover:t
 const lineOf = (s: AboutState) => (s.kind === "failed" || s.kind === "unchecked" ? s.line : "");
 const subOf = (s: AboutState) => (s.kind === "failed" ? s.sub : "");
 
+/** An install is under way: Install is not offered again, and the switch stays (ADR 0140). */
+const busy = (step: string) => step !== "idle" && step !== "failed";
+
 /**
  * Settings › About (ADR 0137, rule 11): the name, the version and its stage, the line that says
  * where the check stands, the switch, when it last checked, and Check now. With a newer version,
- * two actions that open the browser; the app installs nothing. Main opens the links by name.
+ * two actions that open the browser, and Install and Restart where this copy can be replaced (ADR
+ * 0140): its steps are said here in words, and Cancel stops it while it downloads. An install under
+ * way keeps its line and its Cancel even when a check since found no newer version. Main opens the
+ * links by name and installs only the version it knows of.
  */
 export function AboutSection(props: { release: ReleaseStore }) {
   const info = () => props.release.info();
@@ -71,22 +77,90 @@ export function AboutSection(props: { release: ReleaseStore }) {
                         <Show when={newer().download}>
                           <button
                             type="button"
-                            class={pillPrimary}
+                            class={i().install.offered ? pill : pillPrimary}
                             onClick={() => open("download")}
                           >
                             Download ↗
                           </button>
                         </Show>
-                      </div>
-                      <p class="mt-1.5 max-w-[520px] text-[12px] text-secondary">
-                        Matters does not install it. The download opens in your browser.
-                        <Show when={newer().preRelease}>
-                          {" "}
-                          It is a pre-release, so macOS will ask before it opens it.
+                        <Show when={i().install.step === "downloading"}>
+                          <button
+                            type="button"
+                            class={pill}
+                            onClick={() => ask({ action: "cancel" })}
+                          >
+                            Cancel
+                          </button>
                         </Show>
-                      </p>
+                        <Show when={i().install.offered && !busy(i().install.step)}>
+                          <button
+                            type="button"
+                            class={pillPrimary}
+                            onClick={() => ask({ action: "install" })}
+                          >
+                            Install and Restart
+                          </button>
+                        </Show>
+                      </div>
+                      <Show when={i().install.line}>
+                        {(line) => (
+                          <p aria-live="polite" data-install-line class="mt-2 text-[13px]">
+                            {line()}
+                          </p>
+                        )}
+                      </Show>
+                      <Show when={i().install.note}>
+                        {(note) => (
+                          <p class="mt-1 max-w-[520px] text-[12px] text-secondary">{note()}</p>
+                        )}
+                      </Show>
+                      <Show when={!busy(i().install.step)}>
+                        <p class="mt-1.5 max-w-[520px] text-[12px] text-secondary">
+                          <Show
+                            when={i().install.offered}
+                            fallback={
+                              <>
+                                {i().install.cannot === null
+                                  ? "Matters does not install it."
+                                  : `Matters cannot install it here: ${i().install.cannot}.`}{" "}
+                                The download opens in your browser.
+                                <Show when={newer().preRelease}>
+                                  {" "}
+                                  It is a pre-release, so macOS will ask before it opens it.
+                                </Show>
+                              </>
+                            }
+                          >
+                            Install and Restart downloads it from GitHub, checks it as the installer
+                            does, and restarts Matters into it. Download opens it in your browser
+                            instead.
+                          </Show>
+                        </p>
+                      </Show>
                     </>
                   )}
+                </Match>
+                <Match when={busy(i().install.step)}>
+                  <div class="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <p
+                      role="status"
+                      aria-live="polite"
+                      data-install-line
+                      class="m-0 min-w-[200px] flex-1"
+                    >
+                      {i().install.line}
+                    </p>
+                    <Show when={i().install.step === "downloading"}>
+                      <button type="button" class={pill} onClick={() => ask({ action: "cancel" })}>
+                        Cancel
+                      </button>
+                    </Show>
+                  </div>
+                  <Show when={i().install.note}>
+                    {(note) => (
+                      <p class="mt-1 max-w-[520px] text-[12px] text-secondary">{note()}</p>
+                    )}
+                  </Show>
                 </Match>
                 <Match when={aboutState(i()).kind === "source"}>
                   <p role="status" class="mt-3">
@@ -132,7 +206,7 @@ export function AboutSection(props: { release: ReleaseStore }) {
                 <input
                   type="checkbox"
                   checked={i().asks && i().enabled}
-                  disabled={!i().asks}
+                  disabled={!i().asks || busy(i().install.step)}
                   onChange={(e) => ask({ action: "enable", on: e.currentTarget.checked })}
                 />
                 Check for a newer version

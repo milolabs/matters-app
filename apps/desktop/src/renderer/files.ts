@@ -228,7 +228,10 @@ export type ReleaseAsk =
   | { action: "enable"; on: boolean }
   | { action: "check" }
   | { action: "seen" }
-  | { action: "open"; which: "download" | "notes" | "site" | "source" | "issues" };
+  | { action: "open"; which: "download" | "notes" | "site" | "source" | "issues" }
+  /** Install the newer version main knows of, or cancel that while it downloads (ADR 0140). */
+  | { action: "install" }
+  | { action: "cancel" };
 
 /**
  * Newer versions (ADR 0137): what main knows, after the change asked for. A link is named, never

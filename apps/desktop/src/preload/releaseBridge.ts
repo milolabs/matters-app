@@ -1,5 +1,7 @@
 // Newer versions (ADR 0137): every window may read what main knows, Settings › About may turn the
-// check on or off, ask for one, say that it was shown, and open one of its links. Like the other
+// check on or off, ask for one, say that it was shown, and open one of its links; and ask main to
+// install the newer version, or cancel that while it downloads (ADR 0140). An install names no
+// version and no file: main installs the one it knows. Like the other
 // bridges it exposes nothing: the page posts a request, the preload checks its shape and asks
 // main, which validates again. A link crosses by name ("download"), never as a URL: main alone
 // knows where it leads (rule 8). Main tells every window when the state changed (ADR 0115).
@@ -11,13 +13,15 @@ export const CHANNEL_RELEASE_CHANGED = "matters:release-changed";
 /** Main to the settings window: show this section (the menu's item opens About, rule 11). */
 export const CHANNEL_SETTINGS_SECTION = "matters:settings-section";
 
-export type ReleaseAction = "get" | "enable" | "check" | "seen" | "open";
+export type ReleaseAction = "get" | "enable" | "check" | "seen" | "open" | "install" | "cancel";
 const ACTIONS: readonly string[] = [
   "get",
   "enable",
   "check",
   "seen",
   "open",
+  "install",
+  "cancel",
 ] satisfies ReleaseAction[];
 
 export interface ReleaseBridgeDeps {
@@ -39,6 +43,8 @@ function argsOf(ask: Record<string, unknown>): unknown[] | null {
     case "get":
     case "check":
     case "seen":
+    case "install":
+    case "cancel":
       return [ask.action];
     case "enable":
       return typeof ask.on === "boolean" ? [ask.action, ask.on] : null;

@@ -1637,6 +1637,30 @@ export interface ReleaseInfo {
   readonly checkedMs: number | null;
   /** Why the last check failed, in one phrase (rule 12); null when it worked or none was made. */
   readonly failure: string | null;
+  /** Installing the newer version when the person asks (ADR 0140). */
+  readonly install: ReleaseInstall;
+}
+
+/** Where an install stands (ADR 0140, rule 5). */
+export type ReleaseInstallStep =
+  | "idle"
+  | "downloading"
+  | "checking"
+  | "installing"
+  | "restarting"
+  | "failed";
+
+/** What About shows of installing the newer version (ADR 0140): words, never a path. */
+export interface ReleaseInstall {
+  /** About offers Install: a newer version is known and this copy can be replaced (rule 2). */
+  readonly offered: boolean;
+  /** Why this copy cannot install it, in one phrase; null when it can or nothing is newer. */
+  readonly cannot: string | null;
+  readonly step: ReleaseInstallStep;
+  /** The line for the step ("Downloading …", "… Nothing was installed."); null when idle. */
+  readonly line: string | null;
+  /** Whether the build record was checked, said once the checks passed. */
+  readonly note: string | null;
 }
 
 /** What main measures for Settings › Storage: sizes per kind of folder, never paths (ADR 0089). */

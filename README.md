@@ -95,8 +95,10 @@ Matters has no server of its own. The agent runs on what you already have
   reads the text of attached files, one that sees images gets images whole, and a scan in a PDF is
   not sent whole.
 - **Alphas only, no updates that install themselves, no Windows or Linux build.** An alpha is not
-  notarized by Apple, and a newer one is a new install. The plan is in
-  [docs/release.md](docs/release.md).
+  notarized by Apple. Settings › About says when a newer one is out, and installs it only when you
+  press Install and Restart, with the same checks as the installer below
+  ([ADR 0140](docs/adr/0140-the-app-installs-a-newer-version-when-asked.md)); macOS may then ask
+  for your login password once. The plan is in [docs/release.md](docs/release.md).
 
 ## Install
 

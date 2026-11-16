@@ -5,6 +5,8 @@
 - Builds on: [0123](0123-releases.md), rule 11 (stage 2, its first half: saying, not installing),
   [0129](0129-the-site-offers-pre-releases.md) (the file the site publishes),
   [0036](0036-settings-window.md) (a section of Settings), [0115](0115-every-window-hears-a-changed-status.md)
+- Amended by: [0140](0140-the-app-installs-a-newer-version-when-asked.md) (About can install the
+  newer version when the person presses Install and Restart; Download stays)
 - Design: [`docs/design/new-version-notice.html`](../design/new-version-notice.html)
 
 ## Context
