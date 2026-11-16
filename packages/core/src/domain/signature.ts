@@ -145,16 +145,29 @@ export function followSignature(body: string, inserted: string, next: string): s
   return joinSections(parts.own, signatureBlock(next), parts.quote);
 }
 
+/** The numbers of the lines that start a signature block, in order. */
+function delimiterLines(lines: readonly string[]): number[] {
+  const at: number[] = [];
+  lines.forEach((l, i) => {
+    if (l === SIGNATURE_DELIMITER || (l === "--" && (lines[i - 1] ?? "").trim() === "")) at.push(i);
+  });
+  return at;
+}
+
 /**
  * Text a model wrote, without a signature block of its own: from a delimiter line on, everything
  * goes. The model is asked to write none (ADR 0142, rule 6); this makes sure. A delimiter line is
  * `-- ` with its space, or `--` without it when it does not stand right under a line of text: there
  * `--` underlines a Markdown heading ("Summary" over `--`), which is the person's text and stays.
+ *
+ * `before` is the person's own text the model was given, when it was given one. A block of theirs
+ * is theirs, however the model wrote it again: as many delimiter lines as `before` has are kept,
+ * in their order, and only one the model added after them starts the cut.
  */
-export function withoutSignature(text: string): string {
+export function withoutSignature(text: string, before = ""): string {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const at = lines.findIndex(
-    (l, i) => l === SIGNATURE_DELIMITER || (l === "--" && (lines[i - 1] ?? "").trim() === ""),
-  );
-  return at < 0 ? text : lines.slice(0, at).join("\n").trimEnd();
+  const kept =
+    before === "" ? 0 : delimiterLines(before.replace(/\r\n?/g, "\n").split("\n")).length;
+  const at = delimiterLines(lines)[kept];
+  return at === undefined ? text : lines.slice(0, at).join("\n").trimEnd();
 }

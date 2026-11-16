@@ -200,6 +200,25 @@ describe("the sender and its signature change together (rule 5)", () => {
     expect(t.session.senderLocked()).toBe(false);
   });
 
+  it("after a sender that could not be prepared, the next Send goes from the sender shown, and the line stays until then", async () => {
+    const fake = failingBackend();
+    const t = newMessage(fake, { to: [{ address: "anna@example.org" }], subject: "Tuesday" });
+    t.session.setBody(`Hello Anna,${t.session.body()}`);
+    fake.state.fail = true;
+    expect(await t.session.setSender(home)).toBeNull();
+    // A saved draft does not take the line away: the choice still failed.
+    await t.session.flush();
+    expect(t.saved.length).toBeGreaterThan(0);
+    expect(t.session.error()).toContain(home.address);
+    // The composer is as it was before the choice: Send goes, from the sender and signature shown.
+    expect(await t.session.send()).not.toBeNull();
+    expect(fake.sent).toEqual(["d1"]);
+    const last = t.saved.at(-1);
+    expect(last?.accountId).toBe("a1");
+    expect(last?.bodyMarkdown).toBe("Hello Anna,\n\n-- \nMe\nWork Ltd");
+    expect(t.session.error()).toBe("");
+  });
+
   it("no sender can be chosen while Send waits for the files, so it goes with the pair it had", async () => {
     const fake = failingBackend();
     const t = newMessage(fake, { to: [{ address: "anna@example.org" }], subject: "Tuesday" });

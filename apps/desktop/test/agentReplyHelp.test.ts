@@ -40,6 +40,8 @@ async function build(spoil: Spoil = "none", automated = false) {
   const insights = new InMemoryAgentInsightStore();
   const demo = new DemoAgentRuntime(() => clock.now(), 0);
   const calls: AgentRunRequest[] = [];
+  /** When set, what a helper's turn answers instead of the demo assistant. */
+  const answers: { next: unknown } = { next: undefined };
   const helper = (r: AgentRunRequest) => {
     const props = Object.keys((r.schema as { properties: object }).properties);
     return ["rewritten", "written", "withAnswers", "asks", "fills"].some((k) => props.includes(k));
@@ -50,6 +52,7 @@ async function build(spoil: Spoil = "none", automated = false) {
     inspect: () => demo.inspect(),
     run: async (request, options) => {
       calls.push(request);
+      if (answers.next !== undefined && helper(request)) return { value: answers.next };
       if (spoil === "junk" && helper(request)) return { value: { nonsense: true } };
       const out = await demo.run(request, options);
       if (spoil === "dropGap" && "rewritten" in (out.value as object)) {
@@ -104,7 +107,7 @@ async function build(spoil: Spoil = "none", automated = false) {
     await service.pauseReading();
     await service.testRuntime();
   };
-  return { service, insights, calls, enable, storage };
+  return { service, insights, calls, enable, storage, answers };
 }
 
 describe("help with a reply, over the demo assistant (ADR 0098)", () => {
@@ -187,6 +190,54 @@ describe("help with a reply, over the demo assistant (ADR 0098)", () => {
       ["prepare", 1],
     ]);
     expect(await h.storage.drafts.list()).toEqual([]);
+  });
+});
+
+describe("a sign-off the person typed is theirs; a block the model added goes (ADR 0142, rule 6)", () => {
+  // `--` with no space after a blank line reads as a delimiter, but here the person wrote it.
+  const own = "Thanks, see you on Tuesday.\n\n--\nAnna";
+
+  it("a rewrite keeps the person's block, even as the model wrote it again, and cuts one it added", async () => {
+    const h = await build();
+    await h.enable();
+    h.answers.next = { rewritten: "Thank you, I will see you on Tuesday.\n\n--\nAnna" };
+    expect((await h.service.rewriteDraft({ threadId: "t1" }, reply(own), "formal")).text).toBe(
+      reply("Thank you, I will see you on Tuesday.\n\n--\nAnna"),
+    );
+    h.answers.next = {
+      rewritten: "Thank you, I will see you on Tuesday.\n\n--\nAnna\n\n-- \nYour assistant",
+    };
+    expect((await h.service.rewriteDraft({ threadId: "t1" }, reply(own), "formal")).text).toBe(
+      reply("Thank you, I will see you on Tuesday.\n\n--\nAnna"),
+    );
+    // With no block of the person's, one the model wrote goes, as before.
+    h.answers.next = { rewritten: "Thank you.\n\n--\nYour assistant" };
+    expect(
+      (await h.service.rewriteDraft({ threadId: "t1" }, reply("Thanks."), "formal")).text,
+    ).toBe(reply("Thank you."));
+  });
+
+  it("writing as asked keeps the person's block and cuts one the model added", async () => {
+    const h = await build();
+    await h.enable();
+    h.answers.next = {
+      written: "Thanks, see you on Tuesday. I will bring the papers.\n\n--\nAnna\n\n--\nBot",
+    };
+    const text = (
+      await h.service.writeDraft({ threadId: "t1" }, "Dokumenty", reply(own), "say I bring papers")
+    ).text;
+    expect(text).toBe(reply("Thanks, see you on Tuesday. I will bring the papers.\n\n--\nAnna"));
+  });
+
+  it("answers keep the person's block and cut one the model added", async () => {
+    const h = await build();
+    await h.enable();
+    h.answers.next = {
+      withAnswers: "Thanks, see you on Tuesday. Yes, I got the papers.\n\n--\nAnna\n\n-- \nBot",
+      added: 1,
+    };
+    const text = (await h.service.answerQuestions("t1", reply(own))).text;
+    expect(text).toBe(reply("Thanks, see you on Tuesday. Yes, I got the papers.\n\n--\nAnna"));
   });
 });
 

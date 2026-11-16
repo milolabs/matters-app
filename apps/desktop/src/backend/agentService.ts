@@ -2283,7 +2283,7 @@ export class AgentService implements AgentApi {
     );
     const got = acceptRewrite(value, parts.own);
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
-    return { text: joinDraft(got.value, parts.quote, parts.signature) };
+    return { text: joinDraft(got.value, parts.quote, parts.signature, parts.own) };
   }
 
   async writeDraft(
@@ -2335,7 +2335,9 @@ export class AgentService implements AgentApi {
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
     return {
       text:
-        got.value === parts.own.trim() ? text : joinDraft(got.value, parts.quote, parts.signature),
+        got.value === parts.own.trim()
+          ? text
+          : joinDraft(got.value, parts.quote, parts.signature, parts.own),
     };
   }
 
@@ -2452,7 +2454,10 @@ export class AgentService implements AgentApi {
     const got = acceptAnswers(value, parts.own);
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
     return {
-      text: got.value === parts.own ? text : joinDraft(got.value, parts.quote, parts.signature),
+      text:
+        got.value === parts.own
+          ? text
+          : joinDraft(got.value, parts.quote, parts.signature, parts.own),
     };
   }
 

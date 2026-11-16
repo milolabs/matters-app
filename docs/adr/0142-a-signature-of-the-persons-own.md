@@ -102,7 +102,10 @@ Read from the code on 2026-11-16:
    again. Send and Close wait for a sender chosen before them, and once either has begun the
    sender cannot be changed (the list is disabled), so neither goes with a sender and a signature
    that were not chosen together. Send stops when the sender it waited for could not be prepared,
-   so the person sees which account it would go from.
+   so the person sees which account it would go from. After that the composer is as it was
+   before the choice: the next Send goes from the sender shown. The line that says the choice
+   failed stays, a saved draft does not take it away, until the account is chosen again or a
+   Send goes from the sender shown.
 
 6. **The agent writes the words; the code places the signature.** The signature is set apart from
    the person's lines as the quote is, so it never goes to the model, as an instruction or as data,
@@ -110,7 +113,7 @@ Read from the code on 2026-11-16:
    person asks now say: do not add a signature or a sign-off block under the text, the app adds the
    person's own. A block the model writes anyway is cut before the text is joined, from its
    delimiter on: a `-- ` line, or a `--` line that does not stand right under a line of text (under
-   one, `--` underlines a Markdown heading, which is the model's text and stays), so a draft is never signed twice; that holds for the reply the agent prepared in the
+   one, `--` underlines a Markdown heading, which is the model's text and stays), so a draft is never signed twice. The cut is for what the model added, never for the person's own lines: in a rewrite, an answer or a text written as asked, the person's lines go to the model and come back from it whole, so a block the person had in them before the turn is kept (as many delimiter lines as their text had, in order, however the model wrote them again), and only a block new in the model's answer is cut; that holds for the reply the agent prepared in the
    background too (ADR 0052), which is put above the signature and the quote, and for a new
    message the agent offered (ADR 0102), whose words are cut the same way before the person's
    signature is placed under them. The writing prompts
