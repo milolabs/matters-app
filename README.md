@@ -79,6 +79,10 @@ Matters has no server of its own. The agent runs on what you already have
 | [Claude Code](https://claude.com/claude-code) | The Claude plan you already pay for | Runs through Claude Code on your computer |
 | Codex | Your ChatGPT plan | Each turn runs with its own tools off ([ADR 0120](docs/adr/0120-codex-is-a-runtime.md)) |
 | [Ollama](https://ollama.com) | A model on your computer | Mail never leaves it ([ADR 0119](docs/adr/0119-a-runtime-on-this-machine.md)) |
+| Anthropic API | Your own API key | Every turn is billed to the key; the background reads only once you turn it on ([ADR 0141](docs/adr/0141-the-agent-runs-on-the-persons-own-api-key.md)) |
+
+A plan stays the first choice. A key is an option beside it, never something the app moves to by
+itself.
 
 ## What it does not do yet
 
@@ -88,7 +92,10 @@ Matters has no server of its own. The agent runs on what you already have
   administrator may have to allow Matters first. Gmail, iCloud, Yahoo and Fastmail work with an
   app password. A copy built from source needs a Microsoft registration of its own
   ([ADR 0133](docs/adr/0133-microsoft-mail-signs-in-through-the-browser.md), rule 4).
-- **The agent connects to Claude Code, Codex and Ollama only.** API keys are planned.
+- **The agent connects to Claude Code, Codex, Ollama and the Anthropic API only.** Other API
+  keys, OpenAI's among them, are planned. The API's host is fixed: no proxy or own endpoint.
+- **On an API key, nothing shows what a turn cost**, and there is no budget in money: the
+  background either reads or does not, as you set it.
 - **Codex does not report the plan's limits**, so reading in the background stops at the first
   refusal until you continue it.
 - **With Ollama, attachments depend on the model.** One that takes tools searches in a loop and
@@ -162,7 +169,7 @@ plugs into its ports.
 | --- | --- |
 | [`packages/core`](packages/core) | The domain and the use cases |
 | [`packages/contracts`](packages/contracts) | The types the processes share |
-| [`packages/adapter-*`](packages) | Adapters for the ports: IMAP, SMTP, Microsoft Graph, SQLite, MIME, secrets, Claude Code, Codex, Ollama and more |
+| [`packages/adapter-*`](packages) | Adapters for the ports: IMAP, SMTP, Microsoft Graph, SQLite, MIME, secrets, Claude Code, Codex, Ollama, the Anthropic API and more |
 | [`apps/desktop`](apps/desktop) | The Electron app with a Solid renderer |
 | [`site`](site) | [getmatters.app](https://getmatters.app): plain HTML and CSS with no build step, published with GitHub Pages ([ADR 0127](docs/adr/0127-the-site-lives-in-the-repository.md)) |
 | [`tools`](tools) | The checks, smoke tests, benchmarks and release scripts |

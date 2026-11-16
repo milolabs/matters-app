@@ -6,6 +6,8 @@
   person's, any whole percent or no limit), [0054](0054-closing-in-the-persons-own-words.md),
   rule 6 (the log is no longer shown in Settings), [0121](0121-a-runtime-for-each-kind-of-work.md),
   rule 6 (the one share may be no limit)
+- Amended by: [0141](0141-the-agent-runs-on-the-persons-own-api-key.md) (the share of the week
+  does not bound a runtime billed to a key; a switch on its card does)
 
 ## Context
 

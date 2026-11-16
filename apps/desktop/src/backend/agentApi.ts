@@ -121,6 +121,15 @@ export interface AgentApi {
   setWeekShare(percent: number): Promise<AgentStatus>;
   /** The agent searches in a loop with tools instead of the plan and follow turns (ADR 0083). */
   setTalkLoop(on: boolean): Promise<AgentStatus>;
+  /**
+   * Keeps the person's API key for a runtime billed to it (ADR 0141, rule 4), replacing one kept
+   * before, and looks at the runtime with it. The answer never holds the key.
+   */
+  saveKey(runtimeId: string, key: string): Promise<AgentStatus>;
+  /** Removes the key of a runtime, and every account's consent to it (rule 4). */
+  removeKey(runtimeId: string): Promise<AgentStatus>;
+  /** Lets a runtime billed to the person's key work in the background, or not (rule 6). */
+  setKeyReading(runtimeId: string, on: boolean): Promise<AgentStatus>;
   /** Looks at every runtime again; spends nothing and sends no mail. */
   inspect(): Promise<AgentStatus>;
   /** The person stops the reading in the background; it stays stopped across restarts (ADR 0117). */

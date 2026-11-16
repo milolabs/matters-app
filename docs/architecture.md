@@ -57,6 +57,8 @@ client. This page is the map; the reasons behind each choice live in
    │                     `codex`, each turn closed)           │
    │ adapter-ollama      AgentRuntimePort    (Ollama on       │
    │                     127.0.0.1, Node's fetch)             │
+   │ adapter-anthropic-api AgentRuntimePort  (the Messages    │
+   │                     API on the person's key, fetch)      │
    │ adapter-graph       MailConnectorPort,  (fetch; Microsoft│
    │                     MailSubmitPort      Graph, ADR 0136) │
    │ later: adapter-gmail-api, adapter-jmap,                  │
@@ -73,7 +75,10 @@ submitter that pick the adapter by the target's `transport`
 rule 4); core never learns that Graph exists. The sync worker builds every
 agent runtime the app knows; the agent service runs only the one the person chose
 in Settings, and never another in its place
-([ADR 0119](adr/0119-a-runtime-on-this-machine.md)).
+([ADR 0119](adr/0119-a-runtime-on-this-machine.md)). A runtime on the person's own
+API key gets the key from main's vault through the same channel as the mail
+passwords, and the window never sees it
+([ADR 0141](adr/0141-the-agent-runs-on-the-persons-own-api-key.md)).
 
 ## Repository layout
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Credential, CredentialPort } from "@matters/core";
@@ -137,5 +137,48 @@ describe("credential RPC", () => {
     await new Promise((r) => setTimeout(r, 10));
     client.dispose();
     expect(await waiting).toMatchObject({ kind: "credentials" });
+  });
+});
+
+describe("the agent's API keys over the same port (ADR 0141, rule 4)", () => {
+  const KEY = "sk-ant-test-2222222222222222222222222222-made-up";
+
+  it("keeps a runtime's key in the vault, apart from the accounts, and never on disk in the clear", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "matters-rpc-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const path = join(dir, "c.json");
+    const store = new EncryptedFileCredentialStore(path, new TestEncryptor());
+    const ports = portPair();
+    cleanups.push(ports.close);
+    serveCredentials(ports.a, store, store.keys());
+    const client = new RemoteCredentialPort(ports.b);
+    const keys = client.keys();
+
+    expect(await keys.get("anthropic-api")).toBeNull();
+    await keys.set("anthropic-api", { key: KEY, savedAtMs: 5 });
+    await client.set("acc-1", cred);
+    expect(await keys.get("anthropic-api")).toEqual({ key: KEY, savedAtMs: 5 });
+    expect(await store.countKeys()).toBe(1);
+    // The key's entry is not an account's: a mail request by its name finds nothing.
+    expect(await client.get("agent-key:anthropic-api")).toBeNull();
+    const raw = readFileSync(path, "utf8");
+    expect(raw).not.toContain(KEY);
+    expect(raw).not.toContain(Buffer.from(KEY).toString("base64"));
+    // A request for another kind of id is dropped, never served.
+    await expect(store.getKey("../acc-1")).rejects.toThrow();
+    await keys.delete("anthropic-api");
+    expect(await keys.get("anthropic-api")).toBeNull();
+    expect(await client.get("acc-1")).toEqual(cred);
+  });
+
+  it("a backend without keys served is told so, never given a password", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "matters-rpc-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const { client } = pair(
+      new EncryptedFileCredentialStore(join(dir, "c.json"), new TestEncryptor()),
+    );
+    await expect(client.keys().get("anthropic-api")).rejects.toBeInstanceOf(
+      CredentialsUnavailableError,
+    );
   });
 });

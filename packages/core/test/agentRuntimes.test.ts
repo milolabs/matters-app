@@ -3,6 +3,7 @@ import type { AgentRuntimeInfo } from "../src/index.ts";
 import {
   AGENT_WORK_KINDS,
   AgentRunError,
+  apiKeyProblem,
   buildPreparedRequest,
   buildPromptRequest,
   DEFAULT_AGENT_EFFORTS,
@@ -12,6 +13,7 @@ import {
   everyKindOn,
   inputCharsFor,
   isAgentRunError,
+  keyReadingOn,
   kindsOn,
   kindTakesMail,
   LEGACY_RUNTIME_ID,
@@ -525,5 +527,45 @@ describe("making themes is a kind of work (ADR 0134, rules 13 and 14)", () => {
     expect(runtimesInUse(s)).toEqual(["plan", "local"]);
     expect(mailRuntimesInUse(s)).toEqual(["plan"]);
     expect(kindsOn(s, "local")).toEqual(["appearance"]);
+  });
+});
+
+describe("a runtime on the person's own API key (ADR 0141)", () => {
+  const billed = { noPlan: true, billed: true } as const;
+  const budget = { weekSharePercent: 10, usedByUsPercent: 0 };
+
+  it("runs what the person asks for, and background work only once they turn it on (rule 6)", () => {
+    expect(mayRunOn(billed, "P0", undefined, budget, 0)).toEqual({ ok: true });
+    for (const p of ["P1", "P2", "P3"] as const) {
+      expect(mayRunOn(billed, p, undefined, budget, 0)).toEqual({ ok: false, reason: "keyOff" });
+      expect(mayRunOn(billed, p, undefined, { ...budget, keyReading: true }, 0)).toEqual({
+        ok: true,
+      });
+    }
+    // A runtime with no plan and no bill is as before.
+    expect(mayRunOn({ noPlan: true }, "P3", undefined, budget, 0)).toEqual({ ok: true });
+  });
+
+  it("reads the runtimes let read in the background defensively", () => {
+    expect(readAgentSettings({}).keyReading).toBeUndefined();
+    expect(readAgentSettings({ keyReading: "anthropic-api" }).keyReading).toBeUndefined();
+    expect(readAgentSettings({ keyReading: ["a", "a", 3, ""] }).keyReading).toEqual(["a"]);
+    expect(keyReadingOn({ keyReading: ["a"] }, "a")).toBe(true);
+    expect(keyReadingOn({}, "a")).toBe(false);
+  });
+
+  it("takes a key of a provider's shape and says why not otherwise, without repeating it (rule 4)", () => {
+    expect(apiKeyProblem("sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789")).toBeNull();
+    expect(apiKeyProblem("")).toBe("Paste the key first.");
+    for (const bad of [
+      "short",
+      "has space in it 1234567890",
+      "x".repeat(600),
+      "line\nbreak-1234567890",
+    ]) {
+      const said = apiKeyProblem(bad);
+      expect(said).not.toBeNull();
+      expect(said).not.toContain(bad);
+    }
   });
 });

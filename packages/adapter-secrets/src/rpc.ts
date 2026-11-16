@@ -1,4 +1,6 @@
 import type {
+  AgentKey,
+  AgentKeyVaultPort,
   Credential,
   CredentialAvailability,
   CredentialGetOptions,
@@ -12,6 +14,7 @@ import {
   isOAuthProvider,
   mailErrorKind,
 } from "@matters/core";
+import { parseAgentKey } from "./vault.ts";
 
 /** The one thing both ends need from a message port; Electron and worker ports differ otherwise. */
 export interface RpcPort {
@@ -35,7 +38,16 @@ type Request =
       readonly accountId: string;
       readonly credential: Credential;
     }
-  | { readonly id: number; readonly op: "move"; readonly fromId: string; readonly toId: string };
+  | { readonly id: number; readonly op: "move"; readonly fromId: string; readonly toId: string }
+  // The API keys of runtimes (ADR 0141, rule 4): by runtime, never an account's id.
+  | { readonly id: number; readonly op: "keyGet"; readonly runtimeId: string }
+  | { readonly id: number; readonly op: "keyDelete"; readonly runtimeId: string }
+  | {
+      readonly id: number;
+      readonly op: "keySet";
+      readonly runtimeId: string;
+      readonly key: AgentKey;
+    };
 
 type Response =
   | { readonly id: number; readonly ok: true; readonly value?: unknown }
@@ -80,6 +92,13 @@ function parseRequest(data: unknown): Request | null {
       ? { id, op, fromId, toId }
       : null;
   }
+  if (op === "keyGet" || op === "keyDelete" || op === "keySet") {
+    const { runtimeId } = data;
+    if (typeof runtimeId !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(runtimeId)) return null;
+    if (op !== "keySet") return { id, op, runtimeId };
+    const key = parseAgentKey(data.key);
+    return key === null ? null : { id, op, runtimeId, key };
+  }
   if (typeof accountId !== "string" || accountId === "") return null;
   if (op === "get") return { id, op, accountId, ...(data.renew === true ? { renew: true } : {}) };
   if (op === "delete") return { id, op, accountId };
@@ -94,7 +113,11 @@ function parseRequest(data: unknown): Request | null {
  * Answers credential requests from the backend on `port` using `store`. Malformed messages are
  * dropped; failures go back as a kind and a message, never a stack or the request's content.
  */
-export function serveCredentials(port: RpcPort, store: CredentialPort): void {
+export function serveCredentials(
+  port: RpcPort,
+  store: CredentialPort,
+  keys?: AgentKeyVaultPort,
+): void {
   port.onMessage(async (data) => {
     const request = parseRequest(data);
     if (!request) return;
@@ -119,6 +142,17 @@ export function serveCredentials(port: RpcPort, store: CredentialPort): void {
           return reply({ id: request.id, ok: true });
         case "move":
           await store.move(request.fromId, request.toId);
+          return reply({ id: request.id, ok: true });
+        case "keyGet":
+          if (keys === undefined) throw new CredentialsUnavailableError("No keys are kept here");
+          return reply({ id: request.id, ok: true, value: await keys.get(request.runtimeId) });
+        case "keySet":
+          if (keys === undefined) throw new CredentialsUnavailableError("No keys are kept here");
+          await keys.set(request.runtimeId, request.key);
+          return reply({ id: request.id, ok: true });
+        case "keyDelete":
+          if (keys === undefined) throw new CredentialsUnavailableError("No keys are kept here");
+          await keys.delete(request.runtimeId);
           return reply({ id: request.id, ok: true });
       }
     } catch (error) {
@@ -176,6 +210,19 @@ export class RemoteCredentialPort implements CredentialPort {
 
   async move(fromId: string, toId: string): Promise<void> {
     await this.call({ op: "move", fromId, toId });
+  }
+
+  /** The vault's API keys of runtimes (ADR 0141, rule 4), over the same port. */
+  keys(): AgentKeyVaultPort {
+    return {
+      get: async (runtimeId) => parseAgentKey(await this.call({ op: "keyGet", runtimeId })),
+      set: async (runtimeId, key) => {
+        await this.call({ op: "keySet", runtimeId, key });
+      },
+      delete: async (runtimeId) => {
+        await this.call({ op: "keyDelete", runtimeId });
+      },
+    };
   }
 
   /** Fails whatever is still waiting; the port is gone. */

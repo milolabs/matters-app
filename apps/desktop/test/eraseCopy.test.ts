@@ -48,6 +48,11 @@ describe("the review", () => {
       "caches",
     ]);
     expect(rows[0]?.amount).toBe("2 accounts");
+    expect(rows[0]?.detail).toBe("For 2 accounts, and the key that protects them in the Keychain");
+    // The agent's API keys go with the passwords, and the review names them (ADR 0141, rule 4).
+    expect(reviewRows(db, { ...main, agentKeys: 1 })[0]?.detail).toBe(
+      "For 2 accounts and 1 API key for the agent, and the key that protects them in the Keychain",
+    );
     expect(rows[1]?.detail).toMatch(/^1,234 messages/);
     expect(rows[2]?.amount).toBe("500 KB");
     expect(reviewTotal(db, main)).toBe(3_000_000 + 500_000 + 160_000 + 2_000 + 46_000_000);

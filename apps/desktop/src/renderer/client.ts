@@ -341,6 +341,10 @@ export interface Backend {
     efforts?: Partial<AgentEfforts>,
   ): Promise<AgentStatus>;
   agentSetWeekShare(percent: number): Promise<AgentStatus>;
+  /** The person's API key for a runtime billed to it (ADR 0141); the answer never holds it. */
+  agentSaveKey(runtimeId: string, key: string): Promise<AgentStatus>;
+  agentRemoveKey(runtimeId: string): Promise<AgentStatus>;
+  agentSetKeyReading(runtimeId: string, on: boolean): Promise<AgentStatus>;
   agentSetTalkLoop(on: boolean): Promise<AgentStatus>;
   /** Moves kinds of work to a runtime (ADR 0121, rule 1); sends nothing and agrees to nothing. */
   agentSetKindRuntime(kinds: readonly AgentWorkKind[], runtimeId: string): Promise<AgentStatus>;
@@ -702,6 +706,12 @@ export function createBackend(port: MessagePort): Backend {
       ).status,
     agentSetWeekShare: async (percent) =>
       (await request<AgentStatusResponse>({ type: "agentSetWeekShare", percent })).status,
+    agentSaveKey: async (runtimeId, key) =>
+      (await request<AgentStatusResponse>({ type: "agentSaveKey", runtimeId, key })).status,
+    agentRemoveKey: async (runtimeId) =>
+      (await request<AgentStatusResponse>({ type: "agentRemoveKey", runtimeId })).status,
+    agentSetKeyReading: async (runtimeId, on) =>
+      (await request<AgentStatusResponse>({ type: "agentSetKeyReading", runtimeId, on })).status,
     agentSetTalkLoop: async (on) =>
       (await request<AgentStatusResponse>({ type: "agentSetTalkLoop", on })).status,
     agentSetKindRuntime: async (kinds, runtimeId) =>

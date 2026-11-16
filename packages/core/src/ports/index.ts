@@ -1642,6 +1642,29 @@ export interface AgentRuntimePort {
   runWithTools?(request: AgentRunRequest, options: AgentToolRunOptions): Promise<AgentRunResult>;
 }
 
+/**
+ * An API key the person pasted for a runtime billed to it (ADR 0141, rule 4), as the vault keeps it.
+ * Only the runtime's adapter and the vault ever hold `key`.
+ */
+export interface AgentKey {
+  readonly key: string;
+  /** When it was saved: a test from before it does not hold (rule 5). */
+  readonly savedAtMs: number;
+}
+
+/**
+ * The API keys of the runtimes billed to the person's key, in the same encrypted vault as the mail
+ * passwords (ADR 0018; ADR 0141, rule 4), by runtime. Never in the database or a settings file.
+ * Errors carry no key.
+ */
+export interface AgentKeyVaultPort {
+  get(runtimeId: AgentRuntimeId): Promise<AgentKey | null>;
+  /** Replaces a key kept before. Refuses (and says why) when secrets cannot be kept safely here. */
+  set(runtimeId: AgentRuntimeId, key: AgentKey): Promise<void>;
+  /** Nothing kept is not an error. */
+  delete(runtimeId: AgentRuntimeId): Promise<void>;
+}
+
 /** What agents found and made, kept locally. Batch-shaped, like the other stores. */
 export interface AgentInsightStorePort {
   /** Replaces the work prepared for the same thread and last message. */

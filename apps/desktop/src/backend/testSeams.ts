@@ -7,6 +7,8 @@ import type { ServerDiscoveryPort } from "@matters/core";
 
 /** The variable with the stand-in Graph service's address, `http://127.0.0.1:<port>/v1.0`. */
 export const GRAPH_BASE_VARIABLE = "MATTERS_TEST_GRAPH_BASE";
+/** The variable with a stand-in Anthropic API's address, `http://127.0.0.1:<port>` (ADR 0141). */
+export const ANTHROPIC_BASE_VARIABLE = "MATTERS_TEST_ANTHROPIC_BASE";
 /** The variable with the DNS answers of a window test, as JSON (see `testDiscovery`). */
 export const DNS_VARIABLE = "MATTERS_TEST_DNS";
 

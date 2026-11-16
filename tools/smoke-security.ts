@@ -255,6 +255,9 @@ try {
   // ADR 0140, rule 7: installing is pointed at the canary too, with a stand-in folder of apps.
   // Nobody presses Install in this run, so no download may leave, for the canary or for GitHub.
   mkdirSync(join(dir, "apps", "Matters.app"), { recursive: true });
+  // ADR 0141, rule 9: the runtime on the person's own API key is pointed at the canary too, and a
+  // made-up key sits in the environment. No key is saved and AI is off, so nothing may leave for
+  // the provider, the canary or the real host: the environment is never read.
   const { ELECTRON_RUN_AS_NODE: _drop, MATTERS_SEED: _seed, ...env } = process.env;
   const child = spawn(process.execPath, [join(root, "apps/desktop")], {
     env: {
@@ -277,6 +280,8 @@ try {
       MATTERS_TEST_RELEASE_URL: `http://${ORIGIN}/__release/release.json`,
       MATTERS_TEST_INSTALL_URL: `http://${ORIGIN}/__install/`,
       MATTERS_TEST_INSTALL_DIR: join(dir, "apps"),
+      MATTERS_TEST_ANTHROPIC_BASE: `http://${ORIGIN}`,
+      ANTHROPIC_API_KEY: "sk-ant-smoke-0000000000000000000000000000-made-up",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -388,6 +393,22 @@ try {
   if (installRequests.length > 0)
     failures.push(
       `install: nobody pressed Install, yet main saw downloads: ${installRequests
+        .map((e) => e.url)
+        .join(", ")}`,
+    );
+
+  // ---- the agent on the person's own API key, with no key saved (ADR 0141, rule 9) ----
+  const keyHits = hits.filter((h) => h.id === "?" && h.path.startsWith("/v1/")).length;
+  const keyRequests = events.filter(
+    (e) =>
+      e.kind === "request" &&
+      /^https?:\/\/(?:[^/]*\.)?(?:anthropic\.com|openai\.com)(?:[:/]|$)/i.test(e.url ?? ""),
+  );
+  if (keyHits > 0)
+    failures.push(`api key: no key was saved, yet the canary was asked ${keyHits} times`);
+  if (keyRequests.length > 0)
+    failures.push(
+      `api key: no key was saved, yet main saw requests for a provider: ${keyRequests
         .map((e) => e.url)
         .join(", ")}`,
     );

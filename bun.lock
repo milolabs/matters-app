@@ -19,6 +19,7 @@
       "name": "@matters/desktop",
       "version": "0.0.0",
       "dependencies": {
+        "@matters/adapter-anthropic-api": "workspace:*",
         "@matters/adapter-autoconfig": "workspace:*",
         "@matters/adapter-claude-code": "workspace:*",
         "@matters/adapter-codex": "workspace:*",
@@ -60,6 +61,16 @@
         "tailwindcss": "4.3.4",
         "vite": "8.3.6",
         "vite-plugin-solid": "2.11.15",
+      },
+    },
+    "packages/adapter-anthropic-api": {
+      "name": "@matters/adapter-anthropic-api",
+      "version": "0.0.0",
+      "dependencies": {
+        "@matters/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@matters/testkit": "workspace:*",
       },
     },
     "packages/adapter-autoconfig": {
@@ -353,6 +364,8 @@
     "@lezer/markdown": ["@lezer/markdown@1.8.1", "", { "dependencies": { "@lezer/common": "^1.5.0", "@lezer/highlight": "^1.0.0" } }, "sha512-M5YmEcKWO4mJ45Y1hECwqyu8cLv25EiXOK554PVOvDOWOP0olwelHHQUWr9sjF+d1bENVhy0nfJ8E57XZUTiXg=="],
 
     "@marijn/find-cluster-break": ["@marijn/find-cluster-break@1.0.4", "", {}, "sha512-Wy0V7+SGUjnF9/TkiM1hKVDPj7jKXduPNboMVtHTA8dySMURWqfg/JZ9E2Sq8JgSJmkl7k7Qe9FLeMSrSraWmQ=="],
+
+    "@matters/adapter-anthropic-api": ["@matters/adapter-anthropic-api@workspace:packages/adapter-anthropic-api"],
 
     "@matters/adapter-autoconfig": ["@matters/adapter-autoconfig@workspace:packages/adapter-autoconfig"],
 

@@ -33,6 +33,7 @@ import {
   type ThemeAddAnswer,
 } from "@matters/contracts";
 import {
+  type AgentKeyVaultPort,
   type CredentialPort,
   checkDue,
   isPermissionPageId,
@@ -1147,6 +1148,7 @@ async function prepareTestAccount(
 
 function startBackend(
   store: CredentialPort,
+  keys: AgentKeyVaultPort,
   testAccount: string | undefined,
 ): Electron.UtilityProcess {
   // What only main uses stays in main: the test password, and how browser sign-in is set up.
@@ -1158,6 +1160,7 @@ function startBackend(
     MATTERS_TEST_OAUTH_AUTHORITY: _authority,
     MATTERS_TEST_OAUTH_BROWSER: _browser,
     MATTERS_TEST_GRAPH_BASE: graphBase,
+    MATTERS_TEST_ANTHROPIC_BASE: anthropicBase,
     MATTERS_TEST_DNS: testDns,
     MATTERS_TEST_RELEASE_URL: _releaseUrl,
     ...inherited
@@ -1189,6 +1192,10 @@ function startBackend(
         ? { MATTERS_TEST_GRAPH_BASE: graphBase }
         : {}),
       ...(devBuild && testDns ? { MATTERS_TEST_DNS: testDns } : {}),
+      // A stand-in Anthropic API on this machine (ADR 0141, rule 11), for the same window tests.
+      ...(devBuild && anthropicBase && isLoopbackUrl(anthropicBase)
+        ? { MATTERS_TEST_ANTHROPIC_BASE: anthropicBase }
+        : {}),
       // The backend writes to the trace only when main allowed it (a dev build, a benchmark).
       MATTERS_TRACE_FILE: tracing ? (process.env.MATTERS_TRACE_FILE ?? "") : "",
     },
@@ -1202,7 +1209,8 @@ function startBackend(
     postMessage: (m) => secrets.port2.postMessage(m),
     onMessage: (handler) => secrets.port2.on("message", (e) => handler(e.data)),
   };
-  serveCredentials(rpc, store);
+  // The API keys of runtimes are kept in the same vault (ADR 0141, rule 4), on the same channel.
+  serveCredentials(rpc, store, keys);
   secrets.port2.start();
 
   return backend;
@@ -1469,7 +1477,7 @@ if (!identityHelper && !erasing)
     });
     // The backend first: it starts in its own process while main builds the window, so the
     // window's construction (tens of milliseconds of main-thread work) no longer delays it.
-    const backend = startBackend(vault, testAccount);
+    const backend = startBackend(vault, store.keys(), testAccount);
     const boot = createWindow();
     const { win, stage } = boot;
     mailWindow = boot;

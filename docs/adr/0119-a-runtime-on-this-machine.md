@@ -7,6 +7,8 @@
   levels can differ by model)
 - Builds on: [0083](0083-the-agent-searches-in-a-loop.md), [0116](0116-a-prompt-is-a-filter.md)
 - Amended by: [0121](0121-a-runtime-for-each-kind-of-work.md) (rules 2 and 3: a runtime is chosen per kind of work)
+- Amended by: [0141](0141-the-agent-runs-on-the-persons-own-api-key.md) (rule 7: a runtime with no
+  plan may be billed by the turn, and then background work waits for the person)
 
 ## Context
 
