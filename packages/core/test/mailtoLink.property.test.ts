@@ -50,6 +50,9 @@ const piece = fc.oneof(
     "-- ",
     "> ",
     "\\",
+    "`",
+    "*",
+    "    ",
   ),
   fc.string({ maxLength: 8 }),
   fc.string({ unit: "binary", maxLength: 6 }),
@@ -101,15 +104,17 @@ describe("parseMailto, for any link (ADR 0143)", () => {
     );
   });
 
-  it("never gives a body with a link, an image, a quote or a signature of its own", () => {
+  it("never gives a body with a link, an image, code, a quote or a signature of its own", () => {
     fc.assert(
       fc.property(link, (href) => {
         const draft = parseMailto(href);
         if (draft === null) return;
-        // Every bracket is escaped: an odd run of backslashes stands before it.
-        for (const match of draft.body.matchAll(/(\\*)[[\]]/g)) {
+        // Every bracket, backtick and asterisk is escaped: an odd run of backslashes before it.
+        for (const match of draft.body.matchAll(/(\\*)[[\]`*]/g)) {
           expect((match[1] ?? "").length % 2).toBe(1);
         }
+        // No line is indented enough to be a code block.
+        for (const line of draft.body.split("\n")) expect(line).not.toMatch(/^(?: {4}| {0,3}\t)/);
         const sections = draftSections(draft.body);
         expect(sections.signature).toBe("");
         expect(sections.quote).toBe("");

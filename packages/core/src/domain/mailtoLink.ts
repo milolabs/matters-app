@@ -65,14 +65,69 @@ function oneLine(text: string): string {
     .trim();
 }
 
+/** A letter or a digit: an `_` between two of them can neither open nor close emphasis. */
+const WORD = /[\p{L}\p{N}]/u;
+
 /**
- * The text of a link's body as Markdown that reads as that text, so a link cannot write what the
- * person did not: no link or image (`[`, `]`; a bare web address still becomes a link, its address
- * the text that is seen), no quote that the reply's fold or the agent's split would take for
- * quoted mail (`>` at the start of a line), no signature delimiter that would stand for the
- * person's own (ADR 0142), and no backslash that would cancel one of these escapes. Raw HTML needs
- * nothing: the renderer shows it as text (ADR 0020, rule 11). Line ends become `\n`, and control
- * characters other than the line feed and the tab go.
+ * One line's characters that would be read as inline markup, each with a backslash in front; one
+ * pass, so a backslash put in is never read again. A backslash that would escape something (one
+ * before ASCII punctuation, or at the end of a line, where it is a hard break) is doubled. The
+ * line holds no control character but the tab, so an autolink is what stands between `<` and `>`
+ * without a space or a tab.
+ */
+function escapeInline(line: string): string {
+  return line.replace(
+    /\\(?=[!-/:-@[-`{-~]|$)|[[\]`*]|_+|~{2,}|<(?=[^<> \t]*[:@][^<> \t]*>)|&(?=[A-Za-z][A-Za-z0-9]{1,31};|#[xX][0-9A-Fa-f]{1,6};|#[0-9]{1,7};)/g,
+    (match, offset: number) => {
+      if (match[0] === "_") {
+        const before = line[offset - 1] ?? "";
+        const after = line[offset + match.length] ?? "";
+        if (WORD.test(before) && WORD.test(after)) return match;
+      }
+      return match.replace(/./g, "\\$&");
+    },
+  );
+}
+
+/**
+ * Where a line, read from its first character after at most three spaces, would start a block
+ * that is not a paragraph: the index of the character to escape, or -1. A heading (`#` to
+ * `######` before a space or the end), a list item (`-`, `+`, `1.`, `1)`), a setext underline
+ * (`===`, `---`), a thematic break and a table's delimiter row (`-`, `|` and `:` only, with a
+ * `-`), which also covers the signature delimiter `-- ` (ADR 0142). A `*` and an `_` are escaped
+ * wherever they stand; a fence's backticks and tildes are too.
+ */
+function blockStart(rest: string): number {
+  if (/^#{1,6}(?:[ \t]|$)/.test(rest)) return 0;
+  if (/^[-+](?:[ \t]|$)/.test(rest)) return 0;
+  if (/^=+[ \t]*$/.test(rest)) return 0;
+  if (/^[-|:][-|: \t]*$/.test(rest) && rest.includes("-")) return 0;
+  const ordered = /^\d{1,9}[.)](?:[ \t]|$)/.exec(rest);
+  if (ordered) return ordered[0].search(/[.)]/);
+  return -1;
+}
+
+/**
+ * The text of a link's body as Markdown that the app's renderer turns into that same text, in
+ * paragraphs and line breaks, with no other element than a link a bare address makes to itself
+ * (ADR 0143, rule 3). A link's body is plain text, so it cannot write what the person did not.
+ * Escaped, with a backslash, wherever it would be read as markup:
+ * - `[` and `]` (a link with other text, a reference, an image);
+ * - `` ` `` (a code span or a fence, in which the other escapes would show), `*`, and `_` unless it
+ *   stands between two letters or digits (emphasis, a list, a thematic break), a run of two or more
+ *   `~` (struck text, a fence);
+ * - `<` before what an autolink would take (`<https://…>`, `<a@b.example>`), `&` before what an
+ *   entity reference would take (`&amp;`, `&#38;`);
+ * - a backslash before ASCII punctuation or at the end of a line, which would cancel an escape or
+ *   make a hard break;
+ * - at the start of a line: `>` (quoted mail for the reply's fold and the agent's split), a
+ *   heading, a list item, a setext underline, a thematic break, a table's delimiter row and the
+ *   signature delimiter (see `blockStart`).
+ * A line indented by a tab or by four spaces or more would be a code block, in which escapes
+ * show; its indent becomes three spaces (the HTML part drops a line's indent either way). Raw HTML
+ * needs nothing: the renderer shows it as text (ADR 0020, rule 11). A bare web address still
+ * becomes a link, its address the text that is seen, up to the first character escaped in it.
+ * Line ends become `\n`, and control characters other than the line feed and the tab go.
  */
 export function plainBodyMarkdown(text: string): string {
   return text
@@ -80,13 +135,16 @@ export function plainBodyMarkdown(text: string): string {
     .replace(/[\u2028\u2029]/g, "\n")
     .replace(/[\p{Cc}]/gu, (c) => (c === "\n" || c === "\t" ? c : ""))
     .split("\n")
-    .map((line) => {
-      // A backslash before ASCII punctuation is Markdown's escape; doubled, it stays a backslash.
-      // A bracket gets one in front. One pass, so a backslash put in is never read again.
-      let out = line.replace(/\\(?=[!-/:-@[-`{-~])|[[\]]/g, "\\$&");
-      out = out.replace(/^(\s*)>/, "$1\\>");
-      if (/^--\s*$/.test(out)) out = `\\${out}`;
-      return out;
+    .map((raw) => {
+      const indent = /^[ \t]*/.exec(raw)?.[0] ?? "";
+      const lead = indent.includes("\t") || indent.length >= 4 ? "   " : indent;
+      const rest = raw.slice(indent.length);
+      // `>` after any white space at all: that is what the fold and the split read as a quote.
+      const quote = /^\s*>/.exec(rest);
+      const at = quote ? quote[0].length - 1 : blockStart(rest);
+      const out = escapeInline(rest);
+      // The character at `at` is never escaped inline, and nothing before it is changed.
+      return at < 0 ? lead + out : `${lead}${out.slice(0, at)}\\${out.slice(at)}`;
     })
     .join("\n");
 }
