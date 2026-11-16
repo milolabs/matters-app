@@ -13,6 +13,7 @@ import {
   InMemoryAgentInsightStore,
   InMemoryAgentSettings,
   ManualClock,
+  makeMessage,
   settle,
 } from "@matters/testkit";
 import { describe, expect, it } from "vitest";
@@ -58,6 +59,11 @@ class Keyed {
   readonly name = "Anthropic API";
   readonly calls: AgentRunRequest[] = [];
   refuse = false;
+  /** While set, a turn waits until `release` or its signal ends it. */
+  hold = false;
+  release: (() => void) | null = null;
+  /** Turns that were stopped by their signal. */
+  stopped = 0;
   private readonly vault: Vault;
   constructor(vault: Vault) {
     this.vault = vault;
@@ -75,11 +81,41 @@ class Keyed {
       keySavedAtMs: key.savedAtMs,
     };
   }
-  async run(request: AgentRunRequest): Promise<AgentRunResult> {
+  async run(
+    request: AgentRunRequest,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<AgentRunResult> {
     this.calls.push(request);
+    if (this.hold) {
+      await new Promise<void>((resolve, reject) => {
+        this.release = resolve;
+        options?.signal?.addEventListener("abort", () => {
+          this.stopped++;
+          reject(new AgentRunError("failed", "Cancelled."));
+        });
+      });
+    }
     if (this.refuse) throw new AgentRunError("refused", "Anthropic refused the key.");
     return { value: request.untrusted.includes(TEST_PROMPT_QUOTE) ? verdictOfTest : {} };
   }
+}
+
+/** A runtime on a plan, which the kinds of work can be on while a talk chooses the key's. */
+class Plain {
+  readonly id = "plan";
+  readonly name = "Plan runtime";
+  async inspect(): Promise<AgentRuntimeInfo> {
+    return { id: this.id, name: this.name, status: "found", plan: "pro", models: ["small"] };
+  }
+  async run(request: AgentRunRequest): Promise<AgentRunResult> {
+    return { value: request.untrusted.includes(TEST_PROMPT_QUOTE) ? verdictOfTest : {} };
+  }
+}
+
+/** Lets the turns started so far reach their runtime. */
+async function until(done: () => boolean): Promise<void> {
+  for (let i = 0; i < 100 && !done(); i++) await settle();
+  expect(done()).toBe(true);
 }
 
 async function build() {
@@ -93,7 +129,7 @@ async function build() {
   const keyed = new Keyed(vault);
   const told: string[] = [];
   const service = new AgentService({
-    runtimes: [keyed],
+    runtimes: [keyed, new Plain()],
     keys: vault,
     store: storage.store,
     index: storage.index,
@@ -110,6 +146,21 @@ async function build() {
     onChanged: () => {},
     onError: (message) => told.push(message),
   });
+  const message = makeMessage({
+    seq: 1,
+    accountId: "acc1",
+    threadId: "t1",
+    providerId: "t1-1",
+    dateMs: NOW - 86_400_000,
+    from: { name: "Anna", address: "anna@example.org" },
+    to: [{ address: "acc1@example.com" }],
+    subject: "Tuesday",
+    labelIds: ["inbox"],
+  });
+  const { keys } = await storage.store.upsertMessages([message]);
+  await storage.bodies.putBodies(
+    keys.map((key) => ({ key, threadId: "t1", text: "Can we meet on Tuesday?" })),
+  );
   const pass = async () => {
     service.kick();
     await clock.advance(KICK_DEBOUNCE_MS + 100);
@@ -162,6 +213,47 @@ describe("the person's own API key (ADR 0141)", () => {
     const replaced = await h.service.saveKey("anthropic-api", `${KEY}-2`);
     expect(runtimeInfo(replaced, "anthropic-api")?.status).toBe("found");
   });
+
+  it("does not keep a test that ran on the key before the one saved while it ran (rule 5)", async () => {
+    const h = await build();
+    await h.service.saveKey("anthropic-api", KEY);
+    h.keyed.hold = true;
+    const testing = h.service.testRuntime("anthropic-api");
+    await until(() => h.keyed.release !== null);
+    // A new key is saved while the test of the old one waits for its answer, which then passes.
+    await h.clock.advance(1000);
+    await h.service.saveKey("anthropic-api", `${KEY}-2`);
+    h.keyed.release?.();
+    const s = await testing;
+    expect(runtimeInfo(s, "anthropic-api")?.status).toBe("found");
+    expect(await h.settings.getRuntimeRecord("anthropic-api")).toBeNull();
+    // Nor does a look later take it for the new key.
+    expect(runtimeInfo(await h.service.inspect(), "anthropic-api")?.status).toBe("found");
+  });
+
+  for (const change of ["removed", "replaced"] as const) {
+    it(`stops a talk that chose the runtime when its key is ${change}, though no kind is on it (rule 4)`, async () => {
+      const h = await build();
+      await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "plan" });
+      await h.service.saveKey("anthropic-api", KEY);
+      await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "anthropic-api" });
+      await h.service.testRuntime("anthropic-api");
+      expect((await h.settings.get()).kindRuntime.write).toBe("plan");
+      h.keyed.hold = true;
+      const talking = h.service
+        .talk("t1", "When?", { runtimeId: "anthropic-api", model: "claude-opus-5-5" })
+        .then(
+          () => "answered",
+          (e: Error) => e.message,
+        );
+      await until(() => h.keyed.release !== null);
+      if (change === "removed") await h.service.removeKey("anthropic-api");
+      else await h.service.saveKey("anthropic-api", `${KEY}-2`);
+      await until(() => h.keyed.stopped === 1);
+      expect(await talking).not.toBe("answered");
+      expect(await h.insights.listTalk("t1", 10)).toEqual([]);
+    });
+  }
 
   it("says the provider's refusal of the key in its class, and does not keep it as a test (rule 5)", async () => {
     const h = await build();

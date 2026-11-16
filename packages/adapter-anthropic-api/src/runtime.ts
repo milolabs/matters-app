@@ -1,7 +1,10 @@
+import { request as httpRequest, type IncomingMessage } from "node:http";
+import { request as httpsRequest } from "node:https";
 import type {
   AgentEffort,
   AgentFile,
   AgentKey,
+  AgentRunErrorCode,
   AgentRunRequest,
   AgentRunResult,
   AgentRuntimeInfo,
@@ -13,7 +16,9 @@ import type {
 } from "@matters/core";
 import { AGENT_EFFORTS, AgentRunError, apiKeyProblem, wholeFilesProblem } from "@matters/core";
 
-// The Messages API of Anthropic, on the person's own API key (ADR 0141). Node's own fetch, no SDK.
+// The Messages API of Anthropic, on the person's own API key (ADR 0141). Node's own `https`, no
+// SDK. Not `fetch`: it gives up when no headers come within 300 s, and an answer that is written
+// before any byte is sent can take longer than that; the turn's own time is the only bound here.
 // The host is fixed in code; the key is read from the vault for each request, never from the
 // environment. Nothing the provider writes ever goes into an error, which may reach logs, and
 // neither does the key: errors are our own sentences.
@@ -118,9 +123,12 @@ type Reply = { readonly status: number; readonly value: unknown; readonly retryA
 /** Why a request did not give an answer, in our words: a refusal of the key, or trouble. */
 class Refusal extends Error {
   readonly status: AgentRuntimeInfo["status"];
-  constructor(status: AgentRuntimeInfo["status"], message: string) {
+  /** The turn's error, when it is not the one its status gives. */
+  readonly code: AgentRunErrorCode | undefined;
+  constructor(status: AgentRuntimeInfo["status"], message: string, code?: AgentRunErrorCode) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -661,7 +669,10 @@ export class AnthropicApiRuntime implements AgentRuntimePort {
     }
   }
 
-  /** One request, its answer read up to `maxBytes`; rejects when nothing came back. */
+  /**
+   * One request, its answer read up to `maxBytes`; rejects when nothing came back. A redirect is
+   * never followed, so the key never goes to another host: it is a status like any other.
+   */
   private async once(
     key: string,
     method: "GET" | "POST",
@@ -670,21 +681,34 @@ export class AnthropicApiRuntime implements AgentRuntimePort {
     maxBytes: number,
     signal: AbortSignal,
   ): Promise<Reply> {
-    const response = await fetch(`${this.base}${path}`, {
-      method,
-      headers: {
-        "x-api-key": key,
-        "anthropic-version": API_VERSION,
-        accept: "application/json",
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body }),
-      signal,
-      // Never follow the provider elsewhere: the key would go with it.
-      redirect: "error",
+    const url = new URL(`${this.base}${path}`);
+    const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const response = await new Promise<IncomingMessage>((resolve, reject) => {
+      const request = send(
+        url,
+        {
+          method,
+          headers: {
+            "x-api-key": key,
+            "anthropic-version": API_VERSION,
+            accept: "application/json",
+            ...(body === undefined
+              ? {}
+              : {
+                  "content-type": "application/json",
+                  "content-length": String(Buffer.byteLength(body)),
+                }),
+          },
+          signal,
+        },
+        resolve,
+      );
+      request.on("error", reject);
+      request.end(body);
     });
-    const ok = response.status >= 200 && response.status < 300;
-    const read = await readCapped(response, ok ? maxBytes : MAX_ERROR_BYTES).catch((error) => {
+    const status = response.statusCode ?? 0;
+    const ok = status >= 200 && status < 300;
+    const read = await readMessage(response, ok ? maxBytes : MAX_ERROR_BYTES).catch((error) => {
       if (ok || !(error instanceof TooMuch)) throw error;
       return "";
     });
@@ -694,12 +718,9 @@ export class AnthropicApiRuntime implements AgentRuntimePort {
     } catch {
       value = null;
     }
-    const retryAfterMs = retryAfterOf(response.headers.get("retry-after"));
-    return {
-      status: response.status,
-      value,
-      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
-    };
+    const after = response.headers["retry-after"];
+    const retryAfterMs = retryAfterOf(typeof after === "string" ? after : null);
+    return { status, value, ...(retryAfterMs === undefined ? {} : { retryAfterMs }) };
   }
 }
 
@@ -731,17 +752,26 @@ function refusalOf(reply: Reply | null): Refusal {
     return new Refusal("keyRefused", "The key has no access to that model. Choose another model.");
   }
   if (reply.status === 413 || type === "request_too_large") {
-    return new Refusal("failed", "This is too long for Anthropic to take. Ask about less.");
+    // Too long to take: `tooLong`, whose sentence reaches the person (ADR 0119, rule 8).
+    return new Refusal(
+      "failed",
+      "This is too long for Anthropic to take. Ask about less.",
+      "tooLong",
+    );
   }
   if (reply.status >= 500) return new Refusal("failed", BUSY);
   return new Refusal("failed", "Anthropic did not take the request.");
 }
 
-/** A refusal as a turn's error: the key's refusals are `refused`, the rest `failed`. */
+/**
+ * A refusal as a turn's error: the key's refusals are `refused`, a request too long `tooLong`, the
+ * rest `failed`.
+ */
 function runError(error: unknown): AgentRunError {
   if (error instanceof AgentRunError) return error;
   if (error instanceof Refusal) {
-    return new AgentRunError(error.status === "keyRefused" ? "refused" : "failed", error.message);
+    const code = error.code ?? (error.status === "keyRefused" ? "refused" : "failed");
+    return new AgentRunError(code, error.message);
   }
   return new AgentRunError("failed", UNREACHABLE);
 }
@@ -769,6 +799,37 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
       reject(new Error("aborted"));
     };
     signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * The body of an answer as text, up to `maxBytes`; more rejects, and the rest is not read. A
+ * connection that ends before the body does rejects too.
+ */
+function readMessage(response: IncomingMessage, maxBytes: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const declared = Number(response.headers["content-length"] ?? "");
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      response.destroy();
+      reject(new TooMuch());
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    response.on("data", (chunk: Buffer) => {
+      total += chunk.byteLength;
+      if (total > maxBytes) {
+        response.destroy();
+        reject(new TooMuch());
+        return;
+      }
+      chunks.push(chunk);
+    });
+    response.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    response.on("error", reject);
+    response.on("close", () => {
+      if (!response.complete) reject(new Error("The answer ended early."));
+    });
   });
 }
 
