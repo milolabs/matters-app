@@ -289,7 +289,7 @@ describe("the model's blocks are cut first, then the answer is checked (ADR 0142
     );
   });
 
-  it("a sign-off of the person's the model reworded comes back as they wrote it; one it dropped refuses", async () => {
+  it("a sign-off of the person's the model reworded comes back as they wrote it; one it dropped comes back", async () => {
     const h = await build();
     await h.enable();
     const mine = "Thanks.\n\n--\nAnna";
@@ -297,9 +297,14 @@ describe("the model's blocks are cut first, then the answer is checked (ADR 0142
     expect((await h.service.rewriteDraft({ threadId: "t1" }, reply(mine), "formal")).text).toBe(
       reply("Thank you.\n\n--\nAnna"),
     );
+    // Told to write no sign-off, the model took the person's out too: it is put back.
     h.answers.next = { rewritten: "Thank you." };
-    await expect(h.service.rewriteDraft({ threadId: "t1" }, reply(mine), "formal")).rejects.toThrow(
-      "left out part of your reply",
+    expect((await h.service.rewriteDraft({ threadId: "t1" }, reply(mine), "formal")).text).toBe(
+      reply("Thank you.\n\n--\nAnna"),
+    );
+    h.answers.next = { withAnswers: "Thanks, I got them.", added: 1 };
+    expect((await h.service.answerQuestions("t1", reply(mine))).text).toBe(
+      reply("Thanks, I got them.\n\n--\nAnna"),
     );
   });
 });
