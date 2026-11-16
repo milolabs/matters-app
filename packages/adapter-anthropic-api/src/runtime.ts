@@ -288,7 +288,11 @@ export class AnthropicApiRuntime implements AgentRuntimePort {
       return { ...base, models: [], status: "failed", problem: "The key could not be read." };
     }
     if (kept === null) return { ...base, models: [], status: "noKey", problem: NO_KEY };
-    const keyed = { ...base, keySavedAtMs: kept.savedAtMs };
+    const keyed = {
+      ...base,
+      keySavedAtMs: kept.savedAtMs,
+      ...(kept.id === undefined ? {} : { keyId: kept.id }),
+    };
     let models: ApiModel[];
     try {
       models = await this.listModels(kept.key);
