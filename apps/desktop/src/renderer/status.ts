@@ -66,6 +66,8 @@ function refusalLabel(refusal: SignInRefusal | undefined, browser: boolean): str
       return "Needs browser sign-in";
     case "signInAgain":
       return "Sign-in ended";
+    case "notSaved":
+      return browser ? "No sign-in on this Mac" : "No password on this Mac";
     case "notAllowed":
       return browser ? "IMAP is turned off" : "Sign-in not allowed";
     case "encryptionRequired":
@@ -84,6 +86,8 @@ function graphRefusalLabel(refusal: SignInRefusal | undefined): string {
   switch (refusal) {
     case "signInAgain":
       return "Sign-in ended";
+    case "notSaved":
+      return "No sign-in on this Mac";
     case "notAllowed":
       return "Not allowed by your organisation";
     case "unavailable":

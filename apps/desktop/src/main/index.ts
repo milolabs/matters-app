@@ -8,10 +8,22 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { chmod, copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { hostname, uptime } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -64,6 +76,7 @@ import {
   utilityProcess,
 } from "electron";
 import attachmentWorkerPath from "../backend/attachmentWorker.ts?modulePath";
+import backupWorkerPath from "../backend/backupWorker.ts?modulePath";
 import {
   BOOT_STAGE_MESSAGE,
   BOOT_START,
@@ -127,6 +140,7 @@ import {
   withOwnTheme,
 } from "./appearance.ts";
 import { BackendLink } from "./backendLink.ts";
+import { BackupJobs } from "./backupJobs.ts";
 import {
   clientIds,
   isLoopbackUrl,
@@ -135,6 +149,8 @@ import {
   testBrowser,
 } from "./browserSignIn.ts";
 import { BUILT_IN_THEMES } from "./builtInThemes.ts";
+import { EmlSaves } from "./emlSaves.ts";
+import { CHANNEL_EML, CHANNEL_EML_ASK, CHANNEL_EML_PROGRESS } from "./emlShapes.ts";
 import {
   type EraseOrder,
   type EraseOrderRead,
@@ -220,6 +236,14 @@ import {
 } from "./release.ts";
 import { requestReleaseFile } from "./releaseRequest.ts";
 import { isReleaseOpen } from "./releaseShapes.ts";
+import {
+  readHeldFile,
+  removeSetAside,
+  type SwapOutcome,
+  swapPendingRestore,
+  writeHeldFile,
+} from "./restore.ts";
+import { holdRestoredAccounts } from "./restoreHold.ts";
 import { revealDeadline } from "./revealPolicy.ts";
 import { SafeStorageEncryptor } from "./safeStorage.ts";
 import {
@@ -524,6 +548,26 @@ function claimDatabaseFile(): void {
   process.exit(1);
 }
 if (!identityHelper && !erasing) claimDatabaseFile();
+
+/**
+ * A restore from a backup (ADR 0145, rule 9) is a swap at this start: inside the single-instance
+ * lock and the database's claim, before anything opens the database. With none waiting it costs
+ * one `stat`. A swap that fails leaves the database in use as it was, and says so on stderr; the
+ * restore still waits, and Settings › Storage shows it.
+ */
+const restoreSwap: SwapOutcome =
+  identityHelper || erasing ? { kind: "none" } : swapPendingRestore(databasePath());
+if (restoreSwap.kind === "swapped") {
+  // The cache of received files is keyed by message keys, which the restored database gives out
+  // on its own: a copy could stand for another message now. It is a cache (ADR 0043, rule 8), so
+  // it goes whole, and a file is fetched again when asked for.
+  rmSync(join(app.getPath("userData"), "received"), { recursive: true, force: true });
+  console.error(
+    `matters-restore: the backup is in place; the database before it is in restore/set-aside/${restoreSwap.setAside}`,
+  );
+} else if (restoreSwap.kind === "failed") {
+  console.error(`matters-restore: the restore was not put in place: ${restoreSwap.message}`);
+}
 
 /**
  * Takes the database's owner file for this process, or says who has it (ADR 0110). Shared by a
@@ -1119,6 +1163,104 @@ function createSettingsWindow(section?: string): BrowserWindow {
 }
 
 /**
+ * Back Up… and Restore from a Backup… (ADR 0145): the dialogs are main's, the work a process of
+ * its own per job (backupWorker.ts), ended on Stop. A window test of a dev build names the file
+ * to write (`MATTERS_TEST_BACKUP_PATH`) and the file to restore (`MATTERS_TEST_RESTORE_PATH`)
+ * without a dialog; a packaged app reads neither.
+ */
+function createBackupJobs(owner: () => BrowserWindow | null): BackupJobs {
+  const backupPath = devBuild ? process.env.MATTERS_TEST_BACKUP_PATH : undefined;
+  const restorePath = devBuild ? process.env.MATTERS_TEST_RESTORE_PATH : undefined;
+  const parent = () => {
+    const w = owner();
+    return w && !w.isDestroyed() ? w : undefined;
+  };
+  return new BackupJobs({
+    databasePath: databasePath(),
+    async chooseSavePath(defaultName) {
+      if (backupPath) return backupPath;
+      const options = {
+        defaultPath: join(app.getPath("documents"), defaultName),
+        filters: [{ name: "Matters backup", extensions: ["db"] }],
+      };
+      const w = parent();
+      const chosen = w
+        ? await dialog.showSaveDialog(w, options)
+        : await dialog.showSaveDialog(options);
+      return chosen.canceled ? undefined : chosen.filePath;
+    },
+    async chooseBackupFile() {
+      if (restorePath) return restorePath;
+      const options = {
+        defaultPath: app.getPath("documents"),
+        properties: ["openFile" as const],
+        filters: [{ name: "Matters backup", extensions: ["db"] }],
+      };
+      const w = parent();
+      const chosen = w
+        ? await dialog.showOpenDialog(w, options)
+        : await dialog.showOpenDialog(options);
+      return chosen.canceled ? undefined : chosen.filePaths[0];
+    },
+    work(job) {
+      const child = utilityProcess.fork(backupWorkerPath, [], {
+        serviceName: "matters-backup",
+        stdio: "inherit",
+      });
+      const answer = new Promise<unknown>((resolve) => {
+        child.once("message", (message: unknown) => {
+          resolve(message);
+          child.kill();
+        });
+        child.once("exit", () => resolve({ ok: false, message: "the backup process ended" }));
+      });
+      child.postMessage(job);
+      return { answer, kill: () => child.kill() };
+    },
+    fs: {
+      async createPrivate(path) {
+        await (await open(path, "wx", 0o600)).close();
+      },
+      async sync(path) {
+        const handle = await open(path, "r+");
+        try {
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+      },
+      rename: (from, to) => rename(from, to),
+      remove: (path) => rm(path, { force: true }),
+      async copyIn(from, to) {
+        await copyFile(from, to, constants.COPYFILE_FICLONE | constants.COPYFILE_EXCL);
+        await chmod(to, 0o600);
+      },
+      size: (path) =>
+        stat(path).then(
+          (s) => (s.isFile() ? s.size : 0),
+          () => 0,
+        ),
+      mkdir: async (path) => {
+        await mkdir(path, { recursive: true, mode: 0o700 });
+      },
+      chmodPrivate: (path) => chmod(path, 0o600),
+    },
+    now: () => Date.now(),
+    dayOf: (ms) => localDay(ms),
+    log: (message, error) =>
+      console.error(`matters-main: ${message}`, error instanceof Error ? error.message : ""),
+  });
+}
+
+/** `YYYY-MM-DD` of a time on this Mac's calendar, for a file's name (ADR 0145, rule 4). */
+function localDay(ms: number): string {
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
  * The print view of a thread (ADR 0144, rule 4): a hidden window of our own page, made only when
  * asked and destroyed after. The mail window's walls: its session (so its frames are the reader's
  * frames, under the same policy), `lockDown` (no popup, no navigation, no permission), a sandboxed
@@ -1350,6 +1492,9 @@ function startBackend(
     MATTERS_TEST_RELEASE_URL: _releaseUrl,
     MATTERS_TEST_DEFAULT_MAIL: _defaultMail,
     MATTERS_TEST_SAVE_DIR: _saveDir,
+    MATTERS_TEST_BACKUP_PATH: _backupPath,
+    MATTERS_TEST_RESTORE_PATH: _restorePath,
+    MATTERS_TEST_NO_RELAUNCH: _noRelaunch,
     MATTERS_TEST_PRINT_LOG: _printLog,
     ...inherited
   } = process.env;
@@ -1665,7 +1810,13 @@ if (!identityHelper && !erasing)
     });
     // The backend first: it starts in its own process while main builds the window, so the
     // window's construction (tens of milliseconds of main-thread work) no longer delays it.
-    const backend = startBackend(vault, store.keys(), testAccount);
+    // After a restore, accounts whose credential this Mac holds back answer as having none (ADR
+    // 0145, rule 9); the list is read when the backend first asks for one.
+    const held = holdRestoredAccounts(vault, {
+      read: () => readHeldFile(databasePath()),
+      write: (ids) => writeHeldFile(databasePath(), ids),
+    });
+    const backend = startBackend(held, store.keys(), testAccount);
     const boot = createWindow();
     const { win, stage } = boot;
     mailWindow = boot;
@@ -1813,6 +1964,67 @@ if (!identityHelper && !erasing)
       if (win.isDestroyed() || !printAvailable || (focused !== undefined && focused !== win))
         return;
       win.webContents.send(CHANNEL_PRINT_ASK, action);
+    };
+
+    // Save as .eml… (ADR 0145, rules 1 to 5): only the mail window may ask, for the thread it has
+    // open, while the menu's print items are on. The dialogs are main's; the same test variable
+    // as a PDF's names the place in a dev build's window tests (the file, or the folder of several).
+    const emlQuarantine = createQuarantine({
+      platform: process.platform,
+      run: async (file, args) => {
+        await promisify(execFile)(file, [...args]);
+      },
+      now: () => Date.now(),
+    });
+    const emlSaves = new EmlSaves({
+      async chooseSavePath(defaultName) {
+        if (saveDir) return join(saveDir, defaultName);
+        const chosen = await dialog.showSaveDialog(win, {
+          defaultPath: join(app.getPath("downloads"), defaultName),
+          filters: [{ name: "Email message", extensions: ["eml"] }],
+        });
+        return chosen.canceled ? undefined : chosen.filePath;
+      },
+      async chooseFolder() {
+        if (saveDir) return saveDir;
+        const chosen = await dialog.showOpenDialog(win, {
+          defaultPath: app.getPath("downloads"),
+          properties: ["openDirectory", "createDirectory"],
+          buttonLabel: "Save Here",
+        });
+        return chosen.canceled ? undefined : chosen.filePaths[0];
+      },
+      exists: (path) =>
+        lstat(path).then(
+          () => true,
+          () => false,
+        ),
+      save: (job, messageKey, target, overwrite, onBytes) =>
+        link.saveSource(job, messageKey, target, overwrite, onBytes),
+      stop: (job) => link.stopSource(job),
+      quarantine: emlQuarantine,
+      dayOf: (ms) => localDay(ms),
+      progress: (progress) => {
+        if (!win.isDestroyed()) win.webContents.send(CHANNEL_EML_PROGRESS, progress);
+      },
+      newJob: () => randomUUID(),
+      log: (message, error) =>
+        console.error(`matters-main: ${message}`, error instanceof Error ? error.message : ""),
+    });
+    ipcMain.handle(CHANNEL_EML, async (event, action: unknown, letters: unknown) => {
+      if (event.sender !== win.webContents) return { kind: "invalid" };
+      if (action === "stop") {
+        await emlSaves.stop();
+        return { kind: "cancelled" };
+      }
+      if (action !== "save" || !printAvailable) return { kind: "invalid" };
+      return emlSaves.save(letters);
+    });
+    /** The menu's Save as .eml…: it acts on the mail window's open thread, from that window only. */
+    const askEml = (focused: Electron.BaseWindow | undefined) => {
+      if (win.isDestroyed() || !printAvailable || (focused !== undefined && focused !== win))
+        return;
+      win.webContents.send(CHANNEL_EML_ASK);
     };
 
     // Received files: only the mail window may ask, by message key and part id (ADR 0043, rule 10).
@@ -2114,8 +2326,35 @@ if (!identityHelper && !erasing)
         ...(settings ? { settings: settings.webContents.getOSProcessId() } : {}),
       }),
     });
+    // Back Up… and Restore from a Backup… (ADR 0145): main's dialogs, a worker process per job.
+    const backups = createBackupJobs(() => settings);
     ipcMain.handle(CHANNEL_STORAGE, async (event, action: unknown, arg: unknown, more: unknown) => {
       if (!settings || event.sender !== settings.webContents) return null;
+      switch (action) {
+        case "backupOverview":
+          return backups.overview();
+        case "backup":
+          return backups.backup();
+        case "restoreBackup":
+          return backups.restore();
+        case "restoreSetAside":
+          return backups.restoreSetAside(arg);
+        case "stopBackup":
+          backups.stop();
+          return { ok: true };
+        case "cancelRestore":
+          await backups.cancelPending();
+          return backups.overview();
+        case "removeSetAside":
+          await removeSetAside(databasePath(), arg);
+          return backups.overview();
+        case "restartToRestore":
+          if (smoke) return null;
+          // The swap is the next start's (rule 9); this one quits as it always does.
+          if (!(devBuild && process.env.MATTERS_TEST_NO_RELAUNCH === "1")) app.relaunch();
+          setImmediate(() => app.quit());
+          return { ok: true };
+      }
       // A provider's page where the person takes back the app's permission (ADR 0138, rule 8):
       // by name only, at a fixed address.
       if (action === "permissionPage") {
@@ -2260,6 +2499,11 @@ if (!identityHelper && !erasing)
                 label: "Save as PDF…",
                 enabled: printAvailable,
                 click: (_item, focused) => askPrint("pdf", focused),
+              },
+              {
+                label: "Save as .eml…",
+                enabled: printAvailable,
+                click: (_item, focused) => askEml(focused),
               },
               { type: "separator" },
               {

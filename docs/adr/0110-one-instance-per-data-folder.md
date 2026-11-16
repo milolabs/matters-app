@@ -6,7 +6,8 @@
   [0107](0107-matters-runs-on-macos-as-its-own-app.md) (the bundle and a dev run no longer both
   open one folder)
 - Amended by: [0143](0143-matters-opens-mailto-links.md) (rule 2: a `mailto:` argument of a second start
-  is forwarded to the first; nothing else of its arguments is read)
+  is forwarded to the first; nothing else of its arguments is read), [0145](0145-save-a-message-as-a-file-and-back-up-what-matters-keeps.md) (a
+  restore that waits is swapped in after the database's claim, before anything opens it)
 
 ## Context
 

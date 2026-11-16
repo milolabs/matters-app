@@ -20,7 +20,8 @@ export const GROUP_COPY: readonly {
   {
     id: "mail",
     label: "Mail and the search index",
-    detail: "Messages, drafts, your signatures, and mail waiting to be sent",
+    detail:
+      "Messages, drafts, your signatures, mail waiting to be sent, and what a restore set aside",
   },
   {
     id: "files",
@@ -74,9 +75,25 @@ export function reviewRows(
       };
     }
     if (g.id === "mail") {
+      // What a restore set aside or waits to put in place goes too (ADR 0145, rule 9).
+      const restores = main?.restores;
+      const aside =
+        restores === undefined
+          ? ""
+          : [
+              restores.setAside > 0
+                ? `${plural(restores.setAside, "database", "databases")} a restore set aside`
+                : "",
+              restores.pending ? "the restore that waits" : "",
+            ]
+              .filter((s) => s !== "")
+              .join(" and ");
       return {
         ...g,
-        detail: `${plural(db.messages, "message", "messages")}, drafts, your signatures, and mail waiting to be sent`,
+        detail:
+          aside === ""
+            ? `${plural(db.messages, "message", "messages")}, drafts, your signatures, and mail waiting to be sent`
+            : `${plural(db.messages, "message", "messages")}, drafts, your signatures, mail waiting to be sent, and ${aside}`,
         amount: storageSize(bytes(g.id)),
       };
     }

@@ -33,7 +33,7 @@ export class Admin {
     await this.client.logout().catch(() => this.client.close());
   }
 
-  async append(path: string, raw: string, flags: string[] = []): Promise<number> {
+  async append(path: string, raw: string | Buffer, flags: string[] = []): Promise<number> {
     const result = await this.client.append(path, raw, flags);
     const uid = result ? result.uid : undefined;
     if (!uid) throw new Error(`append to ${path} returned no UID`);

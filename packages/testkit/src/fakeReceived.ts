@@ -4,6 +4,7 @@ import type {
   MessageLocation,
   PartDownload,
   ReceivedFilesPort,
+  SourceDownload,
 } from "@matters/core";
 
 /** Where the in-memory cache says its files are: `FakeFileWork.readCache` reads a path back. */
@@ -27,6 +28,40 @@ export class FakeMailAttachments implements MailAttachmentPort {
   /** Each read of a chunk waits for this to resolve, when set. */
   gate: Promise<void> | null = null;
   private readonly parts = new Map<string, readonly Uint8Array[]>();
+  private readonly sources = new Map<string, readonly Uint8Array[]>();
+  /** The sources asked for, in order (ADR 0145). */
+  readonly sourceRequests: MessageLocation[] = [];
+
+  /** The whole message at this location, as the chunks it arrives in. */
+  putSource(location: MessageLocation, ...chunks: Uint8Array[]): void {
+    this.sources.set(partAt(location, ""), chunks);
+  }
+
+  async source(location: MessageLocation, signal?: AbortSignal): Promise<SourceDownload> {
+    this.sourceRequests.push(location);
+    const failure = this.errors.shift();
+    if (failure) throw failure;
+    const chunks = this.sources.get(partAt(location, ""));
+    if (!chunks) return { kind: "gone" };
+    const server = this;
+    return {
+      kind: "found",
+      size: chunks.reduce((n, c) => n + c.byteLength, 0),
+      content: (async function* () {
+        server.active++;
+        server.peak = Math.max(server.peak, server.active);
+        try {
+          for (const chunk of chunks) {
+            if (server.gate) await server.gate;
+            signal?.throwIfAborted();
+            yield chunk;
+          }
+        } finally {
+          server.active--;
+        }
+      })(),
+    };
+  }
 
   put(location: MessageLocation, partId: string, ...chunks: Uint8Array[]): void {
     this.parts.set(partAt(location, partId), chunks);

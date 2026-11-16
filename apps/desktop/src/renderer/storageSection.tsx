@@ -2,6 +2,7 @@ import type { MainStorageInfo, StorageReport } from "@matters/contracts";
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { accountMarks } from "./accountMarks.ts";
 import type { AccountsStore } from "./accounts.ts";
+import { BackupSection } from "./backupSection.tsx";
 import type { Backend } from "./client.ts";
 import { EraseReview } from "./eraseReview.tsx";
 import { askMainStorage } from "./files.ts";
@@ -423,6 +424,8 @@ function StorageOverview(props: {
                   needs them.
                 </p>
               </section>
+
+              <BackupSection />
 
               <section class="border-b border-hairline px-5 py-4" aria-label="Mail by account">
                 <h3 class="mb-1 font-semibold">Mail by account</h3>

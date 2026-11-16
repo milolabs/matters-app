@@ -6,7 +6,13 @@
 // window, a dialog or a disk.
 import { basename, join, resolve, sep } from "node:path";
 import type { FetchReceivedOutcome, ReceivedAnswer, ReceivedItem } from "@matters/contracts";
-import { isMessageKey, isPartId, isRunnableFile, safeFileName } from "@matters/core";
+import {
+  isMessageKey,
+  isPartId,
+  isRunnableFile,
+  numberedFileName,
+  safeFileName,
+} from "@matters/core";
 
 /** A Save all of more files than this is not a person's doing. */
 export const MAX_SAVE_ALL = 200;
@@ -47,11 +53,7 @@ const refused = (
 });
 
 /** "report.pdf" is "report 2.pdf" the second time: the number goes before the extension. */
-export function numberedName(name: string, n: number): string {
-  if (n <= 1) return name;
-  const dot = name.lastIndexOf(".");
-  return dot <= 0 ? `${name} ${n}` : `${name.slice(0, dot)} ${n}${name.slice(dot)}`;
-}
+export const numberedName = numberedFileName;
 
 /** Whether a path is inside a directory, once both are resolved; `..` cannot get out. */
 export function isInside(root: string, path: string): boolean {

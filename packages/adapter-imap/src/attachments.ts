@@ -1,4 +1,9 @@
-import type { MailAttachmentPort, MessageLocation, PartDownload } from "@matters/core";
+import type {
+  MailAttachmentPort,
+  MessageLocation,
+  PartDownload,
+  SourceDownload,
+} from "@matters/core";
 import type { OpenConnection } from "./connection.ts";
 import { ImapUnreachableError, safeError } from "./errors.ts";
 
@@ -56,6 +61,46 @@ export class ImapAttachments implements MailAttachmentPort {
       return {
         kind: "found",
         content: this.stream(content, release, signal),
+      };
+    } catch (error) {
+      lock.release();
+      throw error instanceof ImapUnreachableError ? error : safeError(error, this.secrets);
+    }
+  }
+
+  /**
+   * The whole message as the server keeps it (ADR 0145, rule 2). With no part, ImapFlow asks for
+   * `BODY.PEEK[]` in pieces of 64 KB (`BODY.PEEK[]<start.length>`) and passes them on as they
+   * come, with no transfer or charset decoding: the bytes are the server's. `PEEK` leaves
+   * `\Seen` alone, and the folder is opened read-only besides.
+   */
+  async source(location: MessageLocation, signal?: AbortSignal): Promise<SourceDownload> {
+    const { client } = this.connection;
+    let lock: Awaited<ReturnType<typeof client.getMailboxLock>>;
+    try {
+      lock = await client.getMailboxLock(location.folderId, { readOnly: true });
+    } catch (error) {
+      if ((error as { mailboxMissing?: boolean }).mailboxMissing === true) return { kind: "gone" };
+      throw safeError(error, this.secrets);
+    }
+    try {
+      const mailbox = client.mailbox;
+      if (!mailbox)
+        throw new ImapUnreachableError("The connection closed before the folder opened");
+      if (String(mailbox.uidValidity) !== location.uidValidity) {
+        lock.release();
+        return { kind: "gone" };
+      }
+      const found = await client.download(String(location.uid), undefined, { uid: true });
+      if (!found.content) {
+        lock.release();
+        return { kind: "gone" };
+      }
+      const size = (found.meta as { expectedSize?: unknown } | undefined)?.expectedSize;
+      return {
+        kind: "found",
+        content: this.stream(found.content, () => lock.release(), signal),
+        ...(typeof size === "number" && size > 0 ? { size } : {}),
       };
     } catch (error) {
       lock.release();

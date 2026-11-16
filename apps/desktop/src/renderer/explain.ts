@@ -57,6 +57,8 @@ export function refusalSentence(
 ): string {
   if (transport === "graph") return graphRefusalSentence(refusal, place);
   const rule = hostRule(host);
+  // No server refused anything: this Mac has nothing saved for the account (ADR 0145, rule 9).
+  if (refusal === "notSaved") return notSavedSentence(rule?.signIn === "browserOnly" && browser);
   const setup = place === "setup";
   const saved = place === "status";
   /** The way to try again after doing what the sentence asks. */
@@ -160,6 +162,16 @@ export function refusalSentence(
 }
 
 /**
+ * The account is on this Mac without its password or sign-in (ADR 0145, rule 9): restored from a
+ * backup, which never carries them, or held back because the backup's server for it differs.
+ */
+function notSavedSentence(browser: boolean): string {
+  return browser
+    ? "This Mac has no sign-in saved for this account, as after a restore from a backup. Choose Sign in again. The mail on this computer stays."
+    : "This Mac has no password saved for this account, as after a restore from a backup. Enter it to sync again. The mail on this computer stays.";
+}
+
+/**
  * One sentence per reason Graph turned a Microsoft mailbox away (ADR 0136, rule 11). There is no
  * server to name, no password and no IMAP: the sign-in is Microsoft's in the browser, and
  * `notAllowed` is Graph's `403`, the organisation not letting this app read the mailbox.
@@ -168,6 +180,7 @@ export function graphRefusalSentence(
   refusal: SignInRefusal | undefined,
   place: RefusalPlace = "setup",
 ): string {
+  if (refusal === "notSaved") return notSavedSentence(true);
   const saved = place === "status";
   const setup = place === "setup";
   switch (refusal) {

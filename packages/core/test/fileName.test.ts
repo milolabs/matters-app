@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  emlFileName,
+  emlFolderNames,
   isRunnableFile,
   MAX_FILE_NAME_BYTES,
   nameFromType,
+  numberedFileName,
   pdfFileName,
   safeFileName,
 } from "../src/index.ts";
@@ -469,5 +472,55 @@ describe("pdfFileName (ADR 0144, rule 5)", () => {
 
   it("gives a Windows device name an underscore", () => {
     expect(pdfFileName("CON", "")).toBe("_CON.pdf");
+  });
+});
+
+describe("emlFileName and emlFolderNames (ADR 0145, rule 4)", () => {
+  it("names one letter by its subject and day, with .eml, by the PDF's rules", () => {
+    expect(emlFileName("Lunch on Friday", "2026-11-16")).toBe("Lunch on Friday 2026-11-16.eml");
+    expect(emlFileName("invoice.exe", "")).toBe("invoice.exe.eml");
+    expect(emlFileName("", "2026-11-16")).toBe("Message 2026-11-16.eml");
+    const hostile = emlFileName("../../.zshrc\u202eexe\u0000", "2026-11-16");
+    expect(hostile).not.toMatch(/[/\\\p{Cc}\p{Cf}]/u);
+    expect(hostile.startsWith(".")).toBe(false);
+    expect(hostile.endsWith(" 2026-11-16.eml")).toBe(true);
+  });
+
+  it("numbers the letters of a folder so that sorting by name reads the thread in order", () => {
+    const names = emlFolderNames([
+      { subject: "Lunch", day: "2026-11-14" },
+      { subject: "Re: Lunch", day: "2026-11-15" },
+      { subject: "Re: Lunch", day: "2026-11-15" },
+    ]);
+    expect(names).toEqual([
+      "01 Lunch 2026-11-14.eml",
+      "02 Re: Lunch 2026-11-15.eml",
+      "03 Re: Lunch 2026-11-15.eml",
+    ]);
+    expect(new Set(names).size).toBe(names.length);
+    expect([...names].sort()).toEqual(names);
+  });
+
+  it("pads the number to the width of the count, and keeps it within the length limit", () => {
+    const names = emlFolderNames(
+      Array.from({ length: 120 }, (_, i) => ({
+        subject: "ź".repeat(300),
+        day: `2026-11-${10 + (i % 9)}`,
+      })),
+    );
+    expect(names[0]?.startsWith("001 ")).toBe(true);
+    expect(names[119]?.startsWith("120 ")).toBe(true);
+    expect([...names].sort()).toEqual(names);
+    for (const name of names) {
+      expect(bytes(name)).toBeLessThanOrEqual(MAX_FILE_NAME_BYTES);
+      expect(name.endsWith(".eml")).toBe(true);
+      expect(wellFormed(name)).toBe(true);
+    }
+  });
+
+  it("puts a taken name's number before the extension", () => {
+    expect(numberedFileName("01 Lunch 2026-11-14.eml", 1)).toBe("01 Lunch 2026-11-14.eml");
+    expect(numberedFileName("01 Lunch 2026-11-14.eml", 2)).toBe("01 Lunch 2026-11-14 2.eml");
+    expect(numberedFileName("README", 3)).toBe("README 3");
   });
 });

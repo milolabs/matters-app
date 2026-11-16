@@ -5,6 +5,8 @@
 - Amends: [0024](0024-rendering-mail-html.md) (rule 3: the sanitizer also rewrites what a
   message's style sheets ask about the medium; the reader's frame has a second place, the print
   view)
+- Amended by: [0145](0145-save-a-message-as-a-file-and-back-up-what-matters-keeps.md) (rule 1: Save as .eml… joins the File menu and the More
+  menu on the same terms; "Not in this decision: export as .eml" is decided there)
 - Builds on: [0012](0012-performance-budgets.md), [0036](0036-settings-window.md),
   [0037](0037-remembering-image-choices.md), [0043](0043-received-attachments.md),
   [0047](0047-hostile-mail-corpus.md), [0056](0056-acting-on-rows-of-the-list.md),

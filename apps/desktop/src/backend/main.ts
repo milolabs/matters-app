@@ -4,7 +4,7 @@
 // not here either: they live in the main process and pass through the router untouched, over
 // the dedicated port main hands over.
 import "./traceStart.ts";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { AutoconfigDiscovery } from "@matters/adapter-autoconfig";
 import { MarkdownComposeRenderer } from "@matters/adapter-compose";
@@ -12,7 +12,7 @@ import { registrableDomain } from "@matters/adapter-publicsuffix";
 import type { RpcPort } from "@matters/adapter-secrets";
 import { createSqliteReader, createSqliteReaderIfCurrent } from "@matters/adapter-sqlite";
 import type { BackendEvent, NoticeToMain } from "@matters/contracts";
-import type { SyncStatus } from "@matters/core";
+import { isMessageKey, type SyncStatus } from "@matters/core";
 import { toAttachmentInfo } from "./attachmentInfo.ts";
 import {
   BOOT_STAGE_MESSAGE,
@@ -108,6 +108,11 @@ interface Backend {
   readonly deps: BackendDeps;
   /** What main has granted and the page has not used yet. */
   readonly grants: GrantBook;
+  /**
+   * Requests only main's own line may make (ADR 0145): they carry a path from main's dialog, so
+   * no page can. Null for any other request, which goes to `handle` as a page's would.
+   */
+  mainOnly(request: unknown): Promise<Record<string, unknown> | null>;
   /** Tells every window which moves are still inside their undo window (a window just opened). */
   announceMoves(): void;
   /** A window just opened: a catch-up said a moment ago reaches it too, and only it. */
@@ -210,6 +215,8 @@ async function createBackend(): Promise<Backend> {
         broadcast({ type: "attachmentProgress", id, fraction }),
       onReceivedProgress: (messageKey, partId, bytes, totalBytes) =>
         broadcast({ type: "receivedProgress", messageKey, partId, bytes, totalBytes }),
+      onSourceProgress: (job, bytes, totalBytes) =>
+        toMain({ type: "sourceProgress", job, bytes, totalBytes }),
       onSendProgress: (operationId, sentBytes, totalBytes) =>
         broadcast({ type: "sendProgress", operationId, sentBytes, totalBytes }),
       onCaptured: (ids) => attachments?.captured(ids),
@@ -451,6 +458,7 @@ async function createBackend(): Promise<Backend> {
       storage,
     },
     grants,
+    mainOnly: (request) => mainOnlyRequest(host, request),
     announceMoves: () => void publishMoves(),
     windowOpened: (send) => notifier?.windowOpened(send),
     async close() {
@@ -495,6 +503,44 @@ async function shutdown(code: number): Promise<never> {
   process.exit(code);
 }
 
+/**
+ * Saving a message as a file (ADR 0145): main names the job, the message and the path its dialog
+ * gave; the sync worker writes it. The shapes are checked here too: main is trusted, its messages
+ * still have a fixed form.
+ */
+async function mainOnlyRequest(
+  host: Pick<SyncHost, "command">,
+  raw: unknown,
+): Promise<Record<string, unknown> | null> {
+  const request = (raw ?? {}) as Record<string, unknown>;
+  const { type, requestId, job } = request;
+  if (type !== "saveSource" && type !== "stopSource") return null;
+  if (typeof requestId !== "string" || typeof job !== "string" || job.length > 100) {
+    return { type: "error", requestId, ok: false, code: "invalidRequest", message: "bad request" };
+  }
+  if (type === "stopSource") {
+    await host.command({ name: "stopSource", job });
+    return { type, requestId, ok: true };
+  }
+  const { messageKey, target, overwrite } = request;
+  if (!isMessageKey(messageKey) || typeof target !== "string" || !isAbsolute(target)) {
+    return { type: "error", requestId, ok: false, code: "invalidRequest", message: "bad request" };
+  }
+  try {
+    const outcome = await host.command({
+      name: "saveSource",
+      job,
+      messageKey,
+      target,
+      overwrite: overwrite === true,
+    });
+    if ("message" in outcome) console.error(`matters-backend: save as file: ${outcome.message}`);
+    return { type, requestId, ok: true, outcome: { kind: outcome.kind } };
+  } catch {
+    return { type, requestId, ok: true, outcome: { kind: "failed" } };
+  }
+}
+
 parentPort.on("message", ({ data, ports }) => {
   const type = (data as { type?: unknown } | null)?.type;
   if (type === "shutdown") {
@@ -524,7 +570,8 @@ parentPort.on("message", ({ data, ports }) => {
     // Main's own line (ADR 0043, rule 10): requests and answers, none of the renderer's events,
     // and the banners and badge for main to show (ADR 0071, rule 8).
     port.on("message", async ({ data: request }) => {
-      port.postMessage(await handle((await ready).deps, request));
+      const backend = await ready;
+      port.postMessage((await backend.mainOnly(request)) ?? (await handle(backend.deps, request)));
     });
     port.start();
     mainLine = port;

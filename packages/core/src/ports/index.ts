@@ -26,6 +26,7 @@ import type {
   SendLane,
   StoredAttachment,
 } from "../domain/attachment.ts";
+import type { BackupFindings, SchemaObject } from "../domain/backup.ts";
 import type { BrowserSignInResult, OAuthProvider, TokenRenewal } from "../domain/browserSignIn.ts";
 import type { Draft } from "../domain/draft.ts";
 import type {
@@ -1370,7 +1371,23 @@ export type PartDownload =
  */
 export interface MailAttachmentPort {
   download(location: MessageLocation, partId: string, signal?: AbortSignal): Promise<PartDownload>;
+  /**
+   * The whole message as the server has it, byte for byte (ADR 0145, rule 2): IMAP `BODY.PEEK[]`,
+   * so it is not marked as read; over Graph the message's MIME (`$value`). Streamed: no more than
+   * a chunk is held. `gone` as for a part: the message, its folder or its UIDs are not there any
+   * more. `size` is what the server says the message is, when it says.
+   */
+  source(location: MessageLocation, signal?: AbortSignal): Promise<SourceDownload>;
 }
+
+/** A message's source, opened as a stream of its bytes as the server has them (ADR 0145). */
+export type SourceDownload =
+  | {
+      readonly kind: "found";
+      readonly content: AsyncIterable<Uint8Array>;
+      readonly size?: number;
+    }
+  | { readonly kind: "gone" };
 
 /** A logged-in connection for syncing. Always `close()` it. */
 export interface MailConnection {
@@ -1553,6 +1570,39 @@ export interface ReceivedFilesPort {
   /** Everything the cache holds, partial files included. */
   list(): Promise<readonly CachedFile[]>;
   remove(files: readonly CachedFile[]): Promise<void>;
+}
+
+/**
+ * Where a message saved as a file goes (ADR 0145, rule 2): a path main took from the person's
+ * dialog, never one a page named. The file is hostile content handed over as a file, written as a
+ * received file is: through a temporary name beside the target (a name that starts with a dot,
+ * mode 0600, so never executable) and a rename at the end, so a broken or stopped save never
+ * leaves a file under the name. Backpressure is respected and no more than a chunk is held.
+ * `onBytes` gets the running total. With `overwrite` false a file that is there is never replaced:
+ * the write rejects with an error whose `code` is `EEXIST`. On any failure, an abort included,
+ * the temporary file is removed and the error is rethrown.
+ */
+export interface SourceFilesPort {
+  write(
+    target: string,
+    overwrite: boolean,
+    content: AsyncIterable<Uint8Array>,
+    onBytes: (written: number) => void,
+    signal?: AbortSignal,
+  ): Promise<number>;
+}
+
+/** A consistent copy of the database, and the checks of a file to restore (ADR 0145). */
+export interface DatabaseBackupPort {
+  /**
+   * Writes a consistent copy of the database at `source` to `target`, which must not exist,
+   * while other connections keep writing: one read transaction, so the copy is one moment of it.
+   */
+  copy(source: string, target: string): void;
+  /** Opens a file nobody vouches for read-only, with every defence the driver offers, and reads it. */
+  inspect(path: string): BackupFindings;
+  /** The schema this build's own migrations make for `version`, built in memory. */
+  expectedSchema(version: number): readonly SchemaObject[];
 }
 
 // --- Agents (ADR 0051, 0052) ---

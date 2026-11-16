@@ -120,6 +120,17 @@ try {
   report.seededEntries = entries.length;
   check(undeclared.length === 0, `undeclared entries in the data folder: ${undeclared.join(", ")}`);
 
+  // A restore waiting for the next start and a database a restore set aside (ADR 0145): declared,
+  // and erased with the mail. Fakes: no start between here and the erase runs the swap.
+  const restore = join(userData, "restore");
+  mkdirSync(join(restore, "set-aside", "20261116T153000Z"), { recursive: true });
+  writeFileSync(join(restore, "pending.db"), "a restore waiting (a fake)");
+  writeFileSync(join(restore, "pending.json"), "{}");
+  writeFileSync(join(restore, "held.json"), '["acc1"]');
+  writeFileSync(join(restore, "set-aside", "20261116T153000Z", "matters.db"), "set aside (a fake)");
+  const withRestore = undeclaredEntries(ALL_HOLDINGS, readdirSync(userData).sort(), "matters.db");
+  check(withRestore.length === 0, `the restore folder is not declared: ${withRestore.join(", ")}`);
+
   // 2. A fake earlier copy, and the marker a finished move leaves.
   mkdirSync(earlier, { recursive: true });
   writeFileSync(join(earlier, "unclosed.db"), "the old mailbox (a fake)");
@@ -143,6 +154,7 @@ try {
     JSON.parse(readFileSync(join(userData, MARKER), "utf8")).state === "done",
     "the marker is not done",
   );
+  check(!existsSync(restore), "the waiting restore or the set-aside database stayed");
   check(existsSync(join(earlier, "unclosed.db")), "the earlier copy was touched");
   check(!existsSync(join(temp, "matters-agent-smoke1")), "an agent's temp folder stayed");
   check(!existsSync(join(temp, "matters-codex-smoke2")), "a codex temp folder stayed");

@@ -1735,6 +1735,11 @@ export interface MainEraseOverview {
    */
   readonly agentKeys?: number;
   readonly earlier: { readonly bytes: number; readonly sinceMs: number | null } | null;
+  /**
+   * Databases a restore set aside, and whether a restore waits (ADR 0145, rule 9). They go with
+   * the mail. Absent: none.
+   */
+  readonly restores?: { readonly setAside: number; readonly pending: boolean };
 }
 
 /** The database's part of the erase review, measured on the read thread (ADR 0138, rule 9). */
@@ -3059,7 +3064,14 @@ export type NoticeToMain =
   /** Take back the banners of these messages: read, archived or deleted since (ADR 0108). */
   | { readonly type: "close"; readonly keys: readonly number[] }
   /** Whether banners are paused, for the app menu (ADR 0108); sent at start and on every change. */
-  | { readonly type: "pause"; readonly enabled: boolean; readonly untilMs: number | null };
+  | { readonly type: "pause"; readonly enabled: boolean; readonly untilMs: number | null }
+  /** A message being saved as a file, for main's job (ADR 0145, rule 5): numbers, never stored. */
+  | {
+      readonly type: "sourceProgress";
+      readonly job: string;
+      readonly bytes: number;
+      readonly totalBytes: number;
+    };
 
 /** What main says about being the default mail app, to Settings › About (ADR 0143, rule 2). */
 export interface DefaultMailInfo {
@@ -3080,4 +3092,60 @@ export interface MailtoPrefill {
   readonly subject: string;
   /** Markdown that reads as the link's text. */
   readonly body: string;
+}
+
+// --- Backups (ADR 0145) ---
+
+/** A restore waiting for the next start, as main keeps it (`restore/pending.json`). */
+export interface PendingRestoreInfo {
+  readonly version: 1;
+  /** The folder the database in use goes to at the swap, `20261116T153000Z`. */
+  readonly setAside: string;
+  /** Accounts whose credentials this Mac holds back after the swap (rule 9). */
+  readonly holdAccounts: readonly string[];
+  readonly preparedAtMs: number;
+  readonly messages: number;
+  readonly accounts: number;
+  /** Outbox items the restore holds, so nothing is sent twice (rule 10). */
+  readonly heldSends: number;
+}
+
+/** A database a restore set aside, kept until the person removes it (rule 9). */
+export interface SetAsideInfo {
+  readonly name: string;
+  readonly atMs: number;
+  readonly bytes: number;
+}
+
+/** What runs, for the window's busy line. */
+export type BackupJobState =
+  | { readonly kind: "idle" }
+  | { readonly kind: "backingUp"; readonly writtenBytes: number; readonly databaseBytes: number }
+  | { readonly kind: "copyingIn" }
+  | { readonly kind: "checking" };
+
+export type BackupAnswer =
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "busy" }
+  | { readonly kind: "stopped" }
+  | { readonly kind: "done"; readonly name: string; readonly bytes: number }
+  | { readonly kind: "failed"; readonly text: string };
+
+export type RestoreAnswer =
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "busy" }
+  | { readonly kind: "stopped" }
+  | {
+      readonly kind: "refused";
+      readonly reason: "notSqlite" | "damaged" | "foreign" | "newer" | "schema";
+      readonly text: string;
+    }
+  | { readonly kind: "ready"; readonly pending: PendingRestoreInfo }
+  | { readonly kind: "failed"; readonly text: string };
+
+/** What Settings › Storage shows of backups. */
+export interface BackupOverview {
+  readonly pending: PendingRestoreInfo | null;
+  readonly setAside: readonly SetAsideInfo[];
+  readonly job: BackupJobState;
 }

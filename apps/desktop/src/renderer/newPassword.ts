@@ -28,7 +28,12 @@ export function signInStopped(status: SyncStatus): boolean {
  */
 export function passwordRejected(status: SyncStatus): boolean {
   return (
-    signInStopped(status) && status.state === "error" && newPasswordCanFix(status.detail?.refusal)
+    signInStopped(status) &&
+    status.state === "error" &&
+    newPasswordCanFix(status.detail?.refusal) &&
+    // Nothing saved on this Mac (ADR 0145, rule 9) is not a refusal: the row says so and offers
+    // its button, and the form does not open by itself over every account with no password.
+    status.detail?.refusal !== "notSaved"
   );
 }
 

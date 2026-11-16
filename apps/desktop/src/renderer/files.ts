@@ -99,6 +99,57 @@ export async function askPrint(action: PrintAction, doc: PrintDocument): Promise
   return (await reply).answer;
 }
 
+/** One letter to save as a file (ADR 0145): its key, and what its name is made from. */
+export interface EmlLetter {
+  readonly messageKey: number;
+  readonly subject: string;
+  readonly dateMs: number;
+}
+
+/** How a save of letters as files ended, as main says it. */
+export type EmlResult =
+  | { readonly kind: "cancelled" | "busy" | "invalid" }
+  | { readonly kind: "done"; readonly saved: number; readonly problem: string | null };
+
+/** Saves letters as files (ADR 0145): main asks where and says how it ended. */
+export async function askEml(letters: readonly EmlLetter[]): Promise<EmlResult> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: EmlResult }>("mattersEmlAnswer", requestId);
+  window.postMessage({ mattersEml: { requestId, action: "save", letters } }, "*");
+  return (await reply).answer;
+}
+
+/** Stops the save that runs; the letter being written leaves nothing behind. */
+export function stopEml(): void {
+  window.postMessage({ mattersEml: { requestId: nextRequestId(), action: "stop" } }, "*");
+}
+
+/** How far a save is: the letter (from 0) of how many, and its bytes; null when it ended. */
+export interface EmlProgressInfo {
+  readonly index: number;
+  readonly count: number;
+  readonly bytes: number;
+  readonly totalBytes: number;
+}
+
+/** The menu asked for Save as .eml…, or main says how far a save is. */
+export function onEmlEvents(handlers: {
+  ask(): void;
+  progress(progress: EmlProgressInfo | null): void;
+}): () => void {
+  const onMessage = (event: MessageEvent) => {
+    const data: unknown = event.data;
+    if (event.source !== window || !isRecord(data)) return;
+    if (data.mattersEmlAsk === true) handlers.ask();
+    if ("mattersEmlProgress" in data) {
+      const p = data.mattersEmlProgress;
+      handlers.progress(isRecord(p) ? (p as unknown as EmlProgressInfo) : null);
+    }
+  };
+  window.addEventListener("message", onMessage);
+  return () => window.removeEventListener("message", onMessage);
+}
+
 /** Tells main whether one thread is open in the reader, for the menu's Print… and Save as PDF…. */
 export function tellPrintAvailable(available: boolean): void {
   window.postMessage({ mattersPrintAvailable: available }, "*");
@@ -127,6 +178,28 @@ export async function askMainStorage(
   const requestId = nextRequestId();
   const reply = answer<{ answer: MainStorageInfo | null }>("mattersStorageAnswer", requestId);
   window.postMessage({ mattersStorage: { requestId, action } }, "*");
+  return (await reply).answer;
+}
+
+/**
+ * Backups (ADR 0145): main shows every dialog and runs every job; the page asks and hears the
+ * answer. A set-aside database is named by its folder. Null when main did not answer.
+ */
+export async function askBackup(
+  action:
+    | "backupOverview"
+    | "backup"
+    | "restoreBackup"
+    | "restoreSetAside"
+    | "stopBackup"
+    | "cancelRestore"
+    | "removeSetAside"
+    | "restartToRestore",
+  name?: string,
+): Promise<unknown> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: unknown }>("mattersStorageAnswer", requestId);
+  window.postMessage({ mattersStorage: { requestId, action, ...(name ? { name } : {}) } }, "*");
   return (await reply).answer;
 }
 

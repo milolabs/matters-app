@@ -18,6 +18,9 @@
  * - `signInAgain`: a browser sign-in has ended: the provider refused the refresh token
  *   (withdrawn, a changed password, unused for too long). Only a new sign-in in the browser
  *   ends it (ADR 0133, rule 8).
+ * - `notSaved`: no server refused anything: this Mac holds no password or sign-in for the
+ *   account, as after a restore from a backup made elsewhere (ADR 0145, rule 9). Entering it
+ *   again ends it.
  * - `unknown`: nothing above could be told from the answer.
  */
 export type SignInRefusal =
@@ -32,6 +35,7 @@ export type SignInRefusal =
   | "unavailable"
   | "throttled"
   | "signInAgain"
+  | "notSaved"
   | "unknown";
 
 const REFUSALS: ReadonlySet<string> = new Set<SignInRefusal>([
@@ -46,6 +50,7 @@ const REFUSALS: ReadonlySet<string> = new Set<SignInRefusal>([
   "unavailable",
   "throttled",
   "signInAgain",
+  "notSaved",
   "unknown",
 ]);
 
@@ -242,6 +247,7 @@ export function newPasswordCanFix(refusal: SignInRefusal | undefined): boolean {
     refusal === "credentials" ||
     refusal === "appPassword" ||
     refusal === "expired" ||
+    refusal === "notSaved" ||
     refusal === "unknown"
   );
 }

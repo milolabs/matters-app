@@ -39,6 +39,8 @@ export interface SyncHostHandlers {
   onAttachmentProgress(id: string, fraction: number): void;
   onSendProgress(operationId: string, sentBytes: number, totalBytes: number): void;
   onReceivedProgress(messageKey: number, partId: string, bytes: number, totalBytes: number): void;
+  /** A message being saved as a file (ADR 0145, rule 5). */
+  onSourceProgress?(job: string, bytes: number, totalBytes: number): void;
   /** These attachments are no longer being copied. */
   onCaptured(ids: readonly string[]): void;
   onSynced(accountId: string, scope: string, documents: number, durationMs: number): void;
@@ -251,6 +253,12 @@ export class SyncHost {
           return this.options.handlers.onReceivedProgress(
             message.messageKey,
             message.partId,
+            message.bytes,
+            message.totalBytes,
+          );
+        case "sourceProgress":
+          return this.options.handlers.onSourceProgress?.(
+            message.job,
             message.bytes,
             message.totalBytes,
           );

@@ -51,6 +51,7 @@ export * from "./agentStore.ts";
 export * from "./arrivals.ts";
 export * from "./attachmentStore.ts";
 export * from "./automatedBodies.ts";
+export * from "./backup.ts";
 export * from "./bodyStore.ts";
 export * from "./cursorStore.ts";
 export * from "./database.ts";

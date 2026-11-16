@@ -347,13 +347,19 @@ describe("SyncScheduler", () => {
     expect(t.clock.pendingDelays()).toEqual([]);
   });
 
-  it("reports a missing password as a credentials error without retrying", async () => {
+  it("reports a missing password as nothing saved on this Mac, without retrying (ADR 0145, rule 9)", async () => {
     const t = await setup();
     await t.credentials.delete(account.id);
     t.scheduler.add(account);
     await settle();
-    expect(last(t.statuses)).toMatchObject({ state: "error", kind: "credentials" });
+    // A refusal a new password ends, so the account's row asks for one in place (ADR 0113).
+    expect(last(t.statuses)).toMatchObject({
+      state: "error",
+      kind: "auth",
+      detail: { refusal: "notSaved" },
+    });
     expect(t.connector.connects).toBe(0);
+    expect(t.clock.pendingDelays()).toEqual([]);
     await t.scheduler.stop();
   });
 });

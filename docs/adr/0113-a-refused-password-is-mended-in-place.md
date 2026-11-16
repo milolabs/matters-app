@@ -6,6 +6,8 @@
   password now can)
 - Relates to: [0114](0114-a-refused-sign-in-says-why.md) (why a server refused: which refusals
   stop the work and which open the form)
+- Amended by: [0145](0145-save-a-message-as-a-file-and-back-up-what-matters-keeps.md) (rule 2: an account with no password or sign-in saved on
+  this Mac at all is refused as `notSaved`; its row says so beside *Change password*)
 
 ## Context
 

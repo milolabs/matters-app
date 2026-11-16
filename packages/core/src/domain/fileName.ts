@@ -261,18 +261,71 @@ export function isRunnableFile(name: string): boolean {
   return RUNNABLE.has(trimmed.slice(dot + 1).toLowerCase());
 }
 
+/** `YYYY-MM-DD`, or nothing: a day that is anything else is left out of a name. */
+const isDay = (day: string) => /^\d{4}-\d{2}-\d{2}$/.test(day);
+
+/**
+ * A name made from a subject (ADR 0144, rule 5; ADR 0145, rule 4): `lead` (a number in a folder,
+ * or nothing), the subject, the day and the extension, `Lunch on Friday 2026-11-16.pdf`. The
+ * subject is a stranger's text, so it goes through `safeFileName` first: no separator, no control
+ * or format character, no leading dot (never hidden). It is then cut so that the whole name stays
+ * within 200 bytes, never inside a character, and the lead, the day and the extension are always
+ * kept. A subject with nothing left is `Message`. `day` is `YYYY-MM-DD`, and is left out when it
+ * is anything else.
+ */
+function subjectFileName(lead: string, subject: string, day: string, extension: string): string {
+  const tail = `${isDay(day) ? ` ${day}` : ""}.${extension}`;
+  const words = stripEdges(
+    cutToBytes(
+      safeFileName(subject, "Message"),
+      MAX_FILE_NAME_BYTES - byteLength(lead) - byteLength(tail),
+    ),
+  );
+  return `${lead}${words === "" ? "Message" : words}${tail}`;
+}
+
 /**
  * The name offered for a thread saved as a PDF (ADR 0144, rule 5): its subject and the day of its
- * newest letter, `Lunch on Friday 2026-11-16.pdf`. The subject is a stranger's text, so it goes
- * through `safeFileName` first: no separator, no control or format character, no leading dot
- * (never hidden). It is then cut so that the whole name stays within 200 bytes, never inside a
- * character, and the day and the extension `.pdf` are always kept. A subject with nothing left is
- * `Message`. `day` is `YYYY-MM-DD`, and is left out when it is anything else.
+ * newest letter, `Lunch on Friday 2026-11-16.pdf`, by the rules of `subjectFileName`.
  */
 export function pdfFileName(subject: string, day: string): string {
-  const tail = `${/^\d{4}-\d{2}-\d{2}$/.test(day) ? ` ${day}` : ""}.pdf`;
-  const words = stripEdges(
-    cutToBytes(safeFileName(subject, "Message"), MAX_FILE_NAME_BYTES - byteLength(tail)),
+  return subjectFileName("", subject, day, "pdf");
+}
+
+/**
+ * The name offered for one letter saved as a file (ADR 0145, rule 4): its subject and its day,
+ * `Lunch on Friday 2026-11-16.eml`, by the same rules as a PDF's.
+ */
+export function emlFileName(subject: string, day: string): string {
+  return subjectFileName("", subject, day, "eml");
+}
+
+/** One letter of a thread saved into a folder: its subject and its day (`YYYY-MM-DD`). */
+export interface EmlLetter {
+  readonly subject: string;
+  readonly day: string;
+}
+
+/**
+ * The names of a thread's letters saved into a folder (ADR 0145, rule 4), in the order given
+ * (the thread's, oldest first): each starts with its place, padded so that every name has the
+ * same width, `01 Lunch 2026-11-14.eml`, `02 Re: Lunch 2026-11-16.eml`, so a folder sorted by
+ * name reads the thread in order and no two names are the same.
+ */
+export function emlFolderNames(letters: readonly EmlLetter[]): readonly string[] {
+  const width = Math.max(2, String(letters.length).length);
+  return letters.map((letter, i) =>
+    subjectFileName(`${String(i + 1).padStart(width, "0")} `, letter.subject, letter.day, "eml"),
   );
-  return `${words === "" ? "Message" : words}${tail}`;
+}
+
+/**
+ * "Report 2026-11-16.eml" is "Report 2026-11-16 2.eml" the second time (ADR 0043, rule 13; ADR
+ * 0145, rule 2): when a name is taken in the chosen folder, the number goes before the extension,
+ * and nothing there is replaced.
+ */
+export function numberedFileName(name: string, n: number): string {
+  if (n <= 1) return name;
+  const dot = name.lastIndexOf(".");
+  return dot <= 0 ? `${name} ${n}` : `${name.slice(0, dot)} ${n}${name.slice(dot)}`;
 }

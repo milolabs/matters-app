@@ -97,6 +97,8 @@ export class NoticeShower {
       this.host.paused({ enabled: event.enabled, untilMs: event.untilMs });
       return;
     }
+    // A message being saved as a file is main's own job, not a banner (ADR 0145).
+    if (event.type === "sourceProgress") return;
     if (!event.whenFront && this.host.focused()) return;
     // One sound for mail that came together, on the first banner.
     event.banners.forEach((text, i) => {

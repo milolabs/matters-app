@@ -4,6 +4,7 @@ import type { ThemeSets } from "@matters/contracts";
 import { ipcRenderer, webUtils } from "electron";
 import { readBootReport } from "../backend/bootStage.ts";
 import { readThemeSets } from "../main/appearance.ts";
+import { CHANNEL_EML_ASK, CHANNEL_EML_PROGRESS } from "../main/emlShapes.ts";
 import { CHANNEL_PRINT_ASK } from "../main/printShapes.ts";
 import {
   applyThemeColors,
@@ -11,6 +12,7 @@ import {
   CHANNEL_APPEARANCE_COLORS,
   createAppearanceBridge,
 } from "./appearanceBridge.ts";
+import { createEmlBridge } from "./emlBridge.ts";
 import { CHANNEL_ERASE_PROGRESS, createEraseBridge } from "./eraseBridge.ts";
 import { createFileBridge } from "./fileBridge.ts";
 import { CHANNEL_MAILTO_WAITING, createMailtoBridge } from "./mailtoBridge.ts";
@@ -218,6 +220,19 @@ const printing = createPrintBridge(
 );
 window.addEventListener("message", (event) => printing.message(event));
 ipcRenderer.on(CHANNEL_PRINT_ASK, (_event, action: unknown) => printing.ask(action));
+
+// Saving the open thread's letters as files (ADR 0145): the page sends keys, subjects and dates,
+// hears when the menu asks, and hears how far a save is. No path crosses.
+const eml = createEmlBridge(
+  {
+    invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+    post: (message) => window.postMessage(message, "*"),
+  },
+  window,
+);
+window.addEventListener("message", (event) => eml.message(event));
+ipcRenderer.on(CHANNEL_EML_ASK, () => eml.ask());
+ipcRenderer.on(CHANNEL_EML_PROGRESS, (_event, progress: unknown) => eml.progress(progress));
 
 // Browser sign-in (ADR 0133): main opens the browser and keeps the tokens; the page gets a handle.
 const signIn = createSignInBridge(

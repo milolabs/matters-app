@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-11-09
+- Amended by: [0145](0145-save-a-message-as-a-file-and-back-up-what-matters-keeps.md) (Storage gains Backups: Back Up…, Restore from a
+  Backup…, and the databases a restore set aside)
 
 ## Context
 

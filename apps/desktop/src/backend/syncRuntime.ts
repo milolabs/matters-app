@@ -22,8 +22,10 @@ import type {
   ProcessDeps,
   ReceivedFilesPort,
   RegistrableDomainFn,
+  SaveSourceOutcome,
   ServerDiscoveryPort,
   Sha256Hex,
+  SourceFilesPort,
   StoredAccount,
 } from "@matters/core";
 import {
@@ -34,6 +36,7 @@ import {
   draftFor,
   failureDetailOf,
   incomingTarget,
+  MessageSources,
   ReceivedDownloads,
   RejectedPasswords,
   receivedId,
@@ -116,6 +119,11 @@ export interface SyncRuntimeOptions {
    * removed with a message.
    */
   readonly received?: ReceivedFilesPort;
+  /**
+   * Where a message saved as a file is written (ADR 0145, rule 2), at a path main chose. Without
+   * it a save answers `failed`.
+   */
+  readonly sources?: SourceFilesPort;
   /**
    * The demo server's answers for the seed's account, in a run with no server (see demoMail.ts).
    * Only the seed's worker is given one; it is consulted for no other account.
@@ -388,6 +396,37 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
     }
   };
 
+  // Messages saved as files (ADR 0145, rules 2 and 5): fetched whole over a connection of their
+  // own, like a received file, and written straight to the place main chose. Each save is a job
+  // main named, which main can stop; progress goes to main, at most four times a second.
+  const sources = options.sources
+    ? new MessageSources({ store: storage.store, files: options.sources, open: openForDownload })
+    : null;
+  const sourceJobs = new Map<string, AbortController>();
+  const sourceProgress = new ProgressThrottle<{ bytes: number; total: number }>(clock, (job, v) =>
+    post({ type: "sourceProgress", job, bytes: v.bytes, totalBytes: v.total }),
+  );
+  const saveSource = async (
+    job: string,
+    messageKey: number,
+    target: string,
+    overwrite: boolean,
+  ): Promise<SaveSourceOutcome> => {
+    if (!sources) return { kind: "failed", message: "Saving messages is not available" };
+    if (sourceJobs.has(job)) return { kind: "failed", message: "That job is running already" };
+    const controller = new AbortController();
+    sourceJobs.set(job, controller);
+    try {
+      return await sources.save(messageKey, target, overwrite, {
+        signal: controller.signal,
+        onBytes: (bytes, total) => sourceProgress.report(job, { bytes, total }),
+      });
+    } finally {
+      sourceJobs.delete(job);
+      sourceProgress.forget(job);
+    }
+  };
+
   const fetchForwarded = async (
     messageKey: number,
     partId: string,
@@ -638,6 +677,11 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         return attachments.probeLimit(command.accountId);
       case "fetchReceived":
         return fetchReceived(command.messageKey, command.partId);
+      case "saveSource":
+        return saveSource(command.job, command.messageKey, command.target, command.overwrite);
+      case "stopSource":
+        sourceJobs.get(command.job)?.abort();
+        return null;
       case "sendAction":
         return send.sendAction(command.operationId, command.action);
       case "createView":
@@ -831,6 +875,8 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
       // Runs of the assistant are cut short first: they are child processes of this thread.
       const agentStopped = agent?.stop();
       downloads?.abortAll();
+      // A save cut short removes its temporary file; nothing is left under the name.
+      for (const controller of sourceJobs.values()) controller.abort();
       await Promise.race([
         Promise.all([
           smallRunner.stop(),

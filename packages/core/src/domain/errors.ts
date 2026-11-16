@@ -27,6 +27,22 @@ export class CredentialsUnavailableError extends Error {
 }
 
 /**
+ * This Mac holds no password or sign-in for the account (ADR 0145, rule 9): after a restore, an
+ * account of the backup that the vault here has nothing for, or holds back. It is a sign-in that
+ * cannot be made (`kind` "auth", refusal `notSaved`), so it is marked and not tried again on its
+ * own, and the account's row asks for the password or the sign-in in place (ADR 0113, rule 2).
+ */
+export class CredentialMissingError extends Error {
+  readonly kind = "auth";
+  readonly detail: { readonly refusal: "notSaved" };
+  constructor(message = "No password or sign-in for this account is saved on this Mac") {
+    super(message);
+    this.name = "CredentialMissingError";
+    this.detail = { refusal: "notSaved" };
+  }
+}
+
+/**
  * A browser sign-in has ended (ADR 0133, rule 8): the provider refused the refresh token, or a
  * sign-in held for testing was not used within its 10 minutes. It is a refused sign-in like the
  * servers' (`kind` "auth"), with the reason `signInAgain`, so it is marked and not tried again
