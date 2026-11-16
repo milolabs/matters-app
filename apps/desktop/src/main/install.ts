@@ -258,17 +258,22 @@ export async function runInstall(
     stuck = !closed;
     volume = null;
     if (!closed) return "image";
+    // A quit while the image was closing: the helper is not started, so nothing is swapped in
+    // and reopened after the person left.
+    if (ask.signal.aborted) return "cancelled";
     if (!(await deps.startSwap(ask.pid, ask.folder))) return "restart";
     // The helper holds the lock now, and the new app beside the old one is its to move.
     locked = false;
     deps.step({ kind: "restart" });
     return null;
   } finally {
-    if (volume !== null) stuck = !(await detach(deps, volume));
+    // The app's folder first: closing the image can take longer than a quit waits, and the copy
+    // and the lock must not be what is left behind.
     if (locked) {
       quietly(() => deps.removeTree(incoming));
       quietly(() => deps.releaseLock(ask.folder));
     }
+    if (volume !== null) stuck = !(await detach(deps, volume));
     // The folder holds the image's mount point. While the image is open there, only the files
     // downloaded are removed: the open image is read-only, and a removal that went into it would
     // fail there and stop.
