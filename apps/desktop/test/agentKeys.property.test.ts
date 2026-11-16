@@ -18,6 +18,9 @@
 // 4. Nothing stored was produced under a key other than the one in the vault as it is written:
 //    each answer names the key it was given on, and every write of a rule, an instruction, a talk
 //    entry, prepared work, a verdict or a talk's name is checked as it begins.
+// 5. A turn the person asked for is sent only on the key its gate passed for: each ask carries
+//    the key of what the gate found ready, and a request of that ask that leaves names the same.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { visibleText } from "@matters/adapter-mime";
 import type {
   AgentKey,
@@ -62,6 +65,13 @@ const TEXT = "Can we meet on Tuesday?";
 /** A made-up key; one that ends in `-bad` is refused by the stand-in provider. */
 const keyText = (n: number, bad: boolean) =>
   `sk-ant-test-${String(n).padStart(4, "0")}11111111111111111111111111-made-up${bad ? "-bad" : ""}`;
+
+/** The ask of the person's a request belongs to, if any, and the key its last gate passed for. */
+interface Ask {
+  passed: boolean;
+  gated: string | undefined;
+}
+const asks = new AsyncLocalStorage<Ask>();
 
 const account: StoredAccount = {
   id: "acc1",
@@ -165,6 +175,14 @@ class Keyed {
         this.broken.push(
           `${kindOf(request)} left on ${key.id === handed ? "the key handed" : "another key"} with the switch ${handedOn ? "on" : "off"}`,
         );
+      }
+    }
+    // 5. A turn of the person's leaves only on the key its gate passed for.
+    const ask = asks.getStore();
+    if (key !== undefined && ask !== undefined && background === "never") {
+      if (!ask.passed) this.broken.push(`${kindOf(request)} left before its gate passed`);
+      else if (ask.gated !== key.id) {
+        this.broken.push(`${kindOf(request)} left on a key its gate did not pass for`);
       }
     }
     const limited = this.limitNext;
@@ -271,7 +289,8 @@ type Command =
   | { readonly kind: "limit" }
   | { readonly kind: "pass" }
   | { readonly kind: "remember" }
-  | { readonly kind: "askAll" };
+  | { readonly kind: "askAll" }
+  | { readonly kind: "rewrite" };
 
 const command: fc.Arbitrary<Command> = fc.oneof(
   fc.record({ kind: fc.constant("save" as const), bad: fc.boolean() }),
@@ -287,6 +306,7 @@ const command: fc.Arbitrary<Command> = fc.oneof(
   fc.constant({ kind: "pass" as const }),
   fc.constant({ kind: "remember" as const }),
   fc.constant({ kind: "askAll" as const }),
+  fc.constant({ kind: "rewrite" as const }),
 );
 
 async function build(s: fc.Scheduler) {
@@ -389,6 +409,19 @@ async function build(s: fc.Scheduler) {
   slow(storage.store, ["getThread"]);
   slow(insights, ["listRules", "listInstructions", "listTalk"]);
   slow(settings, ["get"]);
+  // The key each gate of the person's passed for: what it found ready, as it passed (property 5).
+  const inner = service as unknown as {
+    gateRuntime: (...args: unknown[]) => Promise<void>;
+    infoOf: (id: string) => AgentRuntimeInfo | null;
+  };
+  const gateRuntime = inner.gateRuntime.bind(service);
+  inner.gateRuntime = async (...args: unknown[]) => {
+    await gateRuntime(...args);
+    const ask = asks.getStore();
+    if (ask === undefined) return;
+    ask.passed = true;
+    ask.gated = inner.infoOf(ID)?.keyId;
+  };
   const current = settings as unknown as { readonly settings: AgentSettings };
   keyed.switchOn = () => keyReadingOn(current.settings, ID);
   keyed.answers = true;
@@ -411,7 +444,7 @@ describe("the person's own API key, in any order (ADR 0141)", () => {
           h.keyed.personAsks = () => asking > 0;
           const person = <T>(p: () => Promise<T>): Promise<T> => {
             asking++;
-            return p().finally(() => {
+            return asks.run({ passed: false, gated: undefined }, p).finally(() => {
               asking--;
             });
           };
@@ -443,6 +476,10 @@ describe("the person's own API key, in any order (ADR 0141)", () => {
               case "askAll":
                 // The question is the person's; the name of its talk is not (it goes by itself).
                 return person(() => h.service.talkAll("When do we meet?")).then(() => null);
+              case "rewrite":
+                return person(() =>
+                  h.service.rewriteDraft({ threadId: "t1" }, "Tuesday is fine, Anna.", "shorter"),
+                ).then(() => null);
               case "limit":
                 h.keyed.limitNext = true;
                 return Promise.resolve(null);
@@ -476,7 +513,7 @@ describe("the person's own API key, in any order (ADR 0141)", () => {
           // What is read from here on answers at once.
           h.waits.live = false;
 
-          // 3 and 4, as they were checked throughout.
+          // 3, 4 and 5, as they were checked throughout.
           expect(h.keyed.broken).toEqual([]);
           expect(h.broken).toEqual([]);
 

@@ -137,8 +137,11 @@ export interface PromptRuntime {
   putVerdicts(ticket: KeyTicket, verdicts: readonly PromptVerdict[]): Promise<boolean>;
   /** The windows of its plan as last seen, for what a turn used. */
   limits(s: AgentSettings): PlanLimits | undefined;
-  /** The last gates of a turn the person asked for (`P0`): it is ready, its plan has room. */
-  gate(s: AgentSettings): Promise<void>;
+  /**
+   * The last gates of a turn the person asked for (`P0`): it is ready, its plan has room. Decided
+   * for the key of `ticket`, the run's, taken before them (ADR 0141, rule 5).
+   */
+  gate(s: AgentSettings, ticket: KeyTicket): Promise<void>;
   /**
    * After a turn answered: records the windows of its plan it saw, and rejects when the key the
    * turn ran on is no longer the runtime's (ADR 0141, rule 5), so nothing it found is kept.
@@ -417,7 +420,7 @@ export class PromptService {
         this.progress(mine, false);
       }, GATE_SHOWN_AFTER_MS);
       try {
-        await on.gate(s);
+        await on.gate(s, turn.ticket);
       } catch (error) {
         throw on.askFailure(error, FAILED, turn.ticket);
       } finally {
@@ -835,6 +838,8 @@ export class PromptService {
         });
         try {
           const before = on.limits(await settings.get());
+          // Only on the key the gate passed for; nothing awaits from here to the request.
+          if (!on.mayGo(ticket, "P0")) return { kind: "stopped" };
           let run: AgentRunResult;
           try {
             run = await loop.call(
@@ -871,6 +876,8 @@ export class PromptService {
       };
       const understand = async (request: AgentRequestBody): Promise<unknown> => {
         const before = on.limits(await settings.get());
+        // Only on the key the gate passed for; nothing awaits from here to the request.
+        if (!on.mayGo(ticket, "P0")) throw new AgentUnavailableError(STOPPED);
         const run = await runtime.run(
           { model: on.modelOf("understand", s), ...request, ...withEffort(effort) },
           { signal },

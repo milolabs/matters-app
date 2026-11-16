@@ -110,4 +110,56 @@ describe("the keys of the runtimes (ADR 0141)", () => {
     expect(await keys.keep(ticket, write)).toBeNull();
     expect(written).toEqual(["rule"]);
   });
+
+  it("holds no ticket while a key is written, and none taken before or meanwhile once it is", async () => {
+    const keys = new RuntimeKeys();
+    const before = keys.ticket("api");
+    const other = keys.ticket("other");
+    const log: string[] = [];
+    const vault = held(log, "vault");
+    let meanwhile = keys.ticket("api");
+    const writing = keys.change("api", async () => {
+      meanwhile = keys.ticket("api");
+      await vault.run();
+    });
+    let quiet = false;
+    void keys.quiet("api").then(() => {
+      quiet = true;
+    });
+    await settle();
+    // Not even the key before, which the vault still keeps, nor a ticket taken now.
+    expect(keys.holds(before)).toBe(false);
+    expect(keys.holds(meanwhile)).toBe(false);
+    expect(keys.holds(keys.ticket("api"))).toBe(false);
+    expect(keys.mayGoInBackground(meanwhile)).toBe(false);
+    expect(quiet).toBe(false);
+    // Another runtime's key is its own.
+    expect(keys.holds(other)).toBe(true);
+    // The write and the new key are one step: at no moment after does a ticket from before hold.
+    let heldOnce = false;
+    const watch = (async () => {
+      for (let i = 0; i < 20; i++) {
+        heldOnce ||= keys.holds(before) || keys.holds(meanwhile);
+        await Promise.resolve();
+      }
+    })();
+    vault.go();
+    await writing;
+    await watch;
+    expect(heldOnce).toBe(false);
+    expect(keys.holds(before) || keys.holds(meanwhile)).toBe(false);
+    expect(quiet).toBe(true);
+    expect(keys.holds(keys.ticket("api"))).toBe(true);
+  });
+
+  it("ends a change whose write failed, so the key after it holds", async () => {
+    const keys = new RuntimeKeys();
+    await expect(
+      keys.change("api", async () => {
+        throw new Error("vault refused");
+      }),
+    ).rejects.toThrow("vault refused");
+    expect(keys.holds(keys.ticket("api"))).toBe(true);
+    await keys.quiet("api");
+  });
 });
