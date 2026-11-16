@@ -133,13 +133,43 @@ function plainFences(signature: string): boolean {
 }
 
 /**
- * Which lines are inside a fenced code block, its fence lines included (ADR 0142, rule 4). Fences
- * are read from the top, as Markdown reads them: a line that opens one, then the first line below
- * it that closes it. A fence with no line that closes it is text, and the lines under it are read
- * on.
+ * The plain reading of `codeLines` (`placed` false): which lines are code, and the fence left open
+ * at the end, or null.
+ */
+function readPlainly(lines: readonly string[]): {
+  readonly code: boolean[];
+  readonly open: Fence | null;
+} {
+  const n = lines.length;
+  const code = lines.map(() => false);
+  let open: Fence | null = null;
+  for (let i = 0; i < n; i++) {
+    const fence = opens(lines[i] as string);
+    if (fence === null) continue;
+    let j = i + 1;
+    while (j < n && !closes(lines[j] as string, fence)) j++;
+    for (let k = i; k <= Math.min(j, n - 1); k++) code[k] = true;
+    if (j === n) open = fence;
+    i = j;
+  }
+  return { code, open };
+}
+
+/**
+ * Which lines are inside a fenced code block, its fence lines included (ADR 0142, rules 4 and 6).
+ * Fences are read from the top, as Markdown reads them: a line that opens one, then the first line
+ * below it that closes it. How the text is read depends on whether the app may have placed a
+ * signature in it (`placed`).
  *
- * One case is decided for the signature, which the app placed and which is never code: a code
- * block that would hold a `-- ` line.
+ * Text in which the app placed no signature (`placed` false: a model's answer, or the person's own
+ * text above the signature, which has it split off) is read plainly, as markdown-it reads it: a
+ * closed fence is code whatever follows it, and a fence with no line that closes it is code to the
+ * end. So a `-- ` or `--` line in a code block, closed or left open, is code, and the model's code
+ * is never cut at an SQL comment.
+ *
+ * A draft that may hold the app's signature (`placed` true) is read so that the signature placed
+ * is never code. A fence with no line that closes it is text, and the lines under it are read on.
+ * And one case is decided for the signature: a code block that would hold a `-- ` line.
  *
  * - It is closed, and the `-- ` line is code (an SQL comment), when the text under its closing
  *   line, read by this same rule, closes every fence it opens, or has a `-- ` line outside code
@@ -164,7 +194,8 @@ function plainFences(signature: string): boolean {
  * the parts apart, so that code ends where the person's part ends, and the signature and the
  * quote are never in it.
  */
-function codeLines(lines: readonly string[]): boolean[] {
+function codeLines(lines: readonly string[], placed: boolean): boolean[] {
+  if (!placed) return readPlainly(lines).code;
   const n = lines.length;
   const fences = lines.map(opens);
   // The `-- ` lines above line k, so whether one stands between two lines is known at once.
@@ -233,6 +264,13 @@ export type DraftLineKind = "text" | "code" | "quoted" | "delimiter" | "dashes";
  * line numbers. Every reading of a draft in the app comes from this one: the split
  * (`draftSections`, `sectionStarts`), the blocks the agent's text is cut at (`keepOwnBlocks`),
  * the agent's quote check, the renderer and the editor.
+ *
+ * A draft is read as one that may hold the app's signature (`placed`, the default): the split, the
+ * agent's quote check, the renderer and the editor. Text in which the app placed no signature is
+ * read with `placed: false` (`codeLines`): the blocks of a model's answer and of the person's own
+ * text before the turn (`keepOwnBlocks`, `withoutSignature`), both by the same rule, so the
+ * person's blocks are found alike in both. Its `signatureAt` is then only the first delimiter line
+ * outside every fence.
  */
 export interface DraftReading {
   /** The lines, with `\n` line ends. */
@@ -246,9 +284,12 @@ export interface DraftReading {
   readonly quoteAt: number;
 }
 
-export function readDraft(text: string): DraftReading {
+export function readDraft(
+  text: string,
+  { placed = true }: { readonly placed?: boolean } = {},
+): DraftReading {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const code = codeLines(lines);
+  const code = codeLines(lines, placed);
   const kinds: DraftLineKind[] = lines.map((l, i) => {
     if (code[i]) return "code";
     if (QUOTED.test(l)) return "quoted";
@@ -399,8 +440,9 @@ interface Blocks {
 }
 
 function blocksOf(text: string): Blocks {
-  // A block starts at a delimiter line outside a code block, as the draft is read (`readDraft`).
-  const { lines, kinds } = readDraft(text);
+  // A block starts at a delimiter line outside every code block, closed or left open: the text
+  // holds no signature the app placed, so it is read plainly (`readDraft`, `placed: false`).
+  const { lines, kinds } = readDraft(text, { placed: false });
   const at = kinds.flatMap((k, i) => (k === "delimiter" || k === "dashes" ? [i] : []));
   const blocks = at.map((start, i) => {
     const block = lines.slice(start, at[i + 1] ?? lines.length);
@@ -430,14 +472,17 @@ export function signatureBlocks(text: string): string[] {
  * asked to write none; this makes sure, and keeps the person's.
  *
  * `before` is the person's own text the model was given; empty when the text is all the model's
- * (a new message it offered, a reply it prepared). `answer` is what the model wrote.
+ * (a new message it offered, a reply it prepared). `answer` is what the model wrote. Neither holds
+ * a signature the app placed (the person's text has it split off, `splitDraft`), so both are read
+ * plainly and by the same rule (`readDraft` with `placed: false`).
  *
  * - A block is a delimiter line and the lines after it up to the next delimiter line or the end. A
  *   delimiter line is `-- ` with its space anywhere, or `--` on the first line or after an empty
- *   line, outside a fenced code block as `readDraft` reads it (a `-- ` in a code sample is code,
- *   and the fence closing it stays). A `--` right under a line of text underlines a Markdown
- *   heading: it is text, never a delimiter, and starts no block. What stands above the first
- *   delimiter is the answer's body.
+ *   line, outside every fenced code block as markdown-it reads them: a closed fence is code
+ *   whatever follows it, and a fence never closed is code to the end. So a `-- ` in a code sample
+ *   is code and the fence closing it stays, and a model that left a code block open keeps all of
+ *   it. A `--` right under a line of text underlines a Markdown heading: it is text, never a
+ *   delimiter, and starts no block. What stands above the first delimiter is the answer's body.
  * - A block of the answer is the person's when its lines are the same as those of one of the
  *   blocks of `before`, line ends and white space at the end of a line aside. A block the model
  *   reworded is not the person's. Each block of the person's is matched at most once, in whatever
@@ -454,7 +499,9 @@ export function signatureBlocks(text: string): string[] {
  *   person's own blocks are always there, each once.
  *
  * The kept text is the body without white space at its end and then each kept block, the person's
- * as they wrote it, one empty line between each. An answer with no block, and none in `before`, is
+ * as they wrote it, one empty line between each. When the body leaves a code block open and a
+ * block follows it, a line closing that block (its fence character, as many) ends the body, so
+ * the person's blocks put back are not code. An answer with no block, and none in `before`, is
  * kept as it is. The checks of an answer (`keepsGaps` and the others) run on the kept text: a gap
  * in a block of the person's that is put back is theirs and kept; a gap the model moved into a
  * block of its own is cut with that block, and lost.
@@ -486,14 +533,19 @@ export function keepOwnBlocks(before: string, answer: string): string {
   });
   // What the model's blocks did not stand in for comes after them, in the person's order.
   kept.push(...missing.slice(next));
-  return [got.body.join("\n").trimEnd(), ...kept.map((j) => raws[j] as string)]
-    .filter((part) => part !== "")
-    .join("\n\n");
+  let body = got.body.join("\n").trimEnd();
+  // A code block the model left open runs to the end: the person's blocks put back under it
+  // would be code. It is closed first, so they stand under it as theirs.
+  const open = kept.length > 0 ? readPlainly(got.body).open : null;
+  if (open !== null) body = `${body}\n${open.ch.repeat(open.length)}`;
+  return [body, ...kept.map((j) => raws[j] as string)].filter((part) => part !== "").join("\n\n");
 }
 
 /**
- * Text that is all a model's, without a signature block: from its first delimiter line on,
- * everything goes (`keepOwnBlocks` with no text of the person's).
+ * Text that is all a model's, without a signature block: from its first delimiter line outside
+ * every code block on, everything goes (`keepOwnBlocks` with no text of the person's). It is for
+ * text the app has put no signature in yet; a draft with the signature placed is split
+ * (`draftSections`) instead.
  */
 export function withoutSignature(text: string): string {
   return keepOwnBlocks("", text);
