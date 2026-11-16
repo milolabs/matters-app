@@ -447,11 +447,32 @@ describe("an install, in the order of site/install.sh (rules 3 and 4)", () => {
       },
     });
     expect(await runInstall(deps, ask({ signal: abort.signal }))).toBe("cancelled");
-    expect(did.slice(-4)).toEqual(["hdiutil detach", "remove incoming", "unlock", "remove work"]);
+    // The app's folder is cleaned before the image is closed, which may take longer than a quit waits.
+    expect(did.slice(-4)).toEqual(["remove incoming", "unlock", "hdiutil detach", "remove work"]);
     expect(signals.find(([n]) => n.startsWith("ditto"))?.[1]).toBe(abort.signal);
     for (const [name, signal] of signals) {
       if (name.startsWith("hdiutil")) expect(signal).toBeUndefined();
     }
+  });
+
+  it("does not start the helper when the app quit while the image was closing", async () => {
+    const abort = new AbortController();
+    const { deps, did } = fakeDeps();
+    deps.run = async (file, args) => {
+      did.push(`${file.split("/").at(-1)} ${args[0]}`);
+      if (file.endsWith("hdiutil") && args[0] === "detach") abort.abort();
+      if (file.endsWith("plutil")) {
+        return {
+          code: 0,
+          stdout: args[1] === "CFBundleIdentifier" ? "app.getmatters.Matters" : VERSION,
+        };
+      }
+      return { code: 0, stdout: "" };
+    };
+    expect(await runInstall(deps, ask({ signal: abort.signal }))).toBe("cancelled");
+    expect(did).not.toContain("swap");
+    expect(did).toContain("remove incoming");
+    expect(did).toContain("unlock");
   });
 
   it("stops a program it runs when asked", async () => {
