@@ -97,9 +97,11 @@ Read from the code on 2026-11-16:
      app always writes under the signature, at the end of the draft. A person may write `>` lines
      of their own anywhere (a blockquote, a `> x` inside a code block); those are their text.
      - A line inside a fenced code block (from a line of three or more backticks or tildes to the
-       line that closes it) is never a quote and never a delimiter. A fence never closed is text.
-       Fences are read from the top, as Markdown reads them, with one precedence: the signature the
-       app placed is never code. A code block that would hold a `-- ` line is closed, the line
+       line that closes it) is never a quote and never a delimiter. This is the reading of a draft
+       that may hold the app's signature; text in which the app placed none (a model's answer, the
+       person's own text before a turn) is read plainly (rule 6). In a draft a fence never closed
+       is text. Fences are read from the top, as Markdown reads them, with one precedence: the
+       signature the app placed is never code. A code block that would hold a `-- ` line is closed, the line
        code (an SQL comment), when the text under its closing line closes every fence it opens or
        has a `-- ` line outside code; else, when the text under one of those `-- ` lines closes
        every fence it opens, the block's fence is left open, as text, and that line is the
@@ -171,10 +173,22 @@ Read from the code on 2026-11-16:
    - It takes the person's own text before the turn (empty when the text is all the model's) and
      the model's answer, and gives the text to keep. It never refuses.
    - A block is a delimiter line and the lines after it up to the next delimiter line or the end. A
-     delimiter line is `-- ` anywhere, or `--` on the first line or after an empty line, outside a
-     fenced code block as rule 4 reads it (a `-- ` line in a code sample is code: the sample, its
-     closing fence and the text under it stay); a `--` right under a line of text underlines a
-     Markdown heading, which is text and starts no block.
+     delimiter line is `-- ` anywhere, or `--` on the first line or after an empty line, outside
+     every fenced code block; a `--` right under a line of text underlines a Markdown heading,
+     which is text and starts no block. The answer and the person's text before the turn hold no
+     signature the app placed (the person's has it split off), so both are read plainly, by one
+     rule, and the person's blocks are found alike in both: fences from the top, as markdown-it
+     reads them, with none of rule 4's precedence for the signature. A closed fence is code
+     whatever follows it, so a `-- ` line in a code sample is code, and the sample, its closing
+     fence and the text under it stay, with or without a fence left open further down. A fence
+     never closed is code to the end, as Markdown renders it: a model that left a code block open
+     keeps all of it, an SQL comment in it included, and a sign-off it wrote inside that block is
+     code and stays (visible in the draft, which the person reads before sending). So in a
+     model's text a block starts only at a delimiter line outside every fence, closed or left
+     open. When the person's blocks are put back under a body that leaves a fence open, a line
+     closing it comes first, so they are not code. One reading of the draft's lines does both
+     (`readDraft`, with `placed: false` for this one); containers such as list items are not
+     read, so a fence left open inside a list item runs on to a fence after the list.
    - A block of the answer is kept if and only if it is one of the person's blocks: its lines the
      same, line ends and white space at the end of a line aside. A block the model reworded is not
      the person's. Each of the person's blocks is matched at most once, in whatever order the

@@ -684,7 +684,7 @@ describe("any draft with fences, `-- ` lines in code and signatures with code (r
   // with no `-- ` line (one would read two ways: see the case above).
   const own = fc
     .oneof(
-      segments(closedBlock),
+      segments(closedBlock).map((ls) => ({ ls, open: false })),
       fc
         .tuple(
           segments(closedBlock.filter((b) => !b.includes("-- "))),
@@ -692,9 +692,9 @@ describe("any draft with fences, `-- ` lines in code and signatures with code (r
           // A fence left open is text: a `--` line in it would start a block of a model's.
           fc.array(fc.constantFrom("ls", "", "> x", "On Monday, Bob wrote:"), { maxLength: 3 }),
         )
-        .map(([above, open, tail]) => [...above, open, ...tail]),
+        .map(([above, open, tail]) => ({ ls: [...above, open, ...tail], open: true })),
     )
-    .map((ls) => ls.join("\n").trimEnd());
+    .map(({ ls, open }) => ({ mine: ls.join("\n").trimEnd(), open }));
   const signature = fc.constantFrom(
     "",
     SIGNATURE,
@@ -712,7 +712,7 @@ describe("any draft with fences, `-- ` lines in code and signatures with code (r
 
   it("splits back into its parts, the placed signature is the signature, nothing in code is cut", () => {
     fc.assert(
-      fc.property(own, signature, quote, (mine, sig, q) => {
+      fc.property(own, signature, quote, ({ mine, open }, sig, q) => {
         expect(normalizeSignature(sig)).toBe(sig);
         expect(signatureProblem(sig)).toBeNull();
         const block = signatureBlock(sig);
@@ -720,8 +720,9 @@ describe("any draft with fences, `-- ` lines in code and signatures with code (r
         const parts = draftSections(text);
         expect(text.startsWith(parts.own)).toBe(true);
         expect(text.endsWith(parts.quote)).toBe(true);
-        // With no signature, a cut at a delimiter only ever comes at the placed one.
-        expect(withoutSignature(text)).toBe(block === "" ? text : mine);
+        // Read as a model's text (`withoutSignature`), a cut at a delimiter only ever comes at
+        // the placed one; under a fence left open everything is code, and nothing is cut.
+        expect(withoutSignature(text)).toBe(block === "" || open ? text : mine);
         if (block === "" && q === "") return;
         expect(joinSections(parts.own, parts.signature, parts.quote)).toBe(text);
         expect(parts.own.trimEnd()).toBe(mine);

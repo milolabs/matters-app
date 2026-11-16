@@ -478,7 +478,11 @@ function exactly(o: Obj, keys: readonly string[]): boolean {
 
 const refused = (reason: HelpRefusal) => ({ ok: false, reason }) as const;
 
-/** A text's quoted lines as `readDraft` reads them: a `>` line in a code block is code. */
+/**
+ * A text's quoted lines as `readDraft` reads them: a `>` line in a code block is code. Read as a
+ * draft (`placed`), as the kept text is read once the signature and the quote are joined to it: a
+ * `>` line under a fence the model left open is checked, never let through as code.
+ */
 function quotedLines(text: string): string[] {
   const { lines, kinds } = readDraft(text);
   return lines.filter((_, i) => kinds[i] === "quoted");
