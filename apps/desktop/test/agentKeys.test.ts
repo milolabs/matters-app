@@ -584,9 +584,57 @@ describe("the person's own API key (ADR 0141)", () => {
     });
   }
 
+  // Rule 5: what was found ready on the key before says nothing of the new one. A turn asked for
+  // before the new key is looked at tests that key first, and goes on it only once it passed.
+  it("tests a new key before a turn the person asks for on it, though the key before is still shown ready (rule 5)", async () => {
+    const h = await build();
+    await h.service.saveKey("anthropic-api", KEY);
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "anthropic-api" });
+    await h.service.testRuntime("anthropic-api");
+    // The save's own look of the new key waits; meanwhile the key before is shown ready.
+    const look = gate();
+    h.keyed.inspectGate = look.wait;
+    const saving = h.service.saveKey("anthropic-api", `${KEY}-2`);
+    await until(() => h.keyed.inspectGate === null);
+    const calls = h.keyed.calls.length;
+    const asking = h.service.prepare("t1").catch((e: unknown) => e);
+    await until(() => h.keyed.calls.length > calls + 1);
+    look.open();
+    await saving;
+    await asking;
+    const newKey = h.vault.kept.get("anthropic-api")?.id;
+    const sent = h.keyed.calls.slice(calls).map((r, i) => ({
+      test: r.untrusted.includes(TEST_PROMPT_QUOTE),
+      on: h.keyed.sentOn[calls + i],
+    }));
+    expect(sent).toEqual([
+      { test: true, on: newKey },
+      { test: false, on: newKey },
+    ]);
+  });
+
   // Its search turn, and its reading of a few threads matched by the filters alone.
   for (const query of ['prompt:"when do we meet"', 'from:anna prompt:"when do we meet"']) {
-    it(`does not take a refusal of the key before as the new key's, on a prompt that began while the vault was written: ${query} (rule 5)`, async () => {
+    it(`does not take a refusal of the key before as the new key's, on a prompt: ${query} (rule 5)`, async () => {
+      const h = await build();
+      await h.service.saveKey("anthropic-api", KEY);
+      await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "anthropic-api" });
+      await h.service.testRuntime("anthropic-api");
+      // The turn starts on the key before, and its refusal comes once the new key is kept.
+      h.keyed.hold = true;
+      h.keyed.deaf = true;
+      h.keyed.refuse = true;
+      const running = h.service.promptRun(query).catch((e: unknown) => e);
+      await until(() => h.keyed.release !== null);
+      await h.service.saveKey("anthropic-api", `${KEY}-2`);
+      h.keyed.release?.();
+      await running;
+      expect(runtimeInfo(await h.service.status(), "anthropic-api")?.status).toBe("found");
+    });
+
+    // A prompt asked while the vault is written holds for neither key: its gate passes for no
+    // key, so nothing of it goes, on the key before nor on the new one.
+    it(`sends nothing of a prompt asked while the vault was written: ${query} (rule 5)`, async () => {
       const h = await build();
       await h.service.saveKey("anthropic-api", KEY);
       await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "anthropic-api" });
@@ -595,17 +643,14 @@ describe("the person's own API key (ADR 0141)", () => {
       h.vault.setGate = vault.wait;
       const saving = h.service.saveKey("anthropic-api", `${KEY}-2`);
       await until(() => h.vault.setting);
-      // The turn starts on the key before, still shown ready, and its refusal comes once the new
-      // key is kept.
-      h.keyed.hold = true;
-      h.keyed.deaf = true;
       h.keyed.refuse = true;
+      const calls = h.keyed.calls.length;
       const running = h.service.promptRun(query).catch((e: unknown) => e);
-      await until(() => h.keyed.release !== null);
+      for (let i = 0; i < 10; i++) await settle();
       vault.open();
       await saving;
-      h.keyed.release?.();
       await running;
+      expect(h.keyed.calls.slice(calls)).toEqual([]);
       expect(runtimeInfo(await h.service.status(), "anthropic-api")?.status).toBe("found");
     });
   }
@@ -707,6 +752,36 @@ describe("background work on the person's own API key (ADR 0141, rules 5 and 6)"
       await naming;
       expect(h.keyed.calls.slice(calls).filter(names)).toEqual([]);
       expect((await h.insights.getTalk(talk.id))?.titleBy).toBeUndefined();
+    });
+  }
+
+  // Rule 5: the turn the person asked for is taken at its gate and handed down, so a key saved
+  // while what goes with it is read stops it: nothing goes on the new key, for which no gate ran.
+  const helpers = {
+    rewriteDraft: (h: H) =>
+      h.service.rewriteDraft({ threadId: "t1" }, "Tuesday is fine for me, Anna.", "shorter"),
+    answerQuestions: (h: H) => h.service.answerQuestions("t1", "Tuesday is fine."),
+  } as const;
+  for (const [path, ask] of Object.entries(helpers)) {
+    it(`sends no ${path} turn on a key saved after its gate, and says it stopped`, async () => {
+      const h = await build();
+      await h.service.saveKey(ID, KEY);
+      await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: ID });
+      await h.service.testRuntime(ID);
+      const calls = h.keyed.calls.length;
+      const listed = held(h.insights, "listInstructions");
+      const asking = ask(h).then(
+        () => "done",
+        (e: Error) => e.message,
+      );
+      // The gates passed for the key before; the standing instructions are read.
+      await until(listed.waiting);
+      await h.service.saveKey(ID, `${KEY}-2`);
+      listed.open();
+      expect(await asking).toBe("Stopped.");
+      expect(h.keyed.calls.slice(calls)).toEqual([]);
+      // Nothing went, so nothing was counted.
+      expect((await h.insights.listLedger(20)).some((e) => e.purpose === "prepare")).toBe(false);
     });
   }
 
