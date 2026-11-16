@@ -91,6 +91,8 @@ class Keyed {
   /** While set, a turn waits until `release` or its signal ends it. */
   hold = false;
   release: (() => void) | null = null;
+  /** Every held turn that has not ended, in the order sent: its request and its release. */
+  readonly held: { readonly request: AgentRunRequest; readonly release: () => void }[] = [];
   /** Turns that were stopped by their signal. */
   stopped = 0;
   /** While set, a held turn does not hear its signal: its answer was already on the way. */
@@ -125,14 +127,19 @@ class Keyed {
     this.calls.push(request);
     this.sentOn.push(this.vault.kept.get(this.id)?.id);
     if (this.hold) {
+      const ended = () => {
+        const i = this.held.findIndex((h) => h.request === request);
+        if (i >= 0) this.held.splice(i, 1);
+      };
       await new Promise<void>((resolve, reject) => {
         this.release = resolve;
+        this.held.push({ request, release: resolve });
         if (this.deaf) return;
         options?.signal?.addEventListener("abort", () => {
           this.stopped++;
           reject(new AgentRunError("failed", "Cancelled."));
         });
-      });
+      }).finally(ended);
     }
     if (this.refuse) throw new AgentRunError("refused", "Anthropic refused the key.");
     if (request.untrusted.includes(TEST_PROMPT_QUOTE)) return { value: verdictOfTest };
@@ -180,6 +187,7 @@ async function build() {
   const deps: ConstructorParameters<typeof AgentService>[0] = {
     runtimes: [keyed, new Plain()],
     keys: vault,
+    views: storage.views,
     store: storage.store,
     index: storage.index,
     bodies: storage.bodies,
@@ -220,7 +228,7 @@ async function build() {
     await service.idle();
     await settle();
   };
-  return { service, deps, vault, keyed, settings, insights, clock, pass, told };
+  return { service, deps, vault, keyed, settings, insights, clock, pass, told, storage };
 }
 
 describe("the person's own API key (ADR 0141)", () => {
@@ -857,5 +865,171 @@ describe("background work on the person's own API key (ADR 0141, rules 5 and 6)"
     expect((await h.insights.listLedger(50)).filter((e) => e.purpose === "talk").length).toBe(
       ledger * 2,
     );
+  });
+});
+
+// Rule 6: the reading switch governs only what the background starts. Turned off, the background
+// on the runtime stops, a turn of it already sent too; a turn the person asked for goes on, and
+// its answer is kept. Turned on, nothing stops.
+describe("the reading switch of the person's own API key (ADR 0141, rule 6)", () => {
+  const ID = "anthropic-api";
+  /** A saved view the background reads, and the prompt the person asks. */
+  const VIEW = 'from:anna prompt:"a date for the meeting"';
+  const ASKED = 'from:anna prompt:"when do we meet"';
+  const ofView = (r: AgentRunRequest) => r.untrusted.includes("a date for the meeting");
+  const ofAsked = (r: AgentRunRequest) => r.untrusted.includes("when do we meet");
+  const remembers = (r: AgentRunRequest) => r.instructions === REMEMBER_INSTRUCTIONS;
+  type H = Awaited<ReturnType<typeof build>> & { readonly whys: string[] };
+
+  /**
+   * A key kept, agreed to and tested, its switch off, and a saved view the person ran once whose
+   * thread is not read yet: the first answer was not in the form the code keeps. The verdicts
+   * stored from here on are in `whys`.
+   */
+  async function viewed(): Promise<H> {
+    const h = await build();
+    await h.service.saveKey(ID, KEY);
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: ID });
+    await h.service.testRuntime(ID);
+    await h.storage.views.put({
+      id: "v",
+      name: "v",
+      query: VIEW,
+      position: 0,
+      createdMs: 0,
+      updatedMs: 0,
+    });
+    await h.service.promptRun(VIEW);
+    await h.service.idle();
+    const whys: string[] = [];
+    const put = h.insights.putPromptVerdicts.bind(h.insights);
+    h.insights.putPromptVerdicts = async (verdicts) => {
+      whys.push(...verdicts.map((v) => v.why));
+      return put(verdicts);
+    };
+    h.keyed.answer = (r) => ({
+      verdicts: [{ thread: 1, fit: 0, why: ofView(r) ? "Read in the background" : "Asked for" }],
+    });
+    return { ...h, whys };
+  }
+
+  /** The person's run of their prompt, once its turn is sent and waits for its answer. */
+  async function asking(h: H) {
+    const run = h.service.promptRun(ASKED);
+    await until(() => h.keyed.held.some((t) => ofAsked(t.request)));
+    return { run };
+  }
+
+  /** Lets every held turn answer until `done` settles. */
+  async function answerAll<T>(h: H, done: Promise<T>): Promise<T> {
+    let over = false;
+    void done.finally(() => {
+      over = true;
+    });
+    for (let i = 0; i < 100 && !over; i++) {
+      h.keyed.hold = false;
+      for (const t of [...h.keyed.held]) t.release();
+      await settle();
+    }
+    return done;
+  }
+
+  it("lets a prompt the person asked for finish when the switch goes off, and stops the background turn sent beside it", async () => {
+    const h = await viewed();
+    await h.service.setKeyReading(ID, true);
+    await answerAll(h, h.service.idle());
+    expect(h.whys).toEqual(["Read in the background"]);
+    // The person asks their prompt, and what they typed is remembered in the background meanwhile:
+    // both turns wait for their answers.
+    h.keyed.hold = true;
+    const { run } = await asking(h);
+    const remembering = h.service.remember("t1", "Never answer Anna about this");
+    await until(() => h.keyed.held.some((t) => remembers(t.request)));
+    const off = await h.service.setKeyReading(ID, false);
+    expect(off.settings.keyReading).toEqual([]);
+    // The background's turn stopped; the person's still waits, and its answer is stored.
+    expect(h.keyed.stopped).toBe(1);
+    expect(h.keyed.held.map((t) => ofAsked(t.request))).toEqual([true]);
+    expect(await remembering).toEqual({ items: [] });
+    const result = await answerAll(h, run);
+    expect(result.stopped).toBe(false);
+    expect(h.whys).toEqual(["Read in the background", "Asked for"]);
+  });
+
+  it("stops the pass when the switch goes off, and a run the person asked for while it read goes on", async () => {
+    const h = await viewed();
+    h.keyed.hold = true;
+    // Turned on, the pass reads the saved view, and its turn waits for its answer.
+    await h.service.setKeyReading(ID, true);
+    await until(() => h.keyed.held.some((t) => ofView(t.request)));
+    // A run the person asks for meanwhile waits for the pass's turns to answer.
+    const run = h.service.promptRun(ASKED);
+    await settle();
+    const off = await h.service.setKeyReading(ID, false);
+    expect(off.settings.keyReading).toEqual([]);
+    // The pass's turn stopped, and the pass has ended; the run goes on, and its answer is stored.
+    expect(h.keyed.stopped).toBe(1);
+    const result = await answerAll(h, run);
+    expect(result.stopped).toBe(false);
+    expect(h.whys).toEqual(["Asked for"]);
+    // Nothing more went in the background.
+    await h.service.idle();
+    expect(h.keyed.calls.filter(ofView)).toHaveLength(2);
+  });
+
+  it("lets a prompt the person asked for finish when the switch, already off, is set off again", async () => {
+    const h = await viewed();
+    h.keyed.hold = true;
+    const { run } = await asking(h);
+    const off = await h.service.setKeyReading(ID, false);
+    expect(off.settings.keyReading ?? []).toEqual([]);
+    expect(h.keyed.stopped).toBe(0);
+    expect((await answerAll(h, run)).stopped).toBe(false);
+    expect(h.whys).toEqual(["Asked for"]);
+  });
+
+  it("stops nothing when the switch is turned on", async () => {
+    const h = await viewed();
+    h.keyed.hold = true;
+    const { run } = await asking(h);
+    await h.service.setKeyReading(ID, true);
+    expect(h.keyed.stopped).toBe(0);
+    expect((await answerAll(h, run)).stopped).toBe(false);
+    await answerAll(h, h.service.idle());
+    expect(h.keyed.stopped).toBe(0);
+    expect([...h.whys].sort()).toEqual(["Asked for", "Read in the background"]);
+  });
+
+  it("stops a remembering turn already sent when the switch goes off, and keeps nothing of it", async () => {
+    const h = await viewed();
+    await h.service.setKeyReading(ID, true);
+    await h.service.idle();
+    h.keyed.answer = (r) => (remembers(r) ? { items: [{ scope: "sender" }] } : {});
+    h.keyed.hold = true;
+    const remembering = h.service.remember("t1", "Never answer Anna about this");
+    await until(() => h.keyed.held.some((t) => remembers(t.request)));
+    await h.service.setKeyReading(ID, false);
+    expect(h.keyed.stopped).toBe(1);
+    expect(await remembering).toEqual({ items: [] });
+    expect(await h.insights.listRules()).toEqual([]);
+    // It was sent, so it is counted.
+    const ledger = await h.insights.listLedger(20);
+    expect(ledger.filter((e) => e.purpose === "remember")).toHaveLength(1);
+  });
+
+  it("stops the test the pass runs by itself when the switch goes off, keeps nothing of it, and Check tests the key", async () => {
+    const h = await build();
+    await h.service.saveKey(ID, KEY);
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: ID });
+    await h.service.idle();
+    h.keyed.hold = true;
+    await h.service.setKeyReading(ID, true);
+    await until(() => h.keyed.held.length === 1);
+    const off = await h.service.setKeyReading(ID, false);
+    expect(h.keyed.stopped).toBe(1);
+    expect(runtimeInfo(off, ID)?.status).toBe("found");
+    expect(await h.settings.getRuntimeRecord(ID)).toBeNull();
+    h.keyed.hold = false;
+    expect(runtimeInfo(await h.service.testRuntime(ID), ID)?.status).toBe("ready");
   });
 });
