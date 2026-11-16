@@ -19,6 +19,7 @@ import {
   parseRecipients,
   placeSignature,
   sendBlockers,
+  withoutSignature,
 } from "@matters/core";
 import { batch, createMemo, createSignal } from "solid-js";
 import {
@@ -71,6 +72,8 @@ export interface ComposerSession {
   readonly sender: () => Pick<DraftContent, "accountId" | "from">;
   /** A reply stays with the account its thread belongs to (ADR 0050). */
   readonly canChangeSender: boolean;
+  /** Send or Close has begun: the sender stays the one it goes with (ADR 0142, rule 5). */
+  readonly senderLocked: () => boolean;
   readonly to: () => string;
   readonly cc: () => string;
   readonly bcc: () => string;
@@ -108,9 +111,12 @@ export interface ComposerSession {
   /** Moves the composer, keeping everything typed (⤢ opens the full composer). */
   setPlacement(p: ComposePlacement): void;
   /**
-   * Sends from this account instead; resolves once its message limit is known and applied. The
-   * signature follows the account while the person has not changed it (ADR 0142, rule 5): then
-   * the text with the new one in place is the answer, for the editor to show; else null.
+   * Sends from this account instead, once it is prepared: the sender, its message limit and its
+   * signature change together, so the two never disagree (ADR 0142, rule 5). The signature
+   * follows the account while the person has not changed it: then the text with the new one in
+   * place is the answer, for the editor to show; else null. A preparation that fails leaves the
+   * sender as it was and says so; choosing the account again tries again. Refused once Send or
+   * Close has begun.
    */
   setSender(account: { id: string; address: string; displayName: string }): Promise<string | null>;
   /** The system's file dialog, then the chips. */
@@ -136,6 +142,10 @@ export interface ComposerSession {
   discard(): Promise<void>;
   dispose(): void;
 }
+
+const SENDER_PROBLEM_END = "could not be chosen as the sender. Try again.";
+/** What the composer says when the account chosen to send from could not be prepared. */
+const senderProblem = (address: string) => `${address} ${SENDER_PROBLEM_END}`;
 
 /** Text of a list of people as a header would show it. */
 const show = (list: DraftContent["to"]) => formatRecipients(list);
@@ -218,8 +228,14 @@ export function createComposerSession(
 
   // The signature the text was given, so it can follow the sender while untouched (ADR 0142).
   let inserted = input.signature ?? "";
-  /** The preparation of the last sender chosen, while its signature may still be put in. */
-  let senderReady: Promise<void> = Promise.resolve();
+  /**
+   * The preparation of the last sender chosen; it says whether that sender is now the one. Send
+   * and Close wait for it: a sender chosen before them is the one they go with.
+   */
+  let senderReady: Promise<boolean> = Promise.resolve(true);
+  /** Which choice of sender is the latest: an answer about an earlier one is not applied. */
+  let senderChoice = 0;
+  const [senderLocked, setSenderLocked] = createSignal(false);
   let touched = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let saving: Promise<void> = Promise.resolve();
@@ -570,6 +586,7 @@ export function createComposerSession(
     initialBody: base.bodyMarkdown,
     sender,
     canChangeSender,
+    senderLocked,
     to,
     cc,
     bcc,
@@ -620,26 +637,39 @@ export function createComposerSession(
       if (v !== "write") renderPreview();
     },
     async setSender(account) {
-      if (!canChangeSender || account.id === sender().accountId) return null;
+      if (!canChangeSender || senderLocked()) return null;
+      const choice = ++senderChoice;
+      // The one it goes from already: an answer about another chosen since is not applied.
+      if (account.id === sender().accountId) {
+        senderReady = Promise.resolve(true);
+        return null;
+      }
       const { accountId, from } = emptyDraftContent(account);
-      setSenderSignal({ accountId, from });
-      // Choosing a sender is not writing: a message nobody wrote in still leaves nothing behind.
-      if (touched || draft() !== null) touch();
-      // Send and Close wait for this: the new sender never goes with the last one's signature.
       const following = (async () => {
         const prepared = await backend.prepareNew(accountId).catch(() => null);
-        if (disposed || sender().accountId !== accountId) return null;
-        const limit = prepared?.messageLimitBytes ?? null;
-        setLimitBytes(limit);
-        // The signature follows the account only while it is exactly the one put in (rule 5).
-        const next = prepared?.signature ?? "";
-        const signed = prepared === null ? null : followSignature(body(), inserted, next);
-        if (signed !== null) {
-          inserted = next;
-          setBodySignal(signed);
-          if (touched || draft() !== null) touch();
-          if (view() !== "write") renderPreview();
+        if (disposed || choice !== senderChoice) return { ok: false, signed: null };
+        if (prepared === null) {
+          // The sender stays the one it was, with its signature; choosing it again tries again.
+          setError(senderProblem(account.address));
+          return { ok: false, signed: null };
         }
+        const limit = prepared.messageLimitBytes ?? null;
+        // The signature follows the account only while it is exactly the one put in (rule 5).
+        const next = prepared.signature ?? "";
+        const signed = followSignature(body(), inserted, next);
+        batch(() => {
+          setSenderSignal({ accountId, from });
+          setLimitBytes(limit);
+          // What an earlier choice that failed said no longer holds.
+          if (error().endsWith(SENDER_PROBLEM_END)) setError("");
+          if (signed !== null) {
+            inserted = next;
+            setBodySignal(signed);
+          }
+        });
+        // Choosing a sender is not writing: a message nobody wrote in still leaves nothing behind.
+        if (touched || draft() !== null) touch();
+        if (signed !== null && view() !== "write") renderPreview();
         // A file the last account's server refused has no copy; this one may take it.
         for (const chip of chips()) {
           if (
@@ -650,13 +680,13 @@ export function createComposerSession(
             void this.recapture(chip.id);
           }
         }
-        return signed;
+        return { ok: true, signed };
       })();
       senderReady = following.then(
-        () => {},
-        () => {},
+        (r) => r.ok,
+        () => false,
       );
-      return following;
+      return following.then((r) => r.signed);
     },
     async pick() {
       attachPicked(await pickFiles());
@@ -728,12 +758,20 @@ export function createComposerSession(
     flush,
     async send() {
       setError("");
-      await senderReady;
+      // From here the sender is the one this goes with: no other can be chosen while it goes.
+      setSenderLocked(true);
+      // A sender chosen before Send goes, prepared; one that could not be, stops Send so the
+      // person sees the sender it would have gone from (ADR 0142, rule 5).
+      if (!(await senderReady)) {
+        setSenderLocked(false);
+        return null;
+      }
       // The rows first (never the copies: a file still being read does not hold Send back), then
       // the draft with those files in it, then the approval of exactly that version.
       await settleAdds();
       const lost = chips().filter((c) => !c.added);
       if (problems().length > 0 || lost.length > 0) {
+        setSenderLocked(false);
         setError(
           [
             ...problems(),
@@ -747,17 +785,23 @@ export function createComposerSession(
       touched = true;
       await flush();
       const saved = draft();
-      if (!saved || saveState() === "error") return null;
+      if (!saved || saveState() === "error") {
+        setSenderLocked(false);
+        return null;
+      }
       try {
         const op = await backend.requestSend(saved.id);
         await onClosedAfterSend();
         return op;
       } catch (e) {
         setError(e instanceof BackendError ? e.message : "Sending did not start.");
+        setSenderLocked(false);
         return null;
       }
     },
     async close() {
+      // The draft is kept with the sender and signature it has once its preparation is done.
+      setSenderLocked(true);
       await senderReady;
       await settleAdds();
       // Closing a forward nobody wrote in takes the draft and its copies with it.
@@ -875,8 +919,12 @@ export function createComposeStore(backend: Backend, outbox: OutboxStore) {
                     cc: (prefill.cc ?? []).map((address) => ({ address })),
                     bcc: (prefill.bcc ?? []).map((address) => ({ address })),
                     subject: prefill.subject,
-                    // The agent wrote the words; the code puts the signature under them (ADR 0142).
-                    bodyMarkdown: placeSignature(prefill.body, prepared.signature ?? ""),
+                    // The agent wrote the words; the code puts the signature under them (ADR 0142,
+                    // rule 6), after cutting a block of the model's own, as a reply does.
+                    bodyMarkdown: placeSignature(
+                      withoutSignature(prefill.body),
+                      prepared.signature ?? "",
+                    ),
                   }
                 : prepared.content,
             existing: prepared.existing,
