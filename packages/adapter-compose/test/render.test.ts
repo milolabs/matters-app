@@ -1,4 +1,6 @@
-import { parseMailto, placeSignature } from "@matters/core";
+import { parseMailto, placeSignature, withoutSignature } from "@matters/core";
+import fc from "fast-check";
+import type MarkdownIt from "markdown-it";
 import { describe, expect, it } from "vitest";
 import { MarkdownComposeRenderer } from "../src/index.ts";
 
@@ -368,5 +370,65 @@ describe("the body of a mailto: link", () => {
     expect(out.html).not.toContain("<blockquote");
     expect(out.html.match(/matters-signature-mark/g)).toHaveLength(1);
     expect(out.text).toContain("\\> quoted\n\\-- \nEvil Corp\n\n-- \nAnna");
+  });
+});
+
+describe("a model's answer, cut at its sign-off (ADR 0142, rule 6), as Markdown renders it", () => {
+  // The renderer's own markdown-it, which renders a model's answer with no signature in it whole.
+  const md = (renderer as unknown as { readonly md: InstanceType<typeof MarkdownIt> }).md;
+  /** The lines markdown-it renders inside a `<pre>`, its fence lines included. */
+  function preLines(text: string): Set<number> {
+    const inside = new Set<number>();
+    for (const token of md.parse(text, {})) {
+      if ((token.type !== "fence" && token.type !== "code_block") || token.map === null) continue;
+      for (let i = token.map[0]; i < token.map[1]; i++) inside.add(i);
+    }
+    return inside;
+  }
+  // Lines at the top level and in a blockquote. List items are left out: the core does not read
+  // containers, so a fence left open inside a list item (`- x`, then an indented fence) is read
+  // as running on to a fence after the list, where markdown-it ends it with the item.
+  const line = fc.constantFrom(
+    "```",
+    "~~~",
+    "````",
+    "```sql",
+    "  ```",
+    "> ```",
+    "-- ",
+    "--",
+    "",
+    "Hi",
+    "SELECT 1;",
+    "> x",
+    "    -- ",
+  );
+  const answer = fc.array(line, { maxLength: 14 }).map((ls) => ls.join("\n"));
+
+  it("never cuts inside a code block: the cut starts at a delimiter line outside every <pre>", () => {
+    fc.assert(
+      fc.property(answer, (text) => {
+        const kept = withoutSignature(text);
+        if (kept === text) return;
+        expect(text.startsWith(kept)).toBe(true);
+        const lines = text.split("\n");
+        let cut = kept === "" ? 0 : kept.split("\n").length;
+        while (cut < lines.length && (lines[cut] as string).trim() === "") cut++;
+        expect(["-- ", "--"]).toContain(lines[cut]);
+        // Every line above the cut is kept, so no line of a code block above it is lost.
+        expect(preLines(text).has(cut)).toBe(false);
+      }),
+      { numRuns: 5000 },
+    );
+  });
+
+  it("the reviewer's case: the closed block, the text under it and the fence left open are all kept", () => {
+    const text = "Run:\n\n```sql\nSELECT 1;\n-- \nSELECT 2;\n```\n\nThen:\n```\nunfinished";
+    expect(withoutSignature(text)).toBe(text);
+    // With the signature joined under it, as the app sends it: both code blocks, then the block.
+    const out = html(`${withoutSignature(text)}\n\n-- \nMe`);
+    expect(out).toMatch(/<pre[^>]*><code[^>]*>SELECT 1;\n-- \nSELECT 2;\n<\/code>/);
+    expect(out).toMatch(/<pre[^>]*><code[^>]*>unfinished\n<\/code>/);
+    expect(out.indexOf("unfinished")).toBeLessThan(out.indexOf('class="matters-signature"'));
   });
 });

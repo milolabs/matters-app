@@ -119,8 +119,66 @@ describe("keepOwnBlocks", () => {
     // Tildes, and a fence of four that three do not close.
     const tilde = "~~~~\n-- \n~~~\nstill code\n~~~~\nafter";
     expect(withoutSignature(tilde)).toBe(tilde);
-    // A fence never closed is text: a block under it still goes.
-    expect(withoutSignature("```\nls\n\n-- \nBot")).toBe("```\nls");
+    // A fence never closed, in a model's answer, is code to the end, as Markdown reads it: a
+    // `-- ` line under it is code too, and nothing is cut.
+    expect(withoutSignature("```\nls\n\n-- \nBot")).toBe("```\nls\n\n-- \nBot");
+  });
+});
+
+describe("a model's answer is read plainly, with no signature placed in it", () => {
+  // The reviewer's case, verbatim: a closed code block with an SQL comment, a fence left open below.
+  const body = "Run:\n\n```sql\nSELECT 1;\n-- \nSELECT 2;\n```\n\nThen:\n```\nunfinished";
+  const closed = "Run:\n\n```sql\nSELECT 1;\n-- \nSELECT 2;\n```";
+
+  it("the reviewer's case: the code sample, the text under it and the fence left open all stay", () => {
+    expect(signatureBlocks(body)).toEqual([]);
+    expect(withoutSignature(body)).toBe(body);
+    expect(keepOwnBlocks("", body)).toBe(body);
+    expect(acceptRewrite({ rewritten: body }, "Run it.")).toEqual({ ok: true, value: body });
+    expect(acceptWrite({ written: body }, "")).toEqual({ ok: true, value: body });
+    expect(acceptAnswers({ withAnswers: body, added: 1 }, "Run it.")).toEqual({
+      ok: true,
+      value: body,
+    });
+  });
+
+  it("a sign-off of the model's after the closed block is cut; one inside the open fence is code", () => {
+    expect(withoutSignature(`${closed}\n\n-- \nBot`)).toBe(closed);
+    expect(withoutSignature(`${closed}\n\n--\nBot\n\nThen:\n\`\`\`\nunfinished`)).toBe(closed);
+    expect(withoutSignature(`${body}\n\n-- \nBot`)).toBe(`${body}\n\n-- \nBot`);
+    expect(acceptWrite({ written: `${closed}\n\n-- \nBot` }, "")).toEqual({
+      ok: true,
+      value: closed,
+    });
+  });
+
+  it("the person's block put back under a fence the model left open is closed off, not code", () => {
+    const own = "Run it.\n\n--\nAnna";
+    const kept = `${body}\n\`\`\`\n\n--\nAnna`;
+    expect(keepOwnBlocks(own, body)).toBe(kept);
+    expect(acceptRewrite({ rewritten: body }, own)).toEqual({ ok: true, value: kept });
+    expect(signatureBlocks(kept)).toEqual(["--\nAnna"]);
+    expect(keepOwnBlocks(own, kept)).toBe(kept);
+    // A fence of four tildes is closed by four.
+    expect(keepOwnBlocks(own, "Like so:\n~~~~\nls\n\n")).toBe(
+      "Like so:\n~~~~\nls\n~~~~\n\n--\nAnna",
+    );
+  });
+
+  it("the person's own sign-off under a code block with a `-- ` line is theirs, in both texts", () => {
+    const own = `${closed}\n\n--\nAnna`;
+    expect(signatureBlocks(own)).toEqual(["--\nAnna"]);
+    expect(keepOwnBlocks(own, own)).toBe(own);
+    // Reworded around the code, the block is still found as theirs.
+    const answer = `${closed.replace("Run:", "Please run:")}\n\n--\nAnna`;
+    expect(keepOwnBlocks(own, answer)).toBe(answer);
+    // Dropped by the model, it comes back; a model's sign-off in its place is cut.
+    expect(keepOwnBlocks(own, closed)).toBe(own);
+    expect(keepOwnBlocks(own, `${closed}\n\n-- \nBot`)).toBe(own);
+    // With a fence left open below the person's block, both texts read it the same.
+    const open = `${own}\n\nThen:\n\`\`\`\nunfinished`;
+    expect(signatureBlocks(open)).toEqual(["--\nAnna\n\nThen:\n```\nunfinished"]);
+    expect(keepOwnBlocks(open, open)).toBe(open);
   });
 });
 
@@ -271,6 +329,73 @@ describe("keepOwnBlocks, for any text of the person's and any answer", () => {
         }
       }),
       { numRuns: 2000 },
+    );
+  });
+});
+
+describe("the person's own text and a model's answer with code blocks, read by one rule", () => {
+  const plain = fc.constantFrom("Hi", "Anna", "[date]", "> Hi", "Summary");
+  const inside = fc.constantFrom("ls", "-- ", "--", "", "SELECT 1;", "~~~", "> x");
+  const fence = fc.constantFrom("```", "~~~", "````", "```sql");
+  const closer = (open: string) => (open.startsWith("```") ? open.replace("sql", "") : open);
+  const closedBlock = fc
+    .tuple(fence, fc.array(inside, { maxLength: 4 }))
+    .map(([open, body]) => [
+      open,
+      ...body.filter((l) => !l.startsWith(open[0] as string)),
+      closer(open),
+    ]);
+  const lines = fc
+    .array(
+      fc.oneof(
+        plain.map((l) => [l]),
+        closedBlock,
+      ),
+      { minLength: 1, maxLength: 4 },
+    )
+    .map((s) => s.flat());
+  const delimiter = fc.constantFrom("-- ", "--");
+  // The person's own text as a draft's own part has it: a body, then blocks of theirs (each a
+  // delimiter and lines, code blocks with `-- ` lines among them), and at times a fence left open
+  // at the end. Written as the kept text is written, so it is kept as it is.
+  const own = fc
+    .tuple(
+      fc.option(lines),
+      fc.array(fc.tuple(delimiter, lines), { maxLength: 3 }),
+      fc.option(fc.tuple(fence, fc.array(inside, { maxLength: 3 }))),
+    )
+    .map(([body, blocks, open]) => {
+      const parts = [
+        ...(body === null ? [] : [body.join("\n")]),
+        ...blocks.map(([d, ls]) => [d, ...ls].join("\n")),
+      ];
+      let text = parts.join("\n\n");
+      if (open !== null) {
+        const [start, tail] = open;
+        const inner = tail.filter((l) => !l.startsWith(start[0] as string));
+        text = [text, start, ...inner, "end"].join("\n");
+      }
+      // A fence left open in the body, under no block: everything below it is code.
+      return { text: text.replace(/^\n+/, ""), open: open !== null && blocks.length === 0 };
+    });
+
+  it("keeps the person's own text as it is, given back as the answer", () => {
+    fc.assert(
+      fc.property(own, ({ text }) => {
+        expect(keepOwnBlocks(text, text)).toBe(text);
+      }),
+      { numRuns: 3000 },
+    );
+  });
+
+  it("cuts a sign-off the model added under it, unless it stands in a fence the body left open", () => {
+    fc.assert(
+      fc.property(own, ({ text, open }) => {
+        const answer = `${text}\n\n-- \nBot`;
+        expect(keepOwnBlocks(text, answer)).toBe(open ? answer : text);
+        expect(withoutSignature(answer)).toBe(open ? answer : withoutSignature(text));
+      }),
+      { numRuns: 3000 },
     );
   });
 });

@@ -1245,6 +1245,38 @@ describe("AgentService: drafts", () => {
     expect(html.indexOf("Let me know.")).toBeLessThan(html.indexOf('class="matters-signature"'));
   });
 
+  it("keeps a closed code sample with a `-- ` line when a fence is left open below it", async () => {
+    // The reviewer's case: the `-- ` line in the closed block was taken for a delimiter, because
+    // a fence further down is never closed, and the rest of the reply was cut.
+    const h = await ready();
+    await h.storage.accounts.setSignature("acc1", "Me\nWork Ltd");
+    await h.addMail({
+      threadId: "t1",
+      messages: [{ dateMs: NOW - DAY, text: "Can you send it?", fromName: "Anna" }],
+    });
+    const words = "Run:\n\n```sql\nSELECT 1;\n-- \nSELECT 2;\n```\n\nThen:\n```\nunfinished";
+    await h.service.draftFromPrepared("t1", words);
+    const body = h.drafts[0]?.bodyMarkdown ?? "";
+    expect(body.startsWith(`${words}\n\n-- \nMe\nWork Ltd\n\nOn `)).toBe(true);
+    const parts = splitDraft(body);
+    expect(parts.own).toBe(`${words}\n`);
+    expect(parts.signature).toBe("-- \nMe\nWork Ltd");
+    const html = new MarkdownComposeRenderer().render(body).html;
+    expect(html).toMatch(/<pre[^>]*><code[^>]*>SELECT 1;\n-- \nSELECT 2;\n<\/code>/);
+    expect(html.indexOf("unfinished")).toBeLessThan(html.indexOf('class="matters-signature"'));
+    // A sign-off of the model's under the closed block is still cut, and what follows it.
+    const h2 = await ready();
+    await h2.addMail({
+      threadId: "t1",
+      messages: [{ dateMs: NOW - DAY, text: "Can you send it?", fromName: "Anna" }],
+    });
+    const closed = "Run:\n\n```sql\nSELECT 1;\n-- \nSELECT 2;\n```";
+    await h2.service.draftFromPrepared("t1", `${closed}\n\n-- \nBot\n\nThen:\n\`\`\`\nunfinished`);
+    const cut = h2.drafts[0]?.bodyMarkdown ?? "";
+    expect(cut.startsWith(`${closed}\n\nOn `)).toBe(true);
+    expect(cut).not.toContain("Bot");
+  });
+
   it("keeps a line the agent quoted in the reply's own part, the signature and the quote apart", async () => {
     const h = await ready();
     await h.storage.accounts.setSignature("acc1", "Me\nWork Ltd");
