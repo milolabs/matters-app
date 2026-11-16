@@ -21,7 +21,7 @@ import {
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
-import { sectionStarts } from "@matters/core";
+import { readDraft, sectionStarts } from "@matters/core";
 
 /** A value the agent found for a placeholder, and where it found it. */
 export interface GapSuggestion {
@@ -32,29 +32,13 @@ export interface GapSuggestion {
 
 // --- Where the quote starts ---
 
-const ATTRIBUTION = /wrote:\s*$|napisał(a)?:\s*$/i;
-
 /**
- * Where the quoted message starts: the first line of the trailing run of `>` lines (and empty
- * lines), or the attribution line just above it. Null when the text ends with no quote.
+ * Where the quoted message starts, as the core splits a draft (`sectionStarts`, ADR 0142, rule 4):
+ * the app's own quote, under the signature or at its "On … wrote:" line. A `>` line of the
+ * person's own is their text and never folds. Null when the draft has no quote.
  */
 export function quoteStart(text: string): number | null {
-  const lines = text.split("\n");
-  let k = lines.length;
-  while (k > 0) {
-    const line = lines[k - 1] as string;
-    if (line.trim() === "" || /^\s*>/.test(line)) k--;
-    else break;
-  }
-  // The run must hold at least one quoted line.
-  if (!lines.slice(k).some((l) => /^\s*>/.test(l))) return null;
-  while (k < lines.length && (lines[k] as string).trim() === "") k++;
-  let first = k;
-  const above = lines[k - 1];
-  if (above !== undefined && ATTRIBUTION.test(above)) first = k - 1;
-  let offset = 0;
-  for (let i = 0; i < first; i++) offset += (lines[i] as string).length + 1;
-  return offset;
+  return sectionStarts(text).quote;
 }
 
 /**
@@ -117,6 +101,7 @@ class QuoteWidget extends WidgetType {
 }
 
 function quoteDecorations(state: EditorState): DecorationSet {
+  // The core's quote, so a blockquote of the person's own is never folded away.
   const at = quoteStart(state.doc.toString());
   if (at === null) return Decoration.none;
   const folded = state.field(quoteFolded);
@@ -288,34 +273,34 @@ class SuggestionWidget extends WidgetType {
 
 function buildLook(view: EditorView): DecorationSet {
   const state = view.state;
-  const text = state.doc.toString();
-  const end = quoteStart(text) ?? text.length;
-  // The signature reads quieter than the words, as it is sent (ADR 0142, rule 4): from its
-  // delimiter to the quote, as the core splits the draft.
-  const sections = sectionStarts(text);
-  const signature = sections.signature ?? end;
-  const signatureTo = sections.quote ?? text.length;
-  const own = ownEnd(text);
+  // The draft as the core reads it (ADR 0142, rule 4): what each line is, and where the signature
+  // and the quote start. The signature reads quieter than the words, as it is sent: from its
+  // delimiter to the quote. The quote is not marked here; it folds.
+  const { kinds, signatureAt, quoteAt } = readDraft(state.doc.toString());
+  const own = signatureAt < 0 ? quoteAt : signatureAt;
   const suggestions = state.field(suggestionsField);
   const ranges: Range[] = [];
   for (const { from, to } of view.visibleRanges) {
     let pos = from;
     while (pos <= to) {
       const line = state.doc.lineAt(pos);
-      if (line.from >= end) break;
-      if (line.from >= signature && line.from < signatureTo) {
+      const n = line.number - 1;
+      if (n >= quoteAt) break;
+      if (signatureAt >= 0 && n >= signatureAt) {
         ranges.push({ from: line.from, to: line.from, deco: signatureLine });
       }
-      if (/^\s*>/.test(line.text)) ranges.push({ from: line.from, to: line.from, deco: quoteLine });
+      const kind = kinds[n];
+      if (kind === "quoted") ranges.push({ from: line.from, to: line.from, deco: quoteLine });
       else {
-        if (/^\s*([-*+]|\d+[.)])\s/.test(line.text)) {
+        // A line in a code block is no list item and no heading.
+        if (kind !== "code" && /^\s*([-*+]|\d+[.)])\s/.test(line.text)) {
           ranges.push({ from: line.from, to: line.from, deco: listLine });
         }
-        if (/^#{1,6}\s/.test(line.text))
+        if (kind !== "code" && /^#{1,6}\s/.test(line.text))
           ranges.push({ from: line.from, to: line.from, deco: headLine });
         ranges.push(...lineRanges(line.text, line.from));
         // A suggestion is offered where taking it changes something: in the person's own lines.
-        for (const s of line.from < own ? suggestions : []) {
+        for (const s of n < own ? suggestions : []) {
           let at = line.text.indexOf(s.token);
           while (at !== -1) {
             const after = line.from + at + s.token.length;

@@ -276,6 +276,41 @@ describe("the person's signature (ADR 0142, rule 4)", () => {
     expect(out).not.toMatch(/<p[^>]*>--<br/);
   });
 
+  it("the reviewer's case: a fence left open above a signature with code is never around the signature", () => {
+    const md = "Example:\n\n```\nls\n\n-- \n```\nJane\n```";
+    const out = html(md);
+    assertInert(out);
+    expect(renderer.render(md).text).toBe(md);
+    const at = out.indexOf('class="matters-signature"');
+    expect(at).toBeGreaterThan(-1);
+    // Markdown reads the fence left open as code to the end of the person's part, and only there.
+    expect(out.slice(0, at)).toMatch(/<pre[^>]*><code[^>]*>ls\n<\/code><\/pre>/);
+    const block = signatureOf(out);
+    expect(block).toMatch(/>-- <\/p>/);
+    expect(block).toMatch(/<pre[^>]*><code[^>]*>Jane\n<\/code><\/pre>/);
+    // Every `<pre>` closes before the signature starts, or opens inside it.
+    const before = out.slice(0, at);
+    expect(before.split("<pre").length).toBe(before.split("</pre>").length);
+  });
+
+  it("a fence left open above the quote, with no signature, ends with the person's part", () => {
+    const md = "See:\n\n```\nls\n\nOn 3 Nov 2026, 10:29, Ben wrote:\n> When?\n";
+    const out = html(md);
+    const quote = out.indexOf("<blockquote");
+    expect(quote).toBeGreaterThan(-1);
+    expect(out.slice(0, quote)).toMatch(/<pre[^>]*><code[^>]*>ls\n<\/code><\/pre>/);
+    expect(out.indexOf("</pre>")).toBeLessThan(out.indexOf("Ben wrote:"));
+    expect(out.slice(quote)).not.toContain("<pre");
+  });
+
+  it("`-- ` lines of SQL in a closed code block above the signature stay in the code", () => {
+    const md = "Run:\n\n```sql\n-- \n-- the totals\nSELECT 1;\n```\n\n-- \nAnna";
+    const out = html(md);
+    expect(out).toMatch(/<pre[^>]*><code[^>]*>-- \n-- the totals\nSELECT 1;\n<\/code><\/pre>/);
+    expect(signatureOf(out)).toContain("Anna");
+    expect(signatureOf(out)).not.toContain("SELECT");
+  });
+
   it("without a delimiter line nothing changes", () => {
     expect(html("Hi\n\n--\nnot a signature")).not.toContain("matters-signature");
   });

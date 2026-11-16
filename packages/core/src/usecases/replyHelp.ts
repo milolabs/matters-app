@@ -15,7 +15,7 @@
  */
 import { gaps } from "../domain/draft.ts";
 import { withoutRepeats } from "../domain/quotes.ts";
-import { draftSections, joinSections, keepOwnBlocks } from "../domain/signature.ts";
+import { draftSections, joinSections, keepOwnBlocks, readDraft } from "../domain/signature.ts";
 import {
   type AgentRequestBody,
   COMMON_RULES,
@@ -56,6 +56,7 @@ export interface DraftParts {
   readonly quote: string;
 }
 
+/** A quoted line of mail the other side sent (`lastFromThem`); a draft is read by `readDraft`. */
 const QUOTED = /^\s*>/;
 
 /**
@@ -477,18 +478,22 @@ function exactly(o: Obj, keys: readonly string[]): boolean {
 
 const refused = (reason: HelpRefusal) => ({ ok: false, reason }) as const;
 
+/** A text's quoted lines as `readDraft` reads them: a `>` line in a code block is code. */
+function quotedLines(text: string): string[] {
+  const { lines, kinds } = readDraft(text);
+  return lines.filter((_, i) => kinds[i] === "quoted");
+}
+
 /**
  * Whether the text has a quoted line the person's own lines do not: a `>` line of theirs (a
  * blockquote they wrote above the signature) is their text and may stay, each as often as they
- * had it, white space at a line's end aside; any other is quoting mail, and refused.
+ * had it, white space at a line's end aside; any other is quoting mail, and refused. A `>` line
+ * inside a fenced code block is code, in the person's text and in the answer.
  */
 function hasQuotedLine(text: string, own: string): boolean {
   const theirs = new Map<string, number>();
-  for (const l of own.replace(/\r\n?/g, "\n").split("\n")) {
-    if (QUOTED.test(l)) theirs.set(l.trimEnd(), (theirs.get(l.trimEnd()) ?? 0) + 1);
-  }
-  return text.split("\n").some((l) => {
-    if (!QUOTED.test(l)) return false;
+  for (const l of quotedLines(own)) theirs.set(l.trimEnd(), (theirs.get(l.trimEnd()) ?? 0) + 1);
+  return quotedLines(text).some((l) => {
     const left = theirs.get(l.trimEnd()) ?? 0;
     theirs.set(l.trimEnd(), left - 1);
     return left <= 0;
