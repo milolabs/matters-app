@@ -122,6 +122,19 @@ export interface PromptRuntime {
   modelOf(kind: AgentWorkKind, s: AgentSettings): string;
   /** The gate of its plan at a priority; open on a runtime with no plan (ADR 0119, rule 7). */
   planGate(priority: AgentPriority, s: AgentSettings): MayRun;
+  /**
+   * Whether a turn at this priority may be sent now on the key of `ticket` (ADR 0141, rules 5 and
+   * 6): `P0` while the key holds; in the background also only while its reading switch was not
+   * turned off since the ticket was taken. Asked with nothing awaited between it and the request.
+   */
+  mayGo(ticket: KeyTicket, priority: AgentPriority): boolean;
+  /**
+   * Writes what turns on the key of `ticket` found only while that key holds as the write begins
+   * (ADR 0141, rule 5). Null: nothing was written.
+   */
+  keep<T>(ticket: KeyTicket, write: () => Promise<T>): Promise<{ readonly value: T } | null>;
+  /** Stores a turn's verdicts the same way, the one way they are stored. False: none stored. */
+  putVerdicts(ticket: KeyTicket, verdicts: readonly PromptVerdict[]): Promise<boolean>;
   /** The windows of its plan as last seen, for what a turn used. */
   limits(s: AgentSettings): PlanLimits | undefined;
   /** The last gates of a turn the person asked for (`P0`): it is ready, its plan has room. */
@@ -161,7 +174,6 @@ export interface PromptServiceDeps {
     AgentInsightStorePort,
     | "listRules"
     | "getPromptVerdicts"
-    | "putPromptVerdicts"
     | "prunePromptVerdicts"
     | "getPromptSearch"
     | "putPromptSearch"
@@ -459,15 +471,20 @@ export class PromptService {
         else if (searched.kind === "problem") problem = searched.problem;
         else {
           // Only a search that ended is kept: a stopped one leaves nothing half-written.
-          search = {
+          const found: PromptSearch = {
             promptKey: asked.key,
             filters: asked.filters,
             queries: searched.queries,
             threadIds: searched.threadIds,
             atMs: this.deps.now(),
           };
-          await this.deps.insights.putPromptSearch(search);
-          candidates = await this.candidatesOf(asked, search, consented);
+          // What the search turns found is kept only for the key they ran on (ADR 0141, rule 5).
+          const kept = await on.keep(turn.ticket, () => this.deps.insights.putPromptSearch(found));
+          if (kept === null) stopped = true;
+          else {
+            search = found;
+            candidates = await this.candidatesOf(asked, found, consented);
+          }
         }
       }
       if (candidates !== null && !stopped && problem === undefined) {
@@ -539,7 +556,10 @@ export class PromptService {
           rejected === 0 &&
           todo.length === window.todo.length
         ) {
-          await this.deps.insights.putPromptSearch({ ...search, readAtMs: startedAt });
+          const read = search;
+          await on.keep(turn.ticket, () =>
+            this.deps.insights.putPromptSearch({ ...read, readAtMs: startedAt }),
+          );
         }
       }
     } finally {
@@ -990,6 +1010,13 @@ export class PromptService {
           halt.abort();
           return;
         }
+        // The switch was read above, after the ticket: the key it was read for is the key the
+        // turn goes on, and it was not turned off since. Nothing awaits from here to the request
+        // (ADR 0141, rule 6).
+        if (!on.mayGo(ticket, priority)) {
+          halt.abort();
+          return;
+        }
         const candidates: PromptCandidate[] = batch.map((b) => ({
           thread: b.loaded.thread,
           signals: b.c.signals,
@@ -1030,7 +1057,8 @@ export class PromptService {
             { promptKey: asked.key, version: PROMPT_VERSION, atMs: this.deps.now() },
           );
           if (accepted === null) rejected++;
-          else await insights.putPromptVerdicts(accepted);
+          // Kept only while the key of the turn holds as they are written (ADR 0141, rule 5).
+          else if (!(await on.putVerdicts(ticket, accepted))) return;
           mine.done += went.length;
           if (
             enough?.(
@@ -1390,7 +1418,12 @@ export class PromptService {
         if (first === undefined) break;
         this.tried.delete(first);
       }
-      if (complete) await this.deps.insights.putPromptSearch({ ...search, readAtMs: startedAt });
+      if (complete) {
+        // What the turns read moves the reading on only for the key they ran on (ADR 0141, rule 5).
+        await on.keep(ticket, () =>
+          this.deps.insights.putPromptSearch({ ...search, readAtMs: startedAt }),
+        );
+      }
       // What is left now, for the status of the reading: one read of the verdicts, no search.
       const after = promptWindow(
         ordered,
