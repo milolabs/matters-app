@@ -26,7 +26,7 @@ import {
   downloadToFile,
   sha256File,
 } from "../src/main/installDownload.ts";
-import { Installer } from "../src/main/installer.ts";
+import { Installer, runProgram } from "../src/main/installer.ts";
 import {
   clearLeftovers,
   releaseLock,
@@ -179,6 +179,27 @@ describe("a download (rule 3)", () => {
     expect(existsSync(cancelled.path)).toBe(false);
   });
 
+  it("fails, and leaves no file, when the file cannot be written after the last byte came", async () => {
+    // The folder is not there, so the file cannot be opened; the body has ended before that is known.
+    const req = new FakeRequest();
+    const path = join(dir, "missing", "file");
+    const done = downloadToFile(
+      {
+        open: () => {
+          setTimeout(() => body(req, ["abc"], { "content-length": "3" }), 0);
+          return req;
+        },
+      },
+      "https://github.com/milolabs/matters-app/releases/download/v0.1.0-alpha.5/x",
+      path,
+      LIMITS,
+      () => {},
+      new AbortController().signal,
+    );
+    expect(await done).toEqual({ ok: false, failure: "download" });
+    expect(existsSync(path)).toBe(false);
+  });
+
   it("hashes a file on disk", async () => {
     const path = join(dir, "abc");
     writeFileSync(path, "abc");
@@ -237,7 +258,10 @@ function fakeDeps(over: Partial<InstallDeps> & { gh?: string | null; sums?: stri
     },
     clearLeftovers: () => {},
     releaseLock: () => did.push("unlock"),
-    removeTree: () => did.push("remove incoming"),
+    removeTree: (path) =>
+      did.push(
+        path.endsWith(".installing") ? "remove incoming" : `remove ${path.split("/").at(-1)}`,
+      ),
     startSwap: async () => {
       did.push("swap");
       return true;
@@ -363,6 +387,82 @@ describe("an install, in the order of site/install.sh (rules 3 and 4)", () => {
     expect(noHelper).toContain("unlock");
   });
 
+  it("runs every step of the cleanup when one throws, and keeps why it stopped", async () => {
+    const did = await stops("signature", {
+      run: async (file) => ({ code: file.endsWith("codesign") ? 1 : 0, stdout: "" }),
+      removeTree: () => {
+        throw new Error("EBUSY");
+      },
+    });
+    expect(did.slice(-2)).toEqual(["unlock", "remove work"]);
+    const unlocked = await stops("signature", {
+      run: async (file) => ({ code: file.endsWith("codesign") ? 1 : 0, stdout: "" }),
+      releaseLock: () => {
+        throw new Error("EACCES");
+      },
+    });
+    expect(unlocked.at(-1)).toBe("remove work");
+  });
+
+  it("does not start the helper while the image stays open, and leaves its folder alone", async () => {
+    const { deps, did } = fakeDeps();
+    // The checks of the copy pass; only closing the image fails.
+    deps.run = async (file, args) => {
+      did.push(`${file.split("/").at(-1)} ${args[0]}`);
+      if (file.endsWith("hdiutil")) return { code: args[0] === "detach" ? 1 : 0, stdout: "" };
+      if (file.endsWith("plutil")) {
+        return {
+          code: 0,
+          stdout: args[1] === "CFBundleIdentifier" ? "app.getmatters.Matters" : VERSION,
+        };
+      }
+      return { code: 0, stdout: "" };
+    };
+    expect(await runInstall(deps, ask())).toBe("image");
+    expect(did).not.toContain("swap");
+    // Tried, then by force, and not again.
+    expect(did.filter((d) => d === "hdiutil detach")).toHaveLength(2);
+    expect(did).toContain("remove incoming");
+    expect(did).toContain("unlock");
+    // The downloads go; the folder the image is open in stays.
+    expect(did).toContain(`remove ${IMAGE}`);
+    expect(did).toContain("remove SHA256SUMS.txt");
+    expect(did).not.toContain("remove work");
+  });
+
+  it("stops the copy when the app quits, cleans up, and never stops closing the image", async () => {
+    const abort = new AbortController();
+    const signals: [string, AbortSignal | undefined][] = [];
+    const { deps, did } = fakeDeps({
+      run: (file, args, _ms, signal) => {
+        const name = file.split("/").at(-1) ?? "";
+        did.push(`${name} ${String(args[0]).startsWith("/") ? "" : args[0]}`.trim());
+        signals.push([`${name} ${args[0]}`, signal]);
+        if (name !== "ditto") return Promise.resolve({ code: 0, stdout: "" });
+        // A long copy: it ends only when it is stopped.
+        setTimeout(() => abort.abort(), 0);
+        return new Promise((resolve) =>
+          signal?.addEventListener("abort", () => resolve({ code: null, stdout: "" })),
+        );
+      },
+    });
+    expect(await runInstall(deps, ask({ signal: abort.signal }))).toBe("cancelled");
+    expect(did.slice(-4)).toEqual(["hdiutil detach", "remove incoming", "unlock", "remove work"]);
+    expect(signals.find(([n]) => n.startsWith("ditto"))?.[1]).toBe(abort.signal);
+    for (const [name, signal] of signals) {
+      if (name.startsWith("hdiutil")) expect(signal).toBeUndefined();
+    }
+  });
+
+  it("stops a program it runs when asked", async () => {
+    const abort = new AbortController();
+    const started = Date.now();
+    const done = runProgram("/bin/sleep", ["30"], 60_000, { PATH: "/usr/bin:/bin" }, abort.signal);
+    setTimeout(() => abort.abort(), 50);
+    expect((await done).code).toBeNull();
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
   it("says when the image does not open or holds no app", async () => {
     await stops("image", {
       run: async (file) => ({ code: file.endsWith("hdiutil") ? 1 : 0, stdout: "" }),
@@ -448,6 +548,55 @@ describe("one install at a time, and Cancel (rules 1 and 5)", () => {
       failure: "cancelled",
     });
     expect(installer.busy()).toBe(false);
+  });
+
+  it("starts nothing once the app has begun to quit", async () => {
+    const installer = new Installer({
+      place: () => ({ ok: true, folder: join(dir, "Applications") }),
+      deps: () => fakeDeps().deps,
+      running: () => "0.1.0-alpha.4",
+      pid: () => 1,
+      told: () => {},
+      quit: () => {},
+    });
+    installer.knowPlace();
+    await installer.settle(1_000);
+    expect(installer.start(newer)).toBe(false);
+    expect(installer.view().state).toEqual(INSTALL_IDLE);
+  });
+
+  it("installs the version it was started with, whatever is asked while it runs", async () => {
+    const urls: string[] = [];
+    let release: () => void = () => {};
+    const installer = new Installer({
+      place: () => ({ ok: true, folder: join(dir, "Applications") }),
+      deps: (step) =>
+        fakeDeps({
+          step,
+          download: (url, path) => {
+            urls.push(url);
+            writeFileSync(path, `${SUM}  ${IMAGE}\n`);
+            return new Promise((resolve) => {
+              release = () => resolve({ ok: true, bytes: 3 });
+            });
+          },
+        }).deps,
+      running: () => "0.1.0-alpha.4",
+      pid: () => 1,
+      told: () => {},
+      quit: () => {},
+    });
+    installer.knowPlace();
+    expect(installer.start(newer)).toBe(true);
+    // A check since found another version: it starts nothing, and the one under way stays.
+    expect(installer.start({ ...newer, version: "0.1.0-alpha.6" })).toBe(false);
+    for (let n = 0; n < 5; n++) {
+      release();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(urls.length).toBeGreaterThan(0);
+    for (const url of urls) expect(url).toContain(`/v${VERSION}/`);
+    expect(installer.view().state).toMatchObject({ version: VERSION });
   });
 
   it("refuses where this copy cannot be replaced", () => {

@@ -83,7 +83,13 @@ folders with a stand-in bundle. Not tried: a whole install of a real release int
    - The image is opened read-only and not shown in Finder (`hdiutil attach -nobrowse -readonly
      -noautoopen`), the app copied beside the old one with `ditto`, then
      `codesign --verify --deep --strict` of the copy, and the copy's `CFBundleIdentifier` and
-     version must be `app.getmatters.Matters` and the version asked for.
+     version must be `app.getmatters.Matters` and the version asked for. The image is closed
+     (`hdiutil detach`, then with `-force`) before the helper starts; an image that stays open is
+     a failed install, said as one that could not be opened or closed, and no helper is started.
+   - What a step put down is removed when a later one fails: the image is closed, the copy beside
+     the old app and the lock are removed, and so are the downloads. Every step of that cleanup
+     runs even when one before it fails, and the install keeps the failure that stopped it. While
+     the image is still open, only the downloaded files are removed, not the folder it is open in.
    - Programs are run by their full path, without a shell, with a fixed PATH of the system's own
      folders. Never `xattr`, `spctl` or `sudo`; no quarantine mark is set or removed, and no setting
      is changed. As with the script, the copy carries no mark, so macOS does not check it when it
@@ -120,8 +126,12 @@ folders with a stand-in bundle. Not tried: a whole install of a real release int
    checks have passed, one line says whether the build record was among them. Cancel stops it
    while the image downloads. A failure is one phrase saying which step failed, then "Nothing was
    installed."; Install and Restart and Download both stay. While an install runs, the switch of
-   ADR 0137 cannot be turned off and a second install is not started. Quitting during an install
-   stops a download and waits up to ten seconds for the folder to be cleaned up.
+   ADR 0137 cannot be turned off and a second install is not started, and About keeps its line and
+   Cancel even when a check since found no newer version; the install goes on with the version it
+   was started with. Quitting during an install stops a download, `gh`, the copy and its checks,
+   and waits up to ten seconds for the cleanup of rule 3. Opening or closing the image is never
+   stopped: a stopped `hdiutil` could leave it half done. Once the app has begun to quit, no
+   install starts.
 6. **Where it lives.** The rules are pure functions in `packages/core` (`domain/install.ts`): the
    files of a version, which redirects pass, the checksum line, whether this copy can be replaced,
    the steps of an install and what moves them, and the words. Main has the side effects behind
@@ -137,8 +147,10 @@ folders with a stand-in bundle. Not tried: a whole install of a real release int
    not packaged at a stand-in for the downloads (`MATTERS_TEST_INSTALL_URL`, loopback only) and
    a stand-in folder (`MATTERS_TEST_INSTALL_DIR`); a packaged app reads neither. It checks that
    nothing is downloaded before the press, that a wrong checksum stops it with nothing in the
-   folder, and that Cancel stops a download. The security run points the same two at its canary
-   and checks that no download leaves without a press.
+   folder, that Cancel stops a download, and that a check during a download leaves its line and
+   Cancel. The security run points the same two at its canary and checks that no download leaves
+   without a press: once with the check off, and once with the check on and a newer version known,
+   where the canary must have been asked for release.json and the newer version kept.
 
 ## Consequences
 
@@ -171,7 +183,13 @@ folders with a stand-in bundle. Not tried: a whole install of a real release int
   the old app back fails in the helper itself, it is left in `.Matters.app.previous` the same
   way, without the lock.
 - An app that is killed while it copies into the folder leaves the lock, which the next install
-  names, as for the script.
+  names, as for the script. A quit is not a kill: it stops the copy and cleans up.
+- A quit while the image is being opened or closed does not stop `hdiutil` (it may take two
+  minutes to open, one to close), so that step can outlive the ten seconds of rule 5. The app then
+  quits without the rest of the cleanup: `hdiutil` finishes on its own, an image it opened stays
+  open in the temporary folder, and a copy and lock already in the folder of the app are left as
+  after a kill. An image that will not close even by force stays open the same way, with its
+  downloads removed, until it is ejected or the Mac restarts.
 - Nothing here runs in CI on a Mac: CI's window tests run on Linux, where About says it installs
   only on a Mac with Apple silicon, and the helper's test needs `bash`. A change to the swap is
   tried by hand on a copy in another folder, never on `/Applications`.

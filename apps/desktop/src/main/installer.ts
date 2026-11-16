@@ -31,18 +31,29 @@ import { type DownloadRequestLike, downloadToFile, sha256File } from "./installD
 import { clearLeftovers, releaseLock, SYSTEM_PATH, startSwap, takeLock } from "./installSwap.ts";
 import type { InstallView } from "./release.ts";
 
-/** Runs a program with a fixed environment and a time limit; never through a shell. */
+/**
+ * Runs a program with a fixed environment and a time limit; never through a shell. An abort of
+ * `signal` stops it, as the time limit does.
+ */
 export function runProgram(
   file: string,
   args: readonly string[],
   timeoutMs: number,
   env: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     execFile(
       file,
       [...args],
-      { env, timeout: timeoutMs, maxBuffer: 1024 * 1024, cwd: "/", encoding: "utf8" },
+      {
+        env,
+        timeout: timeoutMs,
+        maxBuffer: 1024 * 1024,
+        cwd: "/",
+        encoding: "utf8",
+        ...(signal !== undefined ? { signal } : {}),
+      },
       (error, stdout) => {
         const code = error === null ? 0 : typeof error.code === "number" ? error.code : null;
         resolve({ code, stdout: typeof stdout === "string" ? stdout : "" });
@@ -117,16 +128,22 @@ export function systemInstallDeps(
         return null;
       }
     },
-    run: (file, args, ms) => runProgram(file, args, ms, env),
+    run: (file, args, ms, signal) => runProgram(file, args, ms, env, signal),
     // gh keeps what it fetched of the signing keys under the home folder; it asks nothing.
-    runGh: (file, args, ms) =>
-      runProgram(file, args, ms, {
-        ...env,
-        HOME: homedir(),
-        GH_PROMPT_DISABLED: "1",
-        GH_NO_UPDATE_NOTIFIER: "1",
-        NO_COLOR: "1",
-      }),
+    runGh: (file, args, ms, signal) =>
+      runProgram(
+        file,
+        args,
+        ms,
+        {
+          ...env,
+          HOME: homedir(),
+          GH_PROMPT_DISABLED: "1",
+          GH_NO_UPDATE_NOTIFIER: "1",
+          NO_COLOR: "1",
+        },
+        signal,
+      ),
     findGh: (places) =>
       places.find((place) => {
         try {
@@ -177,6 +194,8 @@ export class Installer {
   private abort: AbortController | null = null;
   private run: Promise<void> | null = null;
   private toldAt = 0;
+  /** The app is quitting: no install starts any more. */
+  private closing = false;
 
   private readonly parts: InstallerParts;
 
@@ -212,12 +231,14 @@ export class Installer {
 
   /**
    * The person pressed Install (rule 1). Only for a newer version a release has, when this copy
-   * can be replaced, and when no install runs. False when nothing was started.
+   * can be replaced, when no install runs, and not once the app has begun to quit (Settings stays
+   * open while it does). False when nothing was started. The version is the one named here: a
+   * check that lands while it runs changes nothing of it.
    */
   start(newer: OfferedRelease | null): boolean {
     const place = this.place;
     const running = this.parts.running();
-    if (this.busy() || newer === null || place === null || !place.ok) return false;
+    if (this.closing || this.busy() || newer === null || place === null || !place.ok) return false;
     if (!mayInstall(newer.version, running)) return false;
     const abort = new AbortController();
     this.abort = abort;
@@ -251,10 +272,12 @@ export class Installer {
   }
 
   /**
-   * The app quits: a download stops, and what an install put beside the old app is cleaned up
-   * before the app goes, for at most `ms`.
+   * The app quits: no install starts from now on, a download, the copy or a check of it stops, and
+   * what an install put beside the old app is cleaned up before the app goes, for at most `ms`.
+   * Opening or closing the image is never stopped.
    */
   async settle(ms: number): Promise<void> {
+    this.closing = true;
     if (this.run === null || this.state.step === "restarting") return;
     this.abort?.abort();
     await Promise.race([this.run, new Promise((resolve) => setTimeout(resolve, ms))]);

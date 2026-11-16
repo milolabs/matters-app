@@ -24,7 +24,8 @@ const busy = (step: string) => step !== "idle" && step !== "failed";
  * Settings › About (ADR 0137, rule 11): the name, the version and its stage, the line that says
  * where the check stands, the switch, when it last checked, and Check now. With a newer version,
  * two actions that open the browser, and Install and Restart where this copy can be replaced (ADR
- * 0140): its steps are said here in words, and Cancel stops it while it downloads. Main opens the
+ * 0140): its steps are said here in words, and Cancel stops it while it downloads. An install under
+ * way keeps its line and its Cancel even when a check since found no newer version. Main opens the
  * links by name and installs only the version it knows of.
  */
 export function AboutSection(props: { release: ReleaseStore }) {
@@ -138,6 +139,28 @@ export function AboutSection(props: { release: ReleaseStore }) {
                       </Show>
                     </>
                   )}
+                </Match>
+                <Match when={busy(i().install.step)}>
+                  <div class="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <p
+                      role="status"
+                      aria-live="polite"
+                      data-install-line
+                      class="m-0 min-w-[200px] flex-1"
+                    >
+                      {i().install.line}
+                    </p>
+                    <Show when={i().install.step === "downloading"}>
+                      <button type="button" class={pill} onClick={() => ask({ action: "cancel" })}>
+                        Cancel
+                      </button>
+                    </Show>
+                  </div>
+                  <Show when={i().install.note}>
+                    {(note) => (
+                      <p class="mt-1 max-w-[520px] text-[12px] text-secondary">{note()}</p>
+                    )}
+                  </Show>
                 </Match>
                 <Match when={aboutState(i()).kind === "source"}>
                   <p role="status" class="mt-3">

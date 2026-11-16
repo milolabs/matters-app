@@ -305,6 +305,27 @@ test("Install downloads only when pressed, stops at a wrong checksum, and can be
     await expect(line).toHaveText(/^Downloading 0\.1\.0-alpha\.5: \d+ of 100 MB…$/);
     await expect(about.getByLabel("Check for a newer version")).toBeDisabled();
     await settings.screenshot({ path: test.info().outputPath("about-install-downloading.png") });
+
+    // A check while it downloads finds no newer version: the line and Cancel stay, and nothing
+    // offers to install (ADR 0140, rule 5).
+    const checkNow = about.getByRole("button", { name: "Check now" });
+    const asks = () => site.asked.filter((a) => a.url === "/release.json").length;
+    const asksBefore = asks();
+    site.serve("v0.0.0", '"newest"');
+    await checkNow.click();
+    await expect.poll(asks).toBe(asksBefore + 1);
+    await expect(about.getByText("0.1.0-alpha.5 is out.", { exact: true })).toHaveCount(0);
+    await expect(line).toHaveText(/^Downloading 0\.1\.0-alpha\.5: \d+ of 100 MB…$/);
+    await expect(about.getByRole("button", { name: "Cancel" })).toBeVisible();
+    await expect(install).toHaveCount(0);
+    await settings.screenshot({ path: test.info().outputPath("about-install-checked.png") });
+    // The newer version is out again, so what follows reads as before.
+    site.serve("v0.1.0-alpha.5", '"again"');
+    await checkNow.click();
+    await expect.poll(asks).toBe(asksBefore + 2);
+    await expect(about.getByText("0.1.0-alpha.5 is out.", { exact: true })).toBeVisible();
+    await expect(line).toHaveText(/^Downloading 0\.1\.0-alpha\.5: \d+ of 100 MB…$/);
+
     await about.getByRole("button", { name: "Cancel" }).click();
     await expect(line).toHaveText("Cancelled. Nothing was installed.");
     await expect(about.getByRole("button", { name: "Cancel" })).toHaveCount(0);

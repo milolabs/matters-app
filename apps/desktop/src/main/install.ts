@@ -41,10 +41,23 @@ export interface InstallDeps {
   ): Promise<DownloadResult>;
   sha256(path: string): Promise<string>;
   readText(path: string): string | null;
-  /** Runs a program by its full path, with a fixed environment and a time limit. */
-  run(file: string, args: readonly string[], timeoutMs: number): Promise<RunResult>;
+  /**
+   * Runs a program by its full path, with a fixed environment and a time limit. With `signal`, an
+   * abort stops the program; `hdiutil` is never given one, so an image is always closed.
+   */
+  run(
+    file: string,
+    args: readonly string[],
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<RunResult>;
   /** Runs `gh`, which also needs a home folder for its cache. */
-  runGh(file: string, args: readonly string[], timeoutMs: number): Promise<RunResult>;
+  runGh(
+    file: string,
+    args: readonly string[],
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<RunResult>;
   /** The first of `GH_PLACES` that is a program this user may run; null when none is. */
   findGh(places: readonly string[]): string | null;
   isDirectory(path: string): boolean;
@@ -66,6 +79,7 @@ export interface InstallAsk {
   /** The folder the running `Matters.app` is in (rule 2). */
   readonly folder: string;
   readonly pid: number;
+  /** The person's Cancel while the image downloads, or the app quitting at any step. */
   readonly signal: AbortSignal;
   /** The release downloads; a window test's stand-in hands in its own. */
   readonly base?: string;
@@ -91,11 +105,23 @@ const PROGRAMS = {
 /** Says which download failed in the terms of an install. */
 const asFailure = (r: Extract<DownloadResult, { ok: false }>): InstallFailure => r.failure;
 
+/** A step of the cleanup; one that throws does not keep the next from running. */
+const quietly = (clean: () => void): void => {
+  try {
+    clean();
+  } catch {
+    // What is left is cleared by the next install (the copy, under the lock) or by macOS (the
+    // temporary folder).
+  }
+};
+
 /**
  * Runs the install. Resolves with the failure that stopped it, or null when the helper was
  * started and the app should now quit. The folder of the app is touched only after every check
  * of the download passed, and only with its lock held; whatever was put there is removed when a
- * later step fails.
+ * later step fails. Every step of that cleanup runs, even when one before it throws, and the
+ * result stays the step's that stopped. An image that does not close is a failed install: the
+ * helper is not started, and the folder it is open in is left alone.
  */
 export async function runInstall(
   deps: InstallDeps,
@@ -106,10 +132,14 @@ export async function runInstall(
   if (files === null) return "older";
   const work = deps.makeWork();
   let volume: string | null = null;
+  /** An image that would not close: its folder is not removed, so nothing recurses into it. */
+  let stuck = false;
   let locked = false;
   const incoming = join(ask.folder, INSTALL_NAMES.installing);
+  const image = join(work, files.image);
+  const sumsPath = join(work, "SHA256SUMS.txt");
+  const recordPath = join(work, files.record);
   try {
-    const image = join(work, files.image);
     const got = await deps.download(
       files.imageUrl,
       image,
@@ -118,7 +148,6 @@ export async function runInstall(
       ask.signal,
     );
     if (!got.ok) return asFailure(got);
-    const sumsPath = join(work, "SHA256SUMS.txt");
     const sums = await deps.download(
       files.sumsUrl,
       sumsPath,
@@ -138,7 +167,6 @@ export async function runInstall(
     const gh = deps.findGh(GH_PLACES);
     if (gh !== null) {
       deps.step({ kind: "check", check: "build-record" });
-      const recordPath = join(work, files.record);
       const record = await deps.download(
         files.recordUrl,
         recordPath,
@@ -161,7 +189,9 @@ export async function runInstall(
           recordPath,
         ],
         LIMIT_MS.gh,
+        ask.signal,
       );
+      if (ask.signal.aborted) return "cancelled";
       if (verified.code !== 0) return "build-record";
     }
     deps.step({ kind: "install", recorded: gh !== null });
@@ -190,20 +220,30 @@ export async function runInstall(
       return "copy";
     }
 
-    // Copied beside the old one and checked there, so a failure leaves the old one as it is.
-    const copied = await deps.run(PROGRAMS.ditto, [source, incoming], LIMIT_MS.copy);
+    // Copied beside the old one and checked there, so a failure leaves the old one as it is. A
+    // quit stops the copy and its checks, so the cleanup below runs before the app goes.
+    const copied = await deps.run(PROGRAMS.ditto, [source, incoming], LIMIT_MS.copy, ask.signal);
+    if (ask.signal.aborted) return "cancelled";
     if (copied.code !== 0) return "copy";
     const sealed = await deps.run(
       PROGRAMS.codesign,
       ["--verify", "--deep", "--strict", incoming],
       LIMIT_MS.codesign,
+      ask.signal,
     );
+    if (ask.signal.aborted) return "cancelled";
     if (sealed.code !== 0) return "signature";
     const plist = join(incoming, "Contents", "Info.plist");
     const read = (key: string) =>
-      deps.run(PROGRAMS.plutil, ["-extract", key, "raw", "-o", "-", plist], LIMIT_MS.plist);
+      deps.run(
+        PROGRAMS.plutil,
+        ["-extract", key, "raw", "-o", "-", plist],
+        LIMIT_MS.plist,
+        ask.signal,
+      );
     const id = await read("CFBundleIdentifier");
     const version = await read("CFBundleShortVersionString");
+    if (ask.signal.aborted) return "cancelled";
     if (
       id.code !== 0 ||
       id.stdout.trim() !== INSTALL_BUNDLE_ID ||
@@ -213,26 +253,35 @@ export async function runInstall(
       return "not-matters";
     }
 
-    await detach(deps, volume);
+    // Closed before the helper starts; one that stays open stops the install here.
+    const closed = await detach(deps, volume);
+    stuck = !closed;
     volume = null;
+    if (!closed) return "image";
     if (!(await deps.startSwap(ask.pid, ask.folder))) return "restart";
     // The helper holds the lock now, and the new app beside the old one is its to move.
     locked = false;
     deps.step({ kind: "restart" });
     return null;
   } finally {
-    if (volume !== null) await detach(deps, volume);
+    if (volume !== null) stuck = !(await detach(deps, volume));
     if (locked) {
-      deps.removeTree(incoming);
-      deps.releaseLock(ask.folder);
+      quietly(() => deps.removeTree(incoming));
+      quietly(() => deps.releaseLock(ask.folder));
     }
-    deps.removeWork(work);
+    // The folder holds the image's mount point. While the image is open there, only the files
+    // downloaded are removed: the open image is read-only, and a removal that went into it would
+    // fail there and stop.
+    if (stuck)
+      for (const path of [image, sumsPath, recordPath]) quietly(() => deps.removeTree(path));
+    else quietly(() => deps.removeWork(work));
   }
 }
 
-async function detach(deps: InstallDeps, volume: string): Promise<void> {
-  const first = await deps.run(PROGRAMS.hdiutil, ["detach", volume, "-quiet"], LIMIT_MS.detach);
-  if (first.code !== 0) {
-    await deps.run(PROGRAMS.hdiutil, ["detach", volume, "-force", "-quiet"], LIMIT_MS.detach);
-  }
+/** Closes the image, by force when it will not close; false when it is still open. */
+async function detach(deps: InstallDeps, volume: string): Promise<boolean> {
+  const run = (args: readonly string[]) =>
+    deps.run(PROGRAMS.hdiutil, args, LIMIT_MS.detach).catch(() => ({ code: null, stdout: "" }));
+  if ((await run(["detach", volume, "-quiet"])).code === 0) return true;
+  return (await run(["detach", volume, "-force", "-quiet"])).code === 0;
 }

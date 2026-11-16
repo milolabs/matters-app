@@ -267,7 +267,7 @@ const FAILURES: Record<InstallFailure, string> = {
   sums: "SHA256SUMS.txt does not list the disk image.",
   checksum: "The download does not match its checksum.",
   "build-record": "gh could not confirm that the release workflow built it.",
-  image: "The disk image could not be opened, or holds no Matters.app.",
+  image: "The disk image could not be opened or closed, or holds no Matters.app.",
   locked: `Another install into this folder is under way. If none is, remove ${INSTALL_NAMES.lock} there.`,
   copy: "The new app could not be copied beside this one.",
   signature: "The new app's signature does not hold.",

@@ -4,10 +4,19 @@
 // and once more with the walls tested alone. A canary HTTP server on 127.0.0.1 counts every request
 // that reaches it, and the app's main process reports every navigation, network request and link
 // handed to the system (a dev-only spy, `MATTERS_SMOKE_MODE=security`). Each check of the manifest
-// is then judged by the ratchet. Needs Docker and `electron-vite build` first; the root
+// is then judged by the ratchet. A second, short start on the demo mailbox knows of a newer
+// version and is never told to install it. Needs Docker and `electron-vite build` first; the root
 // `smoke:security` script does both.
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -43,6 +52,17 @@ const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
   "base64",
 );
+/** What the canary answers for release.json: a newer version, with its downloads. */
+const NEWER = "v0.1.0-alpha.5";
+const NEWER_RELEASE = {
+  repo: "milolabs/matters-app",
+  version: NEWER,
+  date: "2026-11-14T08:00:00Z",
+  url: `https://github.com/milolabs/matters-app/releases/download/${NEWER}/Matters-arm64.dmg`,
+  notes: `https://github.com/milolabs/matters-app/releases/tag/${NEWER}`,
+  stage: "alpha",
+  stars: 0,
+};
 const canary = createServer((req: IncomingMessage, res) => {
   const url = new URL(req.url ?? "/", "http://canary");
   const match = /^\/__c\/([^/]+)(\/.*)?$/.exec(url.pathname);
@@ -53,7 +73,10 @@ const canary = createServer((req: IncomingMessage, res) => {
     dest,
     lane: currentLane,
   });
-  if (dest === "image" || /\.png$/.test(url.pathname)) {
+  if (url.pathname === "/__release/release.json") {
+    // The site's file, naming a version newer than any build that is not packaged (0.0.0).
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(NEWER_RELEASE));
+  } else if (dest === "image" || /\.png$/.test(url.pathname)) {
     res.writeHead(200, { "content-type": "image/png" }).end(PNG);
   } else res.writeHead(200, { "content-type": "text/plain" }).end("canary");
 });
@@ -368,6 +391,100 @@ try {
         .map((e) => e.url)
         .join(", ")}`,
     );
+
+  // ---- a newer version known, Install never pressed (ADR 0140, rules 1 and 7) ----
+  // The run above has the check off, so no newer version is known there: it cannot tell "not
+  // pressed" from "nothing to install". This start has the check on (no state file yet), the
+  // canary's release.json names a newer version, and the demo mailbox, so no corpus. It is stopped
+  // once the check was answered and a while has passed; the check must have run, and kept the
+  // newer version, for "nothing left" to mean anything.
+  const newerDir = join(dir, "newer");
+  mkdirSync(join(newerDir, "userData"), { recursive: true });
+  mkdirSync(join(newerDir, "apps", "Matters.app"), { recursive: true });
+  marker = { id: "newer-known", lane: "newer-known" };
+  currentLane = "newer-known";
+  const releaseAsked = () =>
+    hits.filter((h) => h.lane === "newer-known" && h.path.startsWith("/__release")).length;
+  const second = spawn(process.execPath, [join(root, "apps/desktop")], {
+    env: {
+      ...env,
+      MATTERS_SMOKE: "1",
+      MATTERS_SMOKE_MODE: "security",
+      MATTERS_SMOKE_TIMEOUT_MS: "120000",
+      MATTERS_SEED: "1",
+      MATTERS_DB_PATH: join(newerDir, "matters.db"),
+      MATTERS_USER_DATA: join(newerDir, "userData"),
+      MATTERS_TEST_RELEASE_URL: `http://${ORIGIN}/__release/release.json`,
+      MATTERS_TEST_INSTALL_URL: `http://${ORIGIN}/__install/`,
+      MATTERS_TEST_INSTALL_DIR: join(newerDir, "apps"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let secondLog = "";
+  let secondPending = "";
+  const secondFeed = (d: Buffer) => {
+    const text = d.toString();
+    secondLog += text;
+    secondPending += text;
+    const parts = secondPending.split("\n");
+    secondPending = parts.pop() ?? "";
+    // Only main's events: the page's corpus signals belong to the run above.
+    for (const part of parts) if (part.startsWith(EVENT)) onLine(part);
+  };
+  second.stdout.on("data", secondFeed);
+  second.stderr.on("data", secondFeed);
+  const secondClosed = new Promise<number | null>((r) => second.on("close", r));
+  const askedBy = Date.now() + 90_000;
+  while (releaseAsked() === 0 && second.exitCode === null && Date.now() < askedBy)
+    await new Promise((r) => setTimeout(r, 250));
+  // Long enough for an install that started by itself to have asked for its first file.
+  if (releaseAsked() > 0) await new Promise((r) => setTimeout(r, 5_000));
+  second.kill("SIGTERM");
+  const secondKiller = setTimeout(() => second.kill("SIGKILL"), 15_000);
+  await secondClosed;
+  clearTimeout(secondKiller);
+  let keptVersion: unknown = null;
+  try {
+    const kept = JSON.parse(
+      readFileSync(join(newerDir, "userData", "newer-version.json"), "utf8"),
+    ) as { answer?: { version?: unknown } | null };
+    keptVersion = kept.answer?.version ?? null;
+  } catch {
+    // Not written: the check did not keep an answer.
+  }
+  const newerEvents = events.filter((e) => e.lane === "newer-known" && e.kind === "request");
+  // Controls: the canary was asked, main's spy saw it, and what came back was kept.
+  if (releaseAsked() === 0)
+    failures.push(
+      `newer known: control: the check was on, yet the canary was never asked for release.json (exit ${second.exitCode})\n${secondLog.split("\n").slice(-20).join("\n")}`,
+    );
+  if (!newerEvents.some((e) => (e.url ?? "").includes("/__release/release.json")))
+    failures.push("newer known: control: main's spy did not see the request for release.json");
+  if (keptVersion !== NEWER.replace(/^v/, ""))
+    failures.push(`newer known: control: the newer version was not kept (${String(keptVersion)})`);
+  const newerInstallHits = hits.filter(
+    (h) => h.lane === "newer-known" && h.path.startsWith("/__install"),
+  );
+  const newerInstallRequests = newerEvents.filter(
+    (e) =>
+      /^https?:\/\/github\.com\/milolabs\/matters-app\/releases\/download\//i.test(e.url ?? "") ||
+      /^https?:\/\/release-assets\.githubusercontent\.com(?:[:/]|$)/i.test(e.url ?? "") ||
+      (e.url ?? "").includes("/__install"),
+  );
+  if (newerInstallHits.length > 0)
+    failures.push(
+      `newer known: nobody pressed Install, yet the canary was asked for ${newerInstallHits
+        .map((h) => h.path)
+        .join(", ")}`,
+    );
+  if (newerInstallRequests.length > 0)
+    failures.push(
+      `newer known: nobody pressed Install, yet main saw downloads: ${newerInstallRequests
+        .map((e) => e.url)
+        .join(", ")}`,
+    );
+  if (readdirSync(join(newerDir, "apps")).join(",") !== "Matters.app")
+    failures.push("newer known: the stand-in folder of apps changed");
 
   // ---- judge every check ----
   const summary = new TierSummary("browser");

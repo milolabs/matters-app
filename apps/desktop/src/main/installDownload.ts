@@ -93,16 +93,25 @@ export function downloadToFile(
           // Already ended.
         }
       }
-      const settle = () => {
-        if (!result.ok) rmSync(path, { force: true });
-        resolve(result);
+      const settle = (ended: DownloadResult) => {
+        if (!ended.ok) rmSync(path, { force: true });
+        resolve(ended);
       };
-      if (file === null) settle();
-      else if (result.ok) file.end(settle);
-      else {
+      const out = file;
+      if (out === null) settle(result);
+      else if (result.ok) {
+        // Whole only once every byte is on disk: a write that fails after the last byte came is a
+        // failed download, and its file is removed.
+        let written = true;
+        out.on("error", () => {
+          written = false;
+        });
+        out.once("close", () => settle(written ? result : { ok: false, failure: "download" }));
+        out.end();
+      } else {
         // Closed first: a stream that is still opening would make the file after it was removed.
-        file.once("close", settle);
-        file.destroy();
+        out.once("close", () => settle(result));
+        out.destroy();
       }
     };
     const fail = (failure: DownloadFailure) => finish({ ok: false, failure });
