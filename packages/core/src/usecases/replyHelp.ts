@@ -14,7 +14,7 @@
  */
 import { gaps } from "../domain/draft.ts";
 import { withoutRepeats } from "../domain/quotes.ts";
-import { draftSections, joinSections, withoutSignature } from "../domain/signature.ts";
+import { draftSections, joinSections, keepOwnBlocks } from "../domain/signature.ts";
 import {
   type AgentRequestBody,
   COMMON_RULES,
@@ -70,12 +70,13 @@ export function splitDraft(text: string): DraftParts {
 
 /**
  * The person's lines (as the model wrote them), the signature and the quote again, one empty line
- * between each. A signature block the model wrote anyway is cut off, so a draft is never signed
- * twice (ADR 0142, rule 6). `before` is the person's own lines the model was given: a block they
- * had there is theirs and stays; only one new in the model's answer is cut.
+ * between each. `own` is the model's text as kept: the accept functions below keep only the
+ * person's own signature blocks of it before they check it (`keepOwnBlocks`, ADR 0142, rule 6), and
+ * text that is all the model's goes through `withoutSignature` first, so a draft is never signed
+ * twice.
  */
-export function joinDraft(own: string, quote: string, signature = "", before = ""): string {
-  return joinSections(withoutSignature(own, before), signature, quote);
+export function joinDraft(own: string, quote: string, signature = ""): string {
+  return joinSections(own, signature, quote);
 }
 
 /** The gaps of the person's lines, each once, in the order they first appear. */
@@ -451,8 +452,8 @@ export function buildFillGapsRequest(
 // --- Trusting the answers ---
 
 /**
- * Why an answer is not used: its shape, a gap it dropped, a quote it wrote, the draft it lost, or
- * a subject line it put in the text.
+ * Why an answer is not used: its shape, a gap it dropped, a quote it wrote, the draft or a
+ * signature block of the person's it lost, or a subject line it put in the text.
  */
 export type HelpRefusal = "shape" | "gaps" | "quote" | "dropped" | "subject";
 
@@ -477,29 +478,49 @@ function hasQuotedLine(text: string): boolean {
   return text.split("\n").some((l) => QUOTED.test(l));
 }
 
-/** The rewritten lines, trimmed, when they keep every gap, add none and quote nothing. */
+/**
+ * The model's text as kept, before any check of it (ADR 0142, rule 6): trimmed, with only the
+ * person's own signature blocks of `own` (`keepOwnBlocks`). Refused when nothing is left, or when it
+ * lost a block of the person's. Every check after this one runs on what is kept, so a gap that
+ * stood only in a block of the model's is lost, and the answer refused for it.
+ */
+function keptOf(text: string, own: string): Accepted<string> {
+  const trimmed = text.replace(/\r\n?/g, "\n").trim();
+  if (trimmed === "") return refused("shape");
+  const kept = keepOwnBlocks(own, trimmed);
+  if (kept === null) return refused("dropped");
+  if (kept === "") return refused("shape");
+  return { ok: true, value: kept };
+}
+
+/**
+ * The rewritten lines, trimmed and with only the person's own signature blocks, when they keep
+ * every gap, add none and quote nothing.
+ */
 export function acceptRewrite(value: unknown, own: string): Accepted<string> {
   if (!isObject(value) || !exactly(value, ["rewritten"])) return refused("shape");
   const text = value.rewritten;
   if (typeof text !== "string" || text.length > MAX_HELP_DRAFT_CHARS) return refused("shape");
-  const out = text.replace(/\r\n?/g, "\n").trim();
-  if (out === "") return refused("shape");
+  const kept = keptOf(text, own);
+  if (!kept.ok) return kept;
+  const out = kept.value;
   if (hasQuotedLine(out)) return refused("quote");
   if (!keepsGaps(own, out, true)) return refused("gaps");
   return { ok: true, value: out };
 }
 
 /**
- * The person's lines as the agent wrote them on their words (ADR 0132), trimmed: not empty, no
- * quoted line, no subject line at the top, and every gap of the draft kept. New gaps are allowed:
- * a fact the agent was not given is left as one.
+ * The person's lines as the agent wrote them on their words (ADR 0132), trimmed and with only the
+ * person's own signature blocks: not empty, no quoted line, no subject line at the top, and every
+ * gap of the draft kept. New gaps are allowed: a fact the agent was not given is left as one.
  */
 export function acceptWrite(value: unknown, own: string, subject = ""): Accepted<string> {
   if (!isObject(value) || !exactly(value, ["written"])) return refused("shape");
   const text = value.written;
   if (typeof text !== "string" || text.length > MAX_HELP_DRAFT_CHARS) return refused("shape");
-  const out = text.replace(/\r\n?/g, "\n").trim();
-  if (out === "") return refused("shape");
+  const kept = keptOf(text, own);
+  if (!kept.ok) return kept;
+  const out = kept.value;
   if (hasQuotedLine(out)) return refused("quote");
   const first = (out.split("\n")[0] as string).replace(/\s+/g, " ").trim();
   const topic = subject.replace(/\s+/g, " ").trim();
@@ -514,8 +535,9 @@ export function acceptWrite(value: unknown, own: string, subject = ""): Accepted
 }
 
 /**
- * The draft with the answers added. With nothing added it is the draft exactly as it was. An
- * answer that keeps less than most of the draft has dropped some of the person's words.
+ * The draft with the answers added, with only the person's own signature blocks. With nothing
+ * added it is the draft exactly as it was. An answer that keeps less than most of the draft has
+ * dropped some of the person's words.
  */
 export function acceptAnswers(value: unknown, own: string): Accepted<string> {
   if (!isObject(value) || !exactly(value, ["withAnswers", "added"])) return refused("shape");
@@ -527,8 +549,9 @@ export function acceptAnswers(value: unknown, own: string): Accepted<string> {
     return refused("shape");
   }
   if (added === 0) return { ok: true, value: own };
-  const out = withAnswers.replace(/\r\n?/g, "\n").trim();
-  if (out === "") return refused("shape");
+  const kept = keptOf(withAnswers, own);
+  if (!kept.ok) return kept;
+  const out = kept.value;
   if (hasQuotedLine(out)) return refused("quote");
   if (!keepsGaps(own, out)) return refused("gaps");
   const was = normalizeForQuote(own).length;

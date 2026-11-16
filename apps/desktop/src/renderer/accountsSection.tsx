@@ -15,10 +15,14 @@ import { accountShare, removalNotice } from "./removal.ts";
 import { Setup } from "./setup.tsx";
 import {
   closeSignatureField,
+  NO_SAVED_SIGNATURES,
   NO_SIGNATURE_FIELD,
   openSignatureField,
+  recordSavedSignature,
+  type SavedSignatures,
   type SignatureFields,
   savedSignatureField,
+  signaturesCaughtUp,
   typeInSignatureField,
 } from "./signatureFields.ts";
 import { SignatureForm } from "./signatureForm.tsx";
@@ -85,6 +89,12 @@ export function AccountsSection(props: {
   const [signatureFields, setSignatureFields] = createSignal<SignatureFields>(NO_SIGNATURE_FIELD);
   const signing = () => signatureFields().open;
   const closeSignature = (id: string) => setSignatureFields((f) => closeSignatureField(f, id));
+  // What each account's last save that succeeded left in the store, until the list shows it.
+  const [savedSignatures, setSavedSignatures] = createSignal<SavedSignatures>(NO_SAVED_SIGNATURES);
+  createEffect(() => {
+    const accounts = props.accounts.accounts();
+    setSavedSignatures((s) => signaturesCaughtUp(s, accounts));
+  });
   const byBrowser = (id: string) => {
     const account = props.accounts.accounts().find((a) => a.id === id);
     return account !== undefined && providerOf(account) !== undefined;
@@ -400,7 +410,13 @@ export function AccountsSection(props: {
                         setSignatureFields((f) => typeInSignatureField(f, account.id, text))
                       }
                       onClose={() => closeSignature(account.id)}
-                      onSaved={(note, submitted) => {
+                      saved={savedSignatures()}
+                      onSaved={(note, submitted, signature, order) => {
+                        // What the store holds now, before the list is read again: a Save of other
+                        // text in the meantime is never taken for unchanged.
+                        setSavedSignatures((s) =>
+                          recordSavedSignature(s, account.id, signature, order),
+                        );
                         // This account's field only: another may have been opened meanwhile. It
                         // stays open when it holds text typed after the save was pressed.
                         setSignatureFields((f) => savedSignatureField(f, account.id, submitted));

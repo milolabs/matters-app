@@ -68,3 +68,66 @@ export function signatureAlert(
   if (problem !== null) return problem;
   return failure !== null && failure.text === text ? failure.why : null;
 }
+
+/**
+ * What the last save of each account's signature that succeeded left in the store, as its answer
+ * said, with the order that save was pressed in. The list of accounts is read again after a save,
+ * but until it is, the account it shows still has the signature from before: the field compares
+ * with this too, so a text that differs from what the store holds is never taken for unchanged.
+ */
+export type SavedSignatures = Readonly<
+  Record<string, { readonly text: string; readonly order: number }>
+>;
+
+export const NO_SAVED_SIGNATURES: SavedSignatures = {};
+
+/**
+ * A save of `id`'s signature succeeded with `text`, its answer. It stands unless a save pressed
+ * later already succeeded: the store applies the saves in the order they were asked for, so the
+ * later one's text is what it holds, whichever answer came first.
+ */
+export function recordSavedSignature(
+  saved: SavedSignatures,
+  id: string,
+  text: string,
+  order: number,
+): SavedSignatures {
+  const had = saved[id];
+  if (had !== undefined && had.order > order) return saved;
+  return { ...saved, [id]: { text, order } };
+}
+
+/**
+ * The list of accounts was read again: an account that now shows the text of its last save has
+ * caught up, and the list is what the field compares with again. One that shows other text may
+ * have been read before the save landed; its saved text stays.
+ */
+export function signaturesCaughtUp(
+  saved: SavedSignatures,
+  accounts: readonly { readonly id: string; readonly signature?: string | undefined }[],
+): SavedSignatures {
+  let out: Record<string, { readonly text: string; readonly order: number }> | null = null;
+  for (const a of accounts) {
+    const had = saved[a.id];
+    if (had === undefined || had.text !== (a.signature ?? "")) continue;
+    out ??= { ...saved };
+    delete out[a.id];
+  }
+  return out ?? saved;
+}
+
+/**
+ * Whether the field's text, as it would be kept, is what the store holds already, so Save only
+ * closes the field. Only when it is the account's signature as the list shows it and the text of
+ * the last save that succeeded, while one has not been caught up with: when the two differ, the
+ * store may hold either, and a save of the same text again costs nothing.
+ */
+export function signatureUnchanged(
+  saved: SavedSignatures,
+  id: string,
+  shown: string,
+  kept: string,
+): boolean {
+  const had = saved[id];
+  return kept === shown && (had === undefined || had.text === kept);
+}

@@ -1200,6 +1200,24 @@ describe("AgentService: drafts", () => {
     expect(h.drafts).toHaveLength(1);
   });
 
+  it("cuts every signature block of the prepared words: they are all the agent's (ADR 0142)", async () => {
+    const h = await ready();
+    await h.addMail({
+      threadId: "t1",
+      messages: [{ dateMs: NOW - DAY, text: "Can you send it?", fromName: "Anna" }],
+    });
+    await h.service.draftFromPrepared(
+      "t1",
+      "Hi Anna,\n\nTuesday works.\n\n--\nBot\n\n-- \nYour assistant\n\nSummary\n--\nnone",
+    );
+    const body = h.drafts[0]?.bodyMarkdown ?? "";
+    expect(body.startsWith("Hi Anna,\n\nTuesday works.\n\n")).toBe(true);
+    expect(body).not.toContain("Bot");
+    expect(body).not.toContain("Your assistant");
+    expect(body).not.toContain("Summary");
+    expect(body).toContain("> Can you send it?");
+  });
+
   it("refuses an empty body and a thread that does not exist", async () => {
     const h = await ready();
     await expect(h.service.draftFromPrepared("t1", "  ")).rejects.toBeInstanceOf(
