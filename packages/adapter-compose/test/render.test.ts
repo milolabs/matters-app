@@ -229,6 +229,15 @@ describe("the person's signature (ADR 0142, rule 4)", () => {
     expect(out).not.toMatch(/<img/);
   });
 
+  it("is one message: a link defined on one side of the delimiter is a link on the other", () => {
+    const out = html("[site]: https://matters.example\n\nHello\n\n-- \nVisit [site]");
+    expect(signatureOf(out)).toContain('href="https://matters.example"');
+    const back = html("See [site].\n\n-- \nAnna\n\n[site]: https://matters.example");
+    expect(back).toMatch(/See <a href="https:\/\/matters\.example"/);
+    // Nothing is carried from one message to the next.
+    expect(html("Hello\n\n-- \nVisit [site]")).not.toContain("href=");
+  });
+
   it("without a delimiter line nothing changes", () => {
     expect(html("Hi\n\n--\nnot a signature")).not.toContain("matters-signature");
   });

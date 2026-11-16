@@ -231,10 +231,13 @@ export const suggestionsField = StateField.define<readonly GapSuggestion[]>({
   },
 });
 
-/** Puts a suggested value in place of its placeholder, everywhere the placeholder is written. */
+/**
+ * Puts a suggested value in place of its placeholder, everywhere the person's own lines write it:
+ * not in the signature, nor in the quote, which the agent did not fill (ADR 0142).
+ */
 export function acceptSuggestion(view: EditorView, s: GapSuggestion): boolean {
   const text = view.state.doc.toString();
-  const end = quoteStart(text) ?? text.length;
+  const end = signatureStart(text) ?? quoteStart(text) ?? text.length;
   const changes: { from: number; to: number; insert: string }[] = [];
   let at = text.indexOf(s.token);
   while (at !== -1 && at < end) {
@@ -307,7 +310,8 @@ function buildLook(view: EditorView): DecorationSet {
         if (/^#{1,6}\s/.test(line.text))
           ranges.push({ from: line.from, to: line.from, deco: headLine });
         ranges.push(...lineRanges(line.text, line.from));
-        for (const s of suggestions) {
+        // A suggestion is offered where taking it changes something: in the person's own lines.
+        for (const s of line.from < signature ? suggestions : []) {
           let at = line.text.indexOf(s.token);
           while (at !== -1) {
             const after = line.from + at + s.token.length;

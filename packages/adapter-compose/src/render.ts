@@ -52,19 +52,23 @@ export class MarkdownComposeRenderer implements ComposeRendererPort {
    * it, so a delimiter right under a line of text never makes that line a heading (`-` under a
    * paragraph is Markdown's other way of writing one), and the signature's own lines never run
    * into the person's. Its delimiter is a line of its own, as text: never an `<hr>`, never a list
-   * item. The text part keeps the line exactly, its trailing space included.
+   * item. The text part keeps the line exactly, its trailing space included. The parts are one
+   * message: a link defined in one (`[site]: https://…`) is a link where another uses it, so
+   * every part's definitions are read first, into one environment for this message only.
    */
   private body(markdown: string): string {
     const { own, signature, quote } = draftSections(markdown);
     if (signature === "") return this.md.render(markdown);
     const lines = signature.slice(SIGNATURE_DELIMITER.length + 1);
+    const env = {};
+    for (const part of [own, lines, quote]) this.md.parse(part, env);
     return (
-      this.md.render(own) +
+      this.md.render(own, env) +
       '<div class="matters-signature">' +
       `<p class="matters-signature-mark">${SIGNATURE_DELIMITER}</p>` +
-      this.md.render(lines) +
+      this.md.render(lines, env) +
       "</div>" +
-      this.md.render(quote)
+      this.md.render(quote, env)
     );
   }
 }

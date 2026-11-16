@@ -282,6 +282,12 @@ test("a signature set in Settings starts a new message and a reply, the caret ab
   await expect(accountRow.getByRole("textbox", { name: /^Signature for / })).toHaveCount(0);
   await expect(again.getByRole("region", { name: "Accounts" })).toBeVisible();
   await expect(accountRow.locator("[data-signature-line]")).toHaveText("Signature: Ola Demo");
+  // From the form's buttons too: Escape on Cancel closes the field, and the window stays.
+  await accountRow.getByRole("button", { name: "Signature" }).click();
+  await accountRow.getByRole("button", { name: "Cancel" }).focus();
+  await again.keyboard.press("Escape");
+  await expect(accountRow.getByRole("textbox", { name: /^Signature for / })).toHaveCount(0);
+  await expect(again.getByRole("region", { name: "Accounts" })).toBeVisible();
   const cleared = await editSignature(again, []);
   await expect(cleared.locator("[data-signature-line]")).toHaveCount(0);
   await again.close();
