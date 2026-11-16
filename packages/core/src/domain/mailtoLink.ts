@@ -82,7 +82,8 @@ export function plainBodyMarkdown(text: string): string {
     .split("\n")
     .map((line) => {
       // A backslash before ASCII punctuation is Markdown's escape; doubled, it stays a backslash.
-      let out = line.replace(/\\(?=[!-/:-@[-`{-~])/g, "\\\\").replace(/[[\]]/g, "\\$&");
+      // A bracket gets one in front. One pass, so a backslash put in is never read again.
+      let out = line.replace(/\\(?=[!-/:-@[-`{-~])|[[\]]/g, "\\$&");
       out = out.replace(/^(\s*)>/, "$1\\>");
       if (/^--\s*$/.test(out)) out = `\\${out}`;
       return out;
