@@ -147,10 +147,14 @@ export function followSignature(body: string, inserted: string, next: string): s
 
 /**
  * Text a model wrote, without a signature block of its own: from a delimiter line on, everything
- * goes. The model is asked to write none (ADR 0142, rule 6); this makes sure.
+ * goes. The model is asked to write none (ADR 0142, rule 6); this makes sure. A delimiter line is
+ * `-- ` with its space, or `--` without it when it does not stand right under a line of text: there
+ * `--` underlines a Markdown heading ("Summary" over `--`), which is the person's text and stays.
  */
 export function withoutSignature(text: string): string {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const at = lines.findIndex((l) => /^--\s?$/.test(l));
+  const at = lines.findIndex(
+    (l, i) => l === SIGNATURE_DELIMITER || (l === "--" && (lines[i - 1] ?? "").trim() === ""),
+  );
   return at < 0 ? text : lines.slice(0, at).join("\n").trimEnd();
 }

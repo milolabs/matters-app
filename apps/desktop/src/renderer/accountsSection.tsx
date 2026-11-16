@@ -13,6 +13,13 @@ import { passwordRejected, signInEnded } from "./newPassword.ts";
 import { NewPasswordForm, SignInAgainForm } from "./newPasswordForm.tsx";
 import { accountShare, removalNotice } from "./removal.ts";
 import { Setup } from "./setup.tsx";
+import {
+  closeSignatureField,
+  NO_SIGNATURE_FIELD,
+  openSignatureField,
+  type SignatureFields,
+  typeInSignatureField,
+} from "./signatureFields.ts";
 import { SignatureForm } from "./signatureForm.tsx";
 import { mainSignIn, type SignInClient } from "./signIn.ts";
 import { describeStatus } from "./status.ts";
@@ -73,8 +80,10 @@ export function AccountsSection(props: {
   const [asked, setAsked] = createSignal<ReadonlySet<string>>(new Set());
   const [dismissed, setDismissed] = createSignal<ReadonlySet<string>>(new Set());
   const [saved, setSaved] = createSignal<Readonly<Record<string, string>>>({});
-  // The account whose signature field is open (ADR 0142), one at a time.
-  const [signing, setSigning] = createSignal<string | null>(null);
+  // The account whose signature field is open (ADR 0142), one at a time, and what is typed in it.
+  const [signatureFields, setSignatureFields] = createSignal<SignatureFields>(NO_SIGNATURE_FIELD);
+  const signing = () => signatureFields().open;
+  const closeSignature = (id: string) => setSignatureFields((f) => closeSignatureField(f, id));
   const byBrowser = (id: string) => {
     const account = props.accounts.accounts().find((a) => a.id === id);
     return account !== undefined && providerOf(account) !== undefined;
@@ -148,8 +157,14 @@ export function AccountsSection(props: {
     const inSignature =
       e.target instanceof HTMLElement ? e.target.closest("[data-signature]") !== null : false;
     if (e.key === "Escape" && inSignature) {
-      // The editor closes the field itself; the window stays.
+      // The editor closes the field itself; from the form's buttons it closes here. The window
+      // stays.
       e.preventDefault();
+      const target = e.target as HTMLElement;
+      const form = target.closest<HTMLElement>("[data-signature]");
+      if (target.closest(".cm-editor") === null && form?.dataset.signature) {
+        closeSignature(form.dataset.signature);
+      }
       return;
     }
     // The signature's editor is text: its letters are not the section's keys.
@@ -379,9 +394,14 @@ export function AccountsSection(props: {
                     <SignatureForm
                       backend={props.backend}
                       account={account}
-                      onClose={() => setSigning(null)}
+                      typed={signatureFields().typed[account.id]}
+                      onType={(text) =>
+                        setSignatureFields((f) => typeInSignatureField(f, account.id, text))
+                      }
+                      onClose={() => closeSignature(account.id)}
                       onSaved={(note) => {
-                        setSigning(null);
+                        // This account's field only: another may have been opened meanwhile.
+                        closeSignature(account.id);
                         setSaved((all) => ({ ...all, [account.id]: note }));
                         void props.accounts.refresh();
                       }}
@@ -425,7 +445,7 @@ export function AccountsSection(props: {
                             class={small}
                             onClick={() => {
                               setSaved(({ [account.id]: _, ...rest }) => rest);
-                              setSigning(account.id);
+                              setSignatureFields(openSignatureField(account.id));
                             }}
                           >
                             Signature

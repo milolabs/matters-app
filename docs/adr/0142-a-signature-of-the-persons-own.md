@@ -45,7 +45,9 @@ Read from the code on 2026-11-16:
    "Sent with", nothing under the person's signature. It is set in Settings › Accounts, in the
    account's row: a *Signature* button opens a small field with the composer's own editor (the live
    Markdown of ADR 0100, the same type and colours), *Save signature* and *Cancel*, ⌘↵ saves and
-   Escape closes. The row then says "Signature:" and its first line. A signature is Markdown, at
+   Escape closes, in the field or on its buttons. One field is open at a time; what is typed in it
+   survives the list of accounts being read again, and a save that ends after another account's
+   field was opened closes only its own. The row then says "Signature:" and its first line. A signature is Markdown, at
    most 2,000 characters, kept normalized: line ends as `\n`, no control characters, no white space
    at the end of a line, no empty lines around it, and without a `--` line the person typed at its
    top, since the app writes that line itself. A line that starts with `>` is refused, with the
@@ -77,7 +79,8 @@ Read from the code on 2026-11-16:
      is never an `<hr>` or a list item. The signature is a quiet block, `<div
      class="matters-signature">`, in the colour the sent HTML already gives quotes (`#6e6e73`) at
      13 px, with the delimiter as its first line, as text. The quote below it stays a
-     `<blockquote>`.
+     `<blockquote>`. The three parts are one message: a link defined in one (`[site]: https://…`)
+     is a link where another uses it.
    - The signature is the first `-- ` line above the quote and everything under it up to the quote
      (`draftSections`). A `-- ` inside the quote is the other side's.
    - The reader's `splitSignature` folds what we send: the words above are the body, and the
@@ -91,14 +94,17 @@ Read from the code on 2026-11-16:
    person changed or deleted it, it is theirs and is left alone, then and after. For a draft
    opened again, "the one put in" is the account's signature as it is now. The new text replaces
    only what changed in the editor, so the caret stays. Choosing a sender is still not writing: a
-   message nobody wrote in leaves nothing behind (ADR 0101).
+   message nobody wrote in leaves nothing behind (ADR 0101). The new account's signature is
+   asked for when the sender changes; Send and Close wait for that answer, so the new sender never
+   goes with the last one's signature.
 
 6. **The agent writes the words; the code places the signature.** The signature is set apart from
    the person's lines as the quote is, so it never goes to the model, as an instruction or as data,
    and is joined back as it was. The prompts for a rewrite, for answers and for writing as the
    person asks now say: do not add a signature or a sign-off block under the text, the app adds the
-   person's own. A block the model writes anyway (from a `--` line on) is cut before the text is
-   joined, so a draft is never signed twice; that holds for the reply the agent prepared in the
+   person's own. A block the model writes anyway is cut before the text is joined, from its
+   delimiter on: a `-- ` line, or a `--` line that does not stand right under a line of text (under
+   one, `--` underlines a Markdown heading, which is the model's text and stays), so a draft is never signed twice; that holds for the reply the agent prepared in the
    background too (ADR 0052), which is put above the signature and the quote. The writing prompts
    are not cached and carry no version, so there is no marker to change.
 
@@ -137,7 +143,9 @@ Read from the code on 2026-11-16:
 - Changing a signature does not reach drafts already started; they show the old one until it is
   changed there.
 - A `[placeholder]` in a signature blocks Send like any other gap (ADR 0096): it is text in the
-  draft. The field shows it marked as the composer does.
+  draft. The field shows it marked as the composer does. A value the agent suggests for a gap is
+  offered and put in only in the person's lines, never in the signature, which the agent did not
+  read: the person fills a gap of their signature themselves.
 - A model told to write in a fixed form could still end with a sign-off line of its own ("Best,
   Anna") without a delimiter; that is words, not a signature block, and is kept.
 - Not verified: how other mail programs show the HTML part's quiet block, beyond its being a
