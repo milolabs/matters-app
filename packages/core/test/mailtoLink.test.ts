@@ -324,4 +324,15 @@ describe("plainBodyMarkdown: the body stays the text the link carried", () => {
   it("drops control characters other than the line feed and the tab", () => {
     expect(plainBodyMarkdown("a\r\nb\rc\u0000d\u001be\tf\u2028g")).toBe("a\nb\ncd" + "e\tf\ng");
   });
+  it("reads a body of one `<` and thousands of colons in linear time", () => {
+    // Each `<` is looked at up to the next delimiter only: no split point is tried twice.
+    const body = `<${":".repeat(20_000)}`;
+    const started = performance.now();
+    expect(plainBodyMarkdown(body)).toBe(body);
+    expect(performance.now() - started).toBeLessThan(500);
+    // The same inputs are escaped as before: an autolink is, a lone `<` is not.
+    expect(plainBodyMarkdown("<https://example.com> and a < b")).toBe(
+      "\\<https://example.com> and a < b",
+    );
+  });
 });
