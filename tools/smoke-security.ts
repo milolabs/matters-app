@@ -31,6 +31,7 @@ import {
   TierSummary,
 } from "../packages/testkit/src/corpus.ts";
 import { startImapTestServer } from "./imap-test-server/run.ts";
+import { lanesOf, linkEvents } from "./smoke-security-lanes.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RESULT = "MATTERS_SMOKE_RESULT ";
@@ -168,10 +169,7 @@ const OWN_PAGE =
 
 function measure(c: CorpusCase): Record<string, unknown> {
   const mode = c.tiers.browser?.mode ?? "pipeline";
-  const lanes =
-    mode === "bypass"
-      ? { blocked: "bypass-blocked", images: "bypass-images" }
-      : { blocked: "blocked", images: "images" };
+  const lanes = lanesOf(mode);
   const rec = (lane: string) => records.get(`${c.id}|${lane}`);
   const mine = (lane: "blocked" | "images") =>
     hits.filter((h) => h.id === c.id && h.lane === lanes[lane]);
@@ -202,11 +200,11 @@ function measure(c: CorpusCase): Record<string, unknown> {
         .map((e) => plain(e.url ?? "")),
     ),
   ];
-  const opened = mainEvents
-    .filter((e) => e.kind === "open-external" && e.lane === "blocked")
-    .map((e) => plain(e.href ?? ""));
+  // In the case's own blocked lane: a case put past the pipeline reports in a lane of its own.
+  const links = linkEvents(mainEvents, lanes);
+  const opened = links.opened.map((e) => plain(e.href ?? ""));
   // A `mailto:` link opens a new message in the app (ADR 0143): what each draft would hold.
-  const composed = mainEvents.filter((e) => e.kind === "compose" && e.lane === "blocked");
+  const composed = links.composed;
   const DRAFT_KEYS = new Set([
     "kind",
     "source",
