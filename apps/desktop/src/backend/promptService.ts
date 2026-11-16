@@ -469,8 +469,10 @@ export class PromptService {
         // one `↵` spends is bounded, and the line says how many are left).
         // Without a limit the same holds for the first `↵` (rule 4): it reads the best
         // `PROMPT_ASK_ABOVE`, so the list fills at once, and asks before the rest.
-        // On a runtime with no plan nothing is asked: reading costs the person nothing.
-        const bounded = asked.limit !== undefined || (!readAll && on.info()?.noPlan !== true);
+        // On a runtime with no plan nothing is asked: reading costs the person nothing. One billed
+        // to the person's key spends money on every turn, so it asks as a plan does (ADR 0141).
+        const free = on.info()?.noPlan === true && on.info()?.billed !== true;
+        const bounded = asked.limit !== undefined || (!readAll && !free);
         const todo =
           bounded && window.todo.length > PROMPT_ASK_ABOVE
             ? window.todo.slice(0, PROMPT_ASK_ABOVE)
