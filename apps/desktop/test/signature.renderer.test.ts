@@ -150,6 +150,76 @@ describe("send and close wait for the new sender's signature (rule 5)", () => {
   }
 });
 
+describe("the sender and its signature change together (rule 5)", () => {
+  /** A backend that can be told to fail the next preparation of a sender, and that sends. */
+  function failingBackend() {
+    const fake = fakeBackend();
+    const backend = fake.backend as unknown as Record<string, unknown>;
+    const prepare = backend.prepareNew as (id?: string) => Promise<unknown>;
+    const state = { fail: false };
+    backend.prepareNew = vi.fn(async (id?: string) => {
+      if (state.fail) throw new Error("offline");
+      return prepare(id);
+    });
+    const sent: string[] = [];
+    backend.requestSend = async (id: string) => {
+      sent.push(id);
+      return { id: "op1" };
+    };
+    return { ...fake, state, sent, prepareNew: backend.prepareNew as ReturnType<typeof vi.fn> };
+  }
+
+  it("a sender whose preparation fails is not taken, says so, and is tried again when chosen again", async () => {
+    const fake = failingBackend();
+    const t = newMessage(fake, { to: [{ address: "anna@example.org" }], subject: "Tuesday" });
+    fake.state.fail = true;
+    expect(await t.session.setSender(home)).toBeNull();
+    expect(t.session.sender().accountId).toBe("a1");
+    expect(t.session.body()).toBe("\n\n-- \nMe\nWork Ltd");
+    expect(t.session.error()).toContain(home.address);
+    // Chosen again, it is asked for again; this time it comes, and the line goes.
+    fake.state.fail = false;
+    expect(await t.session.setSender(home)).toBe("\n\n-- \nMe, at home");
+    expect(t.session.sender().accountId).toBe("a2");
+    expect(t.session.error()).toBe("");
+    expect(fake.prepareNew).toHaveBeenCalledTimes(2);
+  });
+
+  it("Send stops when the sender it waited for could not be prepared, and sends no mismatched pair", async () => {
+    const fake = failingBackend();
+    const t = newMessage(fake, { to: [{ address: "anna@example.org" }], subject: "Tuesday" });
+    fake.state.fail = true;
+    const following = t.session.setSender(home);
+    expect(await t.session.send()).toBeNull();
+    await following;
+    expect(fake.sent).toEqual([]);
+    expect(t.session.sender().accountId).toBe("a1");
+    expect(t.session.error()).toContain(home.address);
+    // Nothing saved went from the new sender with the old signature.
+    expect(t.saved.every((c) => c.accountId === "a1")).toBe(true);
+    expect(t.session.senderLocked()).toBe(false);
+  });
+
+  it("no sender can be chosen while Send waits for the files, so it goes with the pair it had", async () => {
+    const fake = failingBackend();
+    const t = newMessage(fake, { to: [{ address: "anna@example.org" }], subject: "Tuesday" });
+    t.session.setBody(`Hello Anna,${t.session.body()}`);
+    // A drop whose grants have not come: Send passes the sender's wait, then waits for these.
+    const drop = t.session.attachDropped([{ name: "a.pdf", size: 10 }]);
+    const sending = t.session.send();
+    await Promise.resolve();
+    expect(t.session.senderLocked()).toBe(true);
+    expect(await t.session.setSender(home)).toBeNull();
+    expect(fake.prepareNew).not.toHaveBeenCalled();
+    drop.fill([]);
+    await sending;
+    expect(fake.sent).toEqual(["d1"]);
+    const last = t.saved.at(-1);
+    expect(last?.accountId).toBe("a1");
+    expect(last?.bodyMarkdown).toBe("Hello Anna,\n\n-- \nMe\nWork Ltd");
+  });
+});
+
 describe("a new message the agent offered (rule 6)", () => {
   it("opens with the agent's words and the signature the code put under them", async () => {
     const fake = fakeBackend();
@@ -165,5 +235,17 @@ describe("a new message the agent offered (rule 6)", () => {
     );
     // Not saved by itself (ADR 0102).
     expect(fake.saved).toEqual([]);
+  });
+
+  it("cuts a signature block the model wrote, and puts the person's under the words", async () => {
+    const fake = fakeBackend();
+    const outbox = createRoot(() => createOutboxStore(fake.backend));
+    const store = createRoot(() => createComposeStore(fake.backend, outbox));
+    await store.open("new", "a1", undefined, undefined, {
+      to: ["anna@example.com"],
+      subject: "Review",
+      body: "Hello Anna,\n\nsee you then.\n\n-- \nThe Assistant",
+    });
+    expect(store.session()?.body()).toBe("Hello Anna,\n\nsee you then.\n\n-- \nMe\nWork Ltd");
   });
 });

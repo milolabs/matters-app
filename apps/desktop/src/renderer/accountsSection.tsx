@@ -18,6 +18,7 @@ import {
   NO_SIGNATURE_FIELD,
   openSignatureField,
   type SignatureFields,
+  savedSignatureField,
   typeInSignatureField,
 } from "./signatureFields.ts";
 import { SignatureForm } from "./signatureForm.tsx";
@@ -399,9 +400,10 @@ export function AccountsSection(props: {
                         setSignatureFields((f) => typeInSignatureField(f, account.id, text))
                       }
                       onClose={() => closeSignature(account.id)}
-                      onSaved={(note) => {
-                        // This account's field only: another may have been opened meanwhile.
-                        closeSignature(account.id);
+                      onSaved={(note, submitted) => {
+                        // This account's field only: another may have been opened meanwhile. It
+                        // stays open when it holds text typed after the save was pressed.
+                        setSignatureFields((f) => savedSignatureField(f, account.id, submitted));
                         setSaved((all) => ({ ...all, [account.id]: note }));
                         void props.accounts.refresh();
                       }}

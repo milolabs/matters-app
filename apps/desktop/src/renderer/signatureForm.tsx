@@ -26,7 +26,8 @@ export function SignatureForm(props: {
   typed?: string | undefined;
   onType?: (text: string) => void;
   onClose: () => void;
-  onSaved: (note: string) => void;
+  /** The save ended, with the text it saved: the field closes only if it still holds that. */
+  onSaved: (note: string, submitted: string) => void;
 }) {
   const [text, setText] = createSignal(props.typed ?? props.account.signature ?? "");
   const [saving, setSaving] = createSignal(false);
@@ -44,12 +45,16 @@ export function SignatureForm(props: {
     }
     setSaving(true);
     setFailure("");
+    // The field stays editable while the save goes, since it can be slow: what is typed meanwhile
+    // is newer than what this saves, and keeps the field open.
+    const submitted = text();
     try {
-      const signature = await props.backend.setSignature(props.account.id, text());
+      const signature = await props.backend.setSignature(props.account.id, submitted);
       props.onSaved(
         signature === ""
           ? "No signature. New messages from this account start empty."
           : "Signature saved. New messages, replies and forwards from this account start with it.",
+        submitted,
       );
     } catch (error) {
       setFailure(error instanceof BackendError ? error.message : "The signature was not saved.");

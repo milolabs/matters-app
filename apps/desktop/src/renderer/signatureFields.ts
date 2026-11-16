@@ -32,3 +32,19 @@ export function closeSignatureField(fields: SignatureFields, id: string): Signat
   if (fields.open !== id) return fields;
   return NO_SIGNATURE_FIELD;
 }
+
+/**
+ * The save of `submitted` in the field of `id` ended. The field closes when it still holds what
+ * was saved; text typed while the save was on its way is newer, so the field stays open with it
+ * for the person to save too. Another account's field is left as it is.
+ */
+export function savedSignatureField(
+  fields: SignatureFields,
+  id: string,
+  submitted: string,
+): SignatureFields {
+  if (fields.open !== id) return fields;
+  const now = fields.typed[id];
+  if (now !== undefined && now !== submitted) return fields;
+  return NO_SIGNATURE_FIELD;
+}

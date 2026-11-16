@@ -95,8 +95,14 @@ Read from the code on 2026-11-16:
    opened again, "the one put in" is the account's signature as it is now. The new text replaces
    only what changed in the editor, so the caret stays. Choosing a sender is still not writing: a
    message nobody wrote in leaves nothing behind (ADR 0101). The new account's signature is
-   asked for when the sender changes; Send and Close wait for that answer, so the new sender never
-   goes with the last one's signature.
+   asked for when the sender changes, and the sender, its message limit and its signature change
+   together once the answer came: the sender shown and saved is the new one only from then, so the
+   two never disagree. An answer that does not come leaves the sender as it was, with its
+   signature, and the composer says so in its line of problems; choosing the account again asks
+   again. Send and Close wait for a sender chosen before them, and once either has begun the
+   sender cannot be changed (the list is disabled), so neither goes with a sender and a signature
+   that were not chosen together. Send stops when the sender it waited for could not be prepared,
+   so the person sees which account it would go from.
 
 6. **The agent writes the words; the code places the signature.** The signature is set apart from
    the person's lines as the quote is, so it never goes to the model, as an instruction or as data,
@@ -105,7 +111,9 @@ Read from the code on 2026-11-16:
    person's own. A block the model writes anyway is cut before the text is joined, from its
    delimiter on: a `-- ` line, or a `--` line that does not stand right under a line of text (under
    one, `--` underlines a Markdown heading, which is the model's text and stays), so a draft is never signed twice; that holds for the reply the agent prepared in the
-   background too (ADR 0052), which is put above the signature and the quote. The writing prompts
+   background too (ADR 0052), which is put above the signature and the quote, and for a new
+   message the agent offered (ADR 0102), whose words are cut the same way before the person's
+   signature is placed under them. The writing prompts
    are not cached and carry no version, so there is no marker to change.
 
 7. **Where it is kept.** In the account's row of `accounts`, a column `signature` added by
