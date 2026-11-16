@@ -1497,6 +1497,27 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 59,
+    // ADR 0141, rule 5: the test of a runtime billed to a key names the key it ran on, by the
+    // random id the key was saved with (never anything of the key's text). NULL: a record from
+    // before, or of a runtime with no key, which holds for no key. A column, as in 55.
+    // The two columns came on branches of their own, each as 58: a database that took the key's
+    // column as 58 has no signature yet, so this adds whichever of the two is missing.
+    sql: "",
+    run: (db) => {
+      const records = db.prepare("PRAGMA table_info(agent_runtime_records)").all() as {
+        name: string;
+      }[];
+      if (!records.some((c) => c.name === "key_id")) {
+        db.exec("ALTER TABLE agent_runtime_records ADD COLUMN key_id TEXT");
+      }
+      const accounts = db.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
+      if (!accounts.some((c) => c.name === "signature")) {
+        db.exec("ALTER TABLE accounts ADD COLUMN signature TEXT");
+      }
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

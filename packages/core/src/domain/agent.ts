@@ -121,10 +121,15 @@ export interface AgentRuntimeInfo {
    */
   readonly billed?: boolean;
   /**
-   * When the key it runs on was saved (ADR 0141, rule 4). A test from before then does not hold:
-   * a new key is tested again. Never the key itself, nor any part of it.
+   * When the key it runs on was saved (ADR 0141, rule 4), for what is shown. Never the key itself,
+   * nor any part of it.
    */
   readonly keySavedAtMs?: number;
+  /**
+   * The random id the key it runs on was saved with (ADR 0141, rule 5): a test holds only for the
+   * key it names. Not made from the key's text, and not told to a window.
+   */
+  readonly keyId?: string;
   /**
    * How many turns of a reading may run side by side. Absent: the app's own number. A runtime
    * with no plan always runs one at a time (ADR 0119, rule 7).
@@ -1528,6 +1533,11 @@ export interface AgentRuntimeRecord {
    */
   readonly model?: string;
   readonly problem?: string;
+  /**
+   * The id of the key the test ran on, for a runtime billed to one (ADR 0141, rule 5). The record
+   * holds only for that key; one without it holds for no key.
+   */
+  readonly keyId?: string;
   readonly testedAtMs: number;
 }
 
