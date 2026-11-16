@@ -92,6 +92,14 @@ describe("the signature follows the sender while untouched (rule 5)", () => {
     expect(await t.session.setSender(home)).toBe("Hello Anna,\n\n-- \nMe, at home");
   });
 
+  it("follows the sender with a blockquote of the person's above it", async () => {
+    const t = newMessage();
+    const mine = "As agreed:\n\n> Paid in 14 days.\n\n```\n> not a quote\n```";
+    t.session.setBody(`${mine}${t.session.body()}`);
+    expect(await t.session.setSender(home)).toBe(`${mine}\n\n-- \nMe, at home`);
+    expect(await t.session.setSender(work)).toBe(`${mine}\n\n-- \nMe\nWork Ltd`);
+  });
+
   it("leaves a signature the person changed alone, then and after", async () => {
     const t = newMessage();
     const edited = "Hello\n\n-- \nMe\nWork Ltd, sales";

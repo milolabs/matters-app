@@ -47,7 +47,10 @@ Read from the code on 2026-11-16:
    Markdown of ADR 0100, the same type and colours), *Save signature* and *Cancel*, ⌘↵ saves and
    Escape closes, in the field or on its buttons. One field is open at a time; what is typed in it
    survives the list of accounts being read again, and a save that ends after another account's
-   field was opened closes only its own. The row then says "Signature:" and its first line. A signature is Markdown, at
+   field was opened closes only its own. A save on its way is kept per account, not per field: a
+   field closed while its save goes and opened again starts with the text being saved, says
+   "Saving…" and lets no Save through until that save ends, so the last Save pressed is always
+   what the store ends up holding. The row then says "Signature:" and its first line. A signature is Markdown, at
    most 2,000 characters, kept normalized: line ends as `\n`, no control characters, no white space
    at the end of a line, no empty lines around it, and without a `--` line the person typed at its
    top, since the app writes that line itself. A line that starts with `>` is refused, with the
@@ -81,8 +84,35 @@ Read from the code on 2026-11-16:
      13 px, with the delimiter as its first line, as text. The quote below it stays a
      `<blockquote>`. The three parts are one message: a link defined in one (`[site]: https://…`)
      is a link where another uses it.
-   - The signature is the first `-- ` line above the quote and everything under it up to the quote
-     (`draftSections`). A `-- ` inside the quote is the other side's.
+   - Where the quote starts (`draftSections`, the one split every part of the app uses: the
+     renderer, the sender change, the agent's helpers, a forward's "nobody wrote in", the editor's
+     signature lines and where it offers a value). The quote is the app's own: a reply's "On …
+     wrote:" line and its `>` lines, or a forward's part from `> Forwarded message` on, which the
+     app always writes under the signature, at the end of the draft. A person may write `>` lines
+     of their own anywhere (a blockquote, a `> x` inside a code block); those are their text.
+     - A line inside a fenced code block (from a line of three or more backticks or tildes to the
+       line that closes it) is never a quote and never a delimiter. A fence never closed is text.
+     - The delimiter is the first `-- ` line. With one, the quote starts at the first `>` line
+       below it, with the line just above when that is below the delimiter, not empty, and ends
+       in a colon; with no `>` line below it there is no quote. A `>` line above the delimiter is
+       the person's, whatever introduces it.
+     - With no delimiter, the quote starts at the last opening the app writes: an "On … wrote:" line right above a `>` line, or a `> Forwarded message` line, each
+       at the start of a run of `>` lines. Without one (the person reworded it), at a line ending
+       in a colon right above the run of `>` and empty lines that ends the draft. Else there is
+       no quote: `>` lines with nothing of the app's around them are the person's.
+     - The signature is the delimiter and what follows it up to the last line before the quote
+       that is not empty. A `-- ` inside the quote (`> -- `) is the other side's. A person who
+       types their own `-- ` under the app's quote (writing below it, with no signature put in)
+       makes everything above that line their own text, the quote included. Everything above the signature (or the quote) is the person's own; everything from
+       the start of the quote on is the quote, words typed between its lines included.
+     - So the person's blockquote above the signature is rendered as a `<blockquote>` in their own
+       part, the signature is the quiet block, and the app's quote stays the quote below it; the
+       signature follows the sender (rule 5) with it there; and it goes to the agent as the
+       person's text (rule 6). The same holds for `>` lines a model wrote (a line of the message
+       it answers, in a prepared reply, an offered message, a rewrite): they stay in the reply's
+       own part as a blockquote, and the signature joined under them is still the signature. A
+       draft carries no mark of where its quote began; the shape of the app's own lines is the
+       anchor.
    - The reader's `splitSignature` folds what we send: the words above are the body, and the
      signature under them is shown quietly. In a reply, the plain text under `-- ` holds the line
      that introduces the quote as well; that is how any reader that folds at the delimiter sees a
@@ -134,7 +164,10 @@ Read from the code on 2026-11-16:
      too; refusing that would fail the helpers for exactly the people who sign by hand. So the kept
      text always holds the person's blocks, each once, as they wrote them.
    - Only then are the answer's checks run (every gap kept, no quoted line, no subject line, not
-     most of the draft dropped), on the kept text against the person's draft. A gap in a block of
+     most of the draft dropped), on the kept text against the person's draft. A `>` line of the
+     person's own text (a blockquote above the signature) is theirs: the prompts say to keep the
+     draft's own such lines and to write no other, and the answer may have each of them as often
+     as the draft does; any other quoted line is refused as before. A gap in a block of
      the person's that is put back is their text and counts as kept; a gap that stood only in a
      block of the model's, one it moved out of the body included, is cut with that block, and the
      answer is refused for it. Nothing left at all is refused as before.
@@ -142,7 +175,8 @@ Read from the code on 2026-11-16:
    This holds for a rewrite, for answers and for a text written as asked. The reply the agent
    prepared in the background (ADR 0052), which is put above the signature and the quote, and a new
    message the agent offered (ADR 0102), whose words get the person's signature under them, are
-   all the model's text: every block in them is cut (`withoutSignature`). The writing prompts
+   all the model's text: every block in them is cut (`withoutSignature`). A prepared reply that is
+   empty once cut (only a sign-off block) makes no draft, as an empty answer is refused. The writing prompts
    are not cached and carry no version, so there is no marker to change.
 
 7. **Where it is kept.** In the account's row of `accounts`, a column `signature` added by

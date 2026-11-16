@@ -4,9 +4,11 @@ import { createSignal, Show } from "solid-js";
 import { type Backend, BackendError } from "./client.ts";
 import { MarkdownEditor } from "./editor.tsx";
 import {
+  type PendingSignatures,
   type SavedSignatures,
   type SignatureFailure,
   signatureAlert,
+  signatureFieldText,
   signatureUnchanged,
 } from "./signatureFields.ts";
 
@@ -40,21 +42,39 @@ export function SignatureForm(props: {
   onClose: () => void;
   /** What the saves that succeeded left, while the list of accounts has not caught up. */
   saved: SavedSignatures;
+  /** The saves still on their way, this field's and any an earlier field of the account sent. */
+  pending: PendingSignatures;
+  /** Why the account's last save failed, kept by the section so a field opened again says it. */
+  failure?: SignatureFailure | undefined;
+  /** A save was sent: the text and the order it was pressed in. */
+  onSaving: (submitted: string, order: number) => void;
   /**
    * The save succeeded: the note, the text it saved (the field closes only if it still holds
    * that), the signature the store now holds, and the order the save was pressed in.
    */
   onSaved: (note: string, submitted: string, signature: string, order: number) => void;
+  /** The save pressed as `order` failed. */
+  onFailed: (failure: SignatureFailure, order: number) => void;
 }) {
-  const [text, setText] = createSignal(props.typed ?? props.account.signature ?? "");
-  const [saving, setSaving] = createSignal(false);
-  const [failure, setFailure] = createSignal<SignatureFailure | null>(null);
+  const [text, setText] = createSignal(
+    signatureFieldText(props.typed, props.pending, props.account.id, props.account.signature ?? ""),
+  );
+  // Saving while any save of this account is on its way, this field's or one an earlier field
+  // sent before it was closed: Save waits for it, as for its own (ADR 0142, rule 1).
+  const saving = () => props.pending[props.account.id] !== undefined;
+  const failure = () => props.failure ?? null;
   const kept = () => normalizeSignature(text());
   const problem = () => signatureProblem(kept());
   // Unchanged only when it is what the store holds: the account as the list shows it, and the
-  // last save that succeeded, which the list may not show yet.
+  // last save that succeeded, which the list may not show yet; never while a save is on its way.
   const unchanged = () =>
-    signatureUnchanged(props.saved, props.account.id, props.account.signature ?? "", kept());
+    signatureUnchanged(
+      props.saved,
+      props.account.id,
+      props.account.signature ?? "",
+      kept(),
+      props.pending,
+    );
 
   async function save(e?: Event) {
     e?.preventDefault();
@@ -63,12 +83,11 @@ export function SignatureForm(props: {
       props.onClose();
       return;
     }
-    setSaving(true);
-    setFailure(null);
     // The field stays editable while the save goes, since it can be slow: what is typed meanwhile
     // is newer than what this saves, and keeps the field open.
     const submitted = text();
     const order = ++saves;
+    props.onSaving(submitted, order);
     try {
       const signature = await props.backend.setSignature(props.account.id, submitted);
       props.onSaved(
@@ -80,12 +99,13 @@ export function SignatureForm(props: {
         order,
       );
     } catch (error) {
-      setFailure({
-        why: error instanceof BackendError ? error.message : "The signature was not saved.",
-        text: submitted,
-      });
-    } finally {
-      setSaving(false);
+      props.onFailed(
+        {
+          why: error instanceof BackendError ? error.message : "The signature was not saved.",
+          text: submitted,
+        },
+        order,
+      );
     }
   }
 
@@ -104,9 +124,8 @@ export function SignatureForm(props: {
           placeholder="Your name, and what people need to reach you"
           grow={{ min: 72, max: "220px" }}
           onChange={(value) => {
+            // Why the last save failed is said only while the field holds the text that failed.
             setText(value);
-            // Why the last save failed is stale once the text changes.
-            if (value !== failure()?.text) setFailure(null);
             props.onType?.(value);
           }}
           onSend={() => void save()}

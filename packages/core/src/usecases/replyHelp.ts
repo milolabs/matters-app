@@ -4,8 +4,9 @@
  * the prompt text, the answer schemas and the checks of the answers. Nothing here sends mail or
  * changes a stored draft; the result goes back to the composer, and the person decides.
  *
- * The draft is the person's own lines above the quote. The quote (from the first `>` line, with
- * the line that introduces it) never goes to the model for a rewrite and is joined back as it was.
+ * The draft is the person's own lines above the quote. The quote (the app's own, as
+ * `draftSections` finds it, with the line that introduces it) never goes to the model for a
+ * rewrite and is joined back as it was. A `>` line the person wrote above it is their own text.
  * Every gap in square brackets the person left is kept exactly, and an answer that drops one is
  * not used.
  *
@@ -58,11 +59,13 @@ export interface DraftParts {
 const QUOTED = /^\s*>/;
 
 /**
- * Splits a reply at its first quoted line. The line just above it goes with the quote when it ends
- * in a colon ("On 3 Nov 2026, 10:29, Anna wrote:"), so the attribution is never rewritten.
- * Anything below the first quoted line stays with the quote, the person's inline words included:
- * those are kept as they are, never rewritten. Above the quote, the signature from its delimiter
- * line on is set apart (ADR 0142).
+ * Splits a reply where its quote starts (`draftSections`, ADR 0142, rule 4): the app's quote under
+ * the signature, or its "On … wrote:" line or forward mark, never a `>` line of the person's above
+ * the signature or in a code block. The line just above the first quoted line goes with the quote
+ * when it ends in a colon ("On 3 Nov 2026, 10:29, Anna wrote:"), so the attribution is never
+ * rewritten. Anything below the start of the quote stays with it, the person's inline words
+ * included: those are kept as they are, never rewritten. Above the quote, the signature from its
+ * delimiter line on is set apart (ADR 0142).
  */
 export function splitDraft(text: string): DraftParts {
   return draftSections(text);
@@ -192,7 +195,7 @@ function draftBlock(own: string): string {
   return [DRAFT_OPEN, clean(own).trim(), DRAFT_CLOSE].join("\n");
 }
 
-const KEEP_RULES = `Keep the draft's Markdown (lists, emphasis, links). Every token in square brackets, like [date] or [amount], is a gap the person will fill: copy each one exactly as it is. Do not add a subject line or a greeting the draft does not have, and never write lines that start with ">". Do not add a signature or a sign-off block under the text: the app adds the person's own.`;
+const KEEP_RULES = `Keep the draft's Markdown (lists, emphasis, links). Every token in square brackets, like [date] or [amount], is a gap the person will fill: copy each one exactly as it is. Do not add a subject line or a greeting the draft does not have, and never write a line that starts with ">" unless the draft has that line: keep the draft's own such lines as they are. Do not add a signature or a sign-off block under the text: the app adds the person's own.`;
 
 // --- Rewrite ---
 
@@ -248,7 +251,7 @@ export function writeInstructions(withThread: boolean): string {
 
 ${COMMON_RULES}${thread}
 
-Do what the person's words ask, and nothing more. written is the person's whole text, written or changed as asked; keep what they did not ask to change as it is, word for word. Write in the language of the draft, or of the person's words when the draft is empty, in a plain and brief tone. Use only facts that the person's words, the subject, the draft${withThread ? " or the thread" : ""} state. When the text needs a fact you were not given (a date, an amount, a name, a decision), write a gap in square brackets that says what is missing, like [date] or [amount], and never invent it. Every token in square brackets already in the draft is a gap the person will fill: copy each one exactly as it is. Keep the draft's Markdown (lists, emphasis, links). Never write lines that start with ">", and do not write the subject or a subject line in the text. Do not add a signature or a sign-off block under the text: the app adds the person's own.`;
+Do what the person's words ask, and nothing more. written is the person's whole text, written or changed as asked; keep what they did not ask to change as it is, word for word. Write in the language of the draft, or of the person's words when the draft is empty, in a plain and brief tone. Use only facts that the person's words, the subject, the draft${withThread ? " or the thread" : ""} state. When the text needs a fact you were not given (a date, an amount, a name, a decision), write a gap in square brackets that says what is missing, like [date] or [amount], and never invent it. Every token in square brackets already in the draft is a gap the person will fill: copy each one exactly as it is. Keep the draft's Markdown (lists, emphasis, links). Never write a line that starts with ">" unless the draft has that line, and do not write the subject or a subject line in the text. Do not add a signature or a sign-off block under the text: the app adds the person's own.`;
 }
 
 export const WRITE_SCHEMA = {
@@ -474,8 +477,22 @@ function exactly(o: Obj, keys: readonly string[]): boolean {
 
 const refused = (reason: HelpRefusal) => ({ ok: false, reason }) as const;
 
-function hasQuotedLine(text: string): boolean {
-  return text.split("\n").some((l) => QUOTED.test(l));
+/**
+ * Whether the text has a quoted line the person's own lines do not: a `>` line of theirs (a
+ * blockquote they wrote above the signature) is their text and may stay, each as often as they
+ * had it, white space at a line's end aside; any other is quoting mail, and refused.
+ */
+function hasQuotedLine(text: string, own: string): boolean {
+  const theirs = new Map<string, number>();
+  for (const l of own.replace(/\r\n?/g, "\n").split("\n")) {
+    if (QUOTED.test(l)) theirs.set(l.trimEnd(), (theirs.get(l.trimEnd()) ?? 0) + 1);
+  }
+  return text.split("\n").some((l) => {
+    if (!QUOTED.test(l)) return false;
+    const left = theirs.get(l.trimEnd()) ?? 0;
+    theirs.set(l.trimEnd(), left - 1);
+    return left <= 0;
+  });
 }
 
 /**
@@ -503,7 +520,7 @@ export function acceptRewrite(value: unknown, own: string): Accepted<string> {
   const kept = keptOf(text, own);
   if (!kept.ok) return kept;
   const out = kept.value;
-  if (hasQuotedLine(out)) return refused("quote");
+  if (hasQuotedLine(out, own)) return refused("quote");
   if (!keepsGaps(own, out, true)) return refused("gaps");
   return { ok: true, value: out };
 }
@@ -520,7 +537,7 @@ export function acceptWrite(value: unknown, own: string, subject = ""): Accepted
   const kept = keptOf(text, own);
   if (!kept.ok) return kept;
   const out = kept.value;
-  if (hasQuotedLine(out)) return refused("quote");
+  if (hasQuotedLine(out, own)) return refused("quote");
   const first = (out.split("\n")[0] as string).replace(/\s+/g, " ").trim();
   const topic = subject.replace(/\s+/g, " ").trim();
   if (
@@ -551,7 +568,7 @@ export function acceptAnswers(value: unknown, own: string): Accepted<string> {
   const kept = keptOf(withAnswers, own);
   if (!kept.ok) return kept;
   const out = kept.value;
-  if (hasQuotedLine(out)) return refused("quote");
+  if (hasQuotedLine(out, own)) return refused("quote");
   if (!keepsGaps(own, out)) return refused("gaps");
   const was = normalizeForQuote(own).length;
   if (normalizeForQuote(out).length < was * 0.8) return refused("dropped");

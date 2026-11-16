@@ -3,12 +3,16 @@
 import { describe, expect, it } from "vitest";
 import {
   closeSignatureField,
+  NO_PENDING_SIGNATURES,
   NO_SAVED_SIGNATURES,
   NO_SIGNATURE_FIELD,
   openSignatureField,
   recordSavedSignature,
   savedSignatureField,
   signatureAlert,
+  signatureFieldText,
+  signatureSaveEnded,
+  signatureSaveStarted,
   signaturesCaughtUp,
   signatureUnchanged,
   typeInSignatureField,
@@ -109,6 +113,70 @@ describe("the signature fields", () => {
       // A signature saved as none caught up when the list shows none.
       const none = recordSavedSignature(NO_SAVED_SIGNATURES, "a", "", 1);
       expect(signaturesCaughtUp(none, [{ id: "a" }])).toEqual(NO_SAVED_SIGNATURES);
+    });
+  });
+  describe("a save still on its way, when the field is opened again", () => {
+    it("the reviewer's case: One is on its way, A's field is closed and opened again, Save of Old waits and then writes", () => {
+      // A shows Old. One is saved; B's field is opened (A's closes); A's is opened again.
+      let pending = signatureSaveStarted(NO_PENDING_SIGNATURES, "a", "One", 1);
+      let fields = openSignatureField("a");
+      fields = openSignatureField("b");
+      fields = openSignatureField("a");
+      // The new field starts with what is on its way, and is saving: Save is not unchanged.
+      expect(signatureFieldText(fields.typed.a, pending, "a", "Old")).toBe("One");
+      expect(signatureUnchanged(NO_SAVED_SIGNATURES, "a", "Old", "Old", pending)).toBe(false);
+      expect(signatureUnchanged(NO_SAVED_SIGNATURES, "a", "Old", "One", pending)).toBe(false);
+      // The person puts Old back while One goes; One ends: the field stays, with Old.
+      fields = typeInSignatureField(fields, "a", "Old");
+      pending = signatureSaveEnded(pending, "a", 1);
+      const saved = recordSavedSignature(NO_SAVED_SIGNATURES, "a", "One", 1);
+      fields = savedSignatureField(fields, "a", "One");
+      expect(fields).toEqual({ open: "a", typed: { a: "Old" } });
+      // Now Save of Old writes, whether or not the list caught up with One: the store ends on Old.
+      expect(pending).toEqual(NO_PENDING_SIGNATURES);
+      expect(signatureUnchanged(saved, "a", "Old", "Old", pending)).toBe(false);
+      const caught = signaturesCaughtUp(saved, [{ id: "a", signature: "One" }]);
+      expect(signatureUnchanged(caught, "a", "One", "Old", pending)).toBe(false);
+    });
+
+    it("a pending save that fails, then a later Save", () => {
+      let pending = signatureSaveStarted(NO_PENDING_SIGNATURES, "a", "One", 1);
+      expect(signatureUnchanged(NO_SAVED_SIGNATURES, "a", "Old", "Old", pending)).toBe(false);
+      pending = signatureSaveEnded(pending, "a", 1);
+      // Nothing was written: the store holds Old. Save of Old is unchanged and only closes; Save
+      // of One sends it again.
+      expect(signatureUnchanged(NO_SAVED_SIGNATURES, "a", "Old", "Old", pending)).toBe(true);
+      expect(signatureUnchanged(NO_SAVED_SIGNATURES, "a", "Old", "One", pending)).toBe(false);
+      // A field opened after the failure starts from the list again.
+      expect(signatureFieldText(undefined, pending, "a", "Old")).toBe("Old");
+    });
+
+    it("two accounts pending at once: each its own", () => {
+      let pending = signatureSaveStarted(NO_PENDING_SIGNATURES, "a", "Anna", 1);
+      pending = signatureSaveStarted(pending, "b", "Ben", 2);
+      expect(signatureFieldText(undefined, pending, "a", "")).toBe("Anna");
+      expect(signatureFieldText(undefined, pending, "b", "")).toBe("Ben");
+      pending = signatureSaveEnded(pending, "b", 2);
+      expect(pending).toEqual({ a: { text: "Anna", order: 1 } });
+      expect(signatureUnchanged(NO_SAVED_SIGNATURES, "a", "", "", pending)).toBe(false);
+      expect(signatureUnchanged(NO_SAVED_SIGNATURES, "b", "", "", pending)).toBe(true);
+      // An end that is not the account's save in flight changes nothing.
+      expect(signatureSaveEnded(pending, "a", 7)).toBe(pending);
+      expect(signatureSaveEnded(pending, "b", 2)).toBe(pending);
+    });
+
+    it("closed while pending (Escape) and opened again: still saving, typed text first", () => {
+      const pending = signatureSaveStarted(NO_PENDING_SIGNATURES, "a", "One", 1);
+      let fields = typeInSignatureField(openSignatureField("a"), "a", "One");
+      fields = closeSignatureField(fields, "a");
+      expect(fields).toEqual(NO_SIGNATURE_FIELD);
+      // Closing a field never ends its save.
+      expect(pending.a).toEqual({ text: "One", order: 1 });
+      fields = openSignatureField("a");
+      expect(signatureFieldText(fields.typed.a, pending, "a", "Old")).toBe("One");
+      expect(signatureUnchanged(NO_SAVED_SIGNATURES, "a", "Old", "One", pending)).toBe(false);
+      // A row made anew keeps what was typed in it.
+      expect(signatureFieldText("Two", pending, "a", "Old")).toBe("Two");
     });
   });
 });
