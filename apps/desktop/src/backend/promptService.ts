@@ -161,6 +161,12 @@ export interface PromptRuntime {
    * moves or the runtime's key changes, and the ticket of the key they run on, taken with it.
    */
   begin(): { readonly signal: AbortSignal; readonly ticket: KeyTicket };
+  /**
+   * The turns of a pass in the background, as it begins: as `begin`, and the signal is aborted
+   * too when the background on the runtime stops, the reading switch turned off (ADR 0141, rule
+   * 6). A run the person asked for never runs on it.
+   */
+  beginInBackground(): { readonly signal: AbortSignal; readonly ticket: KeyTicket };
 }
 
 export interface PromptServiceDeps {
@@ -1288,7 +1294,7 @@ export class PromptService {
     const views = (await this.deps.views?.list()) ?? [];
     // One pass reads on one runtime: the one for understanding mail when it starts (ADR 0121, rule 9).
     const on = this.deps.understand();
-    const { signal, ticket } = on.begin();
+    const { signal, ticket } = on.beginInBackground();
     const over = () => signal.aborted || this.running !== null || options.stopWhen();
     const seen = new Set<string>();
     for (const view of views) {
