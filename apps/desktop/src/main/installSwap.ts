@@ -49,8 +49,8 @@ export const installingPath = (folder: string) => join(folder, INSTALL_NAMES.ins
 
 /**
  * The helper, run by `/bin/bash -c` with the app's pid and the folder; it is never written to a
- * file. It holds the lock main took. It waits for the app to quit (two minutes at most), then, if
- * no copy from that folder runs again meanwhile, moves the old app aside, puts the new one in its
+ * file. It holds the lock main took. It waits for the app to quit (two minutes at most), then, once
+ * no process from that bundle is left (ten seconds at most), moves the old app aside, puts the new one in its
  * place, removes the old one, and opens the app. When a step fails the old app is moved back and
  * opened. It finds its programs through the PATH it is given; main gives a fixed one.
  */
@@ -69,7 +69,14 @@ while kill -0 "$pid" 2>/dev/null; do
   if [ "$n" -gt 600 ]; then finish; exit 3; fi
   sleep 0.2
 done
-if running; then finish; exit 4; fi
+# The app's own helpers may take a moment to end after it; a copy that still runs after ten
+# seconds was started again by the person, and is left alone.
+n=0
+while running; do
+  n=$((n + 1))
+  if [ "$n" -gt 50 ]; then finish; exit 4; fi
+  sleep 0.2
+done
 if [ ! -d "$incoming" ]; then finish; open "$app"; exit 5; fi
 if [ -e "$app" ]; then
   if ! mv "$app" "$previous"; then finish; open "$app"; exit 6; fi

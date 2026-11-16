@@ -97,11 +97,11 @@ folders with a stand-in bundle. Not tried: a whole install of a real release int
    - The new app is copied to `.Matters.app.installing` and checked there (rule 3).
    - Then the app starts a small helper and quits. The helper is a few lines of `bash`, run with
      `/bin/bash -c` (never written to a file), detached, with the app's pid and the folder. It
-     waits until that process has ended (two minutes at most), looks once more that no copy runs
-     from that folder, moves the old app to `.Matters.app.previous`, moves the new one to
+     waits until that process has ended (two minutes at most), waits until no process from
+     that bundle is left (its own helpers end a moment after it; ten seconds at most), moves the old app to `.Matters.app.previous`, moves the new one to
      `Matters.app`, removes the old one and the lock, and opens the app. If the new app cannot be
      put in place, the old one is moved back and opened. If the app did not quit in two minutes,
-     or a copy was started again meanwhile, it removes the new copy and the lock and changes
+     or a copy still runs after those ten seconds (the person started it again), it removes the new copy and the lock and changes
      nothing.
    - So there is always a `Matters.app` in the folder except for the moment between two renames
      in one folder, and when the first rename has happened and the second fails the old one
