@@ -73,6 +73,10 @@ its list gives an id, a date and an owner, and nothing about schemas, tools or e
    the key before (it is looked at again), and for a refusal of a turn the new key stopped. The id
    is not told to a window; the database keeps it with the test record. A refusal during a turn sets the state too, a verdict turn of a prompt
    among them. The sentences are ours; the provider's words never reach the person.
+   All of this is one rule: every look, test and turn on a runtime takes a ticket of the key when
+   it begins, and what it learned (the state shown, the stored test, a refusal or a sign-out, the
+   windows it saw, its answer) is kept only while that ticket is still the runtime's key; a new
+   key also stops what runs on the one before.
 6. **Money is said plainly.** The card and the consent question each say in one sentence that
    every turn is billed by Anthropic to the person's key. The runtime has no plan, so no windows
    or shares show (ADR 0119, rule 7). What bounds the cost is what the person does:
@@ -83,7 +87,9 @@ its list gives an id, a date and an owner, and nothing about schemas, tools or e
      switch `Read in the background` on the runtime's card in Settings. It is off when a key is
      saved, a replaced key or the same one saved again too (a saved key is a new key, agreed to
      again), and off when the key is removed. It is turned off before a new key is kept: if
-     that fails, the new key is not kept. Off, nothing in the background is sent: views with a
+     that fails, the new key is not kept. Saving the key, removing it and the switch run one at
+     a time per runtime, in the order they were asked for, so a press of the switch during a
+     save runs once the save has ended, for the new key. Off, nothing in the background is sent: views with a
      prompt do not read new mail, no talk is named by itself, a key not checked yet is not tested
      by itself (not when an account agrees to it, nor when its model changes), and the reading
      says why (`Waits: reading in the background on Anthropic API is off`). The test is a billed

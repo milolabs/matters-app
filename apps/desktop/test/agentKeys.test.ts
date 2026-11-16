@@ -42,10 +42,26 @@ const verdictOfTest = {
 /** The vault, in memory: what main keeps, by runtime. */
 class Vault implements AgentKeyVaultPort {
   readonly kept = new Map<string, AgentKey>();
+  /** While set, the next write waits for this, then keeps the key, or fails with `failSet`. */
+  setGate: Promise<void> | null = null;
+  failSet = false;
+  /** A write is waiting at the gate. */
+  setting = false;
   async get(runtimeId: string) {
     return this.kept.get(runtimeId) ?? null;
   }
   async set(runtimeId: string, key: AgentKey) {
+    const gate = this.setGate;
+    this.setGate = null;
+    if (gate !== null) {
+      this.setting = true;
+      await gate;
+      this.setting = false;
+    }
+    if (this.failSet) {
+      this.failSet = false;
+      throw new Error("The keychain is locked.");
+    }
     this.kept.set(runtimeId, key);
   }
   async delete(runtimeId: string) {
@@ -121,6 +137,15 @@ class Plain {
   }
 }
 
+/** A gate a test opens by hand. */
+function gate(): { wait: Promise<void>; open: () => void } {
+  let open: () => void = () => {};
+  const wait = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { wait, open };
+}
+
 /** Lets the turns started so far reach their runtime. */
 async function until(done: () => boolean): Promise<void> {
   for (let i = 0; i < 100 && !done(); i++) await settle();
@@ -171,6 +196,9 @@ async function build() {
   await storage.bodies.putBodies(
     keys.map((key) => ({ key, threadId: "t1", text: "Can we meet on Tuesday?" })),
   );
+  await storage.index.indexMessages([
+    { message: { ...message, key: keys[0] ?? message.key }, bodyText: "Can we meet on Tuesday?" },
+  ]);
   const pass = async () => {
     service.kick();
     await clock.advance(KICK_DEBOUNCE_MS + 100);
@@ -457,4 +485,113 @@ describe("the person's own API key (ADR 0141)", () => {
     const again = await h.service.setKeyReading("anthropic-api", false);
     expect(again.settings.keyReading).toEqual([]);
   });
+  // Rule 6: the commands of a runtime's key run one at a time. A press of the switch while a key
+  // is saved runs once the save has ended: the new key starts off, and the press is for it.
+  it("keeps the new key's switch off while the save waits for the turns of the old key, and runs a press after it (rule 6)", async () => {
+    const h = await build();
+    await h.service.saveKey("anthropic-api", KEY);
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "anthropic-api" });
+    await h.service.idle();
+    // With reading on, the pass tests the key by itself; its answer does not hear the stop, so
+    // the save waits for the pass.
+    h.keyed.hold = true;
+    h.keyed.deaf = true;
+    await h.service.setKeyReading("anthropic-api", true);
+    await until(() => h.keyed.release !== null);
+    const saving = h.service.saveKey("anthropic-api", `${KEY}-2`);
+    await settle();
+    const pressing = h.service.setKeyReading("anthropic-api", true);
+    for (let i = 0; i < 10; i++) await settle();
+    expect((await h.settings.get()).keyReading ?? []).toEqual([]);
+    h.keyed.hold = false;
+    h.keyed.release?.();
+    const saved = await saving;
+    expect(saved.settings.keyReading ?? []).toEqual([]);
+    expect((await pressing).settings.keyReading).toEqual(["anthropic-api"]);
+  });
+
+  it("keeps the new key's switch off while the vault is written, and runs a press after it (rule 6)", async () => {
+    const h = await build();
+    await h.service.saveKey("anthropic-api", KEY);
+    const vault = gate();
+    h.vault.setGate = vault.wait;
+    const saving = h.service.saveKey("anthropic-api", `${KEY}-2`);
+    await until(() => h.vault.setting);
+    const pressing = h.service.setKeyReading("anthropic-api", true);
+    for (let i = 0; i < 10; i++) await settle();
+    expect((await h.settings.get()).keyReading ?? []).toEqual([]);
+    vault.open();
+    expect((await saving).settings.keyReading ?? []).toEqual([]);
+    expect((await pressing).settings.keyReading).toEqual(["anthropic-api"]);
+  });
+
+  it("runs a command of the key that waited behind one that failed (rule 6)", async () => {
+    const h = await build();
+    await h.service.saveKey("anthropic-api", KEY);
+    const vault = gate();
+    h.vault.setGate = vault.wait;
+    h.vault.failSet = true;
+    const saving = h.service.saveKey("anthropic-api", `${KEY}-2`).catch((e: unknown) => e);
+    await until(() => h.vault.setting);
+    const pressing = h.service.setKeyReading("anthropic-api", true);
+    for (let i = 0; i < 10; i++) await settle();
+    expect((await h.settings.get()).keyReading ?? []).toEqual([]);
+    vault.open();
+    expect(await saving).toBeInstanceOf(InvalidAgentSettingError);
+    expect((await pressing).settings.keyReading).toEqual(["anthropic-api"]);
+    expect(h.vault.kept.get("anthropic-api")?.key).toBe(KEY);
+  });
+
+  // Rule 5: a refusal is the key's it ran on. Each path a person asks on takes the ticket of the
+  // key when its turn begins.
+  const asks = {
+    prepare: (h: Awaited<ReturnType<typeof build>>) => h.service.prepare("t1"),
+    talk: (h: Awaited<ReturnType<typeof build>>) => h.service.talk("t1", "When?"),
+  } as const;
+  for (const [path, ask] of Object.entries(asks)) {
+    it(`does not take a refusal of the key before as the new key's, on ${path} (rule 5)`, async () => {
+      const h = await build();
+      await h.service.saveKey("anthropic-api", KEY);
+      await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "anthropic-api" });
+      await h.service.testRuntime("anthropic-api");
+      h.keyed.hold = true;
+      h.keyed.deaf = true;
+      h.keyed.refuse = true;
+      const asking = ask(h).then(
+        () => "done",
+        (e: Error) => e.message,
+      );
+      await until(() => h.keyed.release !== null);
+      await h.service.saveKey("anthropic-api", `${KEY}-2`);
+      h.keyed.release?.();
+      await asking;
+      expect(runtimeInfo(await h.service.status(), "anthropic-api")?.status).toBe("found");
+    });
+  }
+
+  // Its search turn, and its reading of a few threads matched by the filters alone.
+  for (const query of ['prompt:"when do we meet"', 'from:anna prompt:"when do we meet"']) {
+    it(`does not take a refusal of the key before as the new key's, on a prompt that began while the vault was written: ${query} (rule 5)`, async () => {
+      const h = await build();
+      await h.service.saveKey("anthropic-api", KEY);
+      await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "anthropic-api" });
+      await h.service.testRuntime("anthropic-api");
+      const vault = gate();
+      h.vault.setGate = vault.wait;
+      const saving = h.service.saveKey("anthropic-api", `${KEY}-2`);
+      await until(() => h.vault.setting);
+      // The turn starts on the key before, still shown ready, and its refusal comes once the new
+      // key is kept.
+      h.keyed.hold = true;
+      h.keyed.deaf = true;
+      h.keyed.refuse = true;
+      const running = h.service.promptRun(query).catch((e: unknown) => e);
+      await until(() => h.keyed.release !== null);
+      vault.open();
+      await saving;
+      h.keyed.release?.();
+      await running;
+      expect(runtimeInfo(await h.service.status(), "anthropic-api")?.status).toBe("found");
+    });
+  }
 });
