@@ -667,6 +667,21 @@ export class AgentService implements AgentApi {
   }
 
   /**
+   * A turn no press of the person's started (ADR 0141, rule 6): what stops a turn of its kind,
+   * and the stop of the background on its runtime too, taken with its ticket, so turning the
+   * reading switch off stops it even once it is sent. Only such turns run on that stop.
+   */
+  private backgroundTurnOf(kind: AgentWorkKind, runtimeId: string): Turn {
+    return {
+      signal: AbortSignal.any([
+        this.signalOf(kind, runtimeId),
+        this.runtimeKeys.backgroundSignal(runtimeId),
+      ]),
+      ticket: this.runtimeKeys.ticket(runtimeId),
+    };
+  }
+
+  /**
    * A request of a turn the person asked for goes only on the key its gate passed for: asked with
    * nothing awaited between it and the request (ADR 0141, rule 5).
    */
@@ -780,6 +795,7 @@ export class AgentService implements AgentApi {
       askFailure: (error, fallback, ticket) => this.askFailure(error, fallback, ticket),
       consented: () => consentedAccounts(this.deps, id === "" ? undefined : id),
       begin: () => this.turnOf("understand", id),
+      beginInBackground: () => this.backgroundTurnOf("understand", id),
     };
   }
 
@@ -1050,8 +1066,12 @@ export class AgentService implements AgentApi {
     const { clock } = this.deps;
     // The key the test runs on: one saved or removed while it runs stops it, and makes what it
     // found one of the key before, which is not kept (ADR 0141, rule 5). Not a kind of work: its
-    // stop is AI off or the key, taken with the ticket.
-    const signal = AbortSignal.any([this.abort.signal, this.runtimeKeys.stopSignal(runtime.id)]);
+    // stop is AI off or the key, and in the background the stop of the background too (rule 6).
+    const signal = AbortSignal.any([
+      this.abort.signal,
+      this.runtimeKeys.stopSignal(runtime.id),
+      ...(background ? [this.runtimeKeys.backgroundSignal(runtime.id)] : []),
+    ]);
     const info = await this.inspectRuntime(runtime);
     if (info.status !== "found" && info.status !== "ready" && info.status !== "failed") return info;
     this.block(ticket, null);
@@ -1102,6 +1122,11 @@ export class AgentService implements AgentApi {
       if (verdicts?.some((v) => v.quote !== undefined) === true) status = "ready";
       else problem = "The assistant answered, but not in the form the app needs.";
     } catch (error) {
+      // A test in the background stopped with the background keeps nothing: it says nothing of
+      // the key, and a press of Check tests the key itself (rule 6).
+      if (background && signal.aborted && !this.runtimeKeys.mayGoInBackground(ticket)) {
+        return this.infoOf(runtime.id) ?? info;
+      }
       // What is kept of the answer goes through the ticket: a test on the key before keeps none.
       if (isAgentRunError(error) && (error.code === "notSignedIn" || error.code === "notPlan")) {
         this.block(ticket, error.code === "notPlan" ? "notPlan" : "signedOut");
@@ -1897,7 +1922,12 @@ export class AgentService implements AgentApi {
     return this.status();
   }
 
-  /** Stops every turn of these kinds, and the pass when it is one of them. */
+  /**
+   * Stops every turn of these kinds, the person's too, and the pass when it is one of them: only
+   * for what takes the ground from under a turn, the kind moved to another runtime or the key it
+   * runs on gone (ADR 0141, rule 6). The background alone stops with
+   * `RuntimeKeys.stopBackground`.
+   */
   private async stopKinds(kinds: readonly AgentWorkKind[]): Promise<void> {
     for (const kind of kinds) {
       this.kindAborts.get(kind)?.abort();
@@ -2018,8 +2048,10 @@ export class AgentService implements AgentApi {
     const before = Object.fromEntries(
       Object.keys(change).map((id) => [id, this.testModel(id, current, { models: [] })]),
     );
-    // The model or effort for understanding mail changed: the turns of the old choice stop, and
-    // the reading goes on at once on the new one (ADR 0117, rule 3a), with no ↵ and no sync.
+    // The model or effort for understanding mail changed: the turns of the old choice in the
+    // background stop, and the reading goes on at once on the new one (ADR 0117, rule 3a), with
+    // no ↵ and no sync. A run the person asked for finishes on the choice it began on: what it
+    // read on it is read, and an answer already billed is not thrown away (ADR 0141, rule 6).
     const reader = current.kindRuntime.understand;
     const was = reader === undefined ? undefined : choicesOn(current, reader);
     const understandChanged =
@@ -2027,7 +2059,12 @@ export class AgentService implements AgentApi {
       was !== undefined &&
       ((models.understand !== undefined && models.understand !== was.models.understand) ||
         (efforts.understand !== undefined && efforts.understand !== was.efforts.understand));
-    if (understandChanged) await this.stopKinds(["understand"]);
+    if (understandChanged && reader !== undefined) {
+      this.runtimeKeys.stopBackground(reader);
+      this.cancelKick?.();
+      this.cancelKick = null;
+      await this.pass?.catch(() => {});
+    }
     const next = await this.deps.settings.update({ choices: change });
     // The test is for a model (ADR 0119): a runtime whose model for the test changed is not checked
     // yet. With AI on and an account agreed to it, it is tested by itself, with the made-up message.
@@ -2198,10 +2235,17 @@ export class AgentService implements AgentApi {
 
   private async setKeyReadingNow(runtimeId: string, on: boolean): Promise<AgentStatus> {
     const runtime = await this.keyedRuntime(runtimeId);
-    if (!on && (await this.deps.settings.get()).kindRuntime.understand === runtime.id) {
-      await this.stopKinds(["understand"]);
-    }
+    // The switch governs only what the background starts (rule 6). Turned off, the background on
+    // this runtime stops, a turn of it already sent too, by the stop of `setReading`; a turn the
+    // person asked for goes on, and so does its signal, the kind's. Turned on, nothing stops.
+    const was = keyReadingOn(await this.deps.settings.get(), runtime.id);
     const s = await this.setReading(runtime.id, on === true);
+    if (was && on !== true && s.kindRuntime.understand === runtime.id) {
+      // The pass that read on it has ended before the switch answers off; the next one says why
+      // it waits.
+      await this.pass?.catch(() => {});
+      if (s.enabled) this.kick();
+    }
     this.deps.onChanged();
     if (on === true && s.enabled) this.startNow();
     return this.status();
@@ -3096,7 +3140,7 @@ export class AgentService implements AgentApi {
       // read, so the reading switch it reads is that key's (ADR 0141, rule 6).
       const runtime = this.runtimeFor("titles", await this.deps.settings.get());
       if (runtime === NO_RUNTIME) return;
-      const turn = this.turnOf("titles", runtime.id);
+      const turn = this.backgroundTurnOf("titles", runtime.id);
       const s = await this.currentSettings();
       if (!s.enabled || s.kindRuntime.titles !== runtime.id) return;
       if (s.models.titles === TITLES_OFF) return;
@@ -3746,7 +3790,7 @@ export class AgentService implements AgentApi {
     // switch it reads is that key's (ADR 0141, rule 6).
     const runtime = this.runtimeFor("understand", await this.deps.settings.get());
     if (runtime === NO_RUNTIME) return none;
-    const turn = this.turnOf("understand", runtime.id);
+    const turn = this.backgroundTurnOf("understand", runtime.id);
     const s = await this.currentSettings();
     if (!s.enabled || s.kindRuntime.understand !== runtime.id) return none;
     if (this.infoOf(runtime.id) === null) await this.inspectRuntime(runtime);
