@@ -38,9 +38,12 @@ its list gives an id, a date and an owner, and nothing about schemas, tools or e
    "OpenAI API", is not built in this step; see *Not tried*. The adapter is written so the next
    provider is one more adapter beside it: the port, the vault, the service, the window and the
    tests take any runtime that says it is billed.
-3. **Direct HTTPS with Node's `fetch`, no SDK.** The Messages API at `https://api.anthropic.com`,
+3. **Direct HTTPS with Node's `https`, no SDK.** The Messages API at `https://api.anthropic.com`,
    API version `2026-10-21`, the key in `x-api-key`. The host is fixed in code; a test may point
-   the adapter at `127.0.0.1` and nowhere else.
+   the adapter at `127.0.0.1` and nowhere else. Not `fetch`: the one in the app's backend process
+   (Node 24.22 with undici 7.30 in Electron 45) gives up when no response headers come within
+   300 s, and the Messages API sends its headers only once the answer is written, which can take
+   longer. With `https` the limits of rule 9 are the only ones.
 4. **The key.** The person pastes it into a password field of the runtime's card, at first run or
    in Settings. It is kept in the same encrypted vault as the mail passwords (ADR 0018), as an
    entry of its own by runtime, encrypted through the keychain in main, and read by the adapter in
@@ -48,7 +51,9 @@ its list gives an id, a date and an owner, and nothing about schemas, tools or e
    file, a log, a trace, an error, the agent's log or an answer to a window: after it is saved, a
    window learns only that a key is kept (its state) and the time it was saved. Nothing of the key
    is shown, as nothing of a password is. The card offers Replace and Remove. Removing the key
-   stops its turns, takes back every account's consent to the runtime (with a line in the ledger),
+   stops the turns on the runtime, those of a talk that chose it among them whatever kind of work
+   is on it, and replacing the key does the same; it takes back every account's consent to the
+   runtime (with a line in the ledger),
    and turns its reading in the background off: a key added later is agreed to again. The kinds of
    work on it stay there and wait. Erasing everything (ADR 0138) removes the vault, keys with it;
    the review names the keys beside the accounts. A variable such as `ANTHROPIC_API_KEY` in the
@@ -58,13 +63,16 @@ its list gives an id, a date and an owner, and nothing about schemas, tools or e
    Console to use it"); a key not tested yet; a key the provider refuses, by the class of its
    reason: a wrong key, no credit, no permission, no access to the model, or rate limited for now;
    ready. Ready only after the same test every runtime passes (ADR 0051, rule 5). The test is for
-   the key: a test from before the key was saved does not hold, so a replaced key is tested again.
+   the key: a test from before the key was saved does not hold, so a replaced key is tested again,
+   and a test that was running on the old key when the new one was saved is not kept.
    A refusal during a turn sets the state too. The sentences are ours; the provider's words never
    reach the person.
 6. **Money is said plainly.** The card and the consent question each say in one sentence that
    every turn is billed by Anthropic to the person's key. The runtime has no plan, so no windows
    or shares show (ADR 0119, rule 7). What bounds the cost is what the person does:
-   - What the person asks for (`P0`) runs.
+   - What the person asks for (`P0`) runs. A prompt's first `↵` reads at most its first batch and
+     asks before the rest, as on a plan (ADR 0116, rule 4); only a runtime with no plan and no
+     bill reads every match at once.
    - **Background work runs on a billed runtime only once the person turns it on**, with the
      switch `Read in the background` on the runtime's card in Settings. It is off when a key is
      saved, and off again when the key is removed. Off, nothing in the background is sent: views
@@ -93,7 +101,8 @@ its list gives an id, a date and an owner, and nothing about schemas, tools or e
    sent, so each model runs as it does by default. Structured outputs do not take bounds of
    numbers, strings and arrays or patterns, so those are left out of what is sent and every object
    is closed; the answer is then checked against the whole schema and the rules of the turn, as for
-   any runtime. A turn whose answer was cut short (`max_tokens`) is too long; one the model
+   any runtime. A turn whose answer was cut short (`max_tokens`), or that the provider would not
+   take for its size (`413`), is too long, and the person is told to ask about less; one the model
    declined (`refusal`) or that does not parse is not used. The search loop of ADR 0083 runs with
    our tools only, as on Ollama: rounds with the tools and no schema, the model's own turns given
    back unchanged with their thinking, every result of a round in one message as data; then one
