@@ -6,7 +6,8 @@
   [0129](0129-the-site-offers-pre-releases.md) (the file the site publishes),
   [0036](0036-settings-window.md) (a section of Settings), [0115](0115-every-window-hears-a-changed-status.md)
 - Amended by: [0140](0140-the-app-installs-a-newer-version-when-asked.md) (About can install the
-  newer version when the person presses Install and Restart; Download stays)
+  newer version when the person presses Install and Restart; Download stays),
+  [0143](0143-matters-opens-mailto-links.md) (About has a row for the default mail app)
 - Design: [`docs/design/new-version-notice.html`](../design/new-version-notice.html)
 
 ## Context

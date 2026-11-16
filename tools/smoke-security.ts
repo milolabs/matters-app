@@ -118,12 +118,18 @@ interface PageRecord {
   error?: string;
 }
 interface MainEvent {
-  readonly kind: "navigate" | "request" | "open-external";
+  readonly kind: "navigate" | "request" | "open-external" | "compose";
   readonly url?: string;
   readonly href?: string;
   readonly mainFrame?: boolean;
   readonly prevented?: boolean;
   readonly type?: string;
+  /** A `compose` event: the new message a `mailto:` link opens (ADR 0143). */
+  readonly to?: readonly string[];
+  readonly cc?: readonly string[];
+  readonly bcc?: readonly string[];
+  readonly subject?: string;
+  readonly body?: string;
   readonly id: string;
   readonly lane: string;
 }
@@ -199,6 +205,20 @@ function measure(c: CorpusCase): Record<string, unknown> {
   const opened = mainEvents
     .filter((e) => e.kind === "open-external" && e.lane === "blocked")
     .map((e) => plain(e.href ?? ""));
+  // A `mailto:` link opens a new message in the app (ADR 0143): what each draft would hold.
+  const composed = mainEvents.filter((e) => e.kind === "compose" && e.lane === "blocked");
+  const DRAFT_KEYS = new Set([
+    "kind",
+    "source",
+    "to",
+    "cc",
+    "bcc",
+    "subject",
+    "body",
+    "id",
+    "lane",
+  ]);
+  const addresses = (e: MainEvent) => [...(e.to ?? []), ...(e.cc ?? []), ...(e.bcc ?? [])];
   const requestsInImages = mainEvents.filter(
     (e) => e.kind === "request" && e.lane === lanes.images,
   ).length;
@@ -213,6 +233,14 @@ function measure(c: CorpusCase): Record<string, unknown> {
     opened,
     openedMailtoWithAttach: opened.some(
       (h) => /^mailto:/i.test(h) && /[?&]attach(?:ment)?=/i.test(h),
+    ),
+    composedFromLinks: composed.length,
+    composedWithAttach: composed.some(
+      (e) =>
+        Object.keys(e).some((k) => !DRAFT_KEYS.has(k)) || /\/etc\/|file:/i.test(JSON.stringify(e)),
+    ),
+    composedWithInjectedHeader: composed.some(
+      (e) => /[\r\n]/.test(e.subject ?? "") || addresses(e).some((a) => /[\s:]/.test(a)),
     ),
     linkWarningCount: blocked?.linkWarnings ?? 0,
     anchorsInFrame: blocked?.anchorsInFrame ?? 0,

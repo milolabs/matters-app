@@ -49,6 +49,14 @@ const desktop = join(root, "apps/desktop");
 const BUNDLE_ID = "app.getmatters.Matters";
 const NAME = "Matters";
 const release = process.env.MATTERS_RELEASE === "1";
+/** The URL schemes the bundle says it opens (ADR 0143): `mailto:`, as an editor of new messages. */
+const URL_TYPES = [
+  {
+    CFBundleURLName: "Email Address URL",
+    CFBundleURLSchemes: ["mailto"],
+    CFBundleTypeRole: "Editor",
+  },
+];
 // At the root, git-ignored (`dist/`) and outside what biome and vitest look at.
 const output = release
   ? join(root, "dist/release", `${NAME}.app`)
@@ -132,7 +140,32 @@ plist(
   ["-replace", "LSApplicationCategoryType", "-string", "public.app-category.productivity"],
   // It named default_app.asar, which is gone; the fuse that checks it is off in this runtime.
   ["-remove", "ElectronAsarIntegrity"],
+  // Matters can open `mailto:` links, so macOS lists it among the mail programs (ADR 0143, rule
+  // 1). Saying so makes it the default of nothing: that is the person's press in Settings › About.
+  ["-insert", "CFBundleURLTypes", "-json", JSON.stringify(URL_TYPES)],
 );
+// Read back: a bundle that does not say it opens mail links is not the bundle this script makes.
+{
+  const written = JSON.parse(
+    run("plutil", [
+      "-extract",
+      "CFBundleURLTypes",
+      "json",
+      "-o",
+      "-",
+      join(contents, "Info.plist"),
+    ]),
+  ) as { CFBundleURLSchemes?: unknown; CFBundleTypeRole?: unknown }[];
+  const mailto = written.filter(
+    (t) => Array.isArray(t.CFBundleURLSchemes) && t.CFBundleURLSchemes.includes("mailto"),
+  );
+  if (
+    written.length !== URL_TYPES.length ||
+    mailto.length !== 1 ||
+    mailto[0]?.CFBundleTypeRole !== "Editor"
+  )
+    fail(`Info.plist has CFBundleURLTypes ${JSON.stringify(written)}, not the mailto scheme`);
+}
 
 // "Electron Helper (GPU).app" becomes "Matters Helper (GPU).app", with its executable and id.
 for (const entry of readdirSync(frameworks)) {

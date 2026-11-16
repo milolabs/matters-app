@@ -44,7 +44,7 @@ import type { Backend } from "./client.ts";
 import type { ComposeStore } from "./compose.ts";
 import { DropOverlay } from "./dropOverlay.tsx";
 import { type DropTarget, installFileDrop } from "./fileDrop.ts";
-import { onDropped } from "./files.ts";
+import { onDropped, onMailtoWaiting, takeMailto } from "./files.ts";
 import type { FoldersStore } from "./folders.ts";
 import { displayName, fullDate, isReallyOwn, letterDate, listDate, senderName } from "./format.ts";
 import { HitsContext, HitText, Segments } from "./hitText.tsx";
@@ -628,6 +628,28 @@ function Mail(props: Stores) {
   createEffect(() => {
     if (compose.isOpen()) paneWidth.setWide(false);
   });
+
+  // `mailto:` links (ADR 0143, rule 5). There is one composer at a time, so the next link that
+  // waits in main is taken whenever none is open: when main says one came, and when a composer
+  // closes. It opens as `c` opens a new message, with the fields the link filled in.
+  let takingLink = false;
+  async function openNextLink() {
+    if (takingLink || compose.isOpen()) return;
+    takingLink = true;
+    try {
+      const link = await takeMailto();
+      if (link !== null)
+        await compose.open("new", store.thread()?.thread.accountId, undefined, undefined, link);
+    } finally {
+      takingLink = false;
+    }
+  }
+  createEffect(
+    on(compose.isOpen, (open) => {
+      if (!open) void openNextLink();
+    }),
+  );
+  onCleanup(onMailtoWaiting(() => void openNextLink()));
 
   function toList() {
     store.setZone("list");

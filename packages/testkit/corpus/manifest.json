@@ -2846,7 +2846,7 @@
         "RFC 6068 section 7 (a mailto URI is a template for a message; the fewer header fields interpreted, the safer)",
         "ADR 0024 rule 5"
       ],
-      "attacks": "The link is passed whole to the system mail client; a client that honours attach= pre-fills a local file.",
+      "attacks": "The link is passed whole to a mail client; a client that honours attach= pre-fills a local file, and a subject with a line break adds a header. Since ADR 0143 the link opens Matters' own composer: each of the three must open a draft without a file and without a header the link smuggled in.",
       "file": "html/html-link-mailto-parameters.eml",
       "tiers": {
         "node": {
@@ -2885,6 +2885,18 @@
             },
             {
               "name": "openedMailtoWithAttach",
+              "ideal": false
+            },
+            {
+              "name": "composedFromLinks",
+              "ideal": 3
+            },
+            {
+              "name": "composedWithAttach",
+              "ideal": false
+            },
+            {
+              "name": "composedWithInjectedHeader",
               "ideal": false
             }
           ]

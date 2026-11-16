@@ -796,9 +796,14 @@ export interface ForwardFrom {
   readonly messages: readonly ThreadMessage[];
 }
 
-/** What a new message may open with, from an offer of the agent (ADR 0102). Never saved by itself. */
+/**
+ * What a new message may open with, from an offer of the agent (ADR 0102) or a `mailto:` link (ADR
+ * 0143). Never saved by itself.
+ */
 export interface NewMessagePrefill {
   readonly to: readonly string[];
+  readonly cc?: readonly string[];
+  readonly bcc?: readonly string[];
   readonly subject: string;
   readonly body: string;
 }
@@ -855,6 +860,8 @@ export function createComposeStore(backend: Backend, outbox: OutboxStore) {
                 ? {
                     ...prepared.content,
                     to: prefill.to.map((address) => ({ address })),
+                    cc: (prefill.cc ?? []).map((address) => ({ address })),
+                    bcc: (prefill.bcc ?? []).map((address) => ({ address })),
                     subject: prefill.subject,
                     // The agent wrote the words; the code puts the signature under them (ADR 0142).
                     bodyMarkdown: placeSignature(prefill.body, prepared.signature ?? ""),

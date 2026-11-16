@@ -4,6 +4,8 @@
 import type {
   AppearanceInfo,
   AppearanceMode,
+  DefaultMailInfo,
+  MailtoPrefill,
   MainEraseOverview,
   MainStorageInfo,
   NoticeSystem,
@@ -267,4 +269,34 @@ export function onSettingsSection(listener: (id: string) => void): () => void {
   };
   window.addEventListener("message", onMessage);
   return () => window.removeEventListener("message", onMessage);
+}
+
+/**
+ * The next `mailto:` link that waits in main (ADR 0143), read by core's rules there; null when none
+ * does or the mail is not shown yet. Main gives it once.
+ */
+export async function takeMailto(): Promise<MailtoPrefill | null> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: MailtoPrefill | null }>("mattersMailtoAnswer", requestId);
+  window.postMessage({ mattersMailtoTake: { requestId } }, "*");
+  return (await reply).answer;
+}
+
+/** Main says a `mailto:` link waits (ADR 0143). */
+export function onMailtoWaiting(listener: () => void): () => void {
+  const onMessage = (event: MessageEvent) => {
+    const data: unknown = event.data;
+    if (event.source !== window || !isRecord(data) || data.mattersMailtoWaiting !== true) return;
+    listener();
+  };
+  window.addEventListener("message", onMessage);
+  return () => window.removeEventListener("message", onMessage);
+}
+
+/** Whether Matters is the default mail app; `make` is the person's press (ADR 0143, rule 2). */
+export async function askDefaultMail(action: "get" | "make"): Promise<DefaultMailInfo | null> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: DefaultMailInfo | null }>("mattersDefaultMailAnswer", requestId);
+  window.postMessage({ mattersDefaultMail: { requestId, action } }, "*");
+  return (await reply).answer;
 }
