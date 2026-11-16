@@ -10,6 +10,9 @@ import type {
   MainStorageInfo,
   NoticeSystem,
   PickedFile,
+  PrintAction,
+  PrintAnswer,
+  PrintDocument,
   ReceivedAnswer,
   ReleaseInfo,
   ThemeAddAnswer,
@@ -86,6 +89,32 @@ export async function askReceived(request: ReceivedAsk): Promise<ReceivedAnswer>
   const reply = answer<{ answer: ReceivedAnswer }>("mattersReceivedAnswer", requestId);
   window.postMessage({ mattersReceived: { requestId, ...request } }, "*");
   return (await reply).answer;
+}
+
+/** Prints the thread or saves it as a PDF (ADR 0144): main shows the dialog and says how it ended. */
+export async function askPrint(action: PrintAction, doc: PrintDocument): Promise<PrintAnswer> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: PrintAnswer }>("mattersPrintAnswer", requestId);
+  window.postMessage({ mattersPrint: { requestId, action, doc } }, "*");
+  return (await reply).answer;
+}
+
+/** Tells main whether one thread is open in the reader, for the menu's Print… and Save as PDF…. */
+export function tellPrintAvailable(available: boolean): void {
+  window.postMessage({ mattersPrintAvailable: available }, "*");
+}
+
+/** The menu asked to print or to save the open thread. */
+export function onPrintAsked(listener: (action: PrintAction) => void): () => void {
+  const onMessage = (event: MessageEvent) => {
+    const data: unknown = event.data;
+    if (event.source !== window || !isRecord(data)) return;
+    if (data.mattersPrintAsk === "print" || data.mattersPrintAsk === "pdf") {
+      listener(data.mattersPrintAsk);
+    }
+  };
+  window.addEventListener("message", onMessage);
+  return () => window.removeEventListener("message", onMessage);
 }
 
 /**

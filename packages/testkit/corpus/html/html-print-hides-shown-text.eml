@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-print-hides-shown-text@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head><style>@media print{.amount{display:none}}</style><style>.iban,.notprint{display:none}@media screen{.iban{display:block}}@media not print{.notprint{display:block}}</style><style media="screen">.attr{color:#000}</style><style media="print">.attr2{display:none}</style></head><body><p class="amount">ON-SCREEN-AMOUNT 120.00 EUR</p><p class="iban">ON-SCREEN-IBAN DE00 1111 0000 0000 0000 00</p><p class="notprint">ON-SCREEN-NOT-PRINT</p><p class="attr2">ON-SCREEN-ATTRIBUTE</p></body></html>

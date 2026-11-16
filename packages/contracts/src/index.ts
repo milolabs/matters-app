@@ -2896,6 +2896,65 @@ export type ReceivedAnswer =
       readonly reason: "runnable" | "quarantine" | "unsupported" | "invalid";
     };
 
+/** What the page asks main to do with the thread open in the reader (ADR 0144, rule 1). */
+export type PrintAction = "print" | "pdf";
+
+/** A piece of a letter's text as the reader shows it before anything is unfolded (ADR 0144, rule 2). */
+export type PrintTextPart =
+  /** Words as written. */
+  | { readonly kind: "text"; readonly text: string }
+  /** A short signature, quiet under the words. */
+  | { readonly kind: "signature"; readonly text: string }
+  /** What the reader folds: a quote or a long signature, named and not printed. */
+  | { readonly kind: "folded"; readonly text: string };
+
+/** The body of a letter: the sanitized HTML the reader shows (light), or its text. */
+export type PrintBody =
+  | {
+      readonly kind: "html";
+      /** `sanitizeMail` and the light view of `mailView`, as the reader's frame gets it. */
+      readonly html: string;
+      /** The frame is the page with images allowed: the reader allowed them for this message. */
+      readonly images: boolean;
+    }
+  | { readonly kind: "text"; readonly parts: readonly PrintTextPart[] };
+
+/**
+ * One letter on paper. Every field is text the print page puts in as text, never as markup; only
+ * `body.html` is markup, and it goes into a sandboxed frame like the reader's.
+ */
+export interface PrintLetter {
+  readonly from: string;
+  readonly to: string;
+  /** Empty when nobody was in Cc. */
+  readonly cc: string;
+  readonly date: string;
+  readonly subject: string;
+  /** "Not verified · domain" or "Verified · domain", as the reader's header says (ADR 0078, 0079). */
+  readonly badge: string;
+  /** The reader's line about blocked images, when they are blocked; else empty. */
+  readonly note: string;
+  readonly body: PrintBody;
+  /** Name and size of each listed file, `invoice.pdf · 120 KB`: listed, never printed. */
+  readonly attachments: readonly string[];
+}
+
+/** The thread on paper (ADR 0144, rule 2). */
+export interface PrintDocument {
+  /** The thread's subject: the page's title, the PDF's only metadata, and the file's name. */
+  readonly title: string;
+  /** The day of the newest letter, `YYYY-MM-DD` in the person's time, for the file's name. */
+  readonly day: string;
+  readonly letters: readonly PrintLetter[];
+}
+
+/** How a print or a save ended. `busy`: another one was still being made, and this one was not. */
+export type PrintAnswer =
+  | { readonly kind: "done" }
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "busy" }
+  | { readonly kind: "failed" };
+
 /**
  * What the router tells main on main's own line (ADR 0071, rule 8): banners to show and the text
  * of the badge. Main shows them and decides nothing but whether its window is in front.

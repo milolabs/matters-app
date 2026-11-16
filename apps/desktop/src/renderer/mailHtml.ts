@@ -1,4 +1,5 @@
 import DOMPurify from "dompurify";
+import { screenDevice, screenMediaCss, screenMediaList } from "./mailMedia.ts";
 import { type MailTheme, mailBaseStyle, mailTheme } from "./mailTheme.ts";
 
 // Everything a page could use to act, ask or fetch beyond images. The frame's sandbox and policy
@@ -81,9 +82,29 @@ function dropPixels(node: Node): void {
   if (node.nodeName === "IMG" && isPixel(node as Element)) node.parentNode?.removeChild(node);
 }
 
+/**
+ * A style sheet asks what the screen would answer, wherever it is drawn (ADR 0144, rule 3): a
+ * `@media print` block is dropped and a screen block applies on paper too, `@page` goes, and so
+ * does a sheet whose `media` attribute only paper matches.
+ */
+function screenStyles(node: Node): void {
+  if (node.nodeName !== "STYLE") return;
+  const style = node as Element;
+  // DOMPurify removes `media` (it is not on its list), so every sheet applies everywhere: one only
+  // paper would match is emptied instead of shown on screen too.
+  const media = style.getAttribute("media");
+  if (media !== null && screenMediaList(media, screenDevice) === null) {
+    style.textContent = "";
+    return;
+  }
+  const css = style.textContent ?? "";
+  if (/@/.test(css)) style.textContent = screenMediaCss(css, screenDevice);
+}
+
 export function sanitizeMail(html: string): CleanMail {
-  // The hook lives for this call only: the sanitizer is shared with the rest of the page.
+  // The hooks live for this call only: the sanitizer is shared with the rest of the page.
   DOMPurify.addHook("beforeSanitizeAttributes", dropPixels);
+  DOMPurify.addHook("uponSanitizeElement", screenStyles);
   let clean: string;
   try {
     clean = DOMPurify.sanitize(html, {
@@ -95,6 +116,7 @@ export function sanitizeMail(html: string): CleanMail {
     });
   } finally {
     DOMPurify.removeHook("beforeSanitizeAttributes", dropPixels);
+    DOMPurify.removeHook("uponSanitizeElement", screenStyles);
   }
   return {
     html: `${BASE_STYLE}${clean}`,

@@ -1,0 +1,9 @@
+From: Sender <sender@example.org>
+To: Reader <reader@example.com>
+Subject: Corpus message
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <html-print-reveals-hidden-text@corpus.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head><style>.paper,.paper3,.paper4{display:none}@media print{.paper{display:block}.screen{display:none}}</style><style media="print">.paper2{display:block!important}</style><style>@\6d edia print{.paper3{display:block}}@media (update:none){.paper4{display:block}}</style><style>@page{margin:20mm;@top-center{content:"PAPER-ONLY-PAGE-MARGIN"}}</style></head><body><p class="screen">ON-SCREEN Pay to IBAN DE00 1111 0000 0000 0000 00</p><p class="paper">PAPER-ONLY Pay to IBAN DE99 9999 0000 0000 0000 00</p><p class="paper2" style="display:none">PAPER-ONLY-ATTRIBUTE</p><p class="paper3">PAPER-ONLY-ESCAPED</p><p class="paper4">PAPER-ONLY-UPDATE</p></body></html>

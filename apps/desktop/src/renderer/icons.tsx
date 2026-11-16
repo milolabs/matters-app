@@ -91,6 +91,22 @@ export const FolderIcon = () => (
   </Icon>
 );
 
+/** A printer: print the open thread (ADR 0144). */
+export const PrintIcon = () => (
+  <Icon>
+    <path d="M4.5 6V2.2h7V6M4.5 11.5H3a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v3.5a1 1 0 0 1-1 1h-1.5" />
+    <path d="M4.5 9.5h7v4.3h-7Z" />
+  </Icon>
+);
+
+/** A sheet with a folded corner and an arrow down: save the open thread as a PDF (ADR 0144). */
+export const SavePageIcon = () => (
+  <Icon>
+    <path d="M4 1.8h4.8L12.2 5.2v8.2a.8.8 0 0 1-.8.8H4a.8.8 0 0 1-.8-.8V2.6A.8.8 0 0 1 4 1.8Z" />
+    <path d="M7.7 7v4.4M5.9 9.8l1.8 1.8 1.8-1.8" />
+  </Icon>
+);
+
 /** Three dots in a row: the actions kept one click further away. */
 export const MoreIcon = () => (
   <Icon>

@@ -260,3 +260,19 @@ export function isRunnableFile(name: string): boolean {
   if (dot < 0 || dot === trimmed.length - 1) return false;
   return RUNNABLE.has(trimmed.slice(dot + 1).toLowerCase());
 }
+
+/**
+ * The name offered for a thread saved as a PDF (ADR 0144, rule 5): its subject and the day of its
+ * newest letter, `Lunch on Friday 2026-11-16.pdf`. The subject is a stranger's text, so it goes
+ * through `safeFileName` first: no separator, no control or format character, no leading dot
+ * (never hidden). It is then cut so that the whole name stays within 200 bytes, never inside a
+ * character, and the day and the extension `.pdf` are always kept. A subject with nothing left is
+ * `Message`. `day` is `YYYY-MM-DD`, and is left out when it is anything else.
+ */
+export function pdfFileName(subject: string, day: string): string {
+  const tail = `${/^\d{4}-\d{2}-\d{2}$/.test(day) ? ` ${day}` : ""}.pdf`;
+  const words = stripEdges(
+    cutToBytes(safeFileName(subject, "Message"), MAX_FILE_NAME_BYTES - byteLength(tail)),
+  );
+  return `${words === "" ? "Message" : words}${tail}`;
+}

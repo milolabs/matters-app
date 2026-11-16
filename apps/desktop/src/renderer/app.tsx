@@ -1,4 +1,4 @@
-import type { ThreadMessage } from "@matters/contracts";
+import type { PrintAction, ThreadMessage } from "@matters/contracts";
 import type {
   DraftFor,
   ImageChoice,
@@ -44,7 +44,13 @@ import type { Backend } from "./client.ts";
 import type { ComposeStore } from "./compose.ts";
 import { DropOverlay } from "./dropOverlay.tsx";
 import { type DropTarget, installFileDrop } from "./fileDrop.ts";
-import { onDropped, onMailtoWaiting, takeMailto } from "./files.ts";
+import {
+  onDropped,
+  onMailtoWaiting,
+  onPrintAsked,
+  takeMailto,
+  tellPrintAvailable,
+} from "./files.ts";
 import type { FoldersStore } from "./folders.ts";
 import { displayName, fullDate, isReallyOwn, letterDate, listDate, senderName } from "./format.ts";
 import { HitsContext, HitText, Segments } from "./hitText.tsx";
@@ -59,8 +65,10 @@ import {
   MattersMark,
   MoreIcon,
   PaperclipIcon,
+  PrintIcon,
   ReplyAllIcon,
   ReplyIcon,
+  SavePageIcon,
   SettingsIcon,
   ShieldCheckIcon,
   SpamIcon,
@@ -91,6 +99,7 @@ import type { OutboxStore } from "./outbox.ts";
 import { OVERLAY_BELOW } from "./paneWidth.ts";
 import { personMark } from "./personMark.ts";
 import { createMenuAnchor, menuPoint, PopMenu } from "./popMenu.tsx";
+import { noteImagesShown, noteTextView, printFailureText, printThread } from "./printing.ts";
 import { PromptLine } from "./promptLine.tsx";
 import { createPromptRun } from "./promptRun.ts";
 import { NOTHING_FITS, promptOff } from "./promptView.ts";
@@ -650,6 +659,29 @@ function Mail(props: Stores) {
     }),
   );
   onCleanup(onMailtoWaiting(() => void openNextLink()));
+
+  // Print… and Save as PDF… (ADR 0144, rule 1): the whole thread open in the reader. With several
+  // rows chosen the reader is the pile (ADR 0056), and with nothing open there is nothing to print:
+  // main keeps the menu's items off then. A failure says so in one phrase, under the window.
+  const [printProblem, setPrintProblem] = createSignal("");
+  const printable = () => !marks.active() && store.thread() !== null;
+  createEffect(() => tellPrintAvailable(printable()));
+  createEffect(
+    on(
+      () => store.thread()?.thread.id,
+      () => setPrintProblem(""),
+      { defer: true },
+    ),
+  );
+  function printOpen(action: PrintAction) {
+    const open = store.thread();
+    if (!open || !printable()) return;
+    setPrintProblem("");
+    void printThread(action, open.thread.subject, open.messages, own(), props.backend).then(
+      (answer) => setPrintProblem(printFailureText(action, answer)),
+    );
+  }
+  onCleanup(onPrintAsked(printOpen));
 
   function toList() {
     store.setZone("list");
@@ -1423,6 +1455,7 @@ function Mail(props: Stores) {
                   words={hitWords}
                   matches={matches}
                   replying={(threadId) => inlineReply()?.base.threadId === threadId}
+                  onPrint={printOpen}
                   reply={() => (
                     <Show when={inlineReply()}>
                       {(session) => (
@@ -1492,6 +1525,15 @@ function Mail(props: Stores) {
       <Show when={compose.problem() !== ""}>
         <p class="border-t border-hairline px-3.5 py-2 text-[12.5px] text-late" role="alert">
           {compose.problem()}
+        </p>
+      </Show>
+      <Show when={printProblem() !== ""}>
+        <p
+          data-print-problem
+          class="border-t border-hairline px-3.5 py-2 text-[12.5px] text-late"
+          role="alert"
+        >
+          {printProblem()}
         </p>
       </Show>
       <SendTray
@@ -2160,6 +2202,8 @@ function ThreadView(props: {
   replying: (threadId: string) => boolean;
   /** That reply, in place of the "Reply to…" line; called only while `replying` says so. */
   reply: () => JSX.Element;
+  /** Print… and Save as PDF… for the open thread (ADR 0144, rule 1). */
+  onPrint: (action: PrintAction) => void;
 }) {
   const open = createMemo(() => props.store.thread());
   const more = createMenuAnchor();
@@ -2322,6 +2366,29 @@ function ThreadView(props: {
                           <FolderIcon />
                           <span class="ml-2 flex-1">Move to…</span>
                           <span class="text-secondary">v</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            more.close(true);
+                            props.onPrint("print");
+                          }}
+                        >
+                          <PrintIcon />
+                          <span class="ml-2 flex-1">Print…</span>
+                          <span class="text-secondary">⌘P</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            more.close(true);
+                            props.onPrint("pdf");
+                          }}
+                        >
+                          <SavePageIcon />
+                          <span class="ml-2 flex-1">Save as PDF…</span>
                         </button>
                       </PopMenu>
                     )}
@@ -2805,6 +2872,9 @@ function Letter(props: {
   const [view, setView] = createSignal<"original" | "text">(
     props.message.htmlKind === undefined ? "text" : "original",
   );
+  // A print made now prints the view on screen (ADR 0144, rule 2).
+  createEffect(() => noteTextView(m().key, m().htmlKind !== undefined && view() === "text"));
+  onCleanup(() => noteTextView(m().key, false));
   const recipients = () =>
     [
       m().to.map(props.name).join(", "),
@@ -3046,6 +3116,9 @@ function Original(props: {
   const [shown, setShown] = createSignal(false);
   const images = () => shown() || choice()?.show === true;
   const [failure, setFailure] = createSignal("");
+  // Show images lasts while the letter is open, and a print made meanwhile has them (ADR 0144).
+  createEffect(() => noteImagesShown(props.message.key, shown()));
+  onCleanup(() => noteImagesShown(props.message.key, false));
 
   // Only the newest answer counts: a rule can change twice in a row.
   let asked = 0;
