@@ -869,13 +869,19 @@ export interface NewMessagePrefill {
   readonly body: string;
 }
 
+/**
+ * How an open went: the composer opened; it could not be prepared (the line of problems says
+ * why); or another composer was opening or open, so nothing was done.
+ */
+export type OpenOutcome = "opened" | "failed" | "busy";
+
 export type OpenComposer = (
   mode: ReplyMode | "new" | "forward",
   accountId?: string,
   threadId?: string,
   forward?: ForwardFrom,
   prefill?: NewMessagePrefill,
-) => Promise<void>;
+) => Promise<OpenOutcome>;
 
 const TITLES = { new: "New message", reply: "Reply", replyAll: "Reply to all", forward: "Forward" };
 
@@ -888,11 +894,12 @@ export function titleOfDraft(draft: Pick<Draft, "forwarded" | "inReplyTo">): str
 export function createComposeStore(backend: Backend, outbox: OutboxStore) {
   const [session, setSession] = createSignal<ComposerSession | null>(null);
   const [problem, setProblem] = createSignal("");
-  let opening = false;
+  // A signal, so what waits for no composer at all (a `mailto:` link) hears an open that failed.
+  const [opening, setOpening] = createSignal(false);
 
   const open: OpenComposer = async (mode, accountId, threadId, forward, prefill) => {
-    if (session() || opening) return;
-    opening = true;
+    if (session() || opening()) return "busy";
+    setOpening(true);
     setProblem("");
     try {
       const prepared =
@@ -941,17 +948,19 @@ export function createComposeStore(backend: Backend, outbox: OutboxStore) {
           () => setSession(null),
         ),
       );
+      return "opened";
     } catch (e) {
       setProblem(e instanceof BackendError ? e.message : "The message could not be started.");
+      return "failed";
     } finally {
-      opening = false;
+      setOpening(false);
     }
   };
 
   /** "Open draft" in the tray: the composer on that draft, with its files. */
   async function openDraft(draftId: string) {
-    if (session() || opening) return;
-    opening = true;
+    if (session() || opening()) return;
+    setOpening(true);
     setProblem("");
     try {
       const existing = await backend.getDraft(draftId);
@@ -976,7 +985,7 @@ export function createComposeStore(backend: Backend, outbox: OutboxStore) {
     } catch (e) {
       setProblem(e instanceof BackendError ? e.message : "The draft could not be opened.");
     } finally {
-      opening = false;
+      setOpening(false);
     }
   }
 
@@ -985,6 +994,8 @@ export function createComposeStore(backend: Backend, outbox: OutboxStore) {
     open,
     openDraft,
     isOpen: () => session() !== null,
+    /** A composer is open, or one is being opened. */
+    isBusy: () => session() !== null || opening(),
     problem,
     clearProblem: () => setProblem(""),
   };

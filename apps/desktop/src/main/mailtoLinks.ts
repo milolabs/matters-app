@@ -1,37 +1,75 @@
 // `mailto:` links that open a new message in Matters (ADR 0143). Main keeps the links that arrived
-// until the mail window takes them, one at a time, when it can show a composer. Pure: no Electron,
-// so the tests use the same functions.
+// until a composer has really opened with them, one at a time: the mail window asks for the next,
+// opens a composer, and then says how it went by the id main gave it. Pure: no Electron, so the
+// tests use the same functions.
+import { randomUUID } from "node:crypto";
 import type { DefaultMailInfo, MailtoPrefill } from "@matters/contracts";
 import { parseMailto } from "@matters/core";
 
 /**
- * At most this many links wait for a composer (rule 5). A page that fires hundreds gets five
- * drafts, one after the other as each is closed; the rest are dropped.
+ * At most this many links wait for a composer (rule 5), the one being opened among them. A page
+ * that fires hundreds gets five drafts, one after the other as each is closed; the rest are
+ * dropped.
  */
 export const MAILTO_WAITING_MAX = 5;
+
+/**
+ * How many times a link's composer may fail to open before the link is dropped (rule 5): one that
+ * can never open, say with no account to send from, does not hold the links behind it for ever.
+ */
+export const MAILTO_TRIES_MAX = 3;
 
 /** Where a link came from: macOS or a second start (outside), or a click in a message (mail). */
 export type LinkSource = "outside" | "mail";
 
+/** The link that is first, with the id main knows it by. The id says nothing of the link. */
+export interface WaitingLink {
+  readonly id: string;
+  readonly link: MailtoPrefill;
+}
+
 export interface LinkQueue {
   /** Reads a link and keeps it; what it reads, or null when it is not one or nothing more waits. */
   offer(href: string): MailtoPrefill | null;
-  /** The oldest link that waits, taken off the queue; null when none does. */
-  take(): MailtoPrefill | null;
+  /** The oldest link that waits, with its id; it stays first until it is done. Null when none. */
+  next(): WaitingLink | null;
+  /**
+   * The window opened a composer with the first link (`opened` true), and it goes; or could not
+   * (false), and it stays first, until it failed `MAILTO_TRIES_MAX` times. Anything but the id of
+   * the first link as `next` gave it is ignored. How many links wait after.
+   */
+  done(id: unknown, opened: unknown): number;
   size(): number;
 }
 
-export function createLinkQueue(max = MAILTO_WAITING_MAX): LinkQueue {
-  const waiting: MailtoPrefill[] = [];
+export function createLinkQueue(
+  max = MAILTO_WAITING_MAX,
+  makeId: () => string = randomUUID,
+): LinkQueue {
+  const waiting: { id: string; link: MailtoPrefill; given: boolean; failed: number }[] = [];
   return {
     offer(href) {
       if (waiting.length >= max) return null;
       const draft = parseMailto(href);
       if (draft === null) return null;
-      waiting.push(draft);
+      waiting.push({ id: makeId(), link: draft, given: false, failed: 0 });
       return draft;
     },
-    take: () => waiting.shift() ?? null,
+    next() {
+      const first = waiting[0];
+      if (first === undefined) return null;
+      first.given = true;
+      return { id: first.id, link: first.link };
+    },
+    done(id, opened) {
+      const first = waiting[0];
+      if (first === undefined || !first.given || typeof id !== "string" || id !== first.id) {
+        return waiting.length;
+      }
+      if (opened === true) waiting.shift();
+      else if (opened === false && ++first.failed >= MAILTO_TRIES_MAX) waiting.shift();
+      return waiting.length;
+    },
     size: () => waiting.length,
   };
 }

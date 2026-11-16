@@ -272,13 +272,25 @@ export function onSettingsSection(listener: (id: string) => void): () => void {
 }
 
 /**
- * The next `mailto:` link that waits in main (ADR 0143), read by core's rules there; null when none
- * does or the mail is not shown yet. Main gives it once.
+ * The first `mailto:` link that waits in main (ADR 0143), read by core's rules there, with the id
+ * main knows it by; null when none does or the mail is not shown yet. It stays first in main until
+ * `doneMailto` says a composer opened with it.
  */
-export async function takeMailto(): Promise<MailtoPrefill | null> {
+export async function takeMailto(): Promise<{ id: string; link: MailtoPrefill } | null> {
   const requestId = nextRequestId();
-  const reply = answer<{ answer: MailtoPrefill | null }>("mattersMailtoAnswer", requestId);
+  const reply = answer<{ answer: { id: string; link: MailtoPrefill } | null }>(
+    "mattersMailtoAnswer",
+    requestId,
+  );
   window.postMessage({ mattersMailtoTake: { requestId } }, "*");
+  return (await reply).answer;
+}
+
+/** A composer opened with the link of `id`, or could not; how many links still wait in main. */
+export async function doneMailto(id: string, opened: boolean): Promise<number> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: number }>("mattersMailtoDoneAnswer", requestId);
+  window.postMessage({ mattersMailtoDone: { requestId, id, opened } }, "*");
   return (await reply).answer;
 }
 

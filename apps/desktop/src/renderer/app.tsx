@@ -44,7 +44,7 @@ import type { Backend } from "./client.ts";
 import type { ComposeStore } from "./compose.ts";
 import { DropOverlay } from "./dropOverlay.tsx";
 import { type DropTarget, installFileDrop } from "./fileDrop.ts";
-import { onDropped, onMailtoWaiting, takeMailto } from "./files.ts";
+import { doneMailto, onDropped, onMailtoWaiting, takeMailto } from "./files.ts";
 import type { FoldersStore } from "./folders.ts";
 import { displayName, fullDate, isReallyOwn, letterDate, listDate, senderName } from "./format.ts";
 import { HitsContext, HitText, Segments } from "./hitText.tsx";
@@ -80,6 +80,7 @@ import { queryHitWords } from "./liveSearch.ts";
 import { MailFrame, type MailLink } from "./mailFrame.tsx";
 import type { CleanMail } from "./mailHtml.ts";
 import { mailView } from "./mailTheme.ts";
+import { createLinkTaker } from "./mailtoTaking.ts";
 import { planReveal } from "./matchNav.ts";
 import { createMatchNavigator, type MatchNavigator } from "./matchNavigator.ts";
 import { MovePicker } from "./movePicker.tsx";
@@ -629,27 +630,28 @@ function Mail(props: Stores) {
     if (compose.isOpen()) paneWidth.setWide(false);
   });
 
-  // `mailto:` links (ADR 0143, rule 5). There is one composer at a time, so the next link that
-  // waits in main is taken whenever none is open: when main says one came, and when a composer
-  // closes. It opens as `c` opens a new message, with the fields the link filled in.
-  let takingLink = false;
-  async function openNextLink() {
-    if (takingLink || compose.isOpen()) return;
-    takingLink = true;
-    try {
-      const link = await takeMailto();
-      if (link !== null)
-        await compose.open("new", store.thread()?.thread.accountId, undefined, undefined, link);
-    } finally {
-      takingLink = false;
-    }
-  }
+  // `mailto:` links (ADR 0143, rule 5). There is one composer at a time, so the first link that
+  // waits in main is asked for whenever none is open or opening: when main says one came, and when
+  // a composer closes or fails to open. It opens as `c` opens a new message, with the fields the
+  // link filled in, and leaves main's queue only once its composer has opened.
+  const links = createLinkTaker({
+    take: takeMailto,
+    done: doneMailto,
+    open: (link) =>
+      compose.open("new", store.thread()?.thread.accountId, undefined, undefined, link),
+    busy: compose.isBusy,
+    later: (run, ms) => {
+      const timer = setTimeout(run, ms);
+      return () => clearTimeout(timer);
+    },
+  });
   createEffect(
-    on(compose.isOpen, (open) => {
-      if (!open) void openNextLink();
+    on(compose.isBusy, (busy) => {
+      if (!busy) void links.next();
     }),
   );
-  onCleanup(onMailtoWaiting(() => void openNextLink()));
+  onCleanup(onMailtoWaiting(() => void links.next()));
+  onCleanup(() => links.stop());
 
   function toList() {
     store.setZone("list");

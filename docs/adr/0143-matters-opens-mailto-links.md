@@ -114,9 +114,18 @@ Read from the code on 2026-11-16:
    them before.
 
 5. **One copy, and the launch first.** Main registers `open-url` before `ready` and keeps each link
-   it reads in a queue of at most five; more are dropped. The mail window takes one when it has
-   shown its mail (ADR 0103) and no composer is open: when main says one came, and when a
-   composer closes. So a link that starts the app waits until the first window has shown, adding
+   it reads in a queue of at most five; more are dropped. The mail window asks for the first one
+   when it has shown its mail (ADR 0103) and no composer is open or opening: when main says one
+   came, and when a composer closes or fails to open. A link leaves the queue only once a composer
+   has really opened with it: main hands the window the first link with a random id it made, the
+   window opens the composer and then says by that id whether it opened, and main takes an id
+   only when it is the one it gave for the first link. So a link asked for while the person
+   started a composer by hand stays first and opens when that composer closes; one whose
+   preparation failed stays first and is tried again two seconds later, or sooner when another
+   link comes; a link that came during an attempt is not left unheard. A link whose composer
+   failed to open three times is dropped, so one that can never open (no account to send from)
+   does not hold the links behind it. The link being opened counts among the five. The page
+   never names a link's content to main, only the id. So a link that starts the app waits until the first window has shown, adding
    nothing to the launch path (ADR 0012); a link that arrives while Matters runs brings the window
    forward and opens its draft; several links open their drafts one after the other as each is
    closed. A `mailto:` argument of the start, or of a second start on the same data folder (ADR
@@ -135,9 +144,10 @@ Read from the code on 2026-11-16:
    (`packages/core/src/domain/mailtoLink.ts`). Main: the queue, the arguments and the default-app
    client (`mailtoLinks.ts`), the shapes the preload checks (`mailtoShapes.ts`), and the handlers
    in `index.ts`. Preload: `mailtoBridge.ts`, which exposes nothing; the page asks for the next
-   link without naming one, and for the default by action name (`get`, `make`). Renderer: the mail
-   window takes links in `app.tsx` and opens them through `compose.open("new", …, prefill)`; the
-   row is `defaultMailRow.tsx`.
+   link without naming one, says how it went by main's id and a yes or no, and asks for the
+   default by action name (`get`, `make`). Renderer: the mail window takes links with
+   `mailtoTaking.ts`, from `app.tsx`, and opens them through `compose.open("new", …, prefill)`,
+   which says whether it opened; the row is `defaultMailRow.tsx`.
 
 ### Not tried, and why
 
@@ -174,7 +184,8 @@ Read from the code on 2026-11-16:
 - Tested: core unit and property tests (`mailtoLink.test.ts`, `mailtoLink.property.test.ts`), the
   rendered HTML of a link's body (`adapter-compose/test/render.test.ts`) and the property that it
   reads as the body's text (`adapter-compose/test/mailtoBody.property.test.ts`), the queue, the client
-  and the bridge (`apps/desktop/test/mailtoLinks.test.ts`), window tests on the demo mailbox
+  and the bridge (`apps/desktop/test/mailtoLinks.test.ts`), the window's side of the queue
+  (`apps/desktop/test/mailtoTaking.renderer.test.ts`), window tests on the demo mailbox
   (`apps/desktop/e2e/mailto.e2e.ts`: a link delivered as Electron's `open-url`, links in a row, a
   link that starts the app, a link from a message, both states of the row), a second start's
   argument in `tools/smoke-instance.ts`, the corpus case `html-link-mailto-parameters`, and the
