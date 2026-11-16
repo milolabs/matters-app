@@ -1,6 +1,6 @@
 // The person's own signature blocks and the model's (ADR 0142, rule 6): a block of the answer is
-// kept only when it is one of the person's, each of theirs once; the checks of an answer run on what
-// is kept.
+// kept only when it is one of the person's, each of theirs once, and one the model dropped is put
+// back; the checks of an answer run on what is kept.
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
@@ -51,13 +51,32 @@ describe("keepOwnBlocks", () => {
     ).toBe("Hello.\n\n--\nSales lead\n\n--\nAnna");
   });
 
-  it("a block of the person's the answer has nothing in place of is lost: refused", () => {
-    expect(keepOwnBlocks("Thanks.\n\n--\nAnna", "Thank you.")).toBeNull();
-    expect(keepOwnBlocks("Hi.\n\n--\nAnna\n\n--\nSales lead", "Hello.\n\n--\nAnna")).toBeNull();
+  it("a block of the person's the answer dropped comes back after the kept ones, in their order", () => {
+    // The model was told to write no sign-off, and took the person's out too.
+    expect(keepOwnBlocks("Thanks.\n\n--\nAnna", "Thank you.")).toBe("Thank you.\n\n--\nAnna");
+    expect(keepOwnBlocks("Hi.\n\n--\nAnna\n\n--\nSales lead", "Hello.\n\n--\nAnna")).toBe(
+      "Hello.\n\n--\nAnna\n\n--\nSales lead",
+    );
+    // The one it kept stays where it is; the one it dropped follows.
+    expect(keepOwnBlocks("Hi.\n\n--\nAnna\n\n--\nSales lead", "Hello.\n\n--\nSales lead")).toBe(
+      "Hello.\n\n--\nSales lead\n\n--\nAnna",
+    );
+    // The model's one block stands for the first of the person's; the rest follow in their order.
+    expect(
+      keepOwnBlocks("Hi.\n\n--\nAnna\n\n--\nSales lead\n\n--\n555 0100", "Hello.\n\n--\nBot"),
+    ).toBe("Hello.\n\n--\nAnna\n\n--\nSales lead\n\n--\n555 0100");
+    // Never refused for it: the rewrite is used with the sign-off back.
     expect(acceptRewrite({ rewritten: "Thank you." }, "Thanks.\n\n--\nAnna")).toEqual({
-      ok: false,
-      reason: "dropped",
+      ok: true,
+      value: "Thank you.\n\n--\nAnna",
     });
+    expect(acceptWrite({ written: "Thank you." }, "Thanks.\n\n--\nAnna")).toEqual({
+      ok: true,
+      value: "Thank you.\n\n--\nAnna",
+    });
+    expect(
+      acceptAnswers({ withAnswers: "Thanks, Tuesday works.", added: 1 }, "Thanks.\n\n--\nAnna"),
+    ).toEqual({ ok: true, value: "Thanks, Tuesday works.\n\n--\nAnna" });
   });
 
   it("text that is all the model's loses every block", () => {
@@ -96,6 +115,30 @@ describe("the checks run on what is kept", () => {
     });
   });
 
+  it("a gap in the person's block that the model dropped is theirs, and is kept when it comes back", () => {
+    const own = "See you.\n\n--\nAnna, [phone]";
+    const back = { ok: true, value: "See you soon.\n\n--\nAnna, [phone]" };
+    expect(acceptRewrite({ rewritten: "See you soon." }, own)).toEqual(back);
+    expect(acceptWrite({ written: "See you soon." }, own)).toEqual(back);
+    expect(acceptAnswers({ withAnswers: "See you soon.", added: 1 }, own)).toEqual(back);
+  });
+
+  it("a gap the model moved from the body into a block of its own is cut with it: refused", () => {
+    const own = "Pay [amount] by Friday.\n\n--\nAnna";
+    // The model's block stands for the person's, which comes back in its place; the gap is gone.
+    const moved = "Please pay by Friday.\n\n--\nTotal: [amount]";
+    expect(keepOwnBlocks(own, moved)).toBe("Please pay by Friday.\n\n--\nAnna");
+    expect(acceptRewrite({ rewritten: moved }, own)).toEqual({ ok: false, reason: "gaps" });
+    expect(acceptWrite({ written: moved }, own)).toEqual({ ok: false, reason: "gaps" });
+    expect(acceptAnswers({ withAnswers: moved, added: 1 }, own)).toEqual({
+      ok: false,
+      reason: "gaps",
+    });
+    // The same with the person's block kept too: the model's is cut, and the gap with it.
+    const beside = "Please pay by Friday.\n\n--\nAnna\n\n--\nTotal: [amount]";
+    expect(acceptRewrite({ rewritten: beside }, own)).toEqual({ ok: false, reason: "gaps" });
+  });
+
   it("an answer that is only a block of the model's is empty once cut", () => {
     expect(acceptWrite({ written: "--\nBot" }, "")).toEqual({ ok: false, reason: "shape" });
   });
@@ -111,6 +154,24 @@ const blocky = fc
 
 function sorted(xs: readonly string[]): string[] {
   return [...xs].sort();
+}
+
+/** Whether `part` is `whole` with some of it left out, the rest in the same order. */
+function within(part: readonly string[], whole: readonly string[]): boolean {
+  let i = 0;
+  for (const x of whole) if (i < part.length && part[i] === x) i++;
+  return i === part.length;
+}
+
+/** The answer's blocks that are the person's, in the answer's order, each of theirs once. */
+function matchedOf(theirs: readonly string[], answer: readonly string[]): string[] {
+  const left = [...theirs];
+  return answer.flatMap((block) => {
+    const i = left.indexOf(block);
+    if (i < 0) return [];
+    left.splice(i, 1);
+    return [block];
+  });
 }
 
 describe("keepOwnBlocks, for any text of the person's and any answer", () => {
@@ -132,15 +193,23 @@ describe("keepOwnBlocks, for any text of the person's and any answer", () => {
     ),
   );
 
-  it("keeps every block of the person's exactly once and none other, or refuses", () => {
+  it("keeps every block of the person's exactly once and none other, never refusing", () => {
     fc.assert(
       fc.property(pair, ([before, answer]) => {
         const kept = keepOwnBlocks(before, answer);
         const theirs = signatureBlocks(before);
-        // Refused exactly when the answer has fewer blocks than the person had.
-        expect(kept === null).toBe(signatureBlocks(answer).length < theirs.length);
-        if (kept === null) return;
-        expect(sorted(signatureBlocks(kept))).toEqual(sorted(theirs));
+        const answered = signatureBlocks(answer);
+        const blocks = signatureBlocks(kept);
+        expect(typeof kept).toBe("string");
+        // The person's blocks, each once, and no other.
+        expect(sorted(blocks)).toEqual(sorted(theirs));
+        // As many as the answer had blocks stand where it had them: the answer's own copies of
+        // the person's in the answer's order, the person's in place of the model's in theirs.
+        const stand = Math.min(answered.length, theirs.length);
+        expect(within(matchedOf(theirs, answered), blocks.slice(0, stand))).toBe(true);
+        // Those it had no block for follow, in the person's order.
+        expect(within(blocks.slice(stand), theirs)).toBe(true);
+        if (answered.length === 0) expect(blocks).toEqual(theirs);
         // Cutting again changes nothing.
         expect(keepOwnBlocks(before, kept)).toBe(kept);
       }),
@@ -163,7 +232,7 @@ describe("keepOwnBlocks, for any text of the person's and any answer", () => {
           expect(got.value).toBe(kept);
           expect(keepsGaps(own, got.value)).toBe(true);
         }
-        if (kept !== null && !keepsGaps(own, kept)) {
+        if (!keepsGaps(own, kept)) {
           for (const got of checks) expect(got.ok).toBe(false);
         }
       }),

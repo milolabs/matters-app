@@ -452,8 +452,8 @@ export function buildFillGapsRequest(
 // --- Trusting the answers ---
 
 /**
- * Why an answer is not used: its shape, a gap it dropped, a quote it wrote, the draft or a
- * signature block of the person's it lost, or a subject line it put in the text.
+ * Why an answer is not used: its shape, a gap it dropped, a quote it wrote, most of the draft it
+ * lost, or a subject line it put in the text.
  */
 export type HelpRefusal = "shape" | "gaps" | "quote" | "dropped" | "subject";
 
@@ -480,15 +480,14 @@ function hasQuotedLine(text: string): boolean {
 
 /**
  * The model's text as kept, before any check of it (ADR 0142, rule 6): trimmed, with only the
- * person's own signature blocks of `own` (`keepOwnBlocks`). Refused when nothing is left, or when it
- * lost a block of the person's. Every check after this one runs on what is kept, so a gap that
+ * person's own signature blocks of `own`, each once, a dropped one put back (`keepOwnBlocks`).
+ * Refused when nothing is left. Every check after this one runs on what is kept, so a gap that
  * stood only in a block of the model's is lost, and the answer refused for it.
  */
 function keptOf(text: string, own: string): Accepted<string> {
   const trimmed = text.replace(/\r\n?/g, "\n").trim();
   if (trimmed === "") return refused("shape");
   const kept = keepOwnBlocks(own, trimmed);
-  if (kept === null) return refused("dropped");
   if (kept === "") return refused("shape");
   return { ok: true, value: kept };
 }
