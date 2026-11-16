@@ -97,6 +97,19 @@ describe("the keys of the runtimes (ADR 0141)", () => {
     expect(keys.mayGoInBackground(keys.ticket("other"))).toBe(true);
   });
 
+  it("stops what runs in the background when the switch goes off, and not what the person asked for", () => {
+    const keys = new RuntimeKeys();
+    const person = keys.stopSignal("api");
+    const background = keys.backgroundSignal("api");
+    const other = keys.backgroundSignal("other");
+    keys.readingOff("api");
+    expect(background.aborted).toBe(true);
+    expect(person.aborted).toBe(false);
+    expect(other.aborted).toBe(false);
+    // What begins after it is not stopped by it.
+    expect(keys.backgroundSignal("api").aborted).toBe(false);
+  });
+
   it("writes what a ticket's turn found only while the ticket holds as the write begins", async () => {
     const keys = new RuntimeKeys();
     const ticket = keys.ticket("api");
