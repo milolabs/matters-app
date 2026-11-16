@@ -6,8 +6,17 @@ import type {
   AgentRunResult,
   AgentRuntimeInfo,
   StoredAccount,
+  TalkSummary,
 } from "@matters/core";
-import { AgentRunError, runtimeInfo } from "@matters/core";
+import {
+  AgentRunError,
+  REMEMBER_INSTRUCTIONS,
+  runtimeInfo,
+  TALK_ALL_INSTRUCTIONS,
+  TALK_FOLLOW_INSTRUCTIONS,
+  TALK_PLAN_INSTRUCTIONS,
+  TALK_TITLE_INSTRUCTIONS,
+} from "@matters/core";
 import {
   createInMemoryStorage,
   InMemoryAgentInsightStore,
@@ -74,6 +83,10 @@ class Keyed {
   readonly id = "anthropic-api";
   readonly name = "Anthropic API";
   readonly calls: AgentRunRequest[] = [];
+  /** The id of the key in the vault as each request was sent. */
+  readonly sentOn: (string | undefined)[] = [];
+  /** What a turn that is not the test answers; none: an empty object. */
+  answer: ((request: AgentRunRequest) => unknown) | null = null;
   refuse = false;
   /** While set, a turn waits until `release` or its signal ends it. */
   hold = false;
@@ -110,6 +123,7 @@ class Keyed {
     options?: { readonly signal?: AbortSignal },
   ): Promise<AgentRunResult> {
     this.calls.push(request);
+    this.sentOn.push(this.vault.kept.get(this.id)?.id);
     if (this.hold) {
       await new Promise<void>((resolve, reject) => {
         this.release = resolve;
@@ -121,7 +135,8 @@ class Keyed {
       });
     }
     if (this.refuse) throw new AgentRunError("refused", "Anthropic refused the key.");
-    return { value: request.untrusted.includes(TEST_PROMPT_QUOTE) ? verdictOfTest : {} };
+    if (request.untrusted.includes(TEST_PROMPT_QUOTE)) return { value: verdictOfTest };
+    return { value: this.answer?.(request) ?? {} };
   }
 }
 
@@ -594,4 +609,178 @@ describe("the person's own API key (ADR 0141)", () => {
       expect(runtimeInfo(await h.service.status(), "anthropic-api")?.status).toBe("found");
     });
   }
+});
+
+// Rule 6: work no press of the person's started takes the ticket of the key before it reads what
+// it decides from, and goes only while that key and its switch still allow it; rule 5: what any
+// turn found is stored only while its key holds as the write begins. The ledger counts it anyway.
+describe("background work on the person's own API key (ADR 0141, rules 5 and 6)", () => {
+  const ID = "anthropic-api";
+  const WORDS = "Never answer Anna about this";
+  type H = Awaited<ReturnType<typeof build>>;
+
+  /** A key kept, agreed to, tested, and reading in the background. */
+  async function reading(): Promise<H> {
+    const h = await build();
+    await h.service.saveKey(ID, KEY);
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: ID });
+    await h.service.testRuntime(ID);
+    await h.service.setKeyReading(ID, true);
+    await h.service.idle();
+    await settle();
+    return h;
+  }
+
+  /** Makes one method wait at a gate the test opens, from its next call on. */
+  function held<T extends object, K extends keyof T>(target: T, name: K) {
+    const original = target[name] as (...args: unknown[]) => Promise<unknown>;
+    const open = gate();
+    let waiting = false;
+    (target as Record<K, unknown>)[name] = async (...args: unknown[]) => {
+      waiting = true;
+      await open.wait;
+      return original.apply(target, args);
+    };
+    return {
+      waiting: () => waiting,
+      /** The method answers at once again, and the call that waits goes on. */
+      open: () => {
+        (target as Record<K, unknown>)[name] = original;
+        open.open();
+      },
+    };
+  }
+
+  const remembers = (r: AgentRunRequest) => r.instructions === REMEMBER_INSTRUCTIONS;
+  const names = (r: AgentRunRequest) => r.instructions === TALK_TITLE_INSTRUCTIONS;
+  const nameTalkSoon = (h: H, talk: TalkSummary) =>
+    (h.service as unknown as { nameTalkSoon(t: TalkSummary): Promise<void> }).nameTalkSoon(talk);
+
+  async function aTalk(h: H): Promise<TalkSummary> {
+    const talk = await h.insights.createTalk(NOW);
+    await h.insights.appendTalk([
+      { threadId: null, talkId: talk.id, atMs: NOW, role: "you", text: "When do we meet Anna?" },
+    ]);
+    return (await h.insights.getTalk(talk.id)) ?? talk;
+  }
+
+  it("remembers with the key reading in the background, and names a talk", async () => {
+    const h = await reading();
+    h.keyed.answer = (r) =>
+      remembers(r) ? { items: [{ scope: "sender" }] } : names(r) ? { title: "Meeting Anna" } : {};
+    const remembered = await h.service.remember("t1", WORDS);
+    expect(remembered.items.map((i) => i.kind)).toEqual(["rule"]);
+    const talk = await aTalk(h);
+    await nameTalkSoon(h, talk);
+    expect(await h.insights.getTalk(talk.id)).toMatchObject({ title: "Meeting Anna" });
+  });
+
+  for (const change of ["replaced", "switched off"] as const) {
+    it(`sends no remembering turn when the key is ${change} while it reads the thread`, async () => {
+      const h = await reading();
+      h.keyed.answer = (r) => (remembers(r) ? { items: [{ scope: "sender" }] } : {});
+      const calls = h.keyed.calls.length;
+      const thread = held(h.deps.store, "getThread");
+      const remembering = h.service.remember("t1", WORDS);
+      await until(thread.waiting);
+      if (change === "replaced") await h.service.saveKey(ID, `${KEY}-2`);
+      else await h.service.setKeyReading(ID, false);
+      thread.open();
+      expect(await remembering).toEqual({ items: [] });
+      // Nothing went, on the new key whose switch is off nor on any other; nothing was counted.
+      expect(h.keyed.calls.slice(calls).filter(remembers)).toEqual([]);
+      expect((await h.insights.listLedger(20)).some((e) => e.purpose === "remember")).toBe(false);
+      expect(await h.insights.listRules()).toEqual([]);
+    });
+
+    it(`sends no turn to name a talk when the key is ${change} while it reads the talk`, async () => {
+      const h = await reading();
+      h.keyed.answer = (r) => (names(r) ? { title: "Meeting Anna" } : {});
+      const talk = await aTalk(h);
+      const calls = h.keyed.calls.length;
+      const listed = held(h.insights, "listTalk");
+      const naming = nameTalkSoon(h, talk);
+      await until(listed.waiting);
+      if (change === "replaced") await h.service.saveKey(ID, `${KEY}-2`);
+      else await h.service.setKeyReading(ID, false);
+      listed.open();
+      await naming;
+      expect(h.keyed.calls.slice(calls).filter(names)).toEqual([]);
+      expect((await h.insights.getTalk(talk.id))?.titleBy).toBeUndefined();
+    });
+  }
+
+  it("stores no rule of a turn whose key is replaced before it is written, and counts the turn", async () => {
+    const h = await reading();
+    h.keyed.answer = (r) => (remembers(r) ? { items: [{ scope: "sender" }] } : {});
+    const rules = held(h.insights, "listRules");
+    const remembering = h.service.remember("t1", WORDS);
+    await until(rules.waiting);
+    // The turn answered on the key before; the rule is not yet written.
+    const sent = h.keyed.calls.filter(remembers);
+    expect(sent).toHaveLength(1);
+    await h.service.saveKey(ID, `${KEY}-2`);
+    rules.open();
+    expect(await remembering).toEqual({ items: [] });
+    expect(await h.insights.listRules()).toEqual([]);
+    const ledger = await h.insights.listLedger(20);
+    expect(ledger.filter((e) => e.purpose === "remember")).toHaveLength(1);
+  });
+
+  it("stores no answer across all mail whose key is replaced before it is written, and counts the turns", async () => {
+    const h = await reading();
+    const isAnswer = (r: AgentRunRequest) => r.instructions.startsWith(TALK_ALL_INSTRUCTIONS);
+    h.keyed.answer = (r) => {
+      if (r.instructions === TALK_PLAN_INSTRUCTIONS) {
+        return {
+          goal: "Find the meeting",
+          assumptions: [],
+          trails: [{ name: "Main", why: "It is likely", priority: 5, queries: ["Tuesday"] }],
+          traps: [],
+        };
+      }
+      if (r.instructions === TALK_FOLLOW_INSTRUCTIONS) {
+        return { decision: "answer", keep: [], hypothesis: "The Tuesday thread" };
+      }
+      if (isAnswer(r)) {
+        return {
+          text: "Anna asks to meet on Tuesday.",
+          threads: [
+            {
+              thread: 1,
+              note: "asks about Tuesday",
+              quotes: [{ message: 1, quote: "Can we meet on Tuesday?" }],
+            },
+          ],
+        };
+      }
+      return {};
+    };
+    // Without a new key, the answer is kept.
+    const asked = await h.service.talkAll("When do we meet?");
+    expect(asked.entries.map((e) => e.role)).toEqual(["you", "agent"]);
+    const ledger = (await h.insights.listLedger(50)).filter((e) => e.purpose === "talk").length;
+    // The answer turn goes; the thread it names is read again before the answer is written.
+    let thread: ReturnType<typeof held> | null = null;
+    const answers = h.keyed.answer;
+    h.keyed.answer = (r) => {
+      if (isAnswer(r)) thread = held(h.deps.store, "getThread");
+      return answers(r);
+    };
+    const asking = h.service.talkAll("And where?").then(
+      () => "kept",
+      (e: Error) => e.message,
+    );
+    await until(() => thread?.waiting() === true);
+    await h.service.saveKey(ID, `${KEY}-2`);
+    (thread as unknown as ReturnType<typeof held>).open();
+    expect(await asking).toBe("Stopped.");
+    // Nothing of the second question is stored; what it sent is counted.
+    const talks = await h.service.talks();
+    expect(talks.map((t) => [t.id, t.entries])).toEqual([[asked.talkId, 2]]);
+    // As many lines as the first question's, which went the same way.
+    expect((await h.insights.listLedger(50)).filter((e) => e.purpose === "talk").length).toBe(
+      ledger * 2,
+    );
+  });
 });

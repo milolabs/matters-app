@@ -80,4 +80,34 @@ describe("the keys of the runtimes (ADR 0141)", () => {
     expect(keys.holds(keys.ticket("api"))).toBe(true);
     expect(keys.stopSignal("api").aborted).toBe(false);
   });
+
+  it("lets background work go only while the key holds and its switch was not turned off since", () => {
+    const keys = new RuntimeKeys();
+    const ticket = keys.ticket("api");
+    expect(keys.mayGoInBackground(ticket)).toBe(true);
+    keys.readingOff("api");
+    // The key still holds, for what the person asked; nothing in the background goes on it.
+    expect(keys.holds(ticket)).toBe(true);
+    expect(keys.mayGoInBackground(ticket)).toBe(false);
+    // A ticket taken after the switch went off reads it off, and may go once it is on again.
+    expect(keys.mayGoInBackground(keys.ticket("api"))).toBe(true);
+    const later = keys.ticket("api");
+    keys.next("api");
+    expect(keys.mayGoInBackground(later)).toBe(false);
+    expect(keys.mayGoInBackground(keys.ticket("other"))).toBe(true);
+  });
+
+  it("writes what a ticket's turn found only while the ticket holds as the write begins", async () => {
+    const keys = new RuntimeKeys();
+    const ticket = keys.ticket("api");
+    const written: string[] = [];
+    const write = async () => {
+      written.push("rule");
+      return 7;
+    };
+    expect(await keys.keep(ticket, write)).toEqual({ value: 7 });
+    keys.next("api");
+    expect(await keys.keep(ticket, write)).toBeNull();
+    expect(written).toEqual(["rule"]);
+  });
 });
