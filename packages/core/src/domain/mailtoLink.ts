@@ -77,7 +77,7 @@ const WORD = /[\p{L}\p{N}]/u;
  */
 function escapeInline(line: string): string {
   return line.replace(
-    /\\(?=[!-/:-@[-`{-~]|$)|[[\]`*]|_+|~{2,}|<(?=[^<> \t]*[:@][^<> \t]*>)|&(?=[A-Za-z][A-Za-z0-9]{1,31};|#[xX][0-9A-Fa-f]{1,6};|#[0-9]{1,7};)/g,
+    /\\(?=[!-/:-@[-`{-~]|$)|[[\]`*]|_+|~{2,}|<(?=[^<> \t]*>)(?=[^<> \t]*[:@])|&(?=[A-Za-z][A-Za-z0-9]{1,31};|#[xX][0-9A-Fa-f]{1,6};|#[0-9]{1,7};)/g,
     (match, offset: number) => {
       if (match[0] === "_") {
         const before = line[offset - 1] ?? "";
