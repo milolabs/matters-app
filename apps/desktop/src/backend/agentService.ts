@@ -720,6 +720,24 @@ export class AgentService implements AgentApi {
    */
   private async inspectOne(runtime: AgentRuntime): Promise<AgentRuntimeInfo> {
     if (runtime === NO_RUNTIME) return NO_INFO;
+    // A look that began on the key before one saved or removed while it ran says what the key
+    // before was: it is not shown for the new one, and the runtime is looked at again (ADR 0141,
+    // rule 5). Looks run at once, so the one that ends last is not always the one of the key now.
+    for (;;) {
+      const key = this.keyGenerations.get(runtime.id) ?? 0;
+      const info = await this.lookAt(runtime);
+      if ((this.keyGenerations.get(runtime.id) ?? 0) !== key) continue;
+      this.setInfo(runtime.id, info);
+      if (info.noPlan !== true && info.limits !== undefined) {
+        // None of a change since the last seen is counted as ours, since no turn of ours ran.
+        await this.noteRun(runtime.id, info.limits);
+      }
+      return this.infoOf(runtime.id) ?? info;
+    }
+  }
+
+  /** What one runtime says now, with what its last test found, not yet shown. */
+  private async lookAt(runtime: AgentRuntime): Promise<AgentRuntimeInfo> {
     const { settings } = this.deps;
     let info = await runtime.inspect();
     // Whether the search in a loop can run here is the port's to say (ADR 0083; ADR 0119, rule 10).
@@ -756,12 +774,7 @@ export class AgentService implements AgentApi {
               problem: record.problem ?? "The last check of the assistant failed.",
             };
     }
-    this.setInfo(runtime.id, info);
-    if (info.noPlan !== true && info.limits !== undefined) {
-      // None of a change since the last seen is counted as ours, since no turn of ours ran.
-      await this.noteRun(runtime.id, info.limits);
-    }
-    return this.infoOf(runtime.id) ?? info;
+    return info;
   }
 
   /** Looks at one runtime and notes whether it waits for the person to sign in. */
@@ -897,6 +910,7 @@ export class AgentService implements AgentApi {
     const settingsNow = await settings.get();
     // A model the runtime no longer lists waits for the person to pick another (ADR 0119, rule 4).
     const model = this.testModel(runtime.id, settingsNow, info);
+    if (keyChanged()) return this.infoOf(runtime.id) ?? info;
     if (model === null) {
       const kind = kindsOn(settingsNow, runtime.id)[0] ?? "understand";
       const gone = choicesOn(settingsNow, runtime.id).models[kind];
@@ -966,6 +980,9 @@ export class AgentService implements AgentApi {
       ...(info.keyId === undefined ? {} : { keyId: info.keyId }),
       testedAtMs: clock.now(),
     });
+    // A key saved while the record was written: the record names the key before, and holds for
+    // no other; what is shown is the new key's.
+    if (keyChanged()) return this.infoOf(runtime.id) ?? info;
     const { problem: _old, ...rest } = this.infoOf(runtime.id) ?? info;
     return this.setInfo(runtime.id, {
       ...rest,
@@ -1230,8 +1247,21 @@ export class AgentService implements AgentApi {
       if (runtime === NO_RUNTIME || this.blocked.has(id)) continue;
       if (!this.testsAlone(id, s, consents)) continue;
       if (this.infoOf(id) === null) await this.inspectRuntime(runtime).catch(() => {});
-      if (this.infoOf(id)?.status === "found") await this.sharedTest(runtime).catch(() => {});
+      if (this.infoOf(id)?.status !== "found") continue;
+      if (!(await this.testsInBackground(id))) continue;
+      await this.sharedTest(runtime).catch(() => {});
     }
+  }
+
+  /**
+   * Whether a runtime may be tested with no press of the person's: always, except one billed to
+   * the person's key while its reading in the background is off. The test is a billed turn, and
+   * with the switch off nothing billed goes in the background (ADR 0141, rule 6): that key is
+   * tested when the person presses Check, or with the first thing they ask for on it.
+   */
+  private async testsInBackground(runtimeId: string): Promise<boolean> {
+    if (this.infoOf(runtimeId)?.billed !== true) return true;
+    return keyReadingOn(await this.deps.settings.get(), runtimeId);
   }
 
   /**
@@ -1283,21 +1313,28 @@ export class AgentService implements AgentApi {
     const info = this.infoOf(runtime.id);
     if (info === null || info.status === "found") this.setProgress({ state: "checking" });
     if (info === null) await this.inspectRuntime(runtime);
-    // The person agreed, so the test with a made-up message may run by itself (ADR 0051, rule 5).
+    // The person agreed, so the test with a made-up message may run by itself (ADR 0051, rule 5),
+    // except on a key whose reading in the background is off (ADR 0141, rule 6).
     await this.testInUse(first);
     const waitsNow = this.blocked.get(runtime.id);
     if (waitsNow !== undefined) {
       this.pause(runtime.id, waitsNow);
       return;
     }
-    if (this.infoOf(runtime.id)?.status !== "ready") {
-      this.setProgress(this.offProgress());
+    // On a runtime billed to the person's key, nothing is read in the background until they
+    // turn that on (ADR 0141, rule 6), the test of a key not checked yet included: what they ask
+    // for still runs. A key that is neither ready nor waiting for its check says its own state.
+    const reader = this.infoOf(runtime.id);
+    if (
+      reader?.billed === true &&
+      (reader.status === "ready" || reader.status === "found") &&
+      !keyReadingOn(await this.currentSettings(), runtime.id)
+    ) {
+      this.setProgress({ state: "off", reason: "keyOff" });
       return;
     }
-    // On a runtime billed to the person's key, nothing is read in the background until they
-    // turn that on (ADR 0141, rule 6): what they ask for still runs.
-    if (this.infoOf(runtime.id)?.billed === true && !keyReadingOn(first, runtime.id)) {
-      this.setProgress({ state: "off", reason: "keyOff" });
+    if (this.infoOf(runtime.id)?.status !== "ready") {
+      this.setProgress(this.offProgress());
       return;
     }
     // Reading runs on the model for understanding mail: gone, it waits for the person (rule 4).
@@ -1833,7 +1870,8 @@ export class AgentService implements AgentApi {
         info.status === "found" &&
         next.enabled &&
         runtimesInUse(next).includes(id) &&
-        this.testsAlone(id, next, await this.deps.settings.listConsents())
+        this.testsAlone(id, next, await this.deps.settings.listConsents()) &&
+        (await this.testsInBackground(id))
       ) {
         // Once the new choice passed its check, the reading starts on it at once.
         void this.testRuntime(id)
@@ -1892,6 +1930,20 @@ export class AgentService implements AgentApi {
     const trimmed = typeof key === "string" ? key.trim() : "";
     const problem = apiKeyProblem(trimmed);
     if (problem !== null) throw new InvalidAgentSettingError(problem);
+    // A saved key is a new key, the same text saved again too: nothing reads on it in the
+    // background until the person turns that on for it (rule 6). That is undone first, so a key
+    // is never kept with the switch of the one before: if it cannot be, nothing new is kept.
+    let s: AgentSettings;
+    try {
+      s = await this.deps.settings.get();
+      if (keyReadingOn(s, runtime.id)) {
+        s = await this.deps.settings.update({
+          keyReading: (s.keyReading ?? []).filter((id) => id !== runtime.id),
+        });
+      }
+    } catch {
+      throw new InvalidAgentSettingError("The key could not be saved. Try again.");
+    }
     // Turns that run on the old key stop: what they started is kept, nothing new goes. A test
     // that ran on it is not kept for this one, and its stored record names the old key's id.
     await this.stopRuntime(runtime.id);
@@ -1905,16 +1957,11 @@ export class AgentService implements AgentApi {
           ? error.message
           : "The key could not be saved. Try again.",
       );
+    } finally {
+      // A look or a test that began while the vault was written may have read the key before.
+      this.nextKey(runtime.id);
     }
     this.blocked.delete(runtime.id);
-    // A saved key is a new key, the same text saved again too: nothing reads on it in the
-    // background until the person turns that on for it (rule 6).
-    const s = await this.deps.settings.get();
-    if (keyReadingOn(s, runtime.id)) {
-      await this.deps.settings.update({
-        keyReading: (s.keyReading ?? []).filter((id) => id !== runtime.id),
-      });
-    }
     await this.inspectRuntime(runtime).catch(() => {});
     this.deps.onChanged();
     if (s.enabled) this.kick();
@@ -1932,7 +1979,12 @@ export class AgentService implements AgentApi {
     const { settings, insights } = this.deps;
     await this.stopRuntime(runtime.id);
     this.nextKey(runtime.id);
-    await keys.delete(runtime.id);
+    try {
+      await keys.delete(runtime.id);
+    } finally {
+      // A look or a test that began while the vault was written may have read the key.
+      this.nextKey(runtime.id);
+    }
     const had = (await settings.listConsents()).filter((c) => c.runtimeId === runtime.id);
     for (const c of had) await settings.revokeConsent(c.accountId, c.runtimeId);
     if (had.length > 0) {
@@ -2071,7 +2123,12 @@ export class AgentService implements AgentApi {
   }
 
   /** What the person is told when a turn they asked for fails; the error is not shown as it is. */
-  private askFailure(error: unknown, fallback: string, runtimeId: string): Error {
+  private askFailure(
+    error: unknown,
+    fallback: string,
+    runtimeId: string,
+    signal?: AbortSignal,
+  ): Error {
     if (error instanceof AgentUnavailableError || error instanceof ThingNotFoundError) return error;
     if (error instanceof InvalidAgentSettingError) return error;
     if (isAgentRunError(error) && (error.code === "notSignedIn" || error.code === "notPlan")) {
@@ -2087,7 +2144,8 @@ export class AgentService implements AgentApi {
     // in its class, and Settings shows the same until the key is looked at again.
     if (isAgentRunError(error) && error.code === "refused") {
       const info = this.infoOf(runtimeId);
-      if (info?.billed === true) {
+      // A turn stopped meanwhile, its key replaced among the reasons, says nothing of the key now.
+      if (info?.billed === true && signal?.aborted !== true) {
         this.setInfo(runtimeId, { ...info, status: "keyRefused", problem: error.message });
         this.deps.onChanged();
       }
@@ -2173,6 +2231,7 @@ export class AgentService implements AgentApi {
   ): Promise<unknown> {
     const { insights, settings } = this.deps;
     const before = this.limitsOf(runtime.id, await settings.get());
+    const signal = this.signalOf("write", runtime.id);
     try {
       const result = await runtime.run(
         {
@@ -2180,12 +2239,12 @@ export class AgentService implements AgentApi {
           ...run.request,
           ...withEffort(run.effort),
         },
-        { signal: this.signalOf("write", runtime.id) },
+        { signal },
       );
       await this.noteRun(runtime.id, result.limits, before);
       return result.value;
     } catch (error) {
-      throw this.askFailure(error, failed, runtime.id);
+      throw this.askFailure(error, failed, runtime.id, signal);
     } finally {
       await insights.appendLedger([
         {
