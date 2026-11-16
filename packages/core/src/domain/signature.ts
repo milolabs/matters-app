@@ -208,15 +208,18 @@ export function signatureBlocks(text: string): string[] {
  *   place of the first block of the model's, in the answer's order, and so on, so a sign-off the
  *   model reworded or moved comes back as the person wrote it, where the model put it. The model's
  *   blocks left over are cut.
- * - A block of the person's that the answer has no block of the model's to stand in for is lost
- *   content: the answer is refused (null), as one that loses a gap is. Text that is all the
- *   model's is never refused.
+ * - The person's blocks still not matched after that (the model was told to write no sign-off, so
+ *   it often drops the person's too) are put back after the last kept block, or after the body
+ *   when none is kept, in the person's order. The answer is never refused for a block: the
+ *   person's own blocks are always there, each once.
  *
  * The kept text is the body without white space at its end and then each kept block, the person's
  * as they wrote it, one empty line between each. An answer with no block, and none in `before`, is
- * kept as it is. The checks of an answer (`keepsGaps` and the others) run on the kept text.
+ * kept as it is. The checks of an answer (`keepsGaps` and the others) run on the kept text: a gap
+ * in a block of the person's that is put back is theirs and kept; a gap the model moved into a
+ * block of its own is cut with that block, and lost.
  */
-export function keepOwnBlocks(before: string, answer: string): string | null {
+export function keepOwnBlocks(before: string, answer: string): string {
   const mine = before === "" ? [] : blocksOf(before).blocks;
   const got = blocksOf(answer);
   if (got.blocks.length === 0 && mine.length === 0) return answer;
@@ -235,13 +238,14 @@ export function keepOwnBlocks(before: string, answer: string): string | null {
     return j;
   });
   const missing = keys.flatMap((_, i) => (used[i] ? [] : [i]));
-  if (missing.length > whose.filter((j) => j < 0).length) return null;
   let next = 0;
   const kept = whose.flatMap((j) => {
     if (j >= 0) return [j];
     const restored = missing[next++];
     return restored === undefined ? [] : [restored];
   });
+  // What the model's blocks did not stand in for comes after them, in the person's order.
+  kept.push(...missing.slice(next));
   return [got.body.join("\n").trimEnd(), ...kept.map((j) => raws[j] as string)]
     .filter((part) => part !== "")
     .join("\n\n");
@@ -252,5 +256,5 @@ export function keepOwnBlocks(before: string, answer: string): string | null {
  * everything goes (`keepOwnBlocks` with no text of the person's).
  */
 export function withoutSignature(text: string): string {
-  return keepOwnBlocks("", text) as string;
+  return keepOwnBlocks("", text);
 }

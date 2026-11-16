@@ -116,7 +116,7 @@ Read from the code on 2026-11-16:
    does it for every helper (`keepOwnBlocks`). Its contract:
 
    - It takes the person's own text before the turn (empty when the text is all the model's) and
-     the model's answer, and gives the text to keep, or a refusal.
+     the model's answer, and gives the text to keep. It never refuses.
    - A block is a delimiter line and the lines after it up to the next delimiter line or the end. A
      delimiter line is `-- ` anywhere, or `--` on the first line or after an empty line; a `--`
      right under a line of text underlines a Markdown heading, which is text and starts no block.
@@ -127,13 +127,17 @@ Read from the code on 2026-11-16:
    - A block of the person's the answer does not have is restored in place of one of the model's:
      the first not matched (in the person's order) where the first block of the model's stands (in
      the answer's order), and so on, so a sign-off the model reworded or moved comes back as the
-     person wrote it, where the model put it. When the answer has no block of the model's left to
-     stand in for one of the person's, it lost the person's text, and it is refused ("left out
-     part of your reply"), as an answer that loses a gap or most of the draft already is: the
-     helpers never fill in what a model dropped, they refuse it.
+     person wrote it, where the model put it.
+   - The person's blocks still missing after that are put back after the last kept block (after
+     the body when none is kept), in the person's order, one empty line between parts. The prompts
+     tell the model to add no sign-off, and an obedient model often removes the person's typed one
+     too; refusing that would fail the helpers for exactly the people who sign by hand. So the kept
+     text always holds the person's blocks, each once, as they wrote them.
    - Only then are the answer's checks run (every gap kept, no quoted line, no subject line, not
-     most of the draft dropped), on the kept text against the person's draft: a gap that stood only
-     in a block of the model's is lost, and the answer refused for it.
+     most of the draft dropped), on the kept text against the person's draft. A gap in a block of
+     the person's that is put back is their text and counts as kept; a gap that stood only in a
+     block of the model's, one it moved out of the body included, is cut with that block, and the
+     answer is refused for it. Nothing left at all is refused as before.
 
    This holds for a rewrite, for answers and for a text written as asked. The reply the agent
    prepared in the background (ADR 0052), which is put above the signature and the quote, and a new
