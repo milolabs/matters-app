@@ -6,9 +6,11 @@
  *   runtime (`serial`). A command that fails does not hold up the next, and the commands of two
  *   runtimes do not wait on each other.
  * - A turn, a look or a test takes a ticket when it begins (`ticket`), and what it learned is kept
- *   only while that ticket holds (`holds`): the key it began on is still the runtime's key.
- *   Saving or removing a key gives the runtime a new key twice, before the vault is written and
- *   once it is (`next`), so a ticket taken while the vault was written holds for neither key.
+ *   only while that ticket holds (`holds`): the key it began on is still the runtime's key, and
+ *   no save or removal of it is under way. Saving or removing a key gives the runtime a new key
+ *   twice, before the vault is written (`next`) and as its write ends (`change`), and no ticket
+ *   holds while it is written, so one taken before or meanwhile holds for neither key, at no
+ *   moment.
  *   What a turn found is written only through `keep`, which checks the ticket as the write begins,
  *   after every wait before it.
  * - Work no press of the person's started takes its ticket before it reads what it decides from,
@@ -38,6 +40,8 @@ export class RuntimeKeys {
   private readonly stops = new Map<string, AbortController>();
   /** The last command of each runtime, settled: the next one starts after it. */
   private readonly queues = new Map<string, Promise<void>>();
+  /** The save or removal of a key under way for a runtime, settled when it ends. */
+  private readonly changing = new Map<string, Promise<void>>();
 
   /** The key of a runtime now, for what begins now. */
   ticket(runtimeId: string): KeyTicket {
@@ -48,9 +52,15 @@ export class RuntimeKeys {
     } as KeyTicket;
   }
 
-  /** Whether the key a ticket was taken on is still the runtime's key. */
+  /**
+   * Whether the key a ticket was taken on is still the runtime's key, with no save or removal of
+   * it under way.
+   */
   holds(ticket: KeyTicket): boolean {
-    return (this.generations.get(ticket.runtimeId) ?? 0) === ticket.generation;
+    return (
+      !this.changing.has(ticket.runtimeId) &&
+      (this.generations.get(ticket.runtimeId) ?? 0) === ticket.generation
+    );
   }
 
   /**
@@ -97,6 +107,33 @@ export class RuntimeKeys {
     this.generations.set(runtimeId, (this.generations.get(runtimeId) ?? 0) + 1);
     this.stops.get(runtimeId)?.abort();
     this.stops.set(runtimeId, new AbortController());
+  }
+
+  /**
+   * Writes a new key of a runtime, or its removal, in the vault: no ticket holds while it is
+   * written, and the runtime has a new key once it has ended, worked or not. The new key and the
+   * end of the write are one step, so nothing a ticket taken before found is kept in between.
+   */
+  async change<T>(runtimeId: string, write: () => Promise<T>): Promise<T> {
+    let ended = () => {};
+    this.changing.set(
+      runtimeId,
+      new Promise<void>((resolve) => {
+        ended = resolve;
+      }),
+    );
+    try {
+      return await write();
+    } finally {
+      this.changing.delete(runtimeId);
+      this.next(runtimeId);
+      ended();
+    }
+  }
+
+  /** Settles once no save or removal of the runtime's key is under way. */
+  async quiet(runtimeId: string): Promise<void> {
+    await this.changing.get(runtimeId);
   }
 
   /**

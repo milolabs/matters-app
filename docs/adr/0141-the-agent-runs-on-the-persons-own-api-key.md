@@ -76,7 +76,9 @@ its list gives an id, a date and an owner, and nothing about schemas, tools or e
    All of this is one rule: every look, test and turn on a runtime takes a ticket of the key when
    it begins, and what it learned (the state shown, the stored test, a refusal or a sign-out, the
    windows it saw, its answer) is kept only while that ticket is still the runtime's key; a new
-   key also stops what runs on the one before.
+   key also stops what runs on the one before. A turn the person asks for takes its ticket before
+   its gates, which are decided for that key alone and not from what was found on a key before,
+   and it is sent only while that ticket holds, which no ticket does while the vault is written.
 6. **Money is said plainly.** The card and the consent question each say in one sentence that
    every turn is billed by Anthropic to the person's key. The runtime has no plan, so no windows
    or shares show (ADR 0119, rule 7). What bounds the cost is what the person does:
