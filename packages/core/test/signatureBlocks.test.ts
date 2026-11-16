@@ -144,8 +144,9 @@ describe("the checks run on what is kept", () => {
   });
 });
 
-// Lines from a small set, so delimiters, heading underlines, gaps and repeats meet often.
-const line = fc.constantFrom("Hi", "Anna", "Bot", "[date]", "[x]", "--", "-- ", "", "  ");
+// Lines from a small set, so delimiters, heading underlines, gaps, the person's own `>` lines
+// (a blockquote above the signature is theirs, ADR 0142, rule 4) and repeats meet often.
+const line = fc.constantFrom("Hi", "Anna", "Bot", "[date]", "[x]", "--", "-- ", "", "  ", "> Hi");
 const text = fc.array(line, { maxLength: 12 }).map((ls) => ls.join("\n"));
 /** A text built from blocks, so the answers often hold the person's blocks, moved or not. */
 const blocky = fc
@@ -234,6 +235,11 @@ describe("keepOwnBlocks, for any text of the person's and any answer", () => {
         }
         if (!keepsGaps(own, kept)) {
           for (const got of checks) expect(got.ok).toBe(false);
+        }
+        // A quoted line is let through only as often as the person's own text has it.
+        const quoted = (t: string) => t.split("\n").filter((l) => l.trimEnd() === "> Hi").length;
+        if (quoted(kept) > quoted(own)) {
+          for (const got of checks) if (got.ok) expect(got.value).toBe(own);
         }
       }),
       { numRuns: 2000 },

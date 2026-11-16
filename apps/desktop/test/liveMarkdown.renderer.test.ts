@@ -7,6 +7,7 @@ import {
   lineRanges,
   ownText,
   quoteStart,
+  signatureStart,
   suggestionsField,
 } from "../src/renderer/liveMarkdown.ts";
 
@@ -84,6 +85,25 @@ describe("acceptSuggestion", () => {
     expect(view.state.doc.toString()).toBe(
       "Meet on Friday, then Friday.\n\n-- \nAway until [date]\n\nAnna wrote:\n> On [date]?",
     );
+  });
+
+  it("fills a gap in the person's own blockquote above the signature, as the core splits it", () => {
+    const mine = "As agreed:\n\n> Paid by [date].\n\nSee you [date].";
+    const doc = `${mine}\n\n-- \nAway until [date]\n\nOn 3 Nov, Anna wrote:\n> On [date]?`;
+    // The signature starts at its delimiter, not inside the person's blockquote.
+    expect(signatureStart(doc)).toBe(`${mine}\n\n`.length);
+    expect(ownText(doc)).toBe(`${mine}\n\n`);
+    const view = viewOf(doc);
+    expect(
+      acceptSuggestion(view as unknown as EditorView, {
+        token: "[date]",
+        value: "Friday",
+        source: "thread",
+      }),
+    ).toBe(true);
+    expect(view.state.doc.toString()).toBe(doc.replace(mine, mine.replaceAll("[date]", "Friday")));
+    // A `-- ` line inside a fenced code block is not the delimiter.
+    expect(signatureStart("```\n-- \n> x\n```\n\n-- \nMe")).toBe("```\n-- \n> x\n```\n\n".length);
   });
 
   it("changes nothing when the gap is only in the signature", () => {

@@ -239,6 +239,44 @@ describe("the person's signature (ADR 0142, rule 4)", () => {
     expect(html("Hello\n\n-- \nVisit [site]")).not.toContain("href=");
   });
 
+  it("the person's blockquote above it stays theirs: a blockquote in their part, then the block, then the quote", () => {
+    const md =
+      "As the contract says:\n\n> Payment within 14 days.\n\n-- \nAnna\n\nOn 3 Nov 2026, 10:29, Ben wrote:\n> When?\n";
+    const out = html(md);
+    assertInert(out);
+    expect(renderer.render(md).text).toBe(md);
+    const block = signatureOf(out);
+    expect(block).toMatch(/>-- <\/p>/);
+    expect(block).toContain("Anna");
+    expect(block).not.toMatch(/blockquote|Payment|When/);
+    const mine = out.indexOf("Payment within 14 days.");
+    const signature = out.indexOf('class="matters-signature"');
+    const theirs = out.indexOf("When?");
+    expect(mine).toBeGreaterThan(-1);
+    expect(mine).toBeLessThan(signature);
+    expect(signature).toBeLessThan(out.indexOf("Ben wrote:"));
+    expect(out.indexOf("Ben wrote:")).toBeLessThan(theirs);
+    // Both are blockquotes: the person's in their own part, above the signature; the quote below.
+    expect(out.slice(0, signature)).toMatch(
+      /<blockquote[^>]*>\s*<p[^>]*>Payment within 14 days\.<\/p>/,
+    );
+    expect(out.slice(signature)).toMatch(/<blockquote[^>]*>\s*<p[^>]*>When\?<\/p>/);
+    // Before, the quote started at the person's `>` line and the whole text was rendered at once:
+    // no quiet block, and the delimiter a paragraph `--<br>` in the body's type.
+    expect(out).not.toMatch(/<p[^>]*>--<br/);
+  });
+
+  it("a `>` line in a fenced code block above it is code, and the signature is still the block", () => {
+    const md = "Run:\n\n```\n> echo hi\n-- \n```\n\n-- \nAnna";
+    const out = html(md);
+    assertInert(out);
+    expect(signatureOf(out)).toContain("Anna");
+    expect(out.indexOf("&gt; echo hi")).toBeLessThan(out.indexOf('class="matters-signature"'));
+    expect(out).toMatch(/<pre[^>]*><code[^>]*>&gt; echo hi\n-- \n<\/code><\/pre>/);
+    expect(out).not.toMatch(/<blockquote/);
+    expect(out).not.toMatch(/<p[^>]*>--<br/);
+  });
+
   it("without a delimiter line nothing changes", () => {
     expect(html("Hi\n\n--\nnot a signature")).not.toContain("matters-signature");
   });

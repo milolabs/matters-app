@@ -76,9 +76,27 @@ describe("the draft and its quote (ADR 0098)", () => {
   });
 
   it("leaves the person's words between quoted lines with the quote, untouched", () => {
-    const parts = splitDraft("Top.\n\n> one\nMy inline answer\n> two");
+    // The quote starts at the app's own line above it, as a reply is prepared (ADR 0142, rule 4).
+    const quote = "On 3 Nov, Anna wrote:\n> one\nMy inline answer\n> two";
+    const parts = splitDraft(`Top.\n\n${quote}`);
     expect(parts.own).toBe("Top.\n");
-    expect(parts.quote).toBe("> one\nMy inline answer\n> two");
+    expect(parts.quote).toBe(quote);
+    // Under a signature too.
+    const signed = splitDraft(`Top.\n\n-- \nMe\n\n> one\nMy inline answer\n> two`);
+    expect(signed.own).toBe("Top.\n");
+    expect(signed.signature).toBe("-- \nMe");
+    expect(signed.quote).toBe("> one\nMy inline answer\n> two");
+    // With neither, `>` lines are the person's own text, unless a line ending in a colon stands
+    // above the run of them that ends the draft.
+    const bare = splitDraft("Top.\n\n> one\nMy inline answer\n> two");
+    expect(bare).toEqual({
+      own: "Top.\n\n> one\nMy inline answer\n> two",
+      signature: "",
+      quote: "",
+    });
+    const said = splitDraft("Top.\n\nAnna said:\n> one\n>\n> two");
+    expect(said.own).toBe("Top.\n");
+    expect(said.quote).toBe("Anna said:\n> one\n>\n> two");
   });
 
   it("finds the gaps of the person's lines once each, and checks they are kept", () => {

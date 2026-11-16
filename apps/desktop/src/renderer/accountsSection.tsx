@@ -15,13 +15,19 @@ import { accountShare, removalNotice } from "./removal.ts";
 import { Setup } from "./setup.tsx";
 import {
   closeSignatureField,
+  NO_PENDING_SIGNATURES,
   NO_SAVED_SIGNATURES,
+  NO_SIGNATURE_FAILURES,
   NO_SIGNATURE_FIELD,
   openSignatureField,
+  type PendingSignatures,
   recordSavedSignature,
   type SavedSignatures,
+  type SignatureFailures,
   type SignatureFields,
   savedSignatureField,
+  signatureSaveEnded,
+  signatureSaveStarted,
   signaturesCaughtUp,
   typeInSignatureField,
 } from "./signatureFields.ts";
@@ -95,6 +101,12 @@ export function AccountsSection(props: {
     const accounts = props.accounts.accounts();
     setSavedSignatures((s) => signaturesCaughtUp(s, accounts));
   });
+  // The saves still on their way and why the last one failed, per account: a field closed while
+  // its save goes and opened again shows it saving, and its Save waits.
+  const [pendingSignatures, setPendingSignatures] =
+    createSignal<PendingSignatures>(NO_PENDING_SIGNATURES);
+  const [signatureFailures, setSignatureFailures] =
+    createSignal<SignatureFailures>(NO_SIGNATURE_FAILURES);
   const byBrowser = (id: string) => {
     const account = props.accounts.accounts().find((a) => a.id === id);
     return account !== undefined && providerOf(account) !== undefined;
@@ -411,7 +423,20 @@ export function AccountsSection(props: {
                       }
                       onClose={() => closeSignature(account.id)}
                       saved={savedSignatures()}
+                      pending={pendingSignatures()}
+                      failure={signatureFailures()[account.id]}
+                      onSaving={(submitted, order) => {
+                        setPendingSignatures((p) =>
+                          signatureSaveStarted(p, account.id, submitted, order),
+                        );
+                        setSignatureFailures(({ [account.id]: _, ...rest }) => rest);
+                      }}
+                      onFailed={(failure, order) => {
+                        setPendingSignatures((p) => signatureSaveEnded(p, account.id, order));
+                        setSignatureFailures((all) => ({ ...all, [account.id]: failure }));
+                      }}
                       onSaved={(note, submitted, signature, order) => {
+                        setPendingSignatures((p) => signatureSaveEnded(p, account.id, order));
                         // What the store holds now, before the list is read again: a Save of other
                         // text in the meantime is never taken for unchanged.
                         setSavedSignatures((s) =>

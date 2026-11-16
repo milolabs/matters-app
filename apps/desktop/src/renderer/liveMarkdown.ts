@@ -21,7 +21,7 @@ import {
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
-import { SIGNATURE_DELIMITER } from "@matters/core";
+import { sectionStarts } from "@matters/core";
 
 /** A value the agent found for a placeholder, and where it found it. */
 export interface GapSuggestion {
@@ -58,18 +58,18 @@ export function quoteStart(text: string): number | null {
 }
 
 /**
- * Where the person's signature starts (ADR 0142): its delimiter line, the first `-- ` above the
- * quote. Null when there is none.
+ * Where the person's signature starts (ADR 0142): its delimiter line, as the core splits a draft
+ * (`draftSections`), so what reads as the signature here is what is sent as one. Null when there
+ * is none.
  */
 export function signatureStart(text: string): number | null {
-  const end = quoteStart(text) ?? text.length;
-  let offset = 0;
-  for (const line of text.split("\n")) {
-    if (offset >= end) return null;
-    if (line === SIGNATURE_DELIMITER) return offset;
-    offset += line.length + 1;
-  }
-  return null;
+  return sectionStarts(text).signature;
+}
+
+/** Where the person's own lines end: at the signature, else at the quote, as the core splits it. */
+function ownEnd(text: string): number {
+  const at = sectionStarts(text);
+  return at.signature ?? at.quote ?? text.length;
 }
 
 // --- Folding the quote ---
@@ -237,7 +237,7 @@ export const suggestionsField = StateField.define<readonly GapSuggestion[]>({
  */
 export function acceptSuggestion(view: EditorView, s: GapSuggestion): boolean {
   const text = view.state.doc.toString();
-  const end = signatureStart(text) ?? quoteStart(text) ?? text.length;
+  const end = ownEnd(text);
   const changes: { from: number; to: number; insert: string }[] = [];
   let at = text.indexOf(s.token);
   while (at !== -1 && at < end) {
@@ -290,8 +290,12 @@ function buildLook(view: EditorView): DecorationSet {
   const state = view.state;
   const text = state.doc.toString();
   const end = quoteStart(text) ?? text.length;
-  // The signature reads quieter than the words, as it is sent (ADR 0142, rule 4).
-  const signature = signatureStart(text) ?? end;
+  // The signature reads quieter than the words, as it is sent (ADR 0142, rule 4): from its
+  // delimiter to the quote, as the core splits the draft.
+  const sections = sectionStarts(text);
+  const signature = sections.signature ?? end;
+  const signatureTo = sections.quote ?? text.length;
+  const own = ownEnd(text);
   const suggestions = state.field(suggestionsField);
   const ranges: Range[] = [];
   for (const { from, to } of view.visibleRanges) {
@@ -299,7 +303,7 @@ function buildLook(view: EditorView): DecorationSet {
     while (pos <= to) {
       const line = state.doc.lineAt(pos);
       if (line.from >= end) break;
-      if (line.from >= signature) {
+      if (line.from >= signature && line.from < signatureTo) {
         ranges.push({ from: line.from, to: line.from, deco: signatureLine });
       }
       if (/^\s*>/.test(line.text)) ranges.push({ from: line.from, to: line.from, deco: quoteLine });
@@ -311,7 +315,7 @@ function buildLook(view: EditorView): DecorationSet {
           ranges.push({ from: line.from, to: line.from, deco: headLine });
         ranges.push(...lineRanges(line.text, line.from));
         // A suggestion is offered where taking it changes something: in the person's own lines.
-        for (const s of line.from < signature ? suggestions : []) {
+        for (const s of line.from < own ? suggestions : []) {
           let at = line.text.indexOf(s.token);
           while (at !== -1) {
             const after = line.from + at + s.token.length;
@@ -448,8 +452,7 @@ const rangeOf = (anchor: number, head: number) => EditorSelection.range(anchor, 
 
 /** The writer's own lines, above the signature and the quote (ADR 0142). */
 export function ownText(doc: string): string {
-  const at = signatureStart(doc) ?? quoteStart(doc);
-  return at === null ? doc : doc.slice(0, at);
+  return doc.slice(0, ownEnd(doc));
 }
 
 export const liveTheme = EditorView.theme({
