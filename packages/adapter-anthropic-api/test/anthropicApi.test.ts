@@ -361,6 +361,20 @@ describe("AnthropicApiRuntime: refusals of the key (ADR 0141, rule 5)", () => {
     expect(error.message).not.toContain("PROVIDER-WORDS");
   });
 
+  it("a request too large to take fails as tooLong, whose sentence reaches the person", async () => {
+    listing([OPUS]);
+    routes.set("POST /v1/messages", (_req, res) =>
+      json(res, 413, {
+        type: "error",
+        error: { type: "request_too_large", message: "PROVIDER-WORDS" },
+      }),
+    );
+    const error = await failure(runtime({ retries: 0 }).run(REQUEST));
+    expect(error.code).toBe("tooLong");
+    expect(error.message).toMatch(/Ask about less/);
+    expect(error.message).not.toContain("PROVIDER-WORDS");
+  });
+
   it("a model the key cannot use is refused before any mail goes", async () => {
     listing([HAIKU]);
     const error = await failure(runtime().run(REQUEST));
@@ -749,6 +763,38 @@ describe("AnthropicApiRuntime: the search loop with our tools (ADR 0083; ADR 014
     );
     expect(error.message).toMatch(/not one this app made/);
   });
+});
+
+describe("AnthropicApiRuntime: an answer whose headers come late (ADR 0141, rule 9)", () => {
+  // `fetch` gives up when no headers come within its dispatcher's headers timeout (300 s by
+  // default); a turn may take longer than that before the provider sends a byte. Here that
+  // timeout is made 100 ms for the whole process (undici checks it about twice a second), and the
+  // stand-in answers after 2.5 s.
+  const GLOBAL = Symbol.for("undici.globalDispatcher.1");
+  type Holder = Record<symbol, unknown>;
+
+  it("waits for the answer as long as the turn may take, whatever fetch would wait", async () => {
+    listing([OPUS]);
+    routes.set("POST /v1/messages", (_req, res) => {
+      setTimeout(() => json(res, 200, answer({ verdict: "yes" })), 2500);
+    });
+    routes.set("GET /late", (_req, res) => {
+      setTimeout(() => json(res, 200, {}), 2500);
+    });
+    // The process's dispatcher exists once a fetch ran; a copy of its kind with a short wait.
+    await fetch(`${base}/v1/models`).then((r) => r.text());
+    const holder = globalThis as unknown as Holder;
+    const was = holder[GLOBAL] as { constructor: new (o: object) => unknown };
+    holder[GLOBAL] = new was.constructor({ headersTimeout: 100 });
+    try {
+      // The premise: fetch itself now gives up before the stand-in answers.
+      await expect(fetch(`${base}/late`)).rejects.toThrow();
+      const result = await runtime({ retries: 0 }).run(REQUEST);
+      expect(result.value).toEqual({ verdict: "yes" });
+    } finally {
+      holder[GLOBAL] = was;
+    }
+  }, 15_000);
 });
 
 describe("AnthropicApiRuntime: the key never shows (ADR 0141, rule 4)", () => {
