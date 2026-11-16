@@ -95,6 +95,14 @@ its list gives an id, a date and an owner, and nothing about schemas, tools or e
      says why (`Waits: reading in the background on Anthropic API is off`). The test is a billed
      turn: it runs when the person presses Check on the card, or with the first thing they ask
      for on the runtime; until then the card says `Key saved · not checked yet`, with Check.
+     Work no press of the person's started (a pass of the reading, the test it runs by itself,
+     remembering what the person typed, the name of a talk) takes the ticket of rule 5 before it
+     reads the switch, and is sent only while that ticket holds and the switch was not turned off
+     since, checked with nothing awaited before the request: a key replaced or a switch turned off
+     while it waited sends nothing. What any turn found (a rule, an instruction, a talk entry,
+     prepared work, a verdict, a talk's name, help with a reply, a theme) is stored or handed back
+     only while its ticket holds as the write begins, after every wait; the ledger counts the
+     turn whether or not.
    - On, a pass reads as much as on a plan (a batch at a time), not a whole view at once as a
      runtime on this machine does.
    - The share of the week of ADR 0131 does not bound a key: a key has no week, and a percent of
