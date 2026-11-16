@@ -3,6 +3,7 @@ import { normalizeSignature, SIGNATURE_MAX_CHARS, signatureProblem } from "@matt
 import { createSignal, Show } from "solid-js";
 import { type Backend, BackendError } from "./client.ts";
 import { MarkdownEditor } from "./editor.tsx";
+import { type SignatureFailure, signatureAlert } from "./signatureFields.ts";
 
 const small =
   "h-[28px] cursor-default rounded-[8px] bg-button px-3 text-[12px] font-semibold disabled:opacity-40";
@@ -31,7 +32,7 @@ export function SignatureForm(props: {
 }) {
   const [text, setText] = createSignal(props.typed ?? props.account.signature ?? "");
   const [saving, setSaving] = createSignal(false);
-  const [failure, setFailure] = createSignal("");
+  const [failure, setFailure] = createSignal<SignatureFailure | null>(null);
   const kept = () => normalizeSignature(text());
   const problem = () => signatureProblem(kept());
   const unchanged = () => kept() === (props.account.signature ?? "");
@@ -44,7 +45,7 @@ export function SignatureForm(props: {
       return;
     }
     setSaving(true);
-    setFailure("");
+    setFailure(null);
     // The field stays editable while the save goes, since it can be slow: what is typed meanwhile
     // is newer than what this saves, and keeps the field open.
     const submitted = text();
@@ -57,7 +58,10 @@ export function SignatureForm(props: {
         submitted,
       );
     } catch (error) {
-      setFailure(error instanceof BackendError ? error.message : "The signature was not saved.");
+      setFailure({
+        why: error instanceof BackendError ? error.message : "The signature was not saved.",
+        text: submitted,
+      });
     } finally {
       setSaving(false);
     }
@@ -79,6 +83,8 @@ export function SignatureForm(props: {
           grow={{ min: 72, max: "220px" }}
           onChange={(value) => {
             setText(value);
+            // Why the last save failed is stale once the text changes.
+            if (value !== failure()?.text) setFailure(null);
             props.onType?.(value);
           }}
           onSend={() => void save()}
@@ -109,7 +115,7 @@ export function SignatureForm(props: {
           {counted(kept().length)}
         </span>
       </div>
-      <Show when={problem() ?? (failure() === "" ? null : failure())}>
+      <Show when={signatureAlert(problem(), failure(), text())}>
         {(why) => (
           <p role="alert" data-signature-problem class="text-[12px] leading-[1.45] text-late">
             {why()}

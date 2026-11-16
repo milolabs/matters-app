@@ -95,6 +95,7 @@ import {
 import { CHANNEL_DROP, CHANNEL_PASTE, CHANNEL_PICK } from "../preload/fileBridge.ts";
 import {
   CHANNEL_DEFAULT_MAIL,
+  CHANNEL_MAILTO_DONE,
   CHANNEL_MAILTO_TAKE,
   CHANNEL_MAILTO_WAITING,
 } from "../preload/mailtoBridge.ts";
@@ -1848,8 +1849,14 @@ if (!identityHelper && !erasing)
       }
       win.webContents.send(CHANNEL_MAILTO_WAITING);
     };
+    // The first link stays first until the window says a composer opened with it, by the id given
+    // here, or it failed too often: one taken while another composer started, or whose
+    // preparation failed, is offered again (rule 5). Main checks the id against its own.
     ipcMain.handle(CHANNEL_MAILTO_TAKE, (event) =>
-      event.sender === win.webContents && linksOpen() ? links.take() : null,
+      event.sender === win.webContents && linksOpen() ? links.next() : null,
+    );
+    ipcMain.handle(CHANNEL_MAILTO_DONE, (event, id: unknown, opened: unknown) =>
+      event.sender === win.webContents && linksOpen() ? links.done(id, opened) : 0,
     );
     trace("window-created");
     connectToBackend(win, backend);

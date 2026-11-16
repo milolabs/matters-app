@@ -291,6 +291,20 @@ describe("the agent and the signature (rule 6)", () => {
     expect(withoutSignature("No block here")).toBe("No block here");
   });
 
+  it("a block the person had before the model's turn stays; only one new in its answer goes", () => {
+    const before = "Thanks.\n\n--\nAnna";
+    // The model gave the person's text back as it was, or wrote its words again: Anna stays.
+    expect(withoutSignature(before, before)).toBe(before);
+    expect(withoutSignature("Thank you.\n\n--\nAnna", before)).toBe("Thank you.\n\n--\nAnna");
+    // A block the model added after the person's goes, from its delimiter on.
+    expect(withoutSignature("Thank you.\n\n--\nAnna\n\n-- \nBot", before)).toBe(
+      "Thank you.\n\n--\nAnna",
+    );
+    // With none of the person's, the model's first block goes, as with no text before.
+    expect(withoutSignature("Thank you.\n\n--\nBot", "Thanks.")).toBe("Thank you.");
+    expect(joinDraft("Thank you.\n\n--\nAnna", "", "", before)).toBe("Thank you.\n\n--\nAnna");
+  });
+
   it("a new message the agent filled in gets the signature from the code", () => {
     expect(placeSignature("Hello Anna,\n\nsee you on [date].", SIGNATURE)).toBe(
       `Hello Anna,\n\nsee you on [date].\n\n${BLOCK}`,

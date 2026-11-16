@@ -64,6 +64,10 @@ class Keyed {
   release: (() => void) | null = null;
   /** Turns that were stopped by their signal. */
   stopped = 0;
+  /** While set, a held turn does not hear its signal: its answer was already on the way. */
+  deaf = false;
+  /** While set, the next look reads the vault and then waits for this before it answers. */
+  inspectGate: Promise<void> | null = null;
   private readonly vault: Vault;
   constructor(vault: Vault) {
     this.vault = vault;
@@ -71,6 +75,9 @@ class Keyed {
   async inspect(): Promise<AgentRuntimeInfo> {
     const base = { id: this.id, name: this.name, noPlan: true, billed: true } as const;
     const key = await this.vault.get(this.id);
+    const gate = this.inspectGate;
+    this.inspectGate = null;
+    if (gate !== null) await gate;
     if (key === null) return { ...base, status: "noKey", models: [], problem: "Paste a key." };
     return {
       ...base,
@@ -90,6 +97,7 @@ class Keyed {
     if (this.hold) {
       await new Promise<void>((resolve, reject) => {
         this.release = resolve;
+        if (this.deaf) return;
         options?.signal?.addEventListener("abort", () => {
           this.stopped++;
           reject(new AgentRunError("failed", "Cancelled."));
@@ -334,6 +342,105 @@ describe("the person's own API key (ADR 0141)", () => {
     expect(runtimeInfo(s, "anthropic-api")?.status).toBe("noKey");
     const ledger = await h.insights.listLedger(10);
     expect(ledger[0]).toMatchObject({ purpose: "revoke", runtimeId: "anthropic-api" });
+  });
+
+  it("tests no key in the background while its reading there is off, and tests it with the first ask (rule 6)", async () => {
+    const h = await build();
+    await h.service.saveKey("anthropic-api", KEY);
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "anthropic-api" });
+    await h.pass();
+    // The test is a billed turn: with the switch off none goes by itself.
+    expect(h.keyed.calls).toHaveLength(0);
+    const s = await h.service.status();
+    expect(runtimeInfo(s, "anthropic-api")?.status).toBe("found");
+    expect(s.progress).toEqual({ state: "off", reason: "keyOff" });
+    // Nor when the model it is tested on changes.
+    await h.service.setModels({ understand: "claude-opus-5-5" });
+    await settle();
+    await h.service.idle();
+    expect(h.keyed.calls).toHaveLength(0);
+    // The first thing the person asks for on it tests it first, then runs.
+    await h.service.rewriteDraft({ threadId: "t1" }, "Hi there", "formal").catch(() => {});
+    expect(h.keyed.calls.map((c) => c.untrusted.includes(TEST_PROMPT_QUOTE))).toEqual([
+      true,
+      false,
+    ]);
+    expect(runtimeInfo(await h.service.status(), "anthropic-api")?.status).toBe("ready");
+  });
+
+  it("keeps nothing new when the switch of the key before cannot be turned off (rule 6)", async () => {
+    const h = await build();
+    await h.service.saveKey("anthropic-api", KEY);
+    await h.service.setKeyReading("anthropic-api", true);
+    const before = h.vault.kept.get("anthropic-api");
+    const update = h.settings.update.bind(h.settings);
+    h.settings.update = async (patch) => {
+      if ("keyReading" in patch) throw new Error("disk full");
+      return update(patch);
+    };
+    const error = await h.service.saveKey("anthropic-api", `${KEY}-2`).catch((e) => e);
+    expect(error).toBeInstanceOf(InvalidAgentSettingError);
+    expect(h.vault.kept.get("anthropic-api")).toEqual(before);
+    expect((await h.settings.get()).keyReading).toEqual(["anthropic-api"]);
+  });
+
+  it("does not show a test as the new key's when the key is replaced while its record is written (rule 5)", async () => {
+    const h = await build();
+    await h.service.saveKey("anthropic-api", KEY);
+    const put = h.settings.putRuntimeRecord.bind(h.settings);
+    let write: (() => void) | null = null;
+    h.settings.putRuntimeRecord = async (record) => {
+      await new Promise<void>((resolve) => {
+        write = resolve;
+      });
+      return put(record);
+    };
+    const testing = h.service.testRuntime("anthropic-api");
+    await until(() => write !== null);
+    h.settings.putRuntimeRecord = put;
+    await h.clock.advance(1000);
+    await h.service.saveKey("anthropic-api", `${KEY}-2`);
+    (write as unknown as () => void)();
+    expect(runtimeInfo(await testing, "anthropic-api")?.status).toBe("found");
+    expect(runtimeInfo(await h.service.status(), "anthropic-api")?.status).toBe("found");
+    expect(runtimeInfo(await h.service.inspect(), "anthropic-api")?.status).toBe("found");
+  });
+
+  it("does not show a look at the key before once a new key is saved during it (rule 5)", async () => {
+    const h = await build();
+    await h.service.saveKey("anthropic-api", KEY);
+    await h.service.testRuntime("anthropic-api");
+    let open: () => void = () => {};
+    h.keyed.inspectGate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    // The look reads the old key, whose test passed, and waits; the new key is saved and looked at.
+    const looking = h.service.inspect();
+    await settle();
+    await h.clock.advance(1000);
+    await h.service.saveKey("anthropic-api", `${KEY}-2`);
+    open();
+    expect(runtimeInfo(await looking, "anthropic-api")?.status).toBe("found");
+    expect(runtimeInfo(await h.service.status(), "anthropic-api")?.status).toBe("found");
+  });
+
+  it("does not take a refusal of a turn stopped by a new key as the new key's (rule 5)", async () => {
+    const h = await build();
+    await h.service.saveKey("anthropic-api", KEY);
+    await h.service.setEnabled({ accountIds: ["acc1"], runtimeId: "anthropic-api" });
+    await h.service.testRuntime("anthropic-api");
+    h.keyed.hold = true;
+    h.keyed.deaf = true;
+    h.keyed.refuse = true;
+    const rewriting = h.service.rewriteDraft({ threadId: "t1" }, "Hi there", "formal").then(
+      () => "done",
+      (e: Error) => e.message,
+    );
+    await until(() => h.keyed.release !== null);
+    await h.service.saveKey("anthropic-api", `${KEY}-2`);
+    h.keyed.release?.();
+    await rewriting;
+    expect(runtimeInfo(await h.service.status(), "anthropic-api")?.status).toBe("found");
   });
 
   it("reads nothing in the background until the person turns it on (rule 6)", async () => {
