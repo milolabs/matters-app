@@ -1,6 +1,7 @@
-// The thread on paper (ADR 0144, rule 2), as pure functions: what each letter says, and the markup
-// of the print page. Everything here but the sanitized HTML of a message is text, and goes into the
-// markup escaped; the HTML goes into a sandboxed frame like the reader's, never into this markup.
+// The thread on paper (ADR 0144, rule 2), as pure functions: what each letter says, and the nodes
+// of the print page. Everything here but the HTML of a message is text, and the page puts it in as
+// text; the HTML is sanitized again in the page and goes into a sandboxed frame like the reader's,
+// never among these nodes.
 import type { PrintDocument, PrintLetter, PrintTextPart, ThreadMessage } from "@matters/contracts";
 import type { ImageChoice, Participant } from "@matters/core";
 import { SHORT_SIGNATURE_LINES, splitBody, splitSignature } from "./body.ts";
@@ -49,9 +50,10 @@ export function lightHtml(clean: Pick<CleanMail, "html" | "theme">): string {
   return mailView(clean, false).html;
 }
 
-/** What the HTML of one letter brings: its sanitized markup and what the reader decided. */
+/** What the HTML of one letter brings: its HTML and what the reader decided. */
 export interface LetterHtml {
-  readonly clean: Pick<CleanMail, "html" | "theme" | "hasRemoteContent">;
+  /** `sanitizeMail` output in the mail window; the print page sanitizes it again (rule 4). */
+  readonly html: string;
   /** The reader shows its images: allowed by a rule, or by Show images while it is open. */
   readonly images: boolean;
   /** What the rules decided, for the words of the blocked state; null when not known. */
@@ -75,7 +77,9 @@ export function printLetter(
     failed: m.senderAuth === "fail",
   };
   const choice = html?.choice ?? null;
-  const blocked = html?.clean.hasRemoteContent === true && !html.images;
+  // Whether the letter asks for images at all is known once the page has sanitized it: the words
+  // go with every letter whose images are not shown, and the page prints them only then.
+  const blocked = html !== null && !html.images;
   const kind = blocked && choice !== null ? barKind(choice) : "ask";
   const note = !blocked
     ? ""
@@ -100,7 +104,7 @@ export function printLetter(
     body:
       html === null
         ? { kind: "text", parts: printTextParts(m.bodyText) }
-        : { kind: "html", html: lightHtml(html.clean), images: html.images },
+        : { kind: "html", html: html.html, images: html.images },
     attachments,
   };
 }
@@ -122,60 +126,103 @@ export function printDocument(
   return { title: subject || "(no subject)", day: newest > 0 ? printDay(newest) : "", letters };
 }
 
-const ESCAPES: Readonly<Record<string, string>> = {
-  "&": "&amp;",
-  "<": "&lt;",
-  ">": "&gt;",
-  '"': "&quot;",
-  "'": "&#39;",
-};
-
-/** Text for markup: every character that could start or end markup, written as a reference. */
-export function escapeText(text: string): string {
-  return text.replace(/[&<>"']/g, (c) => ESCAPES[c] ?? c);
-}
-
-const row = (label: string, value: string) =>
-  value === "" ? "" : `<div><dt>${label}</dt><dd>${escapeText(value)}</dd></div>`;
-
 /** The page of our own that a frame of letter `index` loads, as the reader's frame does (ADR 0024). */
 export const framePage = (images: boolean) => (images ? "./mail-images.html" : "./mail.html");
 
 /** The frames' sandbox: the reader's (`MAIL_FRAME_SANDBOX`), no `allow-scripts`. */
 export const PRINT_FRAME_SANDBOX = "allow-same-origin";
 
+/** The elements of the print page; nothing else is ever made. */
+export type PrintTag = "h1" | "article" | "dl" | "div" | "dt" | "dd" | "p" | "ul" | "li";
+
 /**
- * The print page's markup: a title, then each letter's header as text, its body, and its files.
- * Only escaped text and our own elements; a letter with HTML gets an empty sandboxed frame of
- * `mail.html` (or `mail-images.html`) that the page fills, as the reader does. No style attribute,
- * no script: the page's policy allows neither.
+ * A node of the print page as data. The page makes each with `createElement`, sets its class and
+ * its label, and puts `text` in as text; a frame's attributes are the page's own constants.
  */
-export function printMarkup(doc: PrintDocument): string {
-  const letters = doc.letters.map((l, index) => {
-    const head = [
-      row("From", l.from),
-      row("To", l.to),
-      row("Cc", l.cc),
-      row("Date", l.date),
-      row("Subject", l.subject),
-    ].join("");
-    const badge = l.badge === "" ? "" : `<p class="badge">${escapeText(l.badge)}</p>`;
-    const note = l.note === "" ? "" : `<p class="note">${escapeText(l.note)}</p>`;
-    const body =
+export type PrintNode =
+  | {
+      readonly tag: PrintTag;
+      readonly className?: string;
+      readonly label?: string;
+      readonly text?: string;
+      readonly children?: readonly PrintNode[];
+    }
+  /** The sandboxed frame of letter `frame`, of `mail.html` or `mail-images.html` (`framePage`). */
+  | { readonly tag: "iframe"; readonly frame: number; readonly images: boolean };
+
+const row = (label: string, value: string): PrintNode[] =>
+  value === ""
+    ? []
+    : [
+        {
+          tag: "div",
+          children: [
+            { tag: "dt", text: label },
+            { tag: "dd", text: value },
+          ],
+        },
+      ];
+
+/**
+ * The print page: a title, then each letter's header, its body, and its files. Only text and our
+ * own elements; a letter with HTML gets an empty sandboxed frame that the page fills, as the reader
+ * does. No style attribute, no script: the page's policy allows neither. `asksForImages(index)`
+ * says whether letter `index`, sanitized in the page, asks for images from the network: only then
+ * is its line about blocked images printed.
+ */
+export function printNodes(
+  doc: PrintDocument,
+  asksForImages: (index: number) => boolean,
+): PrintNode[] {
+  const letters = doc.letters.map((l, index): PrintNode => {
+    const head: PrintNode = {
+      tag: "dl",
+      className: "head",
+      children: [
+        ...row("From", l.from),
+        ...row("To", l.to),
+        ...row("Cc", l.cc),
+        ...row("Date", l.date),
+        ...row("Subject", l.subject),
+      ],
+    };
+    const badge: PrintNode[] =
+      l.badge === "" ? [] : [{ tag: "p", className: "badge", text: l.badge }];
+    const held = l.note !== "" && l.body.kind === "html" && asksForImages(index);
+    const note: PrintNode[] = held ? [{ tag: "p", className: "note", text: l.note }] : [];
+    const body: PrintNode =
       l.body.kind === "html"
-        ? `<div class="mail"><iframe data-print-frame="${index}" title="Message as sent" sandbox="${PRINT_FRAME_SANDBOX}" src="${framePage(l.body.images)}"></iframe></div>`
-        : `<div class="words">${
-            l.body.parts.length === 0
-              ? `<p class="folded">No text.</p>`
-              : l.body.parts.map((p) => `<p class="${p.kind}">${escapeText(p.text)}</p>`).join("")
-          }</div>`;
-    const files =
+        ? {
+            tag: "div",
+            className: "mail",
+            children: [{ tag: "iframe", frame: index, images: l.body.images }],
+          }
+        : {
+            tag: "div",
+            className: "words",
+            children:
+              l.body.parts.length === 0
+                ? [{ tag: "p", className: "folded", text: "No text." }]
+                : l.body.parts.map(
+                    (p): PrintNode => ({ tag: "p", className: p.kind, text: p.text }),
+                  ),
+          };
+    const files: PrintNode[] =
       l.attachments.length === 0
-        ? ""
-        : `<ul class="files" aria-label="Attachments">${l.attachments
-            .map((a) => `<li>${escapeText(a)}</li>`)
-            .join("")}</ul>`;
-    return `<article class="letter"><dl class="head">${head}</dl>${badge}${note}${body}${files}</article>`;
+        ? []
+        : [
+            {
+              tag: "ul",
+              className: "files",
+              label: "Attachments",
+              children: l.attachments.map((a): PrintNode => ({ tag: "li", text: a })),
+            },
+          ];
+    return {
+      tag: "article",
+      className: "letter",
+      children: [head, ...badge, ...note, body, ...files],
+    };
   });
-  return `<h1>${escapeText(doc.title)}</h1>${letters.join("")}`;
+  return [{ tag: "h1", text: doc.title }, ...letters];
 }

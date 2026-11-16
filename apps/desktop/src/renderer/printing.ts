@@ -1,7 +1,8 @@
 // The mail window's side of printing (ADR 0144): the thread open in the reader made into a print
 // document, from the same sanitized HTML and the same image decisions the reader uses, and handed
-// to main. What the reader decided while a letter is open (Show images, the Text view) is kept
-// here by message key, so a print made from the menu prints what is on screen.
+// to main; the print page sanitizes each letter again before it shows it (rule 4). What the reader
+// decided while a letter is open (Show images, the Text view) is kept here by message key, so a
+// print made from the menu prints what is on screen.
 import type { PrintAction, PrintAnswer, PrintDocument, ThreadMessage } from "@matters/contracts";
 import type { Backend } from "./client.ts";
 import { askPrint } from "./files.ts";
@@ -35,9 +36,11 @@ export async function buildPrintDocument(
       if (m.htmlKind === undefined || textViews.has(m.key)) return printLetter(m, own, null);
       const { html, images } = await backend.getMessageHtml(m.key);
       if (html === null) return printLetter(m, own, null);
-      const clean = sanitizeMail(html);
+      // Sanitized here first, on the reader's screen: a style sheet's questions about the screen
+      // (its resolution, its colors) are answered by the one the reader is on (rule 3), which the
+      // hidden print window is not.
       return printLetter(m, own, {
-        clean,
+        html: sanitizeMail(html).html,
         images: imagesShown.has(m.key) || images?.show === true,
         choice: images,
       });

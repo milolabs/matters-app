@@ -73,11 +73,12 @@ Read from the code on 2026-11-16:
    are the system dialog's.
 
 3. **Hostile mail stays hostile on paper.**
-   - The print view uses the reader's own pieces: the same `sanitizeMail` output, the same pages
+   - The print view uses the reader's own pieces: the same `sanitizeMail`, the same pages
      (`mail.html`, or `mail-images.html` where the reader shows images), the same sandbox without
      `allow-scripts`, the same fitting. Its own text (headers, plain bodies, file names) is put in
-     as text: escaped once, by one function, and a subject or a name with markup prints that
-     markup as characters.
+     as text: the page builds its elements itself and sets each name, address, subject, file name
+     and line with `textContent`, so a subject or a name with markup prints that markup as
+     characters, and nothing of the thread is ever parsed as the page's markup.
    - Images are printed only where the reader shows them: allowed by a rule (ADR 0037) or by Show
      images while the letter is open. Elsewhere the frame is `mail.html`, which loads nothing, and
      the letter carries the reader's sentence for that state ("Images are off, so the sender can't
@@ -99,7 +100,16 @@ Read from the code on 2026-11-16:
    frames under the same policy and request rules), `lockDown` (no popup, no navigation, every
    permission refused, frames only to our own pages), a sandboxed preload of its own that exposes
    nothing, and the app's strict policy for the page itself. Main hands it the thread, which the
-   page lays out and fills; once every frame is filled, its images have loaded or failed (five
+   page lays out and fills. The page takes none of what it is handed on trust, though the mail
+   window's preload and main have checked it: it reads only a message from its own window and
+   origin (the preload), reads the thread's shape and limits again with the same function
+   (`readPrintDocument` in contracts), and is handed what the reader decided as data (images
+   shown or not; paper is always the light view). Each letter's HTML is `sanitizeMail` output
+   from the mail window, which must answer a style sheet's questions about the screen with the
+   reader's own (rule 3; the hidden window is on no screen the reader looked at); the page treats
+   it as untrusted all the same and sanitizes it again with the same `sanitizeMail` right before
+   it fills the letter's frame, so a letter is sanitized twice, and the line about blocked images
+   is printed when the letter sanitized there asks for images; once every frame is filled, its images have loaded or failed (five
    seconds at most) and the fonts are ready, the page says so. Then main calls
    `webContents.print()` (the system dialog) or `webContents.printToPDF()`. The window is destroyed
    afterwards in every case: done, cancelled, failed, or not ready within 30 seconds. One job at a
@@ -121,12 +131,13 @@ Read from the code on 2026-11-16:
 
 7. **Where it lives.** Core: `pdfFileName` (`packages/core/src/domain/fileName.ts`). Contracts:
    the print document's types. Renderer, pure: the rewrite of the media questions
-   (`mailMedia.ts`, called from `sanitizeMail`), the letter and the page's markup
-   (`printDocument.ts`), the frame's fit, shared with the reader (`mailFit.ts`). Renderer: the
+   (`mailMedia.ts`, called from `sanitizeMail`), the letter and the page's nodes as
+   data (`printDocument.ts`), the frame's fit, shared with the reader (`mailFit.ts`). Renderer: the
    thread made into a print document from the reader's own decisions (`printing.ts`), the menu
    items in `app.tsx`, the print page (`print.html`, `printPage.ts`, `print.css`). Preload:
    `printBridge.ts` (the mail window's), `print.ts` (the print view's). Main: the job, the paper
-   and the stand-ins (`printer.ts`), the shapes and their limits (`printShapes.ts`), the window,
+   and the stand-ins (`printer.ts`), the channels and the answer's shape (`printShapes.ts`; the thread's shape and its
+   limits are `readPrintDocument` in contracts, read by the preload, main and the page), the window,
    the menu and the handlers in `index.ts`.
 
 8. **Tests.** Unit: the file name, the media rewrite (types, `not`, lists, device features,
@@ -184,9 +195,9 @@ Read from the code on 2026-11-16:
   did nothing. A `<style media="print">` is emptied, so the reader no longer shows a print-only
   sheet on screen either; any other `media` attribute is still removed by DOMPurify, as before. A message that answered differently for a Retina screen and another screen is
   answered once, by the screen the reader was on when it was sanitized.
-- Making the print view sanitizes each letter with HTML again, on the page's thread, and loads
-  every letter, also the folded ones; a long thread of designed mail takes a moment before the
-  dialog shows (ADR 0012). Nothing is added to launch.
+- Making the print view sanitizes each letter with HTML again in the mail window, and once more
+  in the print view's own window, and loads every letter, also the folded ones; a long thread of
+  designed mail takes a moment before the dialog shows (ADR 0012). Nothing is added to launch.
 - Images the reader shows are loaded again by the print view, from the cache when they are
   there; images the reader does not show are not.
 - The PDF keeps the message's links as links, and the reader's warning for a link that says one

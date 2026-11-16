@@ -4,12 +4,14 @@ import { describe, expect, it } from "vitest";
 import { imageCopy } from "../src/renderer/imageBar.ts";
 import { mailBaseStyle, mailView } from "../src/renderer/mailTheme.ts";
 import {
-  escapeText,
+  framePage,
   lightHtml,
+  PRINT_FRAME_SANDBOX,
+  type PrintNode,
   printDay,
   printDocument,
   printLetter,
-  printMarkup,
+  printNodes,
   printTextParts,
 } from "../src/renderer/printDocument.ts";
 
@@ -52,11 +54,7 @@ const choice = (over: Partial<ImageChoice> = {}): ImageChoice => ({
   ...over,
 });
 
-const clean = (html: string, hasRemoteContent = false) => ({
-  html: `${mailBaseStyle()}${html}`,
-  theme: "none" as const,
-  hasRemoteContent,
-});
+const clean = (html: string) => ({ html: `${mailBaseStyle()}${html}`, theme: "none" as const });
 
 describe("printLetter (ADR 0144, rule 2)", () => {
   it("says who, to whom, when and what as text, with every address", () => {
@@ -127,27 +125,28 @@ describe("printLetter (ADR 0144, rule 2)", () => {
     ]);
   });
 
-  it("prints the HTML the reader shows, always in its light view", () => {
+  it("hands the page the message's HTML and the reader's choice, and the page shows it light", () => {
     const letter = printLetter(message({ htmlKind: "designed" }), own, {
-      clean: clean("<p style='color:#000'>Hi</p>"),
+      html: "<p style='color:#000'>Hi</p>",
       images: false,
       choice: choice(),
     });
+    // Not sanitized and not themed here: the print page sanitizes it, then takes the light view.
     expect(letter.body).toEqual({
       kind: "html",
-      html: `${mailBaseStyle()}<p style='color:#000'>Hi</p>`,
+      html: "<p style='color:#000'>Hi</p>",
       images: false,
     });
     // In the app's dark theme the same message is recolored; on paper it is not.
     const dark = mailView(clean("<p style='color:#000'>Hi</p>"), true);
-    expect(dark.html).not.toBe(letter.body.kind === "html" ? letter.body.html : "");
+    expect(dark.html).not.toBe(lightHtml(clean("<p style='color:#000'>Hi</p>")));
     expect(lightHtml(clean("<p style='color:#000'>Hi</p>"))).toContain("color:#000");
   });
 
   it("says the reader's words for blocked images, and nothing when they are shown", () => {
     const html = (images: boolean, c: ImageChoice | null) =>
       printLetter(message({ htmlKind: "designed" }), own, {
-        clean: clean('<img src="https://example.com/a.png">', true),
+        html: '<img src="https://example.com/a.png">',
         images,
         choice: c,
       });
@@ -157,16 +156,23 @@ describe("printLetter (ADR 0144, rule 2)", () => {
       imageCopy.denied("anna@example.com"),
     );
     expect(html(true, choice({ show: true })).note).toBe("");
-    // A message that asks for nothing remote has nothing to say about images.
-    const none = printLetter(message({ htmlKind: "designed" }), own, {
-      clean: clean("<p>x</p>"),
-      images: false,
-      choice: choice(),
-    });
-    expect(none.note).toBe("");
+    expect(printLetter(message(), own, null).note).toBe("");
   });
 });
 
+/** Every node of a tree, depth first. */
+function* all(nodes: readonly PrintNode[]): Generator<PrintNode> {
+  for (const node of nodes) {
+    yield node;
+    if (node.tag !== "iframe") yield* all(node.children ?? []);
+  }
+}
+
+/** The text of every node, in order. */
+const texts = (nodes: readonly PrintNode[]) =>
+  [...all(nodes)].flatMap((n) => (n.tag !== "iframe" && n.text !== undefined ? [n.text] : []));
+
+const never = () => false;
 describe("printDocument", () => {
   it("is the whole thread in order, titled by its subject, with the newest letter's day", () => {
     const a = message({ key: 1, dateMs: new Date(2026, 10, 14, 9).getTime() });
@@ -181,7 +187,7 @@ describe("printDocument", () => {
   });
 });
 
-describe("printMarkup", () => {
+describe("printNodes", () => {
   const hostile = '<img src=x onerror="parent.__pwned=1"><script>alert(1)</script>&amp;"\'';
 
   it("puts names and subjects in as text: markup in them prints as itself", () => {
@@ -204,30 +210,73 @@ describe("printMarkup", () => {
       own,
       null,
     );
-    const markup = printMarkup({ title: hostile, day: "", letters: [letter] });
-    expect(markup).not.toMatch(/<img|<script|<b>/i);
-    expect(markup).toContain(escapeText(hostile));
-    expect(escapeText(hostile)).toBe(
-      "&lt;img src=x onerror=&quot;parent.__pwned=1&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;amp;&quot;&#39;",
-    );
+    const nodes = printNodes({ title: hostile, day: "", letters: [letter] }, never);
+    // Only our own elements: whatever a field says, it is a node's text, never an element.
+    const tags = new Set([...all(nodes)].map((n) => n.tag));
+    for (const tag of tags) {
+      expect(["h1", "article", "dl", "div", "dt", "dd", "p", "ul", "li"]).toContain(tag);
+    }
+    const seen = texts(nodes);
+    expect(seen[0]).toBe(hostile);
+    expect(seen).toContain(`${hostile} <x@example.com>`);
+    expect(seen).toContain(hostile);
+    expect(seen).toContain("<b>a</b>.pdf · 1 B");
+    // Nothing carries a field as a class or a label.
+    for (const n of all(nodes)) {
+      if (n.tag === "iframe") continue;
+      expect([
+        undefined,
+        "head",
+        "badge",
+        "note",
+        "mail",
+        "words",
+        "letter",
+        "files",
+        "text",
+        "signature",
+        "folded",
+      ]).toContain(n.className);
+      expect([undefined, "Attachments"]).toContain(n.label);
+    }
   });
 
   it("gives a letter with HTML an empty sandboxed frame of the reader's page, never its markup", () => {
-    const body = (images: boolean) =>
-      printMarkup({
-        title: "t",
-        day: "",
-        letters: [
-          {
-            ...printLetter(message(), own, null),
-            body: { kind: "html", html: "<p>SECRET-BODY</p>", images },
-          },
-        ],
-      });
-    expect(body(false)).not.toContain("SECRET-BODY");
-    expect(body(false)).toContain('sandbox="allow-same-origin" src="./mail.html"');
-    expect(body(true)).toContain('src="./mail-images.html"');
-    expect(body(false)).not.toMatch(/allow-scripts|style=/);
+    const nodes = (images: boolean) =>
+      printNodes(
+        {
+          title: "t",
+          day: "",
+          letters: [
+            {
+              ...printLetter(message(), own, null),
+              body: { kind: "html", html: "<p>SECRET-BODY</p>", images },
+            },
+          ],
+        },
+        never,
+      );
+    expect(JSON.stringify(nodes(false))).not.toContain("SECRET-BODY");
+    const frame = (images: boolean) => [...all(nodes(images))].find((n) => n.tag === "iframe");
+    expect(frame(false)).toEqual({ tag: "iframe", frame: 0, images: false });
+    expect(frame(true)).toEqual({ tag: "iframe", frame: 0, images: true });
+    expect(framePage(false)).toBe("./mail.html");
+    expect(framePage(true)).toBe("./mail-images.html");
+    expect(PRINT_FRAME_SANDBOX).toBe("allow-same-origin");
+  });
+
+  it("prints the words for blocked images only for a letter that asks for images", () => {
+    const letter = printLetter(message({ htmlKind: "designed" }), own, {
+      html: '<img src="https://example.com/a.png">',
+      images: false,
+      choice: choice(),
+    });
+    const doc = { title: "t", day: "", letters: [letter] };
+    const note = (asks: boolean) =>
+      [...all(printNodes(doc, () => asks))].find((n) => n.tag === "p" && n.className === "note");
+    expect(note(true)).toEqual({ tag: "p", className: "note", text: imageCopy.off });
+    // A message that asks for nothing remote has nothing to say about images.
+    expect(note(false)).toBeUndefined();
   });
 
   it("names folded quotes and lists the files", () => {
@@ -242,9 +291,18 @@ describe("printMarkup", () => {
       own,
       null,
     );
-    const markup = printMarkup({ title: "t", day: "", letters: [letter] });
-    expect(markup).toContain('<p class="folded">Quoted text · 1 line, not printed</p>');
-    expect(markup).not.toContain("EARLIER-MAIL");
-    expect(markup).toContain("<li>a.pdf · 2 KB</li>");
+    const nodes = printNodes({ title: "t", day: "", letters: [letter] }, never);
+    expect([...all(nodes)]).toContainEqual({
+      tag: "p",
+      className: "folded",
+      text: "Quoted text · 1 line, not printed",
+    });
+    expect(JSON.stringify(nodes)).not.toContain("EARLIER-MAIL");
+    expect([...all(nodes)]).toContainEqual({
+      tag: "ul",
+      className: "files",
+      label: "Attachments",
+      children: [{ tag: "li", text: "a.pdf · 2 KB" }],
+    });
   });
 });
