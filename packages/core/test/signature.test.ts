@@ -1,6 +1,10 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { Message, StoredAccount } from "../src/index.ts";
 import {
+  acceptAnswers,
+  acceptRewrite,
+  acceptWrite,
   buildRewriteRequest,
   buildWriteRequest,
   draftSections,
@@ -214,8 +218,12 @@ describe("where the signature lands (rules 2 and 3)", () => {
 
   it("keeps the person's words above it and the quote below, one empty line between", () => {
     expect(placeSignature("Thanks!", SIGNATURE)).toBe(`Thanks!\n\n${BLOCK}`);
+    expect(placeSignature("Thanks!\n\nOn 3 Nov, Anna wrote:\n> quoted\n", SIGNATURE)).toBe(
+      `Thanks!\n\n${BLOCK}\n\nOn 3 Nov, Anna wrote:\n> quoted\n`,
+    );
+    // A `>` line with nothing of the app's around it is the person's: the signature goes under it.
     expect(placeSignature("Thanks!\n\n> quoted\n", SIGNATURE)).toBe(
-      `Thanks!\n\n${BLOCK}\n\n> quoted\n`,
+      `Thanks!\n\n> quoted\n\n${BLOCK}`,
     );
     const parts = draftSections(`Thanks!\n\n${BLOCK}\n\n\n> quoted\n`);
     expect(parts).toEqual({ own: "Thanks!\n", signature: BLOCK, quote: "> quoted\n" });
@@ -323,5 +331,202 @@ describe("the agent and the signature (rule 6)", () => {
   it("the block's shape: the delimiter, its space, then the lines", () => {
     expect(signatureBlock("")).toBe("");
     expect(signatureBlock("A\nB")).toBe("-- \nA\nB");
+  });
+});
+
+describe("a `>` line of the person's own is their text, never the quote (rule 4)", () => {
+  const MINE = "Hi Anna,\n\nAs the contract says:\n\n> Payment within 14 days.\n\nSo [date] it is.";
+  const FENCED = "Run this:\n\n```\n> echo hi\n-- \n```\n\nThanks";
+  /** What the person typed at the caret, which starts at 0 (rule 3). */
+  const typed = (words: string, start: string) => `${words}${start}`;
+
+  it("a new message: the blockquote above the signature stays the person's", async () => {
+    const prepared = await prepareNewMessage(deps([account({ signature: SIGNATURE })]));
+    const body = typed(MINE, prepared.content.bodyMarkdown);
+    expect(draftSections(body)).toEqual({ own: `${MINE}\n`, signature: BLOCK, quote: "" });
+    expect(joinSections(MINE, BLOCK, "")).toBe(body);
+    // Before, the quote started at the person's `>` line and the signature was lost in it.
+    expect(placeSignature(body, SIGNATURE)).toBe(body);
+    expect(placeSignature(body, "Other")).toBe(body);
+  });
+
+  it("a `>` line or a `-- ` line inside a fenced code block is code", async () => {
+    const prepared = await prepareNewMessage(deps([account({ signature: SIGNATURE })]));
+    const body = typed(FENCED, prepared.content.bodyMarkdown);
+    expect(draftSections(body)).toEqual({ own: `${FENCED}\n`, signature: BLOCK, quote: "" });
+    // With tildes, and with no signature at all: the fence's `>` line is not a quote.
+    expect(draftSections("~~~\n> x\n~~~")).toEqual({
+      own: "~~~\n> x\n~~~",
+      signature: "",
+      quote: "",
+    });
+    // A fence never closed is text, so the app's quote below it is still found.
+    const open = draftSections("```\nno end\n\n-- \nMe\n\nOn 3 Nov, Anna wrote:\n> When?");
+    expect(open.signature).toBe("-- \nMe");
+    expect(open.quote).toBe("On 3 Nov, Anna wrote:\n> When?");
+  });
+
+  it("a reply: the person's blockquote, the signature, the app's quote, in that order", async () => {
+    const prepared = await prepareReplyDraft(
+      deps([account({ signature: SIGNATURE })]),
+      "t1",
+      "reply",
+    );
+    const body = typed(MINE, prepared?.content.bodyMarkdown ?? "");
+    const parts = draftSections(body);
+    expect(parts.own).toBe(`${MINE}\n`);
+    expect(parts.signature).toBe(BLOCK);
+    expect(parts.quote).toMatch(/^On .* wrote:\n> Can you send the numbers\?\n$/);
+    expect(joinSections(parts.own, parts.signature, parts.quote)).toBe(body);
+    expect(placeSignature(body, SIGNATURE)).toBe(body);
+    // The signature follows a change of sender with the blockquote there (rule 5).
+    expect(followSignature(body, SIGNATURE, "Home")).toBe(`${MINE}\n\n-- \nHome\n\n${parts.quote}`);
+    // A `>` line of the person's below the signature is not theirs any more: it is the quote.
+    const fenced = typed(FENCED, prepared?.content.bodyMarkdown ?? "");
+    expect(draftSections(fenced).signature).toBe(BLOCK);
+    expect(followSignature(fenced, SIGNATURE, "")).toBe(`${FENCED}\n\n${parts.quote}`);
+  });
+
+  it("a reply without a signature: the app's line opens the quote, not the person's `>`", () => {
+    const quote = "On 3 Nov, Anna wrote:\n> When?\n";
+    const body = `${MINE}\n\n${quote}`;
+    expect(draftSections(body)).toEqual({ own: `${MINE}\n`, signature: "", quote });
+    // One is put in, under the blockquote and above the quote; never above the blockquote.
+    expect(followSignature(body, "", "Home")).toBe(`${MINE}\n\n-- \nHome\n\n${quote}`);
+    // A signature the person typed themselves is theirs: none is added next to it.
+    const own = `${MINE}\n\n-- \nAnna's own\n\n${quote}`;
+    expect(followSignature(own, "", "Home")).toBeNull();
+    expect(placeSignature(own, "Home")).toBe(own);
+  });
+
+  it("a forward: the blockquote is the person's words, the forwarded part is not", async () => {
+    const prepared = await prepareForwardDraft(
+      deps([account({ signature: SIGNATURE })]),
+      "t1",
+      false,
+    );
+    const start = prepared?.content.bodyMarkdown ?? "";
+    // A `> Forwarded message` line of the person's own does not end their words either.
+    const words = `See below.\n\n${FORWARD_MARK}\n> (my note)`;
+    const body = typed(words, start);
+    const parts = draftSections(body);
+    expect(parts.own).toBe(`${words}\n`);
+    expect(parts.signature).toBe(BLOCK);
+    expect(parts.quote.startsWith(`${FORWARD_MARK}\n> From: `)).toBe(true);
+    expect(ownWords(body, SIGNATURE)).toBe(words);
+    expect(ownWords(start, SIGNATURE)).toBe("");
+    expect(followSignature(body, SIGNATURE, "Home")).toBe(
+      `${words}\n\n-- \nHome\n\n${parts.quote}`,
+    );
+    // Without a signature, the forward's own mark opens its part, the person's lines above it.
+    const bare = `> a line I cite\n\n${FORWARD_MARK}\n> From: Anna\n>\n> Hello\n`;
+    expect(draftSections(bare).own).toBe("> a line I cite\n");
+    expect(ownWords(bare)).toBe("> a line I cite");
+  });
+
+  it("the agent gets the person's blockquote as their text, and may keep it, never add one", () => {
+    const quote = "On 3 Nov, Anna wrote:\n> When?";
+    const parts = splitDraft(`${MINE}\n\n${BLOCK}\n\n${quote}`);
+    expect(parts.own).toBe(`${MINE}\n`);
+    expect(parts.quote).toBe(quote);
+    const rewrite = buildRewriteRequest(parts.own, "shorter");
+    expect(rewrite.untrusted).toContain("> Payment within 14 days.");
+    expect(rewrite.untrusted).not.toContain("When?");
+    expect(rewrite.untrusted).not.toContain("Sobczak");
+    const kept = "As agreed:\n\n> Payment within 14 days.\n\nSo [date].";
+    expect(acceptRewrite({ rewritten: kept }, parts.own)).toEqual({ ok: true, value: kept });
+    expect(acceptWrite({ written: kept }, parts.own)).toEqual({ ok: true, value: kept });
+    expect(acceptAnswers({ withAnswers: `${MINE}\nOn [date].`, added: 1 }, parts.own).ok).toBe(
+      true,
+    );
+    // A quoted line the person did not write, or theirs twice, is quoting mail: refused.
+    for (const text of [`${kept}\n\n> When?`, `${kept}\n\n> Payment within 14 days.`]) {
+      expect(acceptRewrite({ rewritten: text }, parts.own)).toEqual({ ok: false, reason: "quote" });
+    }
+    expect(joinDraft(kept, parts.quote, parts.signature)).toBe(`${kept}\n\n${BLOCK}\n\n${quote}`);
+  });
+});
+
+describe("a `>` line the model wrote is the reply's own text too (rules 4 and 6)", () => {
+  const quote = "On 3 Nov, Anna wrote:\n> Which day?";
+
+  it("a prepared reply, an offered new message, a rewrite: the signature stays the signature", () => {
+    const words = "Yes.\n\n> Tuesday?";
+    // A reply the agent prepared, joined above the signature and the quote.
+    const joined = joinDraft(words, quote, BLOCK);
+    expect(draftSections(joined)).toEqual({ own: `${words}\n`, signature: BLOCK, quote });
+    // A new message the agent offered: the signature goes under its words, `>` line included.
+    const offered = placeSignature(withoutSignature(words), SIGNATURE);
+    expect(offered).toBe(`${words}\n\n${BLOCK}`);
+    expect(draftSections(offered)).toEqual({ own: `${words}\n`, signature: BLOCK, quote: "" });
+    // With no signature, the app's attribution still opens the quote, under the model's line.
+    expect(draftSections(joinDraft(words, quote))).toEqual({
+      own: `${words}\n`,
+      signature: "",
+      quote,
+    });
+  });
+});
+
+describe("any draft, with `>` lines of the person's own above the signature (rule 4)", () => {
+  // The person's lines: words, gaps, blockquotes, fences, a colon line, heading underlines.
+  const ownLine = fc.constantFrom(
+    "Hi",
+    "[date]",
+    "> cited",
+    ">",
+    "  > indented",
+    "As it says:",
+    "On Monday, Bob wrote:",
+    "```",
+    "~~~",
+    "--",
+    "",
+    "  ",
+  );
+  const own = fc.array(ownLine, { maxLength: 10 }).map((ls) => ls.join("\n").trimEnd());
+  const signature = fc.constantFrom("", SIGNATURE, "Home", "Anna\n[phone]");
+  const quote = fc.constantFrom(
+    "",
+    "On 3 Nov 2026, 10:29, Anna wrote:\n> When?\n",
+    "On 3 Nov 2026, 10:29, Anna wrote:\n> When?\n>\n> > older\n",
+    `${FORWARD_MARK}\n> From: Anna (anna@example.com)\n>\n> Hello\n`,
+  );
+
+  it("splits back into the parts it was joined from, the signature whenever one was placed", () => {
+    fc.assert(
+      fc.property(own, signature, quote, (mine, sig, q) => {
+        const block = signatureBlock(sig);
+        const text = joinSections(mine, block, q);
+        const parts = draftSections(text);
+        // A cut of the text: the person's lines from its start, the quote to its end.
+        expect(text.startsWith(parts.own)).toBe(true);
+        expect(text.endsWith(parts.quote)).toBe(true);
+        if (block === "" && q === "") {
+          // Nothing of the app's: only a run of `>` lines that ends the draft reads as a quote.
+          expect(parts.signature).toBe("");
+          if (parts.quote !== "") expect(parts.quote).toMatch(/^(.*:\n)?\s*>/);
+          return;
+        }
+        expect(joinSections(parts.own, parts.signature, parts.quote)).toBe(text);
+        expect(parts.own.trimEnd()).toBe(mine);
+        expect(parts.signature).toBe(block);
+        expect(parts.quote).toBe(q);
+        // Placed once, never twice, under the person's lines; and it follows a change of sender.
+        // (With no quote of the app's, a run of `>` lines under a colon line that ends the person's
+        // text reads as a quote: the signature goes above it.)
+        const unsigned = draftSections(joinSections(mine, "", q));
+        const placed = placeSignature(joinSections(mine, "", q), sig);
+        expect(placed).toBe(joinSections(unsigned.own, block, unsigned.quote));
+        if (q !== "") expect(placed).toBe(text);
+        expect(placeSignature(placed, "Other")).toBe(
+          block === "" ? joinSections(mine, signatureBlock("Other"), q) : placed,
+        );
+        expect(followSignature(text, sig, "Next")).toBe(
+          joinSections(mine, signatureBlock("Next"), q),
+        );
+      }),
+      { numRuns: 2000 },
+    );
   });
 });
