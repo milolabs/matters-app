@@ -6,6 +6,7 @@ import {
   NO_SIGNATURE_FIELD,
   openSignatureField,
   savedSignatureField,
+  signatureAlert,
   typeInSignatureField,
 } from "../src/renderer/signatureFields.ts";
 
@@ -40,5 +41,15 @@ describe("the signature fields", () => {
     // Another account's open field is left as it is.
     const b = typeInSignatureField(openSignatureField("b"), "b", "Ben");
     expect(savedSignatureField(b, "a", "One")).toBe(b);
+  });
+
+  it("says why a save failed only while the field holds the text that failed", () => {
+    const failure = { why: "The signature was not saved.", text: "Anna" };
+    expect(signatureAlert(null, failure, "Anna")).toBe("The signature was not saved.");
+    // The person edits to fix it: the reason is stale and goes.
+    expect(signatureAlert(null, failure, "Anna K")).toBeNull();
+    // What is wrong with the text now comes first; with neither, nothing is said.
+    expect(signatureAlert("Too long.", failure, "Anna")).toBe("Too long.");
+    expect(signatureAlert(null, null, "Anna")).toBeNull();
   });
 });

@@ -314,7 +314,8 @@ export function createComposerSession(
         batch(() => {
           setDraft(saved);
           setSaveState("saved");
-          setError("");
+          // A saved draft says nothing of a sender that could not be chosen: that line stays.
+          if (!error().endsWith(SENDER_PROBLEM_END)) setError("");
         });
       } catch (e) {
         setSaveState("error");
@@ -650,7 +651,10 @@ export function createComposerSession(
         if (disposed || choice !== senderChoice) return { ok: false, signed: null };
         if (prepared === null) {
           // The sender stays the one it was, with its signature; choosing it again tries again.
+          // The composer is as it was before the choice: a Send that waited for it stops, so the
+          // person sees the sender it would go from, and the next goes from the one shown.
           setError(senderProblem(account.address));
+          senderReady = Promise.resolve(true);
           return { ok: false, signed: null };
         }
         const limit = prepared.messageLimitBytes ?? null;
@@ -757,15 +761,16 @@ export function createComposerSession(
     checkSources,
     flush,
     async send() {
-      setError("");
       // From here the sender is the one this goes with: no other can be chosen while it goes.
       setSenderLocked(true);
-      // A sender chosen before Send goes, prepared; one that could not be, stops Send so the
-      // person sees the sender it would have gone from (ADR 0142, rule 5).
+      // A sender chosen before Send goes, prepared; one that could not be, stops this Send so the
+      // person sees the sender it would have gone from, and says why (ADR 0142, rule 5).
       if (!(await senderReady)) {
         setSenderLocked(false);
         return null;
       }
+      // Send goes from the sender shown: what an earlier press or choice said no longer holds.
+      setError("");
       // The rows first (never the copies: a file still being read does not hold Send back), then
       // the draft with those files in it, then the approval of exactly that version.
       await settleAdds();

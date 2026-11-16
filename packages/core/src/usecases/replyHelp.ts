@@ -71,10 +71,11 @@ export function splitDraft(text: string): DraftParts {
 /**
  * The person's lines (as the model wrote them), the signature and the quote again, one empty line
  * between each. A signature block the model wrote anyway is cut off, so a draft is never signed
- * twice (ADR 0142, rule 6).
+ * twice (ADR 0142, rule 6). `before` is the person's own lines the model was given: a block they
+ * had there is theirs and stays; only one new in the model's answer is cut.
  */
-export function joinDraft(own: string, quote: string, signature = ""): string {
-  return joinSections(withoutSignature(own), signature, quote);
+export function joinDraft(own: string, quote: string, signature = "", before = ""): string {
+  return joinSections(withoutSignature(own, before), signature, quote);
 }
 
 /** The gaps of the person's lines, each once, in the order they first appear. */
