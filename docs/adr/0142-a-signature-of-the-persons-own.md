@@ -54,7 +54,9 @@ Read from the code on 2026-11-16:
    most 2,000 characters, kept normalized: line ends as `\n`, no control characters, no white space
    at the end of a line, no empty lines around it, and without a `--` line the person typed at its
    top, since the app writes that line itself. A line that starts with `>` is refused, with the
-   reason: it would read as quoted mail to the reply's fold and to the agent's split. Images, raw
+   reason: it would read as quoted mail to the reply's fold and to the agent's split. A code block
+   in it is fenced plainly or refused: the same line of backticks or tildes above and below, with
+   nothing after it and no such line inside (rule 4 says why). Images, raw
    HTML and anything remote cannot come out of it: the renderer has images off and raw HTML off
    (ADR 0020, rule 11), so such text is sent as text.
 
@@ -78,7 +80,7 @@ Read from the code on 2026-11-16:
      editor, the draft store, the renderer's `text` and the MIME builder keep it as it is (tested
      through each, and through the parser back).
    - In the HTML part the text is rendered in three parts: the person's lines, the signature, and
-     the quote. So the delimiter right under a line of text never makes that line a heading, and it
+     the quote (a reply with no signature in two). So the delimiter right under a line of text never makes that line a heading, and it
      is never an `<hr>` or a list item. The signature is a quiet block, `<div
      class="matters-signature">`, in the colour the sent HTML already gives quotes (`#6e6e73`) at
      13 px, with the delimiter as its first line, as text. The quote below it stays a
@@ -86,18 +88,39 @@ Read from the code on 2026-11-16:
      is a link where another uses it.
    - Where the quote starts (`draftSections`, the one split every part of the app uses: the
      renderer, the sender change, the agent's helpers, a forward's "nobody wrote in", the editor's
-     signature lines and where it offers a value). The quote is the app's own: a reply's "On …
+     signature lines, its fold and where it offers a value). The split, the blocks the agent's text
+     is cut at (rule 6), the agent's check for quoted lines and the editor's look all come from one
+     reading of the draft's lines (`readDraft`): each line is code, a `>` line, a `-- ` line, a
+     `--` line after an empty one, or text, and nothing else in the app tests a draft's lines for
+     these. The quote is the app's own: a reply's "On …
      wrote:" line and its `>` lines, or a forward's part from `> Forwarded message` on, which the
      app always writes under the signature, at the end of the draft. A person may write `>` lines
      of their own anywhere (a blockquote, a `> x` inside a code block); those are their text.
      - A line inside a fenced code block (from a line of three or more backticks or tildes to the
        line that closes it) is never a quote and never a delimiter. A fence never closed is text.
+       Fences are read from the top, as Markdown reads them, with one precedence: the signature the
+       app placed is never code. A code block that would hold a `-- ` line is closed, the line
+       code (an SQL comment), when the text under its closing line closes every fence it opens or
+       has a `-- ` line outside code; else, when the text under one of those `-- ` lines closes
+       every fence it opens, the block's fence is left open, as text, and that line is the
+       delimiter. A signature fenced plainly (rule 1) closes every fence it opens, and a fence above
+       it closed at its first fence line would leave its last one open; so a fence the person left
+       open above it is never closed inside it. Two shapes read two ways, and are read for the
+       signature: a `-- ` line in a code block with a fence left open further down and no other
+       `-- ` line (the block's fence is the one left open, the `-- ` line the delimiter); and a
+       fence left open with a `-- ` line under it above the signature placed (the first `-- ` line
+       is the delimiter, so the signature read is not the one placed, and stays as the person's).
+       Markdown reads a fence left open as code to the end; the renderer renders the parts apart,
+       so in the HTML that code ends where the person's part ends, and the signature and the quote
+       are never inside a `<pre>`. Where the two readings differ, the part boundaries are ours and
+       Markdown's reading holds inside each part; the text part is the source as it is.
      - The delimiter is the first `-- ` line. With one, the quote starts at the first `>` line
        below it, with the line just above when that is below the delimiter, not empty, and ends
        in a colon; with no `>` line below it there is no quote. A `>` line above the delimiter is
        the person's, whatever introduces it.
-     - With no delimiter, the quote starts at the last opening the app writes: an "On … wrote:" line right above a `>` line, or a `> Forwarded message` line, each
-       at the start of a run of `>` lines. Without one (the person reworded it), at a line ending
+     - With no delimiter, the quote starts at the last opening the app writes: an "On … wrote:"
+       line right above a `>` line, or a `> Forwarded message` line, each at the start of a run of
+       `>` lines. Without one (the person reworded it), at a line ending
        in a colon right above the run of `>` and empty lines that ends the draft. Else there is
        no quote: `>` lines with nothing of the app's around them are the person's.
      - The signature is the delimiter and what follows it up to the last line before the quote
@@ -148,8 +171,10 @@ Read from the code on 2026-11-16:
    - It takes the person's own text before the turn (empty when the text is all the model's) and
      the model's answer, and gives the text to keep. It never refuses.
    - A block is a delimiter line and the lines after it up to the next delimiter line or the end. A
-     delimiter line is `-- ` anywhere, or `--` on the first line or after an empty line; a `--`
-     right under a line of text underlines a Markdown heading, which is text and starts no block.
+     delimiter line is `-- ` anywhere, or `--` on the first line or after an empty line, outside a
+     fenced code block as rule 4 reads it (a `-- ` line in a code sample is code: the sample, its
+     closing fence and the text under it stay); a `--` right under a line of text underlines a
+     Markdown heading, which is text and starts no block.
    - A block of the answer is kept if and only if it is one of the person's blocks: its lines the
      same, line ends and white space at the end of a line aside. A block the model reworded is not
      the person's. Each of the person's blocks is matched at most once, in whatever order the

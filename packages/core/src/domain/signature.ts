@@ -67,6 +67,9 @@ export function signatureProblem(signature: string): string | null {
   if (signature.split("\n").some((line) => QUOTED.test(line))) {
     return "A line of a signature can't start with >: it would read as quoted mail.";
   }
+  if (!plainFences(signature)) {
+    return "A code block in a signature opens and closes with the same line of ``` or ~~~, with nothing after it and no such line inside.";
+  }
   return null;
 }
 
@@ -85,50 +88,175 @@ export interface DraftSections {
   readonly quote: string;
 }
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+/** A line that opens a fenced code block: three or more backticks or tildes, indented 0-3 spaces. */
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+
+interface Fence {
+  readonly ch: string;
+  readonly length: number;
+}
+
+/** The fence a line opens, or null. A backtick fence's info string has no backtick (CommonMark). */
+function opens(line: string): Fence | null {
+  const m = FENCE.exec(line);
+  if (m === null) return null;
+  const run = m[1] as string;
+  if (run[0] === "`" && (m[2] as string).includes("`")) return null;
+  return { ch: run[0] as string, length: run.length };
+}
+
+/** Whether a line closes `fence`: its character, at least as many, then only white space. */
+function closes(line: string, fence: Fence): boolean {
+  const m = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
+  return m !== null && (m[1] as string)[0] === fence.ch && (m[1] as string).length >= fence.length;
+}
 
 /**
- * Which lines are inside a fenced code block, its fence lines included: from a line that opens one
- * (three or more backticks or tildes, indented at most three spaces) to the first line below that
- * closes it (the same character, at least as many, nothing after but white space). A fence that
- * is never closed is text: the app's quote below it is still found.
+ * Whether every code block of a signature is fenced plainly: a line of backticks or tildes with
+ * nothing after them, the same line again below, and no line that looks like a fence between.
+ * Such a signature is never read as code (`codeLines`): under a fence the person left open above
+ * it, closing theirs at its first fence line would leave its last one open, so theirs is left
+ * open instead. One with a fence that has words after it, or one inside a block, could pair up
+ * with theirs and be read as their code.
+ */
+function plainFences(signature: string): boolean {
+  let open: string | null = null;
+  for (const line of signature.split("\n")) {
+    if (!FENCE.test(line)) continue;
+    if (open === null) {
+      if (!/^ {0,3}(`{3,}|~{3,})$/.test(line)) return false;
+      open = line;
+    } else if (line === open) open = null;
+    else return false;
+  }
+  return open === null;
+}
+
+/**
+ * Which lines are inside a fenced code block, its fence lines included (ADR 0142, rule 4). Fences
+ * are read from the top, as Markdown reads them: a line that opens one, then the first line below
+ * it that closes it. A fence with no line that closes it is text, and the lines under it are read
+ * on.
+ *
+ * One case is decided for the signature, which the app placed and which is never code: a code
+ * block that would hold a `-- ` line.
+ *
+ * - It is closed, and the `-- ` line is code (an SQL comment), when the text under its closing
+ *   line, read by this same rule, closes every fence it opens, or has a `-- ` line outside code
+ *   (a signature of its own below). So a `-- ` line in a closed code block stays code, with or
+ *   without a signature under the block, and with or without a code block in that signature.
+ * - Else closing it would leave a fence open further down with no signature outside code: the
+ *   signature's own code block, read from its closing line. Then, when the text under one of the
+ *   `-- ` lines it would hold closes every fence it opens, its fence is left open, as text, and
+ *   that `-- ` line is outside code: the delimiter. A signature the app placed is fenced plainly
+ *   (`plainFences`, which `signatureProblem` asks for), so it closes every fence it opens, and
+ *   closing a fence above it at its first fence line always leaves its last one open; a quote's
+ *   lines all start with `>`. So a fence the person left open is never closed by a fence inside
+ *   the signature.
+ * - Else it is closed.
+ *
+ * Two shapes read two ways, and are read for the signature. A `-- ` line in a code block, with a
+ * fence left open further down and no other `-- ` line: the block's closing line pairs with that
+ * fence, so the block's fence is the one left open and the `-- ` line is the delimiter. A fence
+ * left open with a `-- ` line under it, above the signature the app placed: the first `-- ` line
+ * is the delimiter, and the signature read from it is not the one placed (it is the person's, as
+ * when they change it). Markdown reads a fence left open as code to the end; the renderer renders
+ * the parts apart, so that code ends where the person's part ends, and the signature and the
+ * quote are never in it.
  */
 function codeLines(lines: readonly string[]): boolean[] {
-  const code = lines.map(() => false);
-  // The shortest fence of each character that found no close below it: none further down will.
-  const unclosed = new Map<string, number>();
-  for (let i = 0; i < lines.length; i++) {
-    const open = FENCE.exec(lines[i] as string)?.[1];
-    if (open === undefined) continue;
-    const ch = open[0] as string;
-    if (open.length >= (unclosed.get(ch) ?? Number.POSITIVE_INFINITY)) continue;
-    const close = new RegExp(`^ {0,3}\\${ch}{${open.length},}\\s*$`);
+  const n = lines.length;
+  const fences = lines.map(opens);
+  // The `-- ` lines above line k, so whether one stands between two lines is known at once.
+  const dashes = [0];
+  for (let k = 0; k < n; k++)
+    dashes.push((dashes[k] as number) + (lines[k] === SIGNATURE_DELIMITER ? 1 : 0));
+  const dashBetween = (from: number, to: number) =>
+    (dashes[to] as number) > (dashes[from] as number);
+  // What each opening line decides, from the bottom up: everything it depends on is below it.
+  // `close`: the line that closes it, or -1 when it is left open. `open`: the fences left open
+  // reading from it to the end; `signed`: whether that reading has a `-- ` line outside code.
+  const close: number[] = lines.map(() => -1);
+  const open: number[] = lines.map(() => 0);
+  const signed: boolean[] = lines.map(() => false);
+  const next: number[] = new Array(n + 1).fill(n);
+  for (let k = n - 1; k >= 0; k--) next[k] = fences[k] === null ? (next[k + 1] as number) : k;
+  // The same two, reading from any line.
+  const openFrom = (p: number) =>
+    p >= n || next[p] === n ? 0 : (open[next[p] as number] as number);
+  const signedFrom = (p: number) => {
+    if (p >= n) return false;
+    const i = next[p] as number;
+    return dashBetween(p, i) || (i < n && (signed[i] as boolean));
+  };
+  for (let i = n - 1; i >= 0; i--) {
+    const fence = fences[i];
+    if (fence === null || fence === undefined) continue;
     let j = i + 1;
-    while (j < lines.length && !close.test(lines[j] as string)) j++;
-    if (j === lines.length) {
-      unclosed.set(ch, open.length);
+    while (j < n && !closes(lines[j] as string, fence)) j++;
+    let closed = j < n;
+    if (closed && dashBetween(i + 1, j) && openFrom(j + 1) > 0 && !signedFrom(j + 1)) {
+      for (let d = i + 1; d < j; d++) {
+        if (lines[d] === SIGNATURE_DELIMITER && openFrom(d + 1) === 0) {
+          closed = false;
+          break;
+        }
+      }
+    }
+    close[i] = closed ? j : -1;
+    open[i] = closed ? openFrom(j + 1) : 1 + openFrom(i + 1);
+    signed[i] = closed ? signedFrom(j + 1) : signedFrom(i + 1);
+  }
+  const code = lines.map(() => false);
+  for (let p = next[0] as number; p < n; ) {
+    const j = close[p] as number;
+    if (j < 0) {
+      p = next[p + 1] as number;
       continue;
     }
-    for (let k = i; k <= j; k++) code[k] = true;
-    i = j;
+    for (let k = p; k <= j; k++) code[k] = true;
+    p = next[j + 1] as number;
   }
   return code;
 }
 
-/** Where a draft's signature and quote start, as line numbers; `quoteAt` is the end when none. */
-interface SectionLines {
+/**
+ * What one line of a draft is (ADR 0142, rule 4). `code`: inside a fenced code block, its fence
+ * lines included. Outside one: `quoted`, a line that starts with `>`; `delimiter`, a `-- ` line;
+ * `dashes`, a `--` line on the first line or after an empty line (a delimiter that lost its
+ * space, which only a model's text is cut at: `keepOwnBlocks`); else `text`.
+ */
+export type DraftLineKind = "text" | "code" | "quoted" | "delimiter" | "dashes";
+
+/**
+ * A draft's text read once: its lines, what each is, and where its signature and quote start, as
+ * line numbers. Every reading of a draft in the app comes from this one: the split
+ * (`draftSections`, `sectionStarts`), the blocks the agent's text is cut at (`keepOwnBlocks`),
+ * the agent's quote check, the renderer and the editor.
+ */
+export interface DraftReading {
+  /** The lines, with `\n` line ends. */
   readonly lines: readonly string[];
+  readonly kinds: readonly DraftLineKind[];
   /** The delimiter line of the signature, or -1. */
   readonly signatureAt: number;
   /** The last line of the signature that is not empty, plus one. */
   readonly signatureEnd: number;
+  /** The first line of the quote; the number of lines when there is none. */
   readonly quoteAt: number;
 }
 
-function sectionLines(text: string): SectionLines {
+export function readDraft(text: string): DraftReading {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const code = codeLines(lines);
-  const quoted = (i: number) => !code[i] && QUOTED.test(lines[i] as string);
+  const kinds: DraftLineKind[] = lines.map((l, i) => {
+    if (code[i]) return "code";
+    if (QUOTED.test(l)) return "quoted";
+    if (l === SIGNATURE_DELIMITER) return "delimiter";
+    if (l === "--" && (lines[i - 1] ?? "").trim() === "") return "dashes";
+    return "text";
+  });
+  const quoted = (i: number) => kinds[i] === "quoted";
   // A quote starts at its first `>` line, with the line just above it when that ends in a colon.
   const introduced = (i: number, floor: number) => {
     const above = lines[i - 1];
@@ -136,7 +264,7 @@ function sectionLines(text: string): SectionLines {
       ? i - 1
       : i;
   };
-  const delimiter = lines.findIndex((l, i) => !code[i] && l === SIGNATURE_DELIMITER);
+  const delimiter = kinds.indexOf("delimiter");
   let quoteAt = lines.length;
   if (delimiter >= 0) {
     // The app writes its quote under the signature: only a `>` line below the delimiter starts it.
@@ -169,21 +297,24 @@ function sectionLines(text: string): SectionLines {
       signatureEnd--;
     }
   }
-  return { lines, signatureAt, signatureEnd, quoteAt };
+  return { lines, kinds, signatureAt, signatureEnd, quoteAt };
 }
 
 /**
- * Splits a draft's text (ADR 0142, rule 4). The quote is the app's own: what it wrote under the
- * signature, at the end of the draft, a reply's "On 3 Nov 2026, 10:29, Anna wrote:" and its `>`
- * lines, or a forward's part from `> Forwarded message` on. A `>` line the person wrote above the
+ * Splits a draft's text (ADR 0142, rule 4), as `readDraft` reads it. The quote is the app's own:
+ * what it wrote under the signature, at the end of the draft, a reply's "On 3 Nov 2026, 10:29,
+ * Anna wrote:" and its `>` lines, or a forward's part from `> Forwarded message` on. A `>` line the person wrote above the
  * signature, or anywhere inside a fenced code block, is their own text.
  *
- * - Lines inside a fenced code block are never a quote and never a delimiter (`codeLines`).
+ * - Lines inside a fenced code block are never a quote and never a delimiter. The signature the
+ *   app placed is never code: a fence still open at a `-- ` line is closed below it only when the
+ *   text below that line leaves a fence of its own open (`codeLines`).
  * - The delimiter is the first `-- ` line. With one, the quote starts at the first `>` line below
  *   it, with the line just above that when it is below the delimiter, not empty, and ends in a
  *   colon; with no `>` line below it there is no quote. Nothing above the delimiter is quote.
- * - With no delimiter, the quote starts at the last opening the app writes: a line "On … wrote:" right above a `>` line that does not follow another `>`
- *   line, or a `> Forwarded message` line that does not. Without one, at the line that ends in a
+ * - With no delimiter, the quote starts at the last opening the app writes: a line "On … wrote:"
+ *   right above a `>` line that does not follow another `>` line, or a `> Forwarded message` line
+ *   that does not. Without one, at the line that ends in a
  *   colon right above the run of `>` lines and empty lines that ends the draft (a reply whose
  *   attribution the person reworded). Without that either, there is no quote: a `>` line with
  *   nothing of the app's around it is the person's.
@@ -194,7 +325,7 @@ function sectionLines(text: string): SectionLines {
  *   between its lines included.
  */
 export function draftSections(text: string): DraftSections {
-  const { lines, signatureAt, signatureEnd, quoteAt } = sectionLines(text);
+  const { lines, signatureAt, signatureEnd, quoteAt } = readDraft(text);
   return {
     own: lines.slice(0, signatureAt < 0 ? quoteAt : signatureAt).join("\n"),
     signature: signatureAt < 0 ? "" : lines.slice(signatureAt, signatureEnd).join("\n"),
@@ -210,7 +341,7 @@ export function sectionStarts(text: string): {
   readonly signature: number | null;
   readonly quote: number | null;
 } {
-  const { lines, signatureAt, quoteAt } = sectionLines(text);
+  const { lines, signatureAt, quoteAt } = readDraft(text);
   const offset = (n: number) => {
     let at = 0;
     for (let i = 0; i < n; i++) at += (lines[i] as string).length + 1;
@@ -260,15 +391,6 @@ export function followSignature(body: string, inserted: string, next: string): s
   return joinSections(parts.own, signatureBlock(next), parts.quote);
 }
 
-/** The numbers of the lines that start a signature block, in order. */
-function delimiterLines(lines: readonly string[]): number[] {
-  const at: number[] = [];
-  lines.forEach((l, i) => {
-    if (l === SIGNATURE_DELIMITER || (l === "--" && (lines[i - 1] ?? "").trim() === "")) at.push(i);
-  });
-  return at;
-}
-
 /** A text cut at its delimiter lines: what stands above the first, and each block, as lines. */
 interface Blocks {
   readonly body: readonly string[];
@@ -277,8 +399,9 @@ interface Blocks {
 }
 
 function blocksOf(text: string): Blocks {
-  const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const at = delimiterLines(lines);
+  // A block starts at a delimiter line outside a code block, as the draft is read (`readDraft`).
+  const { lines, kinds } = readDraft(text);
+  const at = kinds.flatMap((k, i) => (k === "delimiter" || k === "dashes" ? [i] : []));
   const blocks = at.map((start, i) => {
     const block = lines.slice(start, at[i + 1] ?? lines.length);
     let end = block.length;
@@ -311,8 +434,10 @@ export function signatureBlocks(text: string): string[] {
  *
  * - A block is a delimiter line and the lines after it up to the next delimiter line or the end. A
  *   delimiter line is `-- ` with its space anywhere, or `--` on the first line or after an empty
- *   line. A `--` right under a line of text underlines a Markdown heading: it is text, never a
- *   delimiter, and starts no block. What stands above the first delimiter is the answer's body.
+ *   line, outside a fenced code block as `readDraft` reads it (a `-- ` in a code sample is code,
+ *   and the fence closing it stays). A `--` right under a line of text underlines a Markdown
+ *   heading: it is text, never a delimiter, and starts no block. What stands above the first
+ *   delimiter is the answer's body.
  * - A block of the answer is the person's when its lines are the same as those of one of the
  *   blocks of `before`, line ends and white space at the end of a line aside. A block the model
  *   reworded is not the person's. Each block of the person's is matched at most once, in whatever
