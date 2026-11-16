@@ -8,6 +8,8 @@
  * the person's own lines. Pure.
  */
 
+import { FORWARD_MARK, isAttribution } from "./appQuote.ts";
+
 /** The longest signature kept, in characters (UTF-16 code units, as the field counts them). */
 export const SIGNATURE_MAX_CHARS = 2000;
 
@@ -83,27 +85,140 @@ export interface DraftSections {
   readonly quote: string;
 }
 
+const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+
 /**
- * Splits a draft's text. The quote starts at the first `>` line, with the line just above it when
- * that ends in a colon ("On 3 Nov 2026, 10:29, Anna wrote:"). The signature is the first delimiter
- * line above the quote and what follows it up to the quote. Everything else is the person's own.
+ * Which lines are inside a fenced code block, its fence lines included: from a line that opens one
+ * (three or more backticks or tildes, indented at most three spaces) to the first line below that
+ * closes it (the same character, at least as many, nothing after but white space). A fence that
+ * is never closed is text: the app's quote below it is still found.
+ */
+function codeLines(lines: readonly string[]): boolean[] {
+  const code = lines.map(() => false);
+  // The shortest fence of each character that found no close below it: none further down will.
+  const unclosed = new Map<string, number>();
+  for (let i = 0; i < lines.length; i++) {
+    const open = FENCE.exec(lines[i] as string)?.[1];
+    if (open === undefined) continue;
+    const ch = open[0] as string;
+    if (open.length >= (unclosed.get(ch) ?? Number.POSITIVE_INFINITY)) continue;
+    const close = new RegExp(`^ {0,3}\\${ch}{${open.length},}\\s*$`);
+    let j = i + 1;
+    while (j < lines.length && !close.test(lines[j] as string)) j++;
+    if (j === lines.length) {
+      unclosed.set(ch, open.length);
+      continue;
+    }
+    for (let k = i; k <= j; k++) code[k] = true;
+    i = j;
+  }
+  return code;
+}
+
+/** Where a draft's signature and quote start, as line numbers; `quoteAt` is the end when none. */
+interface SectionLines {
+  readonly lines: readonly string[];
+  /** The delimiter line of the signature, or -1. */
+  readonly signatureAt: number;
+  /** The last line of the signature that is not empty, plus one. */
+  readonly signatureEnd: number;
+  readonly quoteAt: number;
+}
+
+function sectionLines(text: string): SectionLines {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const code = codeLines(lines);
+  const quoted = (i: number) => !code[i] && QUOTED.test(lines[i] as string);
+  // A quote starts at its first `>` line, with the line just above it when that ends in a colon.
+  const introduced = (i: number, floor: number) => {
+    const above = lines[i - 1];
+    return i - 1 > floor && !code[i - 1] && above !== undefined && /\S.*:\s*$/.test(above)
+      ? i - 1
+      : i;
+  };
+  const delimiter = lines.findIndex((l, i) => !code[i] && l === SIGNATURE_DELIMITER);
+  let quoteAt = lines.length;
+  if (delimiter >= 0) {
+    // The app writes its quote under the signature: only a `>` line below the delimiter starts it.
+    const below = lines.findIndex((_, i) => i > delimiter && quoted(i));
+    if (below >= 0) quoteAt = introduced(below, delimiter);
+  } else {
+    // No signature: the quote starts at the last line the app opens one with, the attribution
+    // of a reply above a `>` line, or the mark of a forward as the first `>` line of its run.
+    // Else at the line ending in a colon above the run of `>` and empty lines that ends the
+    // draft. A run with no such line above it is the person's.
+    let opening = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (!quoted(i) || (i > 0 && quoted(i - 1))) continue;
+      if (lines[i] === FORWARD_MARK) opening = i;
+      else if (i > 0 && !code[i - 1] && isAttribution(lines[i - 1] as string)) opening = i - 1;
+    }
+    if (opening >= 0) {
+      quoteAt = opening;
+    } else {
+      let k = lines.length;
+      while (k > 0 && ((lines[k - 1] as string).trim() === "" || quoted(k - 1))) k--;
+      while (k < lines.length && !quoted(k)) k++;
+      if (k < lines.length && introduced(k, -1) < k) quoteAt = k - 1;
+    }
+  }
+  const signatureAt = delimiter;
+  let signatureEnd = quoteAt;
+  if (signatureAt >= 0) {
+    while (signatureEnd > signatureAt + 1 && (lines[signatureEnd - 1] as string).trim() === "") {
+      signatureEnd--;
+    }
+  }
+  return { lines, signatureAt, signatureEnd, quoteAt };
+}
+
+/**
+ * Splits a draft's text (ADR 0142, rule 4). The quote is the app's own: what it wrote under the
+ * signature, at the end of the draft, a reply's "On 3 Nov 2026, 10:29, Anna wrote:" and its `>`
+ * lines, or a forward's part from `> Forwarded message` on. A `>` line the person wrote above the
+ * signature, or anywhere inside a fenced code block, is their own text.
+ *
+ * - Lines inside a fenced code block are never a quote and never a delimiter (`codeLines`).
+ * - The delimiter is the first `-- ` line. With one, the quote starts at the first `>` line below
+ *   it, with the line just above that when it is below the delimiter, not empty, and ends in a
+ *   colon; with no `>` line below it there is no quote. Nothing above the delimiter is quote.
+ * - With no delimiter, the quote starts at the last opening the app writes: a line "On … wrote:" right above a `>` line that does not follow another `>`
+ *   line, or a `> Forwarded message` line that does not. Without one, at the line that ends in a
+ *   colon right above the run of `>` lines and empty lines that ends the draft (a reply whose
+ *   attribution the person reworded). Without that either, there is no quote: a `>` line with
+ *   nothing of the app's around it is the person's.
+ * - The signature is the delimiter and what follows it up to the last line before the quote that
+ *   is not empty. A `-- ` inside the quote (`> -- `) is the other side's.
+ * - Everything above the signature, or above the quote when there is no signature, is the
+ *   person's own. Below the start of the quote everything is the quote, words the person wrote
+ *   between its lines included.
  */
 export function draftSections(text: string): DraftSections {
-  const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const first = lines.findIndex((l) => QUOTED.test(l));
-  let quoteAt = lines.length;
-  if (first >= 0) {
-    const above = lines[first - 1];
-    quoteAt = above !== undefined && above.trim() !== "" && /:\s*$/.test(above) ? first - 1 : first;
-  }
-  const head = lines.slice(0, quoteAt);
-  const at = head.indexOf(SIGNATURE_DELIMITER);
-  let end = head.length;
-  if (at >= 0) while (end > at + 1 && (head[end - 1] as string).trim() === "") end--;
+  const { lines, signatureAt, signatureEnd, quoteAt } = sectionLines(text);
   return {
-    own: (at < 0 ? head : head.slice(0, at)).join("\n"),
-    signature: at < 0 ? "" : head.slice(at, end).join("\n"),
+    own: lines.slice(0, signatureAt < 0 ? quoteAt : signatureAt).join("\n"),
+    signature: signatureAt < 0 ? "" : lines.slice(signatureAt, signatureEnd).join("\n"),
     quote: lines.slice(quoteAt).join("\n"),
+  };
+}
+
+/**
+ * Where the signature and the quote of a draft start, as offsets into the text (which has `\n`
+ * line ends, as the editor's has); null for one there is not. The same parts as `draftSections`.
+ */
+export function sectionStarts(text: string): {
+  readonly signature: number | null;
+  readonly quote: number | null;
+} {
+  const { lines, signatureAt, quoteAt } = sectionLines(text);
+  const offset = (n: number) => {
+    let at = 0;
+    for (let i = 0; i < n; i++) at += (lines[i] as string).length + 1;
+    return at;
+  };
+  return {
+    signature: signatureAt < 0 ? null : offset(signatureAt),
+    quote: quoteAt === lines.length ? null : offset(quoteAt),
   };
 }
 

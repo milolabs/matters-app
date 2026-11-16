@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { MarkdownComposeRenderer } from "@matters/adapter-compose";
 import { visibleText } from "@matters/adapter-mime";
 import type {
   AgentRunRequest,
@@ -25,6 +26,7 @@ import {
   PROMPT_INSTRUCTIONS,
   planUseOf,
   REMEMBER_INSTRUCTIONS,
+  splitDraft,
   TALK_ALL_FACTS_RULES,
   TALK_ALL_INSTRUCTIONS,
   TALK_ALL_OFFERS_RULES,
@@ -1218,11 +1220,47 @@ describe("AgentService: drafts", () => {
     expect(body).toContain("> Can you send it?");
   });
 
+  it("keeps a line the agent quoted in the reply's own part, the signature and the quote apart", async () => {
+    const h = await ready();
+    await h.storage.accounts.setSignature("acc1", "Me\nWork Ltd");
+    await h.addMail({
+      threadId: "t1",
+      messages: [{ dateMs: NOW - DAY, text: "Can you send it?", fromName: "Anna" }],
+    });
+    await h.service.draftFromPrepared("t1", "Yes.\n\n> Tuesday?");
+    const body = h.drafts[0]?.bodyMarkdown ?? "";
+    expect(body.startsWith("Yes.\n\n> Tuesday?\n\n-- \nMe\nWork Ltd\n\nOn ")).toBe(true);
+    const parts = splitDraft(body);
+    expect(parts.own).toBe("Yes.\n\n> Tuesday?\n");
+    expect(parts.signature).toBe("-- \nMe\nWork Ltd");
+    expect(parts.quote).toMatch(/^On .* wrote:\n> Can you send it\?\n$/);
+    // Sent, the agent's `>` line is a blockquote of the reply, the signature its quiet block, and
+    // the app's quote below it.
+    const html = new MarkdownComposeRenderer().render(body).html;
+    const block = html.indexOf('class="matters-signature"');
+    expect(block).toBeGreaterThan(html.indexOf("Tuesday?"));
+    expect(html.slice(0, block)).toMatch(/<blockquote[^>]*>\s*<p[^>]*>Tuesday\?<\/p>/);
+    expect(html.slice(block)).toMatch(
+      /Work Ltd[\s\S]*<blockquote[^>]*>\s*<p[^>]*>Can you send it\?/,
+    );
+  });
+
   it("refuses an empty body and a thread that does not exist", async () => {
     const h = await ready();
     await expect(h.service.draftFromPrepared("t1", "  ")).rejects.toBeInstanceOf(
       InvalidAgentSettingError,
     );
+    // A body that is only a block of the agent's is empty once cut: no draft is made.
+    await h.addMail({
+      threadId: "t1",
+      messages: [{ dateMs: NOW - DAY, text: "Can you send it?", fromName: "Anna" }],
+    });
+    for (const only of ["--\nBot", "-- \nYour assistant\n\n--\nBot", "\n\n-- \n"]) {
+      await expect(h.service.draftFromPrepared("t1", only)).rejects.toBeInstanceOf(
+        InvalidAgentSettingError,
+      );
+    }
+    expect(h.drafts).toEqual([]);
     await expect(h.service.draftFromPrepared("none", "Hi")).rejects.toBeInstanceOf(
       ThingNotFoundError,
     );

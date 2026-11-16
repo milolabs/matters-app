@@ -3898,6 +3898,12 @@ export class AgentService implements AgentApi {
     if (typeof body !== "string" || body.trim() === "" || body.length > MAX_DRAFT_CHARS) {
       throw new InvalidAgentSettingError("The reply is empty or too long.");
     }
+    // The words are all the agent's, so every signature block in them goes (ADR 0142, rule 6). A
+    // body that was only a block is empty once cut, and makes no draft, as a helper's answer that
+    // is empty once kept is refused. A `>` line the model wrote (a line it answers) stays in the
+    // reply's own part: the quote is only the app's, under the signature (rule 4).
+    const words = withoutSignature(body.replace(/\r\n?/g, "\n"));
+    if (words.trim() === "") throw new InvalidAgentSettingError("The reply is empty or too long.");
     // The reply rules of the composer (ADR 0020, 0042) decide who it goes to and what it quotes.
     const prepared = await prepareReplyDraft(
       {
@@ -3913,10 +3919,8 @@ export class AgentService implements AgentApi {
     // A draft the person already started is theirs: the composer opens it, nothing is overwritten.
     if (prepared.existing !== null) return { draftId: prepared.existing.id, existing: true };
     // The agent's words above the account's signature and the quote, as the composer starts a
-    // reply; the words are all the agent's, so every signature block in them goes (ADR 0142,
-    // rule 6).
+    // reply.
     const start = splitDraft(prepared.content.bodyMarkdown);
-    const words = withoutSignature(body.replace(/\r\n?/g, "\n"));
     const joined = joinDraft(words, start.quote, start.signature);
     const draft = await this.deps.saveDraft({
       ...prepared.content,
