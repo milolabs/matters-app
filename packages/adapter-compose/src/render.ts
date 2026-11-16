@@ -74,20 +74,24 @@ export class MarkdownComposeRenderer implements ComposeRendererPort {
    * item. The text part keeps the line exactly, its trailing space included. The parts are one
    * message: a link defined in one (`[site]: https://…`) is a link where another uses it, so
    * every part's definitions are read first, into one environment for this message only.
+   *
+   * The parts are where the core reads them (`draftSections`), the quote rendered apart too.
+   * Within a part Markdown reads its own fences: a fence the person left open is code to the end
+   * of their part (the core reads it as text), never into the signature or the quote.
    */
   private body(markdown: string): string {
     const { own, signature, quote } = draftSections(markdown);
-    if (signature === "") return this.md.render(markdown);
-    const lines = signature.slice(SIGNATURE_DELIMITER.length + 1);
+    if (signature === "" && quote === "") return this.md.render(markdown);
+    const lines = signature === "" ? "" : signature.slice(SIGNATURE_DELIMITER.length + 1);
     const env = {};
     for (const part of [own, lines, quote]) this.md.parse(part, env);
-    return (
-      this.md.render(own, env) +
-      '<div class="matters-signature">' +
-      `<p class="matters-signature-mark">${SIGNATURE_DELIMITER}</p>` +
-      this.md.render(lines, env) +
-      "</div>" +
-      this.md.render(quote, env)
-    );
+    const block =
+      signature === ""
+        ? ""
+        : '<div class="matters-signature">' +
+          `<p class="matters-signature-mark">${SIGNATURE_DELIMITER}</p>` +
+          this.md.render(lines, env) +
+          "</div>";
+    return this.md.render(own, env) + block + this.md.render(quote, env);
   }
 }

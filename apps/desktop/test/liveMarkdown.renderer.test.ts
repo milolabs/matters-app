@@ -1,15 +1,38 @@
 // The reply editor's live Markdown (ADR 0100): where the quote starts, and how a line is marked.
 import { EditorState, type Transaction, type TransactionSpec } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
+import { type DecorationSet, EditorView } from "@codemirror/view";
+import {
+  draftSections,
+  FORWARD_MARK,
+  joinSections,
+  sectionStarts,
+  signatureBlock,
+} from "@matters/core";
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   acceptSuggestion,
   lineRanges,
+  liveMarkdown,
   ownText,
   quoteStart,
   signatureStart,
   suggestionsField,
+  toggleQuote,
 } from "../src/renderer/liveMarkdown.ts";
+
+/** Where the editor folds the quote: the start of the "···" that stands for it, or null. */
+function foldedAt(doc: string): number | null {
+  const state = EditorState.create({ doc, extensions: liveMarkdown() });
+  let at: number | null = null;
+  for (const source of state.facet(EditorView.decorations)) {
+    if (typeof source === "function") continue;
+    (source as DecorationSet).between(0, doc.length, (from) => {
+      at = from;
+    });
+  }
+  return at;
+}
 
 describe("quoteStart", () => {
   it("starts at the attribution line above the quoted lines", () => {
@@ -18,10 +41,43 @@ describe("quoteStart", () => {
     expect(ownText(text)).toBe("Dziękuję!\n\n");
   });
 
-  it("finds a quote without an attribution line, and none in a text without one", () => {
-    expect(quoteStart("a\n> b")).toBe(2);
+  it("finds a quote under a line ending in a colon, and none in a text without one", () => {
+    // Before, any run of `>` lines that ended the text was the quote (`"a\n> b"` folded at 2);
+    // the core reads one with nothing of the app's above it as the person's own (ADR 0142).
+    expect(quoteStart("a\n> b")).toBeNull();
+    expect(quoteStart("Anna said:\n> b")).toBe(0);
     expect(quoteStart("a\n> quoted in the middle\nb")).toBeNull();
     expect(quoteStart("plain text")).toBeNull();
+  });
+
+  it("the reviewer's case: the person's own blockquote is theirs, and never folds away", () => {
+    const text = "As agreed:\n\n> Paid by [date].";
+    expect(quoteStart(text)).toBeNull();
+    expect(sectionStarts(text).quote).toBeNull();
+    expect(ownText(text)).toBe(text);
+    expect(foldedAt(text)).toBeNull();
+    // Under the signature, with the app's quote below: only the app's quote folds.
+    const reply = `${text}\n\n-- \nMe\n\nOn 3 Nov 2026, 10:29, Anna wrote:\n> When?`;
+    const at = `${text}\n\n-- \nMe\n\n`.length;
+    expect(quoteStart(reply)).toBe(at);
+    expect(foldedAt(reply)).toBe(at);
+    // Opened, the fold's line stands where the quote starts.
+    const state = EditorState.create({ doc: reply, extensions: liveMarkdown() });
+    const open = state.update({ effects: toggleQuote.of(false) }).state;
+    const starts: number[] = [];
+    for (const source of open.facet(EditorView.decorations)) {
+      if (typeof source !== "function")
+        (source as DecorationSet).between(0, reply.length, (f) => {
+          starts.push(f);
+        });
+    }
+    expect(starts).toEqual([at]);
+  });
+
+  it("a fence the person left open does not make the signature theirs (ADR 0142, rule 4)", () => {
+    const doc = "Example:\n\n```\nls\n\n-- \n```\nJane\n```";
+    expect(signatureStart(doc)).toBe("Example:\n\n```\nls\n\n".length);
+    expect(ownText(doc)).toBe("Example:\n\n```\nls\n\n");
   });
 
   it("treats an empty reply above a quote as empty", () => {
@@ -116,5 +172,47 @@ describe("acceptSuggestion", () => {
       }),
     ).toBe(false);
     expect(view.state.doc.toString()).toBe("Hello\n\n-- \nAway until [date]");
+  });
+});
+
+describe("the editor reads a draft as the core does (ADR 0142, rule 4)", () => {
+  const plain = fc.constantFrom("Hi", "[date]", "> cited", "As it says:", "", "Anna napisała:");
+  const inside = fc.constantFrom("ls", "-- ", "--", "", "> x", "~~~");
+  const closed = fc
+    .tuple(fc.constantFrom("```", "~~~"), fc.array(inside, { maxLength: 3 }))
+    .map(([open, body]) => [open, ...body.filter((l) => !l.startsWith(open[0] as string)), open]);
+  const own = fc
+    .tuple(
+      fc.array(
+        fc.oneof(
+          plain.map((l) => [l]),
+          closed,
+        ),
+        { maxLength: 6 },
+      ),
+      fc.constantFrom([], ["```"], ["```", "ls"]),
+    )
+    .map(([parts, tail]) => [...parts.flat(), ...tail].join("\n").trimEnd());
+  const signature = fc.constantFrom("", "Me", "```\nJane\n```");
+  const quote = fc.constantFrom(
+    "",
+    "On 3 Nov 2026, 10:29, Anna wrote:\n> When?\n",
+    `${FORWARD_MARK}\n> From: Anna\n>\n> Hello\n`,
+  );
+
+  it("folds, styles and fills where the core splits, for any draft", () => {
+    fc.assert(
+      fc.property(own, signature, quote, (mine, sig, q) => {
+        const text = joinSections(mine, signatureBlock(sig), q);
+        const at = sectionStarts(text);
+        const parts = draftSections(text);
+        expect(quoteStart(text)).toBe(at.quote);
+        expect(signatureStart(text)).toBe(at.signature);
+        expect(foldedAt(text)).toBe(at.quote);
+        const end = at.signature ?? at.quote;
+        expect(ownText(text)).toBe(end === null ? text : `${parts.own}\n`);
+      }),
+      { numRuns: 1000 },
+    );
   });
 });

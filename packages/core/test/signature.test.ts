@@ -21,9 +21,11 @@ import {
   prepareForwardDraft,
   prepareNewMessage,
   prepareReplyDraft,
+  readDraft,
   SIGNATURE_DELIMITER,
   SIGNATURE_MAX_CHARS,
   saveSignature,
+  sectionStarts,
   signatureBlock,
   signatureProblem,
   splitDraft,
@@ -527,6 +529,213 @@ describe("any draft, with `>` lines of the person's own above the signature (rul
         );
       }),
       { numRuns: 2000 },
+    );
+  });
+});
+
+describe("a fence and the signature the app placed: the signature is never code (rule 4)", () => {
+  // The reviewer's case: a fence the person left open above a signature that has a fence of its
+  // own. Before, the signature's first fence line closed the person's, the delimiter was code,
+  // and the signature read as the person's own text.
+  const MINE = "Example:\n\n```\nls";
+  const FENCED_SIGNATURE = "```\nJane\n```";
+  const SIGNED = `-- \n${FENCED_SIGNATURE}`;
+  // SQL comments: `-- ` lines inside a closed code block, above the signature.
+  const SQL = "Run:\n\n```sql\n-- \n-- the totals\nSELECT 1;\n-- \n```\n\nThanks";
+
+  it("the reviewer's case: the sections, a change of sender, placing it", async () => {
+    expect(signatureProblem(FENCED_SIGNATURE)).toBeNull();
+    const prepared = await prepareNewMessage(deps([account({ signature: FENCED_SIGNATURE })]));
+    const body = `${MINE}${prepared.content.bodyMarkdown}`;
+    expect(body).toBe(`${MINE}\n\n${SIGNED}`);
+    expect(draftSections(body)).toEqual({ own: `${MINE}\n`, signature: SIGNED, quote: "" });
+    expect(sectionStarts(body)).toEqual({ signature: `${MINE}\n\n`.length, quote: null });
+    expect(followSignature(body, FENCED_SIGNATURE, "Home")).toBe(`${MINE}\n\n-- \nHome`);
+    expect(followSignature(body, FENCED_SIGNATURE, "")).toBe(MINE);
+    expect(placeSignature(body, FENCED_SIGNATURE)).toBe(body);
+    expect(placeSignature(MINE, FENCED_SIGNATURE)).toBe(body);
+    // The person's fence left open is text; the signature's is the code.
+    const { kinds } = readDraft(body);
+    expect(kinds).toEqual([
+      "text",
+      "text",
+      "text",
+      "text",
+      "text",
+      "delimiter",
+      "code",
+      "code",
+      "code",
+    ]);
+  });
+
+  it("the reviewer's case in a reply and a forward: the signature never reaches the agent", async () => {
+    const reply = await prepareReplyDraft(
+      deps([account({ signature: FENCED_SIGNATURE })]),
+      "t1",
+      "reply",
+    );
+    const body = `${MINE}${reply?.content.bodyMarkdown ?? ""}`;
+    const parts = splitDraft(body);
+    expect(parts.own).toBe(`${MINE}\n`);
+    expect(parts.signature).toBe(SIGNED);
+    expect(parts.quote).toMatch(/^On .* wrote:\n> Can you send the numbers\?\n$/);
+    expect(buildRewriteRequest(parts.own, "shorter").untrusted).not.toContain("Jane");
+    expect(followSignature(body, FENCED_SIGNATURE, "Home")).toBe(
+      `${MINE}\n\n-- \nHome\n\n${parts.quote}`,
+    );
+    const forward = await prepareForwardDraft(
+      deps([account({ signature: FENCED_SIGNATURE })]),
+      "t1",
+      false,
+    );
+    const start = forward?.content.bodyMarkdown ?? "";
+    expect(ownWords(`${MINE}${start}`, FENCED_SIGNATURE)).toBe(MINE);
+    expect(ownWords(start, FENCED_SIGNATURE)).toBe("");
+  });
+
+  it("`-- ` lines of SQL inside a closed code block stay code, above any signature", () => {
+    for (const sig of [SIGNATURE, FENCED_SIGNATURE]) {
+      const block = signatureBlock(sig);
+      const quote = "On 3 Nov, Anna wrote:\n> When?";
+      const body = joinSections(SQL, block, quote);
+      expect(draftSections(body)).toEqual({ own: `${SQL}\n`, signature: block, quote });
+      expect(followSignature(body, sig, "Home")).toBe(joinSections(SQL, "-- \nHome", quote));
+      expect(placeSignature(joinSections(SQL, "", quote), sig)).toBe(body);
+      expect(withoutSignature(joinSections(SQL, block, ""))).toBe(SQL);
+    }
+    // Without a signature the code block is all the person's, and nothing is cut from it.
+    expect(draftSections(SQL)).toEqual({ own: SQL, signature: "", quote: "" });
+    expect(withoutSignature(SQL)).toBe(SQL);
+  });
+
+  it("a signature with a code block: placed, followed, and its fence is its own", () => {
+    for (const mine of ["Hi", MINE, SQL, "> cited\n\n```\n> code\n```"]) {
+      for (const quote of ["", "On 3 Nov, Anna wrote:\n> When?"]) {
+        const body = joinSections(mine, SIGNED, quote);
+        expect(draftSections(body)).toEqual({ own: `${mine}\n`, signature: SIGNED, quote });
+        expect(followSignature(body, FENCED_SIGNATURE, "Home")).toBe(
+          joinSections(mine, "-- \nHome", quote),
+        );
+      }
+    }
+    // A signature whose code block is never closed is refused: it would take what is under it
+    // for code, and close a fence the person left open above it.
+    expect(signatureProblem("```\nJane")).toMatch(/code block/);
+    expect(signatureProblem("Jane\n~~~~\nx\n~~~")).toMatch(/code block/);
+    // Words after a fence, or a fence line inside a block, could pair up with a fence the person
+    // left open, and the signature would read as their code: this one does.
+    for (const odd of ["````\n```\n````", "```sh\nls\n```"]) {
+      expect(signatureProblem(odd)).toMatch(/code block/);
+    }
+    expect(
+      draftSections(joinSections("```", signatureBlock("````\n```\n````"), "")).signature,
+    ).toBe("");
+    expect(signatureProblem("Jane\n~~~\n--\n~~~")).toBeNull();
+    expect(signatureProblem("```\na\n```\n````\nb\n````")).toBeNull();
+  });
+
+  it("the shapes that read two ways are read for the signature", () => {
+    // A `-- ` line in a code block, with a fence left open further down: the block's closing
+    // line pairs with that fence, and the `-- ` line is the delimiter.
+    expect(draftSections("```\n-- \nx\n```\ny\n```")).toEqual({
+      own: "```",
+      signature: "-- \nx\n```\ny\n```",
+      quote: "",
+    });
+    // A fence left open with a `-- ` line under it, above the signature placed: the first `-- `
+    // line is the delimiter, so the signature read is not the one placed and stays as it is.
+    const body = joinSections("```\n-- \nx", SIGNED, "");
+    expect(draftSections(body).signature).toBe(`-- \nx\n\n${SIGNED}`);
+    expect(followSignature(body, FENCED_SIGNATURE, "Home")).toBeNull();
+  });
+});
+
+describe("any draft with fences, `-- ` lines in code and signatures with code (rule 4)", () => {
+  // Plain lines of the person's: no fence and no delimiter outside a code block.
+  const plain = fc.constantFrom("Hi", "[date]", "> cited", ">", "As it says:", "", "Summary");
+  const inside = fc.constantFrom(
+    "ls",
+    "-- ",
+    "--",
+    "",
+    "> x",
+    "-- comment",
+    "~~~",
+    "On Monday, Bob wrote:",
+  );
+  const fence = fc.constantFrom("```", "~~~", "````", "```sql");
+  const closer = (open: string) => (open.startsWith("```") ? open.replace("sql", "") : open);
+  const closedBlock = fc.tuple(fence, fc.array(inside, { maxLength: 4 })).map(([open, body]) =>
+    // A line of the opening character inside would close it: only the other kind is inside.
+    [open, ...body.filter((l) => !l.startsWith(open[0] as string)), closer(open)],
+  );
+  const segments = (block: fc.Arbitrary<string[]>) =>
+    fc
+      .array(
+        fc.oneof(
+          plain.map((l) => [l]),
+          block,
+        ),
+        { maxLength: 6 },
+      )
+      .map((s) => s.flat());
+  // Fenced blocks closed, `-- ` lines in them; or a fence left open at the end, under blocks
+  // with no `-- ` line (one would read two ways: see the case above).
+  const own = fc
+    .oneof(
+      segments(closedBlock),
+      fc
+        .tuple(
+          segments(closedBlock.filter((b) => !b.includes("-- "))),
+          fence,
+          // A fence left open is text: a `--` line in it would start a block of a model's.
+          fc.array(fc.constantFrom("ls", "", "> x", "On Monday, Bob wrote:"), { maxLength: 3 }),
+        )
+        .map(([above, open, tail]) => [...above, open, ...tail]),
+    )
+    .map((ls) => ls.join("\n").trimEnd());
+  const signature = fc.constantFrom(
+    "",
+    SIGNATURE,
+    "Home",
+    "```\nJane\n```",
+    "Jane\n\n~~~\n--\nx\n~~~",
+    "````\nx\n````\n\n```\ny\n```",
+  );
+  const quote = fc.constantFrom(
+    "",
+    "On 3 Nov 2026, 10:29, Anna wrote:\n> When?\n",
+    "On 3 Nov 2026, 10:29, Anna wrote:\n> ```\n> -- \n",
+    `${FORWARD_MARK}\n> From: Anna (anna@example.com)\n>\n> Hello\n`,
+  );
+
+  it("splits back into its parts, the placed signature is the signature, nothing in code is cut", () => {
+    fc.assert(
+      fc.property(own, signature, quote, (mine, sig, q) => {
+        expect(normalizeSignature(sig)).toBe(sig);
+        expect(signatureProblem(sig)).toBeNull();
+        const block = signatureBlock(sig);
+        const text = joinSections(mine, block, q);
+        const parts = draftSections(text);
+        expect(text.startsWith(parts.own)).toBe(true);
+        expect(text.endsWith(parts.quote)).toBe(true);
+        // With no signature, a cut at a delimiter only ever comes at the placed one.
+        expect(withoutSignature(text)).toBe(block === "" ? text : mine);
+        if (block === "" && q === "") return;
+        expect(joinSections(parts.own, parts.signature, parts.quote)).toBe(text);
+        expect(parts.own.trimEnd()).toBe(mine);
+        expect(parts.signature).toBe(block);
+        expect(parts.quote).toBe(q);
+        expect(followSignature(text, sig, "Next")).toBe(
+          joinSections(mine, signatureBlock("Next"), q),
+        );
+        if (q !== "") expect(placeSignature(joinSections(mine, "", q), sig)).toBe(text);
+        // The placed signature's lines are never code that started above it.
+        const { kinds, signatureAt } = readDraft(text);
+        if (block !== "") expect(kinds[signatureAt]).toBe("delimiter");
+      }),
+      { numRuns: 3000 },
     );
   });
 });

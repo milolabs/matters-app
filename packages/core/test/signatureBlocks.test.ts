@@ -94,6 +94,34 @@ describe("keepOwnBlocks", () => {
     // A `--` right under a line inside a block is that block's text, not a new block.
     expect(signatureBlocks("Hi\n\n--\nAnna\n--\nmore")).toEqual(["--\nAnna\n--\nmore"]);
   });
+
+  it("the reviewer's case: a `-- ` or `--` line in a code sample is code, and no block starts there", () => {
+    const sample =
+      "Run this:\n\n```sql\nSELECT 1;\n-- \nSELECT 2;\n\n--\nSELECT 3;\n```\n\nThen tell me.";
+    // Before, the cut came at the `-- ` line: the closing fence and the text below were lost.
+    expect(signatureBlocks(sample)).toEqual([]);
+    expect(withoutSignature(sample)).toBe(sample);
+    expect(withoutSignature(`${sample}\n\n-- \nBot`)).toBe(sample);
+    expect(keepOwnBlocks("", sample)).toBe(sample);
+    // A rewrite with the sample keeps it whole, under the person's block put back.
+    const own = "Run [query].\n\n-- \nAnna";
+    const rewritten = sample.replace("Run this:", "Run [query]:");
+    expect(acceptRewrite({ rewritten }, own)).toEqual({
+      ok: true,
+      value: `${rewritten}\n\n-- \nAnna`,
+    });
+    // Its `>` lines are code too: not quoting mail.
+    const shell = "Like so:\n\n```\n> echo hi\n-- \n```";
+    expect(acceptRewrite({ rewritten: shell }, "Like so.")).toEqual({
+      ok: true,
+      value: shell,
+    });
+    // Tildes, and a fence of four that three do not close.
+    const tilde = "~~~~\n-- \n~~~\nstill code\n~~~~\nafter";
+    expect(withoutSignature(tilde)).toBe(tilde);
+    // A fence never closed is text: a block under it still goes.
+    expect(withoutSignature("```\nls\n\n-- \nBot")).toBe("```\nls");
+  });
 });
 
 describe("the checks run on what is kept", () => {

@@ -1220,6 +1220,31 @@ describe("AgentService: drafts", () => {
     expect(body).toContain("> Can you send it?");
   });
 
+  it("keeps a `-- ` or `--` line of a code sample and everything under it: code is no block", async () => {
+    // The reviewer's case: a prepared reply with such a line in a code sample lost that line,
+    // the closing fence and the text below.
+    const h = await ready();
+    await h.storage.accounts.setSignature("acc1", "Me\nWork Ltd");
+    await h.addMail({
+      threadId: "t1",
+      messages: [{ dateMs: NOW - DAY, text: "Can you send it?", fromName: "Anna" }],
+    });
+    const words =
+      "Here is the query:\n\n```sql\nSELECT 1;\n-- \nSELECT 2;\n\n--\nSELECT 3;\n```\n\nLet me know.";
+    await h.service.draftFromPrepared("t1", `${words}\n\n-- \nYour assistant`);
+    const body = h.drafts[0]?.bodyMarkdown ?? "";
+    expect(body.startsWith(`${words}\n\n-- \nMe\nWork Ltd\n\nOn `)).toBe(true);
+    expect(body).not.toContain("Your assistant");
+    const parts = splitDraft(body);
+    expect(parts.own).toBe(`${words}\n`);
+    expect(parts.signature).toBe("-- \nMe\nWork Ltd");
+    const html = new MarkdownComposeRenderer().render(body).html;
+    expect(html).toMatch(
+      /<pre[^>]*><code[^>]*>SELECT 1;\n-- \nSELECT 2;\n\n--\nSELECT 3;\n<\/code>/,
+    );
+    expect(html.indexOf("Let me know.")).toBeLessThan(html.indexOf('class="matters-signature"'));
+  });
+
   it("keeps a line the agent quoted in the reply's own part, the signature and the quote apart", async () => {
     const h = await ready();
     await h.storage.accounts.setSignature("acc1", "Me\nWork Ltd");
