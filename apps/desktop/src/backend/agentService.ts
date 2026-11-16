@@ -12,6 +12,7 @@ import type {
   AgentFile,
   AgentInsightStorePort,
   AgentInstruction,
+  AgentKeyVaultPort,
   AgentModels,
   AgentPriority,
   AgentRequestBody,
@@ -82,6 +83,7 @@ import {
   acceptWrite,
   actMatches,
   addNeedsYouView,
+  apiKeyProblem,
   buildAnswerQuestionsRequest,
   buildCheckReplyRequest,
   buildFillGapsRequest,
@@ -96,6 +98,7 @@ import {
   buildTalkTitleRequest,
   buildThemeRequest,
   buildWriteRequest,
+  CredentialsUnavailableError,
   choicesOn,
   clean,
   countQuery,
@@ -109,6 +112,7 @@ import {
   isAutomatedSender,
   isEmptyQuery,
   joinDraft,
+  keyReadingOn,
   kindsOn,
   kindTakesMail,
   lastFromThem,
@@ -236,6 +240,11 @@ export interface AgentServiceDeps {
    * on the runtime of its kind of work (ADR 0121, rules 1 and 3); a kind with none runs nothing.
    */
   readonly runtimes: readonly AgentRuntime[];
+  /**
+   * The API keys of the runtimes billed to them (ADR 0141, rule 4), in main's vault. The service
+   * only saves and removes them; the runtime's adapter reads its own. Absent: no key can be kept.
+   */
+  readonly keys?: AgentKeyVaultPort;
   readonly store: Pick<
     MessageStorePort,
     | "listThreadsSince"
@@ -421,7 +430,9 @@ function usable(info: AgentRuntimeInfo | null): boolean {
     status !== "signedOut" &&
     status !== "missing" &&
     status !== "notRunning" &&
-    status !== "noModel"
+    status !== "noModel" &&
+    status !== "noKey" &&
+    status !== "keyRefused"
   );
 }
 
@@ -599,7 +610,11 @@ export class AgentService implements AgentApi {
       this.infoOf(runtimeId),
       priority,
       plan.limits,
-      { weekSharePercent: s.weekSharePercent, usedByUsPercent: plan.usedByUsPercent },
+      {
+        weekSharePercent: s.weekSharePercent,
+        usedByUsPercent: plan.usedByUsPercent,
+        keyReading: keyReadingOn(s, runtimeId),
+      },
       this.now,
     );
   }
@@ -693,7 +708,16 @@ export class AgentService implements AgentApi {
     // chosen now.
     const model = this.testModel(runtime.id, s, info);
     const sameModel = record?.model === undefined || record.model === model;
-    if (info.status === "found" && record !== null && record.plan === info.plan && sameModel) {
+    // A test from before the key it ran on was saved does not hold for a new key (ADR 0141).
+    const sameKey =
+      info.keySavedAtMs === undefined || (record?.testedAtMs ?? 0) >= info.keySavedAtMs;
+    if (
+      info.status === "found" &&
+      record !== null &&
+      record.plan === info.plan &&
+      sameModel &&
+      sameKey
+    ) {
       // The same plan and model passed the test before: the program is not asked to prove it again.
       info =
         record.status === "ready"
@@ -888,6 +912,11 @@ export class AgentService implements AgentApi {
               ? `The assistant is not using your ${PLAN_NAMES[runtime.id] ?? "plan"}.`
               : "Not signed in. Sign in with the assistant's own program, then check again.",
         });
+      }
+      if (isAgentRunError(error) && error.code === "refused" && info.billed === true) {
+        // The provider refused the key: a sentence of the adapter's, with no words of theirs
+        // (ADR 0141, rule 5). It is not kept as a test: the next look asks the provider again.
+        return this.setInfo(runtime.id, { ...info, status: "keyRefused", problem: error.message });
       }
       problem =
         isAgentRunError(error) && error.code === "badAnswer"
@@ -1228,6 +1257,12 @@ export class AgentService implements AgentApi {
     }
     if (this.infoOf(runtime.id)?.status !== "ready") {
       this.setProgress(this.offProgress());
+      return;
+    }
+    // On a runtime billed to the person's key, nothing is read in the background until they
+    // turn that on (ADR 0141, rule 6): what they ask for still runs.
+    if (this.infoOf(runtime.id)?.billed === true && !keyReadingOn(first, runtime.id)) {
+      this.setProgress({ state: "off", reason: "keyOff" });
       return;
     }
     // Reading runs on the model for understanding mail: gone, it waits for the person (rule 4).
@@ -1778,6 +1813,102 @@ export class AgentService implements AgentApi {
     return this.status();
   }
 
+  // --- AgentApi: the person's own API key (ADR 0141) ---
+
+  /** A runtime billed to the person's key, by id; refused for any other. */
+  private async keyedRuntime(runtimeId: string): Promise<AgentRuntime> {
+    const runtime = this.runtimeById(runtimeId);
+    if (runtime === NO_RUNTIME || this.deps.keys === undefined) {
+      throw new InvalidAgentSettingError("That assistant is not available.");
+    }
+    // What it is is the runtime's to say: one not looked at yet is looked at first.
+    const info = this.infoOf(runtime.id) ?? (await this.inspectOne(runtime).catch(() => null));
+    if (info?.billed !== true) {
+      throw new InvalidAgentSettingError("That assistant does not take an API key.");
+    }
+    return runtime;
+  }
+
+  /**
+   * Keeps the key the person pasted for a runtime, in the vault as a mail password is kept (rule
+   * 4), replacing one kept before, and looks at the runtime with it: the provider lists its models
+   * or refuses the key. Nothing is sent but that look, and the key is not tested yet (rule 5). The
+   * answer, as every answer to a window, says only whether a key is kept.
+   */
+  async saveKey(runtimeId: string, key: string): Promise<AgentStatus> {
+    const runtime = await this.keyedRuntime(runtimeId);
+    const keys = this.deps.keys as AgentKeyVaultPort;
+    const trimmed = typeof key === "string" ? key.trim() : "";
+    const problem = apiKeyProblem(trimmed);
+    if (problem !== null) throw new InvalidAgentSettingError(problem);
+    // Turns that run on the old key stop: what they started is kept, nothing new goes.
+    await this.stopKinds(kindsOn(await this.deps.settings.get(), runtime.id));
+    try {
+      await keys.set(runtime.id, { key: trimmed, savedAtMs: this.now });
+    } catch (error) {
+      // The vault's reasons never hold the key; a refusal there says why secrets cannot be kept.
+      throw new InvalidAgentSettingError(
+        error instanceof CredentialsUnavailableError
+          ? error.message
+          : "The key could not be saved. Try again.",
+      );
+    }
+    this.blocked.delete(runtime.id);
+    await this.inspectRuntime(runtime).catch(() => {});
+    this.deps.onChanged();
+    if ((await this.deps.settings.get()).enabled) this.kick();
+    return this.status();
+  }
+
+  /**
+   * Removes the key of a runtime (rule 4). Its turns stop; every account's consent to it is taken
+   * back, with a line in the ledger, and it no longer reads in the background: a key added later
+   * is agreed to again. The kinds of work on it stay there and wait (no fallback).
+   */
+  async removeKey(runtimeId: string): Promise<AgentStatus> {
+    const runtime = await this.keyedRuntime(runtimeId);
+    const keys = this.deps.keys as AgentKeyVaultPort;
+    const { settings, insights } = this.deps;
+    await this.stopKinds(kindsOn(await settings.get(), runtime.id));
+    await keys.delete(runtime.id);
+    const had = (await settings.listConsents()).filter((c) => c.runtimeId === runtime.id);
+    for (const c of had) await settings.revokeConsent(c.accountId, c.runtimeId);
+    if (had.length > 0) {
+      await insights.appendLedger(
+        had.map((c) => ({
+          atMs: this.now,
+          runtimeId: c.runtimeId,
+          accountId: c.accountId,
+          purpose: "revoke" as const,
+          threads: 0,
+        })),
+      );
+    }
+    const s = await settings.get();
+    if (keyReadingOn(s, runtime.id)) {
+      await settings.update({ keyReading: (s.keyReading ?? []).filter((id) => id !== runtime.id) });
+    }
+    await this.inspectRuntime(runtime).catch(() => {});
+    this.deps.onChanged();
+    this.kick();
+    return this.status();
+  }
+
+  /**
+   * Lets a runtime billed to the person's key work in the background, or stops it (rule 6). Off,
+   * which is where it starts, only what the person asks for runs on it.
+   */
+  async setKeyReading(runtimeId: string, on: boolean): Promise<AgentStatus> {
+    const runtime = await this.keyedRuntime(runtimeId);
+    const s = await this.deps.settings.get();
+    const others = (s.keyReading ?? []).filter((id) => id !== runtime.id);
+    if (!on && s.kindRuntime.understand === runtime.id) await this.stopKinds(["understand"]);
+    await this.deps.settings.update({ keyReading: on === true ? [...others, runtime.id] : others });
+    this.deps.onChanged();
+    if (on === true && s.enabled) this.startNow();
+    return this.status();
+  }
+
   async setTalkLoop(on: boolean): Promise<AgentStatus> {
     await this.deps.settings.update({ talkLoop: on === true });
     this.deps.onChanged();
@@ -1890,6 +2021,16 @@ export class AgentService implements AgentApi {
       );
     }
     if (isAgentRunError(error) && error.code === "limit") return new AgentUnavailableError(USED_UP);
+    // The provider refused the person's key (ADR 0141, rule 5): the adapter's sentence says why
+    // in its class, and Settings shows the same until the key is looked at again.
+    if (isAgentRunError(error) && error.code === "refused") {
+      const info = this.infoOf(runtimeId);
+      if (info?.billed === true) {
+        this.setInfo(runtimeId, { ...info, status: "keyRefused", problem: error.message });
+        this.deps.onChanged();
+      }
+      return new AgentUnavailableError(error.message);
+    }
     // The model does not take the effort set for this work: said as the runtime said it, which
     // is a sentence of the adapter's naming the model and the level (ADR 0118, rule 5).
     if (isAgentRunError(error) && error.code === "effortRefused") {
@@ -2464,6 +2605,7 @@ export class AgentService implements AgentApi {
         if (reason === "signedOut") return { kind: "signedOut" };
         if (reason === "runtime")
           return { kind: "runtime", ...(problem === undefined ? {} : { problem }) };
+        if (reason === "keyOff") return { kind: "keyOff" };
         return undefined;
       default:
         // The person's pause holds even while the progress says nothing of it.

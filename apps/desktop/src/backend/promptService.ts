@@ -85,6 +85,9 @@ export { sha256Hex };
 const NO_PROMPT = "There is no prompt in this query.";
 const BUSY = "The assistant is still working on a prompt.";
 const USED_UP = "Your plan's allowance is used up for now. The threads read so far are kept.";
+/** Background reading on a runtime billed to the person's key, which they have not let read. */
+const KEY_OFF =
+  "Reading in the background on your API key is off. Turn it on in Settings › Agents.";
 const FAILED = "The assistant could not read some threads. Try again.";
 const SEARCH_FAILED = "The assistant could not search for this prompt. Try again.";
 const STOPPED = "Stopped.";
@@ -106,7 +109,13 @@ export interface PromptRuntime {
   /** What was last seen of it: how many turns run at once (ADR 0119, rule 7; ADR 0121, rule 7). */
   info(): Pick<
     AgentRuntimeInfo,
-    "noPlan" | "turnsAtOnce" | "modelInputChars" | "tools" | "toolModels" | "onThisMachine"
+    | "noPlan"
+    | "billed"
+    | "turnsAtOnce"
+    | "modelInputChars"
+    | "tools"
+    | "toolModels"
+    | "onThisMachine"
   > | null;
   /** The model of a kind of work on it, refused with a sentence when it no longer lists it. */
   modelOf(kind: AgentWorkKind, s: AgentSettings): string;
@@ -202,7 +211,7 @@ interface Running {
 }
 
 /** What the last pass in the background met for a view, when it did not read it to its end. */
-type BackgroundNote = Extract<ReadingWait, { kind: "plan" | "limit" | "failed" }>;
+type BackgroundNote = Extract<ReadingWait, { kind: "plan" | "limit" | "failed" | "keyOff" }>;
 
 /** The counts of a view as last computed, so a window's status read costs no search (rule 3a). */
 interface KnownCounts {
@@ -882,7 +891,7 @@ export class PromptService {
     /** A turn was refused for the plan's limit; `untilMs` when the runtime said until when. */
     limited?: { readonly untilMs?: number };
     /** The plan's gate at this priority said no before a turn went (ADR 0051, rule 7). */
-    gated?: Extract<ReadingWait, { kind: "plan" }>;
+    gated?: Extract<ReadingWait, { kind: "plan" | "keyOff" }>;
   }> {
     const { enough, priority = "P0", stopWhen } = options;
     const { insights, settings } = this.deps;
@@ -895,7 +904,7 @@ export class PromptService {
     const answered: string[] = [];
     let problem: string | undefined;
     let limited: { untilMs?: number } | undefined;
-    let gated: Extract<ReadingWait, { kind: "plan" }> | undefined;
+    let gated: Extract<ReadingWait, { kind: "plan" | "keyOff" }> | undefined;
     let turnSeq = 0;
     // The limit is reached: the turns under way finish and are kept, and none more starts.
     let full = false;
@@ -938,15 +947,19 @@ export class PromptService {
         const now = await settings.get();
         const gate = on.planGate(priority, now);
         if (!gate.ok) {
-          problem ??= USED_UP;
-          gated ??= {
-            kind: "plan",
-            reason: gate.reason,
-            ...(gate.untilMs === undefined ? {} : { untilMs: gate.untilMs }),
-            ...(on.limits(now) === undefined && on.info()?.noPlan !== true
-              ? { unknown: true as const }
-              : {}),
-          };
+          problem ??= gate.reason === "keyOff" ? KEY_OFF : USED_UP;
+          // A runtime billed to the person's key waits for them to let it read (ADR 0141, rule 6).
+          gated ??=
+            gate.reason === "keyOff"
+              ? { kind: "keyOff" }
+              : {
+                  kind: "plan",
+                  reason: gate.reason,
+                  ...(gate.untilMs === undefined ? {} : { untilMs: gate.untilMs }),
+                  ...(on.limits(now) === undefined && on.info()?.noPlan !== true
+                    ? { unknown: true as const }
+                    : {}),
+                };
           halt.abort();
           return;
         }
@@ -1198,7 +1211,7 @@ export class PromptService {
   nextTryMs(): number | undefined {
     let soonest: number | undefined;
     for (const note of this.notes.values()) {
-      if (note.kind === "failed" || note.untilMs === undefined) continue;
+      if (note.kind === "failed" || note.kind === "keyOff" || note.untilMs === undefined) continue;
       soonest = soonest === undefined ? note.untilMs : Math.min(soonest, note.untilMs);
     }
     return soonest;
@@ -1253,8 +1266,11 @@ export class PromptService {
       const recentSince = startedAt - options.recentDays * DAY_MS;
       const recent = fresh.filter((c) => c.newest.dateMs >= recentSince);
       const older = fresh.filter((c) => c.newest.dateMs < recentSince);
-      // A runtime with no plan spends nothing of the person's: one pass reads it all.
-      const take = on.info()?.noPlan === true ? fresh.length : PROMPT_ASK_ABOVE;
+      // A runtime with no plan spends nothing of the person's: one pass reads it all. One billed to
+      // the person's key spends money on every turn, so a pass takes as much as on a plan (ADR
+      // 0141, rule 6).
+      const take =
+        on.info()?.noPlan === true && on.info()?.billed !== true ? fresh.length : PROMPT_ASK_ABOVE;
       // The new mail first, then the rest of the view: both `P1`, since the person ran this view
       // and reading it to its end is what they asked for (ADR 0117, rule 3).
       const groups: [AgentPriority, readonly Candidate[]][] = [

@@ -248,6 +248,11 @@ export type ReadingWait =
   | { readonly kind: "notPlan" }
   | { readonly kind: "runtime"; readonly problem?: string }
   | { readonly kind: "consent" }
+  /**
+   * The runtime for understanding mail is billed to the person's key, and they have not let it
+   * read in the background (ADR 0141, rule 6).
+   */
+  | { readonly kind: "keyOff" }
   /** A pass is about to start: the debounce after a sync, or a run of the person's that ended. */
   | { readonly kind: "soon" }
   | { readonly kind: "failed"; readonly problem: string };

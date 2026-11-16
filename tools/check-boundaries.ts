@@ -61,6 +61,14 @@ const rules: readonly Rule[] = [
     allowNode: true,
     checkManifest: true,
   },
+  // The Messages API of Anthropic on the person's own key (ADR 0141): Node's own fetch at a host
+  // fixed in code; no SDK and no package of its own. The key comes from the vault, injected.
+  {
+    pkg: "packages/adapter-anthropic-api",
+    allowed: ["@matters/core"],
+    allowNode: true,
+    checkManifest: true,
+  },
   // Markdown to HTML runs in the router and the worker alike; pure, no Node APIs.
   {
     pkg: "packages/adapter-compose",
@@ -148,6 +156,8 @@ const rules: readonly Rule[] = [
       "@matters/contracts",
       "@matters/core",
       "@matters/testkit",
+      // The person's own API key, at the provider's fixed host (ADR 0141).
+      "@matters/adapter-anthropic-api",
       "@matters/adapter-autoconfig",
       "@matters/adapter-claude-code",
       "@matters/adapter-codex",

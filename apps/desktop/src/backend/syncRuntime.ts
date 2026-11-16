@@ -6,6 +6,7 @@ import { readFile as readFileBytes, stat } from "node:fs/promises";
 import { RemoteCredentialPort } from "@matters/adapter-secrets";
 import type { SqliteStorage } from "@matters/adapter-sqlite";
 import type {
+  AgentKeyVaultPort,
   ClockPort,
   CompactionPort,
   ComposeRendererPort,
@@ -128,6 +129,11 @@ export interface SyncRuntimeOptions {
    */
   readonly agent?: {
     readonly runtimes: readonly AgentRuntime[];
+    /**
+     * The runtimes on the person's own API key (ADR 0141), made with the vault's keys, after
+     * `runtimes`: the plans stay first (rule 1). Absent: none.
+     */
+    readonly keyed?: (keys: AgentKeyVaultPort) => readonly AgentRuntime[];
     readonly visibleText: (html: string) => string;
     readonly kickDebounceMs?: number;
     readonly stepThreads?: number;
@@ -495,9 +501,12 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
     now: () => clock.now(),
   });
 
+  // The API keys are kept in main's vault, beside the passwords (ADR 0141, rule 4).
+  const agentKeys = vault.keys();
   const agent = options.agent
     ? new AgentService({
-        runtimes: options.agent.runtimes,
+        runtimes: [...options.agent.runtimes, ...(options.agent.keyed?.(agentKeys) ?? [])],
+        keys: agentKeys,
         store: storage.store,
         bodies: storage.bodies,
         accounts: storage.accounts,
@@ -687,6 +696,12 @@ export async function startSyncRuntime(options: SyncRuntimeOptions): Promise<Syn
         return needAgent().setModels(command.models, command.efforts);
       case "agentSetWeekShare":
         return needAgent().setWeekShare(command.percent);
+      case "agentSaveKey":
+        return needAgent().saveKey(command.runtimeId, command.key);
+      case "agentRemoveKey":
+        return needAgent().removeKey(command.runtimeId);
+      case "agentSetKeyReading":
+        return needAgent().setKeyReading(command.runtimeId, command.on);
       case "agentSetTalkLoop":
         return needAgent().setTalkLoop(command.on);
       case "agentInspect":

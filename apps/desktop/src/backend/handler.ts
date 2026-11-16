@@ -668,6 +668,21 @@ function parseAgentRequest(
       return typeof raw.percent === "number" && Number.isFinite(raw.percent)
         ? { type, requestId, percent: raw.percent }
         : "percent must be a number";
+    // A key's own shape is the service's to judge, with a sentence that never repeats it.
+    case "agentSaveKey":
+      return shortString(raw.runtimeId, 100) &&
+        typeof raw.key === "string" &&
+        raw.key.length <= 2048
+        ? { type, requestId, runtimeId: raw.runtimeId, key: raw.key }
+        : "runtimeId and key must be strings";
+    case "agentRemoveKey":
+      return shortString(raw.runtimeId, 100)
+        ? { type, requestId, runtimeId: raw.runtimeId }
+        : "runtimeId must be a string";
+    case "agentSetKeyReading":
+      return shortString(raw.runtimeId, 100) && typeof raw.on === "boolean"
+        ? { type, requestId, runtimeId: raw.runtimeId, on: raw.on }
+        : "runtimeId must be a string and on true or false";
     case "agentSetTalkLoop":
       return typeof raw.on === "boolean"
         ? { type, requestId, on: raw.on }
@@ -1952,6 +1967,27 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           requestId,
           ok: true,
           status: await needAgent(deps).setWeekShare(request.percent),
+        };
+      case "agentSaveKey":
+        return {
+          type: "agentSaveKey",
+          requestId,
+          ok: true,
+          status: await needAgent(deps).saveKey(request.runtimeId, request.key),
+        };
+      case "agentRemoveKey":
+        return {
+          type: "agentRemoveKey",
+          requestId,
+          ok: true,
+          status: await needAgent(deps).removeKey(request.runtimeId),
+        };
+      case "agentSetKeyReading":
+        return {
+          type: "agentSetKeyReading",
+          requestId,
+          ok: true,
+          status: await needAgent(deps).setKeyReading(request.runtimeId, request.on),
         };
       case "agentSetTalkLoop":
         return {

@@ -173,6 +173,8 @@ function pausedWhy(reason: ReadingProgress["reason"]): string {
       return " · signed out";
     case "notPlan":
       return " · not on your plan";
+    case "keyOff":
+      return " · off on your API key";
     default:
       return "";
   }
@@ -220,6 +222,8 @@ export function readingWaitText(wait: ReadingWait, runtime: string, now: number)
       return `Waits: ${who} is not ready`;
     case "consent":
       return `Waits: no account is shared with ${who}`;
+    case "keyOff":
+      return `Waits: reading in the background on ${who} is off`;
     case "soon":
       return "Reading goes on in a moment";
     case "failed":
@@ -230,7 +234,9 @@ export function readingWaitText(wait: ReadingWait, runtime: string, now: number)
 /** The reason is the person's to act on (`--late`): reading cannot go on until they do. */
 export function readingWaitActs(wait: ReadingWait | undefined): boolean {
   const k = wait?.kind;
-  return k === "consent" || k === "signedOut" || k === "runtime" || k === "notPlan";
+  return (
+    k === "consent" || k === "signedOut" || k === "runtime" || k === "notPlan" || k === "keyOff"
+  );
 }
 
 /** `292 of 754 read`, or `292 read` once nothing is left; nothing for a view never run. */
@@ -381,6 +387,8 @@ const STATUS_WORDS: Record<AgentRuntimeInfo["status"], string> = {
   failed: "The check did not pass",
   notRunning: "Not running",
   noModel: "No model installed",
+  noKey: "No API key yet",
+  keyRefused: "The key was refused",
 };
 
 /** The state of a runtime in a few words; one on this Mac has no sign-in to speak of. */
@@ -389,6 +397,8 @@ export function statusWords(runtime: AgentRuntimeInfo | null): string {
   if (runtime.status === "found" && runtime.onThisMachine === true) {
     return "Installed · not checked yet";
   }
+  if (runtime.status === "found" && runtime.billed === true) return "Key saved · not checked yet";
+  if (runtime.status === "ready" && runtime.billed === true) return "Ready · key saved";
   return STATUS_WORDS[runtime.status];
 }
 
@@ -420,6 +430,8 @@ interface RuntimeWords {
 
 const RUNTIME_WORDS: Readonly<Record<string, RuntimeWords>> = {
   "claude-code": { vendor: "Claude", privacy: "Claude", signIn: "claude auth login" },
+  // The person's own API key (ADR 0141): nothing to sign in to, a key pasted in Settings.
+  "anthropic-api": { vendor: "Anthropic", privacy: "Anthropic API", signIn: "" },
   codex: {
     vendor: "OpenAI",
     plan: "your ChatGPT plan",
@@ -443,6 +455,9 @@ export function signInCommand(runtime: Pick<AgentRuntimeInfo, "id"> | null): str
  * vendor, under the person's plan, only when asked and for views with a prompt.
  */
 export function consentText(runtime: AgentRuntimeInfo | null): string {
+  if (runtime?.billed === true) {
+    return `Mail goes to ${vendorName(runtime)}, through its API, only when you ask about it, and for views with a prompt, such as Needs you, once you let it read in the background. ${billedLine(runtime)} The privacy terms of your ${vendorName(runtime)} account apply to what is sent.`;
+  }
   if (runtime?.onThisMachine === true) {
     return `${vendorName(runtime)} reads mail only when you ask about it, and for views with a prompt, such as Needs you, which read new mail as it comes. It runs on this Mac: your mail stays on this Mac.`;
   }
@@ -450,6 +465,14 @@ export function consentText(runtime: AgentRuntimeInfo | null): string {
   const plan = words?.plan === undefined ? "" : `, under ${words.plan},`;
   const privacy = words?.privacy ?? vendorName(runtime);
   return `Mail goes to ${vendorName(runtime)}${plan} only when you ask about it, and for views with a prompt, such as Needs you, which read new mail as it comes. Your ${privacy} privacy settings apply to what is sent.`;
+}
+
+/**
+ * What a runtime on the person's own key costs, in one sentence (ADR 0141, rule 6): every turn is
+ * billed to the key. No price: prices change, and we do not ship them.
+ */
+export function billedLine(runtime: Pick<AgentRuntimeInfo, "id" | "name"> | null): string {
+  return `Every turn is billed by ${vendorName(runtime)} to your API key.`;
 }
 
 /**
@@ -605,11 +628,18 @@ export function talkRuntimes(
  * were made here, on no plan.
  */
 const ON_THIS_MACHINE = new Set(["Ollama"]);
+/** The runtimes on the person's own API key, by the same name (ADR 0141): billed to the key. */
+const ON_A_KEY = new Set(["Anthropic API"]);
+
+/** Where a runtime runs, as an answer's line says it: on a plan, on this Mac, or on a key. */
+function whereOf(runtimeName: string): string {
+  if (ON_THIS_MACHINE.has(runtimeName)) return "on this Mac";
+  return ON_A_KEY.has(runtimeName) ? "your API key" : "your plan";
+}
 
 /** Who answered in a talk: `Claude Code, Sonnet, your plan`, or `Ollama, Qwen3:8b, on this Mac`. */
 export function answeredByLine(runtimeName: string, model: string): string {
-  const where = ON_THIS_MACHINE.has(runtimeName) ? "on this Mac" : "your plan";
-  return `${runtimeName}, ${modelName(model)}, ${where}`;
+  return `${runtimeName}, ${modelName(model)}, ${whereOf(runtimeName)}`;
 }
 
 /** What left the machine for an answer about one thread. */
@@ -621,7 +651,12 @@ export function sentLine(runtimeName: string): string {
 
 /** The model that wrote a draft: every draft is written on request, on the runtime for writing. */
 export function writtenByLine(runtime: AgentRuntimeInfo | null, models: AgentModels): string {
-  const where = runtime?.onThisMachine === true ? "on this Mac" : "your plan";
+  const where =
+    runtime?.onThisMachine === true
+      ? "on this Mac"
+      : runtime?.billed === true
+        ? "your API key"
+        : "your plan";
   return `${runtime?.name ?? "Agent"}, ${modelName(models.write)}, ${where}`;
 }
 

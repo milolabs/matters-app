@@ -13,6 +13,7 @@ problem is in [SECURITY.md](../../SECURITY.md).
 | Who you are to others | what the app sends in your name: only what you approved |
 | Your attention | what a message is allowed to look like, and what a view shows you |
 | Your AI plan | sign-in stays with the runtime's own program; Matters never sees a token |
+| Your AI API key | in the same encrypted vault as the passwords; sent only to the provider's fixed host, never shown again, never in a log ([ADR 0141](../adr/0141-the-agent-runs-on-the-persons-own-api-key.md)) |
 
 Matters has no server. Nothing here is copied to us, and there is no telemetry.
 
@@ -32,7 +33,8 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
   database, which Matters does not encrypt, and can ask the keychain as you can.
 - **Your mail provider.** It has your mail already.
 - **The AI runtime you chose.** A runtime on a plan receives the text you agreed to send to it, and
-  its provider's privacy settings apply. A model on your computer (Ollama) keeps mail on it.
+  its provider's privacy settings apply. So does a runtime on your own API key, which also bills
+  your key for every turn. A model on your computer (Ollama) keeps mail on it.
 - **A hostile IMAP server over a valid TLS session.** Malformed responses from a server you signed in
   to are not in the corpus yet.
 
@@ -52,6 +54,9 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
 5. **Passwords stay away from the window.** They are encrypted and decrypted in the main process,
    through the keychain, and handed only to the backend process that signs in to the mail server.
    A stored password is never given back to the window, and never reaches the logs or a model.
+   An API key for the agent is kept the same way; the window learns only that one is kept, and
+   the key goes nowhere but in a header to the provider's fixed host
+   ([ADR 0141](../adr/0141-the-agent-runs-on-the-persons-own-api-key.md)).
 6. **A model is behind code.** Instructions are fixed text, mail goes in as data, hidden text is left
    out, an answer must match a schema, and a quote must occur in the message it names. Each turn runs
    with the runtime's own tools off, and AI is off for an account until you turn it on

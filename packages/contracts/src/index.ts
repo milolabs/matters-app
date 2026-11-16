@@ -740,6 +740,31 @@ export interface AgentSetWeekShareRequest {
   readonly percent: number;
 }
 
+/**
+ * The person's API key for a runtime billed to it (ADR 0141, rule 4). The only request that
+ * carries a key; no answer ever does, and no answer says more than whether a key is kept.
+ */
+export interface AgentSaveKeyRequest {
+  readonly type: "agentSaveKey";
+  readonly requestId: RequestId;
+  readonly runtimeId: string;
+  readonly key: string;
+}
+
+export interface AgentRemoveKeyRequest {
+  readonly type: "agentRemoveKey";
+  readonly requestId: RequestId;
+  readonly runtimeId: string;
+}
+
+/** Lets a runtime billed to the person's key work in the background (ADR 0141, rule 6). */
+export interface AgentSetKeyReadingRequest {
+  readonly type: "agentSetKeyReading";
+  readonly requestId: RequestId;
+  readonly runtimeId: string;
+  readonly on: boolean;
+}
+
 /** Turns the agent's search in a loop with tools on or off (ADR 0083). */
 export interface AgentSetTalkLoopRequest {
   readonly type: "agentSetTalkLoop";
@@ -1069,6 +1094,9 @@ export type BackendRequest =
   | AgentDisableRequest
   | AgentSetModelsRequest
   | AgentSetWeekShareRequest
+  | AgentSaveKeyRequest
+  | AgentRemoveKeyRequest
+  | AgentSetKeyReadingRequest
   | AgentSetTalkLoopRequest
   | AgentInspectRequest
   | AgentTestRuntimeRequest
@@ -1688,6 +1716,11 @@ export type HoldingBytes = Readonly<
  */
 export interface MainEraseOverview {
   readonly groups: HoldingBytes;
+  /**
+   * How many API keys of runtimes the vault keeps (ADR 0141, rule 4), counted without decrypting.
+   * They go with the saved passwords. Absent: none, or not counted.
+   */
+  readonly agentKeys?: number;
   readonly earlier: { readonly bytes: number; readonly sinceMs: number | null } | null;
 }
 
@@ -2229,6 +2262,9 @@ export interface AgentStatusResponse {
     | "agentRevokeConsent"
     | "agentSetModels"
     | "agentSetWeekShare"
+    | "agentSaveKey"
+    | "agentRemoveKey"
+    | "agentSetKeyReading"
     | "agentSetTalkLoop"
     | "agentInspect"
     | "agentPauseReading"
