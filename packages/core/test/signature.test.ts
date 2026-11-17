@@ -31,6 +31,7 @@ import {
   splitDraft,
   withoutSignature,
 } from "../src/index.ts";
+import { QUICK_MS, timed } from "./support.ts";
 
 const NOV_3 = new Date(2026, 10, 3, 10, 29).getTime();
 const SIGNATURE = "Miłosz Sobczak\n**Matters** · [matters.example](https://matters.example)";
@@ -738,5 +739,27 @@ describe("any draft with fences, `-- ` lines in code and signatures with code (r
       }),
       { numRuns: 3000 },
     );
+  });
+});
+
+describe("reading a long draft with many fences is linear (rule 4)", () => {
+  // The editor reads the draft on every edit: fences that never close must not make each opening
+  // line read every line under it.
+  it("reads 20,000 opening lines with no line that closes them quickly", () => {
+    const text = joinSections(Array(20_000).fill("```sql").join("\n"), BLOCK, "");
+    const { result, ms } = timed(() => readDraft(text));
+    expect(result.signatureAt).toBe(20_001);
+    expect(result.kinds.slice(0, 20_000).every((k) => k === "text")).toBe(true);
+    expect(ms).toBeLessThan(QUICK_MS);
+  });
+
+  it("reads 10,000 opening lines, each over `-- ` lines and a fence left open, quickly", () => {
+    // Every opening line closes at the same line, with `-- ` lines between and a fence left open
+    // under it: each asks whether a `-- ` line it would hold has every fence closed under it.
+    const lines = [...Array(10_000).fill(["```sql", SIGNATURE_DELIMITER]).flat(), "```", "~~~"];
+    const { result, ms } = timed(() => readDraft(lines.join("\n")));
+    expect(result.kinds.slice(0, 20_001).every((k) => k === "code")).toBe(true);
+    expect(result.signatureAt).toBe(-1);
+    expect(ms).toBeLessThan(QUICK_MS);
   });
 });
