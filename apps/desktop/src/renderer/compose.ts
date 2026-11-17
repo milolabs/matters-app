@@ -647,8 +647,11 @@ export function createComposerSession(
       }
       const { accountId, from } = emptyDraftContent(account);
       const following = (async () => {
-        const prepared = await backend.prepareNew(accountId).catch(() => null);
+        const answer = await backend.prepareNew(accountId).catch(() => null);
         if (disposed || choice !== senderChoice) return { ok: false, signed: null };
+        // An answer about another account (the chosen one was removed meanwhile, and the backend
+        // fell back to the first) did not prepare this one: its signature and limit are not its own.
+        const prepared = answer?.content.accountId === accountId ? answer : null;
         if (prepared === null) {
           // The sender stays the one it was, with its signature; choosing it again tries again.
           // The composer is as it was before the choice: a Send that waited for it stops, so the

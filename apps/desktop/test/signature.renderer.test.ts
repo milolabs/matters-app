@@ -227,6 +227,24 @@ describe("the sender and its signature change together (rule 5)", () => {
     expect(t.session.error()).toBe("");
   });
 
+  it("a sender removed before its answer came is not taken with another account's signature", async () => {
+    const fake = failingBackend();
+    const t = newMessage(fake, { to: [{ address: "anna@example.org" }], subject: "Tuesday" });
+    t.session.setBody(`Hello Anna,${t.session.body()}`);
+    // The backend falls back to the first account left when the one asked for is gone.
+    const gone = { id: "a3", address: "me@gone.example", displayName: "Me" };
+    expect(await t.session.setSender(gone)).toBeNull();
+    expect(fake.prepareNew).toHaveBeenCalledWith("a3");
+    expect(t.session.sender().accountId).toBe("a1");
+    expect(t.session.body()).toBe("Hello Anna,\n\n-- \nMe\nWork Ltd");
+    expect(t.session.error()).toContain(gone.address);
+    // Send goes from the sender shown, with its own signature.
+    expect(await t.session.send()).not.toBeNull();
+    const last = t.saved.at(-1);
+    expect(last?.accountId).toBe("a1");
+    expect(last?.bodyMarkdown).toBe("Hello Anna,\n\n-- \nMe\nWork Ltd");
+  });
+
   it("no sender can be chosen while Send waits for the files, so it goes with the pair it had", async () => {
     const fake = failingBackend();
     const t = newMessage(fake, { to: [{ address: "anna@example.org" }], subject: "Tuesday" });
