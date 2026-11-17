@@ -25,32 +25,31 @@ export function createLinkTaker(deps: LinkTakerDeps) {
   let taking = false;
   /** Main said a link came, or a composer closed, while a link was being opened. */
   let again = false;
+  /** A try of a link that failed waits for its moment; cancels it. */
   let cancelRetry: (() => void) | null = null;
+  /** The window went: nothing more is asked for, opened or scheduled. */
+  let stopped = false;
 
-  async function next(): Promise<void> {
-    if (taking) {
-      again = true;
-      return;
-    }
-    if (deps.busy()) return;
+  async function attempt(): Promise<void> {
     taking = true;
     again = false;
-    cancelRetry?.();
-    cancelRetry = null;
     try {
       const waiting = await deps.take();
-      if (waiting === null) return;
+      if (waiting === null || stopped) return;
       const outcome = await deps.open(waiting.link);
       // A composer the person started while the link was asked for: the link stays first in
       // main, and is asked for again once that composer closes or fails to open.
       if (outcome === "busy") return;
       const left = await deps.done(waiting.id, outcome === "opened");
       // It could not be prepared: main keeps it first, a bounded number of times, and it is tried
-      // again in a moment, or sooner when something else happens.
-      if (outcome === "failed" && left > 0) {
+      // again in a moment. Until then nothing else starts a try: the failed open itself frees
+      // the window, and a try at once would use up the link's tries with no wait between them.
+      // What came during this attempt is heard by that try.
+      if (outcome === "failed" && left > 0 && !stopped) {
+        again = false;
         cancelRetry = deps.later(() => {
           cancelRetry = null;
-          void next();
+          if (!stopped && !taking && !deps.busy()) void attempt();
         }, LINK_RETRY_MS);
       }
     } catch {
@@ -58,14 +57,26 @@ export function createLinkTaker(deps: LinkTakerDeps) {
     } finally {
       taking = false;
       // What came during this attempt is not left waiting with no one to hear it.
-      if (again && !deps.busy()) void next();
+      if (again && !stopped && !deps.busy()) void next();
     }
+  }
+
+  async function next(): Promise<void> {
+    if (stopped) return;
+    if (taking) {
+      again = true;
+      return;
+    }
+    // A failed link waits for its try: that try asks for whatever is first then.
+    if (cancelRetry !== null || deps.busy()) return;
+    await attempt();
   }
 
   return {
     next,
-    /** The window goes: no retry is left behind. */
+    /** The window goes: no retry is left behind, and an attempt under way starts nothing more. */
     stop(): void {
+      stopped = true;
       cancelRetry?.();
       cancelRetry = null;
     },
