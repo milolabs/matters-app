@@ -128,8 +128,6 @@ describe("a link leaves main only once its composer opened (ADR 0143, rule 5)", 
   it("a link that arrives while another is being opened is heard once that attempt ends", async () => {
     const r = rig();
     r.queue.offer("mailto:first@example.org");
-    // The first try fails; the one after opens.
-    r.state.once = ["failed"];
     let answer: () => void = () => {};
     r.state.takeGate = new Promise((resolve) => {
       answer = resolve;
@@ -141,11 +139,84 @@ describe("a link leaves main only once its composer opened (ADR 0143, rule 5)", 
     answer();
     await taking;
     await settle();
-    // What main said is not lost: the window asks again at once, with no wait for the retry.
     expect(r.opened).toEqual(["first@example.org"]);
-    expect(r.timers).toEqual([]);
+    // What main said is not lost: the window asks again once the first composer closes.
     await r.free();
     expect(r.opened).toEqual(["first@example.org", "second@example.org"]);
     expect(r.queue.size()).toBe(0);
+  });
+
+  it("a failed link is tried again only after the wait, whatever happens meanwhile", async () => {
+    const r = rig();
+    r.queue.offer("mailto:first@example.org");
+    r.state.outcome = "failed";
+    let answer: () => void = () => {};
+    r.state.takeGate = new Promise((resolve) => {
+      answer = resolve;
+    });
+    const taking = r.taker.next();
+    // The failed open frees the window while the attempt is still under way, and another link
+    // comes: neither starts a try at once.
+    void r.taker.next();
+    r.queue.offer("mailto:second@example.org");
+    void r.taker.next();
+    answer();
+    await taking;
+    await settle();
+    expect(r.timers.map((t) => t.ms)).toEqual([LINK_RETRY_MS]);
+    // Nor does anything that happens during the wait.
+    await r.taker.next();
+    await settle();
+    expect(r.timers.length).toBe(1);
+    expect(r.opened).toEqual([]);
+    // One try was used, not all of them: the link is still there when the wait is over.
+    r.state.outcome = "opened";
+    r.timers.shift()?.run();
+    await settle();
+    expect(r.opened).toEqual(["first@example.org"]);
+    await r.free();
+    expect(r.opened).toEqual(["first@example.org", "second@example.org"]);
+  });
+
+  it("a retry that comes due while a composer is open leaves the link for when it closes", async () => {
+    const r = rig();
+    r.queue.offer("mailto:anna@example.org");
+    r.state.once = ["failed"];
+    await r.taker.next();
+    r.state.busy = true;
+    r.timers.shift()?.run();
+    await settle();
+    expect(r.opened).toEqual([]);
+    await r.free();
+    expect(r.opened).toEqual(["anna@example.org"]);
+  });
+
+  it("a window that went starts nothing more: no open, no retry", async () => {
+    const r = rig();
+    r.queue.offer("mailto:anna@example.org");
+    let answer: () => void = () => {};
+    r.state.takeGate = new Promise((resolve) => {
+      answer = resolve;
+    });
+    const taking = r.taker.next();
+    r.taker.stop();
+    answer();
+    await taking;
+    await settle();
+    expect(r.opened).toEqual([]);
+    expect(r.queue.size()).toBe(1);
+
+    // Stopped while the composer was being prepared, which then fails: no retry is scheduled.
+    const s = rig();
+    s.queue.offer("mailto:anna@example.org");
+    s.state.outcome = "failed";
+    const failing = s.taker.next();
+    s.taker.stop();
+    await failing;
+    await settle();
+    expect(s.timers).toEqual([]);
+    await s.taker.next();
+    await settle();
+    expect(s.opened).toEqual([]);
   });
 });

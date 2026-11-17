@@ -121,8 +121,10 @@ Read from the code on 2026-11-16:
    window opens the composer and then says by that id whether it opened, and main takes an id
    only when it is the one it gave for the first link. So a link asked for while the person
    started a composer by hand stays first and opens when that composer closes; one whose
-   preparation failed stays first and is tried again two seconds later, or sooner when another
-   link comes; a link that came during an attempt is not left unheard. A link whose composer
+   preparation failed stays first and is tried again two seconds later, and not sooner: until
+   then nothing else starts a try, so a failure that passes does not use up the three tries at
+   once; a link that came during an attempt is not left unheard. A window that went asks for no
+   link, opens none and schedules no try. A link whose composer
    failed to open three times is dropped, so one that can never open (no account to send from)
    does not hold the links behind it. The link being opened counts among the five. The page
    never names a link's content to main, only the id. So a link that starts the app waits until the first window has shown, adding
