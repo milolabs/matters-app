@@ -4,16 +4,18 @@
  * the prompt text, the answer schemas and the checks of the answers. Nothing here sends mail or
  * changes a stored draft; the result goes back to the composer, and the person decides.
  *
- * The draft is the person's own lines above the quote. The quote (from the first `>` line, with
- * the line that introduces it) never goes to the model for a rewrite and is joined back as it was.
+ * The draft is the person's own lines above the quote. The quote (the app's own, as
+ * `draftSections` finds it, with the line that introduces it) never goes to the model for a
+ * rewrite and is joined back as it was. A `>` line the person wrote above it is their own text.
  * Every gap in square brackets the person left is kept exactly, and an answer that drops one is
  * not used.
  *
  * A new message has no thread (ADR 0132): a rewrite and a turn that writes as the person asks
  * work without one, by the account the message goes out from.
  */
-import { gaps } from "../domain/draft.ts";
+import { ownTextGaps } from "../domain/draft.ts";
 import { withoutRepeats } from "../domain/quotes.ts";
+import { draftSections, joinSections, keepOwnBlocks, readDraft } from "../domain/signature.ts";
 import {
   type AgentRequestBody,
   COMMON_RULES,
@@ -43,39 +45,51 @@ export function draftFor(from: DraftFor): DraftFor {
   return "threadId" in from ? { threadId: from.threadId } : { accountId: from.accountId };
 }
 
-/** The person's own lines, and the quote below them as it was (empty when there is none). */
+/**
+ * The person's own lines, their signature and the quote below them as they were (each empty when
+ * there is none). The signature is the person's own, placed by the code (ADR 0142, rule 6): it
+ * never goes to the model, as an instruction or otherwise, and is joined back as it was.
+ */
 export interface DraftParts {
   readonly own: string;
+  readonly signature: string;
   readonly quote: string;
 }
 
+/** A quoted line of mail the other side sent (`lastFromThem`); a draft is read by `readDraft`. */
 const QUOTED = /^\s*>/;
 
 /**
- * Splits a reply at its first quoted line. The line just above it goes with the quote when it ends
- * in a colon ("On 3 Nov 2026, 10:29, Anna wrote:"), so the attribution is never rewritten.
- * Anything below the first quoted line stays with the quote, the person's inline words included:
- * those are kept as they are, never rewritten.
+ * Splits a reply where its quote starts (`draftSections`, ADR 0142, rule 4): the app's quote under
+ * the signature, or its "On … wrote:" line or forward mark, never a `>` line of the person's above
+ * the signature or in a code block. The line just above the first quoted line goes with the quote
+ * when it ends in a colon ("On 3 Nov 2026, 10:29, Anna wrote:"), so the attribution is never
+ * rewritten. Anything below the start of the quote stays with it, the person's inline words
+ * included: those are kept as they are, never rewritten. Above the quote, the signature from its
+ * delimiter line on is set apart (ADR 0142).
  */
 export function splitDraft(text: string): DraftParts {
-  const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const at = lines.findIndex((l) => QUOTED.test(l));
-  if (at < 0) return { own: lines.join("\n"), quote: "" };
-  const above = lines[at - 1];
-  const start = above !== undefined && above.trim() !== "" && /:\s*$/.test(above) ? at - 1 : at;
-  return { own: lines.slice(0, start).join("\n"), quote: lines.slice(start).join("\n") };
+  return draftSections(text);
 }
 
-/** The person's lines and the quote again, one empty line between them. */
-export function joinDraft(own: string, quote: string): string {
-  const body = own.trimEnd();
-  if (quote === "") return body;
-  return body === "" ? `\n\n${quote}` : `${body}\n\n${quote}`;
+/**
+ * The person's lines (as the model wrote them), the signature and the quote again, one empty line
+ * between each. `own` is the model's text as kept: the accept functions below keep only the
+ * person's own signature blocks of it before they check it (`keepOwnBlocks`, ADR 0142, rule 6), and
+ * text that is all the model's goes through `withoutSignature` first, so a draft is never signed
+ * twice.
+ */
+export function joinDraft(own: string, quote: string, signature = ""): string {
+  return joinSections(own, signature, quote);
 }
 
-/** The gaps of the person's lines, each once, in the order they first appear. */
+/**
+ * The gaps of the person's lines, each once, in the order they first appear. `own` is their part
+ * as `splitDraft` cut it, so the app's quote is not in it; a blockquote they wrote is, and its
+ * gaps count like any other.
+ */
 export function draftGaps(own: string): string[] {
-  return [...new Set(gaps({ subject: "", bodyMarkdown: own }).map((g) => g.token))];
+  return [...new Set(ownTextGaps(own).map((g) => g.token))];
 }
 
 function count(text: string, token: string): number {
@@ -186,7 +200,7 @@ function draftBlock(own: string): string {
   return [DRAFT_OPEN, clean(own).trim(), DRAFT_CLOSE].join("\n");
 }
 
-const KEEP_RULES = `Keep the draft's Markdown (lists, emphasis, links). Every token in square brackets, like [date] or [amount], is a gap the person will fill: copy each one exactly as it is. Do not add a subject line, a greeting or a signature the draft does not have, and never write lines that start with ">".`;
+const KEEP_RULES = `Keep the draft's Markdown (lists, emphasis, links). Every token in square brackets, like [date] or [amount], is a gap the person will fill: copy each one exactly as it is. Do not add a subject line or a greeting the draft does not have, and never write a line that starts with ">" unless the draft has that line: keep the draft's own such lines as they are. Do not add a signature or a sign-off block under the text: the app adds the person's own.`;
 
 // --- Rewrite ---
 
@@ -242,7 +256,7 @@ export function writeInstructions(withThread: boolean): string {
 
 ${COMMON_RULES}${thread}
 
-Do what the person's words ask, and nothing more. written is the person's whole text, written or changed as asked; keep what they did not ask to change as it is, word for word. Write in the language of the draft, or of the person's words when the draft is empty, in a plain and brief tone. Use only facts that the person's words, the subject, the draft${withThread ? " or the thread" : ""} state. When the text needs a fact you were not given (a date, an amount, a name, a decision), write a gap in square brackets that says what is missing, like [date] or [amount], and never invent it. Every token in square brackets already in the draft is a gap the person will fill: copy each one exactly as it is. Keep the draft's Markdown (lists, emphasis, links). Never write lines that start with ">", and do not write the subject or a subject line in the text.`;
+Do what the person's words ask, and nothing more. written is the person's whole text, written or changed as asked; keep what they did not ask to change as it is, word for word. Write in the language of the draft, or of the person's words when the draft is empty, in a plain and brief tone. Use only facts that the person's words, the subject, the draft${withThread ? " or the thread" : ""} state. When the text needs a fact you were not given (a date, an amount, a name, a decision), write a gap in square brackets that says what is missing, like [date] or [amount], and never invent it. Every token in square brackets already in the draft is a gap the person will fill: copy each one exactly as it is. Keep the draft's Markdown (lists, emphasis, links). Never write a line that starts with ">" unless the draft has that line, and do not write the subject or a subject line in the text. Do not add a signature or a sign-off block under the text: the app adds the person's own.`;
 }
 
 export const WRITE_SCHEMA = {
@@ -446,8 +460,8 @@ export function buildFillGapsRequest(
 // --- Trusting the answers ---
 
 /**
- * Why an answer is not used: its shape, a gap it dropped, a quote it wrote, the draft it lost, or
- * a subject line it put in the text.
+ * Why an answer is not used: its shape, a gap it dropped, a quote it wrote, most of the draft it
+ * lost, or a subject line it put in the text.
  */
 export type HelpRefusal = "shape" | "gaps" | "quote" | "dropped" | "subject";
 
@@ -468,34 +482,75 @@ function exactly(o: Obj, keys: readonly string[]): boolean {
 
 const refused = (reason: HelpRefusal) => ({ ok: false, reason }) as const;
 
-function hasQuotedLine(text: string): boolean {
-  return text.split("\n").some((l) => QUOTED.test(l));
+/**
+ * A text's quoted lines as `readDraft` reads them: a `>` line in a code block is code. Read as a
+ * draft (`placed`), as the kept text is read once the signature and the quote are joined to it: a
+ * `>` line under a fence the model left open is checked, never let through as code.
+ */
+function quotedLines(text: string): string[] {
+  const { lines, kinds } = readDraft(text);
+  return lines.filter((_, i) => kinds[i] === "quoted");
 }
 
-/** The rewritten lines, trimmed, when they keep every gap, add none and quote nothing. */
+/**
+ * Whether the text has a quoted line the person's own lines do not: a `>` line of theirs (a
+ * blockquote they wrote above the signature) is their text and may stay, each as often as they
+ * had it, white space at a line's end aside; any other is quoting mail, and refused. A `>` line
+ * inside a fenced code block is code, in the person's text and in the answer.
+ */
+function hasQuotedLine(text: string, own: string): boolean {
+  const theirs = new Map<string, number>();
+  for (const l of quotedLines(own)) theirs.set(l.trimEnd(), (theirs.get(l.trimEnd()) ?? 0) + 1);
+  return quotedLines(text).some((l) => {
+    const left = theirs.get(l.trimEnd()) ?? 0;
+    theirs.set(l.trimEnd(), left - 1);
+    return left <= 0;
+  });
+}
+
+/**
+ * The model's text as kept, before any check of it (ADR 0142, rule 6): trimmed, with only the
+ * person's own signature blocks of `own`, each once, a dropped one put back (`keepOwnBlocks`).
+ * Refused when nothing is left. Every check after this one runs on what is kept, so a gap that
+ * stood only in a block of the model's is lost, and the answer refused for it.
+ */
+function keptOf(text: string, own: string): Accepted<string> {
+  const trimmed = text.replace(/\r\n?/g, "\n").trim();
+  if (trimmed === "") return refused("shape");
+  const kept = keepOwnBlocks(own, trimmed);
+  if (kept === "") return refused("shape");
+  return { ok: true, value: kept };
+}
+
+/**
+ * The rewritten lines, trimmed and with only the person's own signature blocks, when they keep
+ * every gap, add none and quote nothing.
+ */
 export function acceptRewrite(value: unknown, own: string): Accepted<string> {
   if (!isObject(value) || !exactly(value, ["rewritten"])) return refused("shape");
   const text = value.rewritten;
   if (typeof text !== "string" || text.length > MAX_HELP_DRAFT_CHARS) return refused("shape");
-  const out = text.replace(/\r\n?/g, "\n").trim();
-  if (out === "") return refused("shape");
-  if (hasQuotedLine(out)) return refused("quote");
+  const kept = keptOf(text, own);
+  if (!kept.ok) return kept;
+  const out = kept.value;
+  if (hasQuotedLine(out, own)) return refused("quote");
   if (!keepsGaps(own, out, true)) return refused("gaps");
   return { ok: true, value: out };
 }
 
 /**
- * The person's lines as the agent wrote them on their words (ADR 0132), trimmed: not empty, no
- * quoted line, no subject line at the top, and every gap of the draft kept. New gaps are allowed:
- * a fact the agent was not given is left as one.
+ * The person's lines as the agent wrote them on their words (ADR 0132), trimmed and with only the
+ * person's own signature blocks: not empty, no quoted line, no subject line at the top, and every
+ * gap of the draft kept. New gaps are allowed: a fact the agent was not given is left as one.
  */
 export function acceptWrite(value: unknown, own: string, subject = ""): Accepted<string> {
   if (!isObject(value) || !exactly(value, ["written"])) return refused("shape");
   const text = value.written;
   if (typeof text !== "string" || text.length > MAX_HELP_DRAFT_CHARS) return refused("shape");
-  const out = text.replace(/\r\n?/g, "\n").trim();
-  if (out === "") return refused("shape");
-  if (hasQuotedLine(out)) return refused("quote");
+  const kept = keptOf(text, own);
+  if (!kept.ok) return kept;
+  const out = kept.value;
+  if (hasQuotedLine(out, own)) return refused("quote");
   const first = (out.split("\n")[0] as string).replace(/\s+/g, " ").trim();
   const topic = subject.replace(/\s+/g, " ").trim();
   if (
@@ -509,8 +564,9 @@ export function acceptWrite(value: unknown, own: string, subject = ""): Accepted
 }
 
 /**
- * The draft with the answers added. With nothing added it is the draft exactly as it was. An
- * answer that keeps less than most of the draft has dropped some of the person's words.
+ * The draft with the answers added, with only the person's own signature blocks. With nothing
+ * added it is the draft exactly as it was. An answer that keeps less than most of the draft has
+ * dropped some of the person's words.
  */
 export function acceptAnswers(value: unknown, own: string): Accepted<string> {
   if (!isObject(value) || !exactly(value, ["withAnswers", "added"])) return refused("shape");
@@ -522,9 +578,10 @@ export function acceptAnswers(value: unknown, own: string): Accepted<string> {
     return refused("shape");
   }
   if (added === 0) return { ok: true, value: own };
-  const out = withAnswers.replace(/\r\n?/g, "\n").trim();
-  if (out === "") return refused("shape");
-  if (hasQuotedLine(out)) return refused("quote");
+  const kept = keptOf(withAnswers, own);
+  if (!kept.ok) return kept;
+  const out = kept.value;
+  if (hasQuotedLine(out, own)) return refused("quote");
   if (!keepsGaps(own, out)) return refused("gaps");
   const was = normalizeForQuote(own).length;
   if (normalizeForQuote(out).length < was * 0.8) return refused("dropped");

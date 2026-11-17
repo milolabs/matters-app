@@ -192,6 +192,112 @@ test("the agent writes in a new message as the person asks", async ({ start }) =
   await expect(composer).toBeVisible();
 });
 
+test("a signature set in Settings starts a new message and a reply, the caret above it, and clearing it leaves none", async ({
+  start,
+}, testInfo) => {
+  const { app, window } = await start(demo);
+  const list = window.getByRole("listbox", { name: "Messages" });
+  await expect(list.getByRole("option", { name: /PKP Intercity/ })).toBeVisible();
+  const openSettings = async () => {
+    const [settings] = await Promise.all([
+      app.waitForEvent("window"),
+      window.getByRole("button", { name: "Settings" }).click(),
+    ]);
+    return settings;
+  };
+  const editSignature = async (settings: Page, lines: readonly string[]) => {
+    const row = settings.locator("[data-account]").first();
+    await row.getByRole("button", { name: "Signature" }).click();
+    const field = row.getByRole("textbox", { name: /^Signature for / });
+    await expect(field).toBeFocused();
+    await settings.keyboard.press("ControlOrMeta+a");
+    await settings.keyboard.press("Backspace");
+    for (const [i, line] of lines.entries()) {
+      if (i > 0) await settings.keyboard.press("Enter");
+      await settings.keyboard.type(line);
+    }
+    // Letters typed there are text, not the section's keys: the window and the row are still here.
+    await settings.screenshot({ path: testInfo.outputPath(`signature-${lines.length}.png`) });
+    await row.getByRole("button", { name: "Save signature" }).click();
+    await expect(row.getByRole("button", { name: "Save signature" })).toHaveCount(0);
+    return row;
+  };
+
+  // Empty by default: a new message starts empty.
+  const pkp = list.getByRole("option", { name: /PKP Intercity/ });
+  await pkp.click();
+  await window.keyboard.press("c");
+  const composer = window.locator("[data-composer]");
+  const text = composer.getByRole("textbox", { name: "Message" });
+  await expect(text).toBeVisible();
+  await expect(text).not.toContainText("--");
+  await window.keyboard.press("Escape");
+  await expect(composer).toHaveCount(0);
+
+  const settings = await openSettings();
+  const row = await editSignature(settings, ["Ola Demo", "Matters, room 4 (s, p, r)"]);
+  await expect(row.locator("[data-signature-line]")).toHaveText("Signature: Ola Demo");
+  await settings.close();
+
+  // A new message: an empty line to write on, then the delimiter and the signature. ↵ in the
+  // subject takes the caret to the text, at its top.
+  await pkp.click();
+  await window.keyboard.press("c");
+  await expect(text).toContainText("Ola Demo");
+  await composer.getByRole("textbox", { name: "Subject" }).click();
+  await window.keyboard.press("Enter");
+  await window.keyboard.type("Hello there");
+  await window.screenshot({ path: testInfo.outputPath("signature-new.png") });
+  const written = (await text.textContent()) ?? "";
+  expect(written.indexOf("Hello there")).toBeGreaterThanOrEqual(0);
+  expect(written.indexOf("Hello there")).toBeLessThan(written.indexOf("--"));
+  expect(written.indexOf("--")).toBeLessThan(written.indexOf("Ola Demo"));
+  expect(written).toContain("Matters, room 4 (s, p, r)");
+  await composer.getByRole("button", { name: "Discard" }).click();
+  await expect(composer).toHaveCount(0);
+
+  // A reply under its thread: the caret is in the text, above the signature, the quote below.
+  await pkp.click();
+  await window.keyboard.press("r");
+  const reply = window.getByRole("textbox", { name: "Reply" });
+  await expect(reply).toBeFocused();
+  await expect(reply).toContainText("Ola Demo");
+  await window.keyboard.type("Thanks");
+  await window.screenshot({ path: testInfo.outputPath("signature-reply.png") });
+  const replied = (await reply.textContent()) ?? "";
+  expect(replied.indexOf("Thanks")).toBeGreaterThanOrEqual(0);
+  expect(replied.indexOf("Thanks")).toBeLessThan(replied.indexOf("--"));
+  expect(replied.indexOf("--")).toBeLessThan(replied.indexOf("Ola Demo"));
+  expect(replied.indexOf("Ola Demo")).toBeLessThan(replied.indexOf("···"));
+  await window.getByRole("button", { name: "Discard" }).click();
+  await expect(reply).toHaveCount(0);
+
+  // Cleared, there is none again.
+  const again = await openSettings();
+  // Escape in the field closes the field, not the window, and keeps the signature.
+  const accountRow = again.locator("[data-account]").first();
+  await accountRow.getByRole("button", { name: "Signature" }).click();
+  await expect(accountRow.getByRole("textbox", { name: /^Signature for / })).toBeFocused();
+  await again.keyboard.press("Escape");
+  await expect(accountRow.getByRole("textbox", { name: /^Signature for / })).toHaveCount(0);
+  await expect(again.getByRole("region", { name: "Accounts" })).toBeVisible();
+  await expect(accountRow.locator("[data-signature-line]")).toHaveText("Signature: Ola Demo");
+  // From the form's buttons too: Escape on Cancel closes the field, and the window stays.
+  await accountRow.getByRole("button", { name: "Signature" }).click();
+  await accountRow.getByRole("button", { name: "Cancel" }).focus();
+  await again.keyboard.press("Escape");
+  await expect(accountRow.getByRole("textbox", { name: /^Signature for / })).toHaveCount(0);
+  await expect(again.getByRole("region", { name: "Accounts" })).toBeVisible();
+  const cleared = await editSignature(again, []);
+  await expect(cleared.locator("[data-signature-line]")).toHaveCount(0);
+  await again.close();
+  await pkp.click();
+  await window.keyboard.press("c");
+  await expect(text).toBeVisible();
+  await expect(text).not.toContainText("--");
+  await expect(text).not.toContainText("Ola Demo");
+});
+
 const darkScheme = (page: Page) =>
   page.evaluate(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
 const openAppearance = async (running: Running) => {

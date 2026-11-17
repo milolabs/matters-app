@@ -1,3 +1,6 @@
+import { withoutSignature } from "@matters/core";
+import fc from "fast-check";
+import type MarkdownIt from "markdown-it";
 import { describe, expect, it } from "vitest";
 import { MarkdownComposeRenderer } from "../src/index.ts";
 
@@ -178,5 +181,200 @@ describe("rendering", () => {
     const start = performance.now();
     for (let i = 0; i < 50; i++) renderer.render(md);
     expect((performance.now() - start) / 50).toBeLessThan(10);
+  });
+});
+
+describe("the person's signature (ADR 0142, rule 4)", () => {
+  const signed = "Thanks!\n\n-- \nAnna Nowak\n**Matters** · [site](https://matters.example)";
+  const signatureOf = (out: string) =>
+    /<div class="matters-signature"[^>]*>([\s\S]*?)<\/div>/.exec(out)?.[1] ?? "";
+
+  it("keeps the delimiter line exactly in the text part, its space included", () => {
+    expect(renderer.render(signed).text).toBe(signed);
+    expect(renderer.render(signed).text.split("\n")).toContain("-- ");
+  });
+
+  it("renders it as a quiet block: the delimiter as text, never a rule, a heading or a list", () => {
+    const out = html(signed);
+    assertInert(out);
+    const block = signatureOf(out);
+    expect(block).toContain('class="matters-signature-mark"');
+    expect(block).toMatch(/>-- <\/p>/);
+    expect(block).toContain("<strong>Matters</strong>");
+    expect(block).toContain('href="https://matters.example"');
+    expect(out).not.toMatch(/<hr|<h[1-6]|<li/);
+    // The block carries the quiet colour of quotes; the words above keep the body's.
+    expect(out).toMatch(/class="matters-signature" style="[^"]*color: #6e6e73/);
+    expect(out).toMatch(/<p style="[^"]*">Thanks!<\/p>/);
+  });
+
+  it("does not make the line above it a heading when no empty line is between", () => {
+    const out = html("Thanks!\n-- \nAnna");
+    expect(out).not.toMatch(/<h[1-6]/);
+    expect(out).toMatch(/>Thanks!<\/p>/);
+    expect(signatureOf(out)).toContain("Anna");
+  });
+
+  it("ends where the reply's quote begins, which stays a blockquote below it", () => {
+    const out = html("Yes.\n\n-- \nAnna\n\nOn 3 Nov 2026, 10:29, Ben wrote:\n> When?\n");
+    const block = signatureOf(out);
+    expect(block).toContain("Anna");
+    expect(block).not.toContain("Ben");
+    expect(out.indexOf("matters-signature")).toBeLessThan(out.indexOf("<blockquote"));
+    expect(out).toMatch(/<blockquote[^>]*>\s*<p[^>]*>When\?<\/p>/);
+  });
+
+  it("is inert whatever the signature says: no image, no raw HTML", () => {
+    const out = html(
+      'Hi\n\n-- \n<img src="https://evil.example/x.png"> ![logo](https://evil.example/l.png)',
+    );
+    assertInert(out);
+    expect(out).not.toMatch(/<img/);
+  });
+
+  it("is one message: a link defined on one side of the delimiter is a link on the other", () => {
+    const out = html("[site]: https://matters.example\n\nHello\n\n-- \nVisit [site]");
+    expect(signatureOf(out)).toContain('href="https://matters.example"');
+    const back = html("See [site].\n\n-- \nAnna\n\n[site]: https://matters.example");
+    expect(back).toMatch(/See <a href="https:\/\/matters\.example"/);
+    // Nothing is carried from one message to the next.
+    expect(html("Hello\n\n-- \nVisit [site]")).not.toContain("href=");
+  });
+
+  it("the person's blockquote above it stays theirs: a blockquote in their part, then the block, then the quote", () => {
+    const md =
+      "As the contract says:\n\n> Payment within 14 days.\n\n-- \nAnna\n\nOn 3 Nov 2026, 10:29, Ben wrote:\n> When?\n";
+    const out = html(md);
+    assertInert(out);
+    expect(renderer.render(md).text).toBe(md);
+    const block = signatureOf(out);
+    expect(block).toMatch(/>-- <\/p>/);
+    expect(block).toContain("Anna");
+    expect(block).not.toMatch(/blockquote|Payment|When/);
+    const mine = out.indexOf("Payment within 14 days.");
+    const signature = out.indexOf('class="matters-signature"');
+    const theirs = out.indexOf("When?");
+    expect(mine).toBeGreaterThan(-1);
+    expect(mine).toBeLessThan(signature);
+    expect(signature).toBeLessThan(out.indexOf("Ben wrote:"));
+    expect(out.indexOf("Ben wrote:")).toBeLessThan(theirs);
+    // Both are blockquotes: the person's in their own part, above the signature; the quote below.
+    expect(out.slice(0, signature)).toMatch(
+      /<blockquote[^>]*>\s*<p[^>]*>Payment within 14 days\.<\/p>/,
+    );
+    expect(out.slice(signature)).toMatch(/<blockquote[^>]*>\s*<p[^>]*>When\?<\/p>/);
+    // Before, the quote started at the person's `>` line and the whole text was rendered at once:
+    // no quiet block, and the delimiter a paragraph `--<br>` in the body's type.
+    expect(out).not.toMatch(/<p[^>]*>--<br/);
+  });
+
+  it("a `>` line in a fenced code block above it is code, and the signature is still the block", () => {
+    const md = "Run:\n\n```\n> echo hi\n-- \n```\n\n-- \nAnna";
+    const out = html(md);
+    assertInert(out);
+    expect(signatureOf(out)).toContain("Anna");
+    expect(out.indexOf("&gt; echo hi")).toBeLessThan(out.indexOf('class="matters-signature"'));
+    expect(out).toMatch(/<pre[^>]*><code[^>]*>&gt; echo hi\n-- \n<\/code><\/pre>/);
+    expect(out).not.toMatch(/<blockquote/);
+    expect(out).not.toMatch(/<p[^>]*>--<br/);
+  });
+
+  it("the reviewer's case: a fence left open above a signature with code is never around the signature", () => {
+    const md = "Example:\n\n```\nls\n\n-- \n```\nJane\n```";
+    const out = html(md);
+    assertInert(out);
+    expect(renderer.render(md).text).toBe(md);
+    const at = out.indexOf('class="matters-signature"');
+    expect(at).toBeGreaterThan(-1);
+    // Markdown reads the fence left open as code to the end of the person's part, and only there.
+    expect(out.slice(0, at)).toMatch(/<pre[^>]*><code[^>]*>ls\n<\/code><\/pre>/);
+    const block = signatureOf(out);
+    expect(block).toMatch(/>-- <\/p>/);
+    expect(block).toMatch(/<pre[^>]*><code[^>]*>Jane\n<\/code><\/pre>/);
+    // Every `<pre>` closes before the signature starts, or opens inside it.
+    const before = out.slice(0, at);
+    expect(before.split("<pre").length).toBe(before.split("</pre>").length);
+  });
+
+  it("a fence left open above the quote, with no signature, ends with the person's part", () => {
+    const md = "See:\n\n```\nls\n\nOn 3 Nov 2026, 10:29, Ben wrote:\n> When?\n";
+    const out = html(md);
+    const quote = out.indexOf("<blockquote");
+    expect(quote).toBeGreaterThan(-1);
+    expect(out.slice(0, quote)).toMatch(/<pre[^>]*><code[^>]*>ls\n<\/code><\/pre>/);
+    expect(out.indexOf("</pre>")).toBeLessThan(out.indexOf("Ben wrote:"));
+    expect(out.slice(quote)).not.toContain("<pre");
+  });
+
+  it("`-- ` lines of SQL in a closed code block above the signature stay in the code", () => {
+    const md = "Run:\n\n```sql\n-- \n-- the totals\nSELECT 1;\n```\n\n-- \nAnna";
+    const out = html(md);
+    expect(out).toMatch(/<pre[^>]*><code[^>]*>-- \n-- the totals\nSELECT 1;\n<\/code><\/pre>/);
+    expect(signatureOf(out)).toContain("Anna");
+    expect(signatureOf(out)).not.toContain("SELECT");
+  });
+
+  it("without a delimiter line nothing changes", () => {
+    expect(html("Hi\n\n--\nnot a signature")).not.toContain("matters-signature");
+  });
+});
+
+describe("a model's answer, cut at its sign-off (ADR 0142, rule 6), as Markdown renders it", () => {
+  // The renderer's own markdown-it, which renders a model's answer with no signature in it whole.
+  const md = (renderer as unknown as { readonly md: InstanceType<typeof MarkdownIt> }).md;
+  /** The lines markdown-it renders inside a `<pre>`, its fence lines included. */
+  function preLines(text: string): Set<number> {
+    const inside = new Set<number>();
+    for (const token of md.parse(text, {})) {
+      if ((token.type !== "fence" && token.type !== "code_block") || token.map === null) continue;
+      for (let i = token.map[0]; i < token.map[1]; i++) inside.add(i);
+    }
+    return inside;
+  }
+  // Lines at the top level and in a blockquote. List items are left out: the core does not read
+  // containers, so a fence left open inside a list item (`- x`, then an indented fence) is read
+  // as running on to a fence after the list, where markdown-it ends it with the item.
+  const line = fc.constantFrom(
+    "```",
+    "~~~",
+    "````",
+    "```sql",
+    "  ```",
+    "> ```",
+    "-- ",
+    "--",
+    "",
+    "Hi",
+    "SELECT 1;",
+    "> x",
+    "    -- ",
+  );
+  const answer = fc.array(line, { maxLength: 14 }).map((ls) => ls.join("\n"));
+
+  it("never cuts inside a code block: the cut starts at a delimiter line outside every <pre>", () => {
+    fc.assert(
+      fc.property(answer, (text) => {
+        const kept = withoutSignature(text);
+        if (kept === text) return;
+        expect(text.startsWith(kept)).toBe(true);
+        const lines = text.split("\n");
+        let cut = kept === "" ? 0 : kept.split("\n").length;
+        while (cut < lines.length && (lines[cut] as string).trim() === "") cut++;
+        expect(["-- ", "--"]).toContain(lines[cut]);
+        // Every line above the cut is kept, so no line of a code block above it is lost.
+        expect(preLines(text).has(cut)).toBe(false);
+      }),
+      { numRuns: 5000 },
+    );
+  });
+
+  it("the reviewer's case: the closed block, the text under it and the fence left open are all kept", () => {
+    const text = "Run:\n\n```sql\nSELECT 1;\n-- \nSELECT 2;\n```\n\nThen:\n```\nunfinished";
+    expect(withoutSignature(text)).toBe(text);
+    // With the signature joined under it, as the app sends it: both code blocks, then the block.
+    const out = html(`${withoutSignature(text)}\n\n-- \nMe`);
+    expect(out).toMatch(/<pre[^>]*><code[^>]*>SELECT 1;\n-- \nSELECT 2;\n<\/code>/);
+    expect(out).toMatch(/<pre[^>]*><code[^>]*>unfinished\n<\/code>/);
+    expect(out.indexOf("unfinished")).toBeLessThan(out.indexOf('class="matters-signature"'));
   });
 });

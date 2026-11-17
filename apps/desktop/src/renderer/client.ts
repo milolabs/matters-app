@@ -80,6 +80,7 @@ import type {
   SendActionResponse,
   SetImageRuleResponse,
   SetSeenResponse,
+  SetSignatureResponse,
   SignInAgainResponse,
   SortRankedResponse,
   StorageReport,
@@ -247,6 +248,8 @@ export interface Backend {
    * the servers before it replaces the stored one.
    */
   signInAgain(accountId: string, signIn: string): Promise<SignInAgainResponse>;
+  /** Keeps the account's own signature (ADR 0142); resolves with it as kept. */
+  setSignature(accountId: string, signature: string): Promise<string>;
   /** Starting points of a message; nothing is stored until the first `saveDraft`. */
   prepareNew(accountId?: string): Promise<PrepareResponse>;
   prepareReply(threadId: string, mode: ReplyMode): Promise<PrepareResponse>;
@@ -579,6 +582,9 @@ export function createBackend(port: MessagePort): Backend {
       request<ChangePasswordResponse>({ type: "changePassword", accountId, password }),
     signInAgain: (accountId, signIn) =>
       request<SignInAgainResponse>({ type: "signInAgain", accountId, signIn }),
+    setSignature: async (accountId, signature) =>
+      (await request<SetSignatureResponse>({ type: "setSignature", accountId, signature }))
+        .signature,
     prepareNew: (accountId) =>
       request<PrepareResponse>({ type: "prepareNew", ...(accountId ? { accountId } : {}) }),
     prepareReply: (threadId, mode) =>

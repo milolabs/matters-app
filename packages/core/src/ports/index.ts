@@ -1221,6 +1221,11 @@ export interface AccountStorePort {
   remove(id: string): Promise<boolean>;
   /** Keeps what the outgoing server last announced as its largest message; null forgets it. */
   setMessageLimit(accountId: string, bytes: number | null): Promise<void>;
+  /**
+   * Keeps the account's signature (ADR 0142), already normalized and checked; empty takes it
+   * away. Returns whether the account exists.
+   */
+  setSignature(accountId: string, signature: string): Promise<boolean>;
 }
 
 /**

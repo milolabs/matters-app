@@ -35,6 +35,7 @@ export * from "./domain/release.ts";
 export * from "./domain/reply.ts";
 export * from "./domain/seen.ts";
 export * from "./domain/send.ts";
+export * from "./domain/signature.ts";
 export * from "./domain/signIn.ts";
 export * from "./domain/stem.ts";
 export * from "./domain/talks.ts";

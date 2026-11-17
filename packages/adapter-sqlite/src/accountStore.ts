@@ -16,6 +16,7 @@ interface AccountRow {
   smtp_security: string | null;
   smtp_username: string | null;
   max_message_bytes: number | null;
+  signature: string | null;
   created_at_ms: number;
 }
 
@@ -27,6 +28,7 @@ function toAccount(row: AccountRow): StoredAccount {
     address: row.address,
     displayName: row.display_name,
     ...(row.max_message_bytes === null ? {} : { messageLimitBytes: row.max_message_bytes }),
+    ...(row.signature === null || row.signature === "" ? {} : { signature: row.signature }),
     createdAtMs: row.created_at_ms,
   };
   // ADR 0136, rule 2: a Graph account has no servers; the table's CHECK keeps an IMAP one whole.
@@ -59,6 +61,7 @@ export class SqliteAccountStore implements AccountStorePort {
   private readonly insert;
   private readonly delete;
   private readonly setLimit;
+  private readonly setSign;
 
   constructor(db: Database) {
     this.db = db;
@@ -67,10 +70,11 @@ export class SqliteAccountStore implements AccountStorePort {
     this.insert = db.prepare(`
       INSERT INTO accounts (id, address, display_name, transport, imap_host, imap_port,
                             imap_security, imap_username, smtp_host, smtp_port, smtp_security,
-                            smtp_username, max_message_bytes, created_at_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+                            smtp_username, max_message_bytes, signature, created_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     this.delete = db.prepare("DELETE FROM accounts WHERE id = ?");
     this.setLimit = db.prepare("UPDATE accounts SET max_message_bytes = ? WHERE id = ?");
+    this.setSign = db.prepare("UPDATE accounts SET signature = ? WHERE id = ?");
   }
 
   async list(): Promise<readonly StoredAccount[]> {
@@ -99,6 +103,7 @@ export class SqliteAccountStore implements AccountStorePort {
           account.smtp?.security ?? null,
           account.smtp?.username ?? null,
           account.messageLimitBytes ?? null,
+          account.signature === undefined || account.signature === "" ? null : account.signature,
           account.createdAtMs,
         );
       } catch (error) {
@@ -118,5 +123,12 @@ export class SqliteAccountStore implements AccountStorePort {
     await exclusive(this.db, () => {
       this.setLimit.run(bytes, accountId);
     });
+  }
+
+  async setSignature(accountId: string, signature: string): Promise<boolean> {
+    return exclusive(
+      this.db,
+      () => Number(this.setSign.run(signature === "" ? null : signature, accountId).changes) > 0,
+    );
   }
 }

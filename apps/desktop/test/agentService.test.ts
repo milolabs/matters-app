@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { MarkdownComposeRenderer } from "@matters/adapter-compose";
 import { visibleText } from "@matters/adapter-mime";
 import type {
   AgentRunRequest,
@@ -25,6 +26,7 @@ import {
   PROMPT_INSTRUCTIONS,
   planUseOf,
   REMEMBER_INSTRUCTIONS,
+  splitDraft,
   TALK_ALL_FACTS_RULES,
   TALK_ALL_INSTRUCTIONS,
   TALK_ALL_OFFERS_RULES,
@@ -1200,11 +1202,122 @@ describe("AgentService: drafts", () => {
     expect(h.drafts).toHaveLength(1);
   });
 
+  it("cuts every signature block of the prepared words: they are all the agent's (ADR 0142)", async () => {
+    const h = await ready();
+    await h.addMail({
+      threadId: "t1",
+      messages: [{ dateMs: NOW - DAY, text: "Can you send it?", fromName: "Anna" }],
+    });
+    await h.service.draftFromPrepared(
+      "t1",
+      "Hi Anna,\n\nTuesday works.\n\n--\nBot\n\n-- \nYour assistant\n\nSummary\n--\nnone",
+    );
+    const body = h.drafts[0]?.bodyMarkdown ?? "";
+    expect(body.startsWith("Hi Anna,\n\nTuesday works.\n\n")).toBe(true);
+    expect(body).not.toContain("Bot");
+    expect(body).not.toContain("Your assistant");
+    expect(body).not.toContain("Summary");
+    expect(body).toContain("> Can you send it?");
+  });
+
+  it("keeps a `-- ` or `--` line of a code sample and everything under it: code is no block", async () => {
+    // The reviewer's case: a prepared reply with such a line in a code sample lost that line,
+    // the closing fence and the text below.
+    const h = await ready();
+    await h.storage.accounts.setSignature("acc1", "Me\nWork Ltd");
+    await h.addMail({
+      threadId: "t1",
+      messages: [{ dateMs: NOW - DAY, text: "Can you send it?", fromName: "Anna" }],
+    });
+    const words =
+      "Here is the query:\n\n```sql\nSELECT 1;\n-- \nSELECT 2;\n\n--\nSELECT 3;\n```\n\nLet me know.";
+    await h.service.draftFromPrepared("t1", `${words}\n\n-- \nYour assistant`);
+    const body = h.drafts[0]?.bodyMarkdown ?? "";
+    expect(body.startsWith(`${words}\n\n-- \nMe\nWork Ltd\n\nOn `)).toBe(true);
+    expect(body).not.toContain("Your assistant");
+    const parts = splitDraft(body);
+    expect(parts.own).toBe(`${words}\n`);
+    expect(parts.signature).toBe("-- \nMe\nWork Ltd");
+    const html = new MarkdownComposeRenderer().render(body).html;
+    expect(html).toMatch(
+      /<pre[^>]*><code[^>]*>SELECT 1;\n-- \nSELECT 2;\n\n--\nSELECT 3;\n<\/code>/,
+    );
+    expect(html.indexOf("Let me know.")).toBeLessThan(html.indexOf('class="matters-signature"'));
+  });
+
+  it("keeps a closed code sample with a `-- ` line when a fence is left open below it", async () => {
+    // The reviewer's case: the `-- ` line in the closed block was taken for a delimiter, because
+    // a fence further down is never closed, and the rest of the reply was cut.
+    const h = await ready();
+    await h.storage.accounts.setSignature("acc1", "Me\nWork Ltd");
+    await h.addMail({
+      threadId: "t1",
+      messages: [{ dateMs: NOW - DAY, text: "Can you send it?", fromName: "Anna" }],
+    });
+    const words = "Run:\n\n```sql\nSELECT 1;\n-- \nSELECT 2;\n```\n\nThen:\n```\nunfinished";
+    await h.service.draftFromPrepared("t1", words);
+    const body = h.drafts[0]?.bodyMarkdown ?? "";
+    expect(body.startsWith(`${words}\n\n-- \nMe\nWork Ltd\n\nOn `)).toBe(true);
+    const parts = splitDraft(body);
+    expect(parts.own).toBe(`${words}\n`);
+    expect(parts.signature).toBe("-- \nMe\nWork Ltd");
+    const html = new MarkdownComposeRenderer().render(body).html;
+    expect(html).toMatch(/<pre[^>]*><code[^>]*>SELECT 1;\n-- \nSELECT 2;\n<\/code>/);
+    expect(html.indexOf("unfinished")).toBeLessThan(html.indexOf('class="matters-signature"'));
+    // A sign-off of the model's under the closed block is still cut, and what follows it.
+    const h2 = await ready();
+    await h2.addMail({
+      threadId: "t1",
+      messages: [{ dateMs: NOW - DAY, text: "Can you send it?", fromName: "Anna" }],
+    });
+    const closed = "Run:\n\n```sql\nSELECT 1;\n-- \nSELECT 2;\n```";
+    await h2.service.draftFromPrepared("t1", `${closed}\n\n-- \nBot\n\nThen:\n\`\`\`\nunfinished`);
+    const cut = h2.drafts[0]?.bodyMarkdown ?? "";
+    expect(cut.startsWith(`${closed}\n\nOn `)).toBe(true);
+    expect(cut).not.toContain("Bot");
+  });
+
+  it("keeps a line the agent quoted in the reply's own part, the signature and the quote apart", async () => {
+    const h = await ready();
+    await h.storage.accounts.setSignature("acc1", "Me\nWork Ltd");
+    await h.addMail({
+      threadId: "t1",
+      messages: [{ dateMs: NOW - DAY, text: "Can you send it?", fromName: "Anna" }],
+    });
+    await h.service.draftFromPrepared("t1", "Yes.\n\n> Tuesday?");
+    const body = h.drafts[0]?.bodyMarkdown ?? "";
+    expect(body.startsWith("Yes.\n\n> Tuesday?\n\n-- \nMe\nWork Ltd\n\nOn ")).toBe(true);
+    const parts = splitDraft(body);
+    expect(parts.own).toBe("Yes.\n\n> Tuesday?\n");
+    expect(parts.signature).toBe("-- \nMe\nWork Ltd");
+    expect(parts.quote).toMatch(/^On .* wrote:\n> Can you send it\?\n$/);
+    // Sent, the agent's `>` line is a blockquote of the reply, the signature its quiet block, and
+    // the app's quote below it.
+    const html = new MarkdownComposeRenderer().render(body).html;
+    const block = html.indexOf('class="matters-signature"');
+    expect(block).toBeGreaterThan(html.indexOf("Tuesday?"));
+    expect(html.slice(0, block)).toMatch(/<blockquote[^>]*>\s*<p[^>]*>Tuesday\?<\/p>/);
+    expect(html.slice(block)).toMatch(
+      /Work Ltd[\s\S]*<blockquote[^>]*>\s*<p[^>]*>Can you send it\?/,
+    );
+  });
+
   it("refuses an empty body and a thread that does not exist", async () => {
     const h = await ready();
     await expect(h.service.draftFromPrepared("t1", "  ")).rejects.toBeInstanceOf(
       InvalidAgentSettingError,
     );
+    // A body that is only a block of the agent's is empty once cut: no draft is made.
+    await h.addMail({
+      threadId: "t1",
+      messages: [{ dateMs: NOW - DAY, text: "Can you send it?", fromName: "Anna" }],
+    });
+    for (const only of ["--\nBot", "-- \nYour assistant\n\n--\nBot", "\n\n-- \n"]) {
+      await expect(h.service.draftFromPrepared("t1", only)).rejects.toBeInstanceOf(
+        InvalidAgentSettingError,
+      );
+    }
+    expect(h.drafts).toEqual([]);
     await expect(h.service.draftFromPrepared("none", "Hi")).rejects.toBeInstanceOf(
       ThingNotFoundError,
     );

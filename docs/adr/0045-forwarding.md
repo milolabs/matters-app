@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-11-05
 - Builds on: [0020](0020-sending-outbox-and-compose.md), [0041](0041-attachments-never-block.md), [0043](0043-received-attachments.md)
+- Amended by: [0142](0142-a-signature-of-the-persons-own.md) (rule 13: the signature put in is not
+  what the person wrote)
 
 ## Context
 

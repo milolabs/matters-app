@@ -40,6 +40,8 @@ async function build(spoil: Spoil = "none", automated = false) {
   const insights = new InMemoryAgentInsightStore();
   const demo = new DemoAgentRuntime(() => clock.now(), 0);
   const calls: AgentRunRequest[] = [];
+  /** When set, what a helper's turn answers instead of the demo assistant. */
+  const answers: { next: unknown } = { next: undefined };
   const helper = (r: AgentRunRequest) => {
     const props = Object.keys((r.schema as { properties: object }).properties);
     return ["rewritten", "written", "withAnswers", "asks", "fills"].some((k) => props.includes(k));
@@ -50,6 +52,7 @@ async function build(spoil: Spoil = "none", automated = false) {
     inspect: () => demo.inspect(),
     run: async (request, options) => {
       calls.push(request);
+      if (answers.next !== undefined && helper(request)) return { value: answers.next };
       if (spoil === "junk" && helper(request)) return { value: { nonsense: true } };
       const out = await demo.run(request, options);
       if (spoil === "dropGap" && "rewritten" in (out.value as object)) {
@@ -104,7 +107,7 @@ async function build(spoil: Spoil = "none", automated = false) {
     await service.pauseReading();
     await service.testRuntime();
   };
-  return { service, insights, calls, enable, storage };
+  return { service, insights, calls, enable, storage, answers };
 }
 
 describe("help with a reply, over the demo assistant (ADR 0098)", () => {
@@ -187,6 +190,122 @@ describe("help with a reply, over the demo assistant (ADR 0098)", () => {
       ["prepare", 1],
     ]);
     expect(await h.storage.drafts.list()).toEqual([]);
+  });
+});
+
+describe("a sign-off the person typed is theirs; a block the model added goes (ADR 0142, rule 6)", () => {
+  // `--` with no space after a blank line reads as a delimiter, but here the person wrote it.
+  const own = "Thanks, see you on Tuesday.\n\n--\nAnna";
+
+  it("a rewrite keeps the person's block, even as the model wrote it again, and cuts one it added", async () => {
+    const h = await build();
+    await h.enable();
+    h.answers.next = { rewritten: "Thank you, I will see you on Tuesday.\n\n--\nAnna" };
+    expect((await h.service.rewriteDraft({ threadId: "t1" }, reply(own), "formal")).text).toBe(
+      reply("Thank you, I will see you on Tuesday.\n\n--\nAnna"),
+    );
+    h.answers.next = {
+      rewritten: "Thank you, I will see you on Tuesday.\n\n--\nAnna\n\n-- \nYour assistant",
+    };
+    expect((await h.service.rewriteDraft({ threadId: "t1" }, reply(own), "formal")).text).toBe(
+      reply("Thank you, I will see you on Tuesday.\n\n--\nAnna"),
+    );
+    // With no block of the person's, one the model wrote goes, as before.
+    h.answers.next = { rewritten: "Thank you.\n\n--\nYour assistant" };
+    expect(
+      (await h.service.rewriteDraft({ threadId: "t1" }, reply("Thanks."), "formal")).text,
+    ).toBe(reply("Thank you."));
+  });
+
+  it("writing as asked keeps the person's block and cuts one the model added", async () => {
+    const h = await build();
+    await h.enable();
+    h.answers.next = {
+      written: "Thanks, see you on Tuesday. I will bring the papers.\n\n--\nAnna\n\n--\nBot",
+    };
+    const text = (
+      await h.service.writeDraft({ threadId: "t1" }, "Dokumenty", reply(own), "say I bring papers")
+    ).text;
+    expect(text).toBe(reply("Thanks, see you on Tuesday. I will bring the papers.\n\n--\nAnna"));
+  });
+
+  it("answers keep the person's block and cut one the model added", async () => {
+    const h = await build();
+    await h.enable();
+    h.answers.next = {
+      withAnswers: "Thanks, see you on Tuesday. Yes, I got the papers.\n\n--\nAnna\n\n-- \nBot",
+      added: 1,
+    };
+    const text = (await h.service.answerQuestions("t1", reply(own))).text;
+    expect(text).toBe(reply("Thanks, see you on Tuesday. Yes, I got the papers.\n\n--\nAnna"));
+  });
+});
+
+describe("the model's blocks are cut first, then the answer is checked (ADR 0142, rule 6)", () => {
+  // A gap that stands only in a block of the model's is lost once the block is cut.
+  const own = "Confirm [date].";
+  const lost = "The assistant's answer lost a gap in [brackets], so it was not used. Try again.";
+
+  it("a rewrite that keeps a gap only under its own delimiter is refused", async () => {
+    const h = await build();
+    await h.enable();
+    h.answers.next = { rewritten: "Confirmed.\n\n--\n[date]" };
+    await expect(h.service.rewriteDraft({ threadId: "t1" }, reply(own), "shorter")).rejects.toThrow(
+      lost,
+    );
+  });
+
+  it("writing as asked that keeps a gap only under its own delimiter is refused", async () => {
+    const h = await build();
+    await h.enable();
+    h.answers.next = { written: "Confirmed.\n\n--\n[date]" };
+    await expect(
+      h.service.writeDraft({ threadId: "t1" }, "Dokumenty", reply(own), "confirm it"),
+    ).rejects.toThrow(lost);
+  });
+
+  it("answers that keep a gap only under their own delimiter are refused", async () => {
+    const h = await build();
+    await h.enable();
+    h.answers.next = { withAnswers: "Confirm, yes, I got them.\n\n--\n[date]", added: 1 };
+    await expect(h.service.answerQuestions("t1", reply(own))).rejects.toThrow(lost);
+  });
+
+  it("a block of the model's above the person's goes, and theirs stays, in all three", async () => {
+    const h = await build();
+    await h.enable();
+    const mine = "Thanks.\n\n--\nAnna";
+    h.answers.next = { rewritten: "Thank you.\n\n--\nBot\n\n--\nAnna" };
+    expect((await h.service.rewriteDraft({ threadId: "t1" }, reply(mine), "formal")).text).toBe(
+      reply("Thank you.\n\n--\nAnna"),
+    );
+    h.answers.next = { written: "Thank you.\n\n--\nBot\n\n--\nAnna" };
+    expect(
+      (await h.service.writeDraft({ threadId: "t1" }, "Dokumenty", reply(mine), "thank her")).text,
+    ).toBe(reply("Thank you.\n\n--\nAnna"));
+    h.answers.next = { withAnswers: "Thanks, I got them.\n\n--\nBot\n\n--\nAnna", added: 1 };
+    expect((await h.service.answerQuestions("t1", reply(mine))).text).toBe(
+      reply("Thanks, I got them.\n\n--\nAnna"),
+    );
+  });
+
+  it("a sign-off of the person's the model reworded comes back as they wrote it; one it dropped comes back", async () => {
+    const h = await build();
+    await h.enable();
+    const mine = "Thanks.\n\n--\nAnna";
+    h.answers.next = { rewritten: "Thank you.\n\n--\nAnna K." };
+    expect((await h.service.rewriteDraft({ threadId: "t1" }, reply(mine), "formal")).text).toBe(
+      reply("Thank you.\n\n--\nAnna"),
+    );
+    // Told to write no sign-off, the model took the person's out too: it is put back.
+    h.answers.next = { rewritten: "Thank you." };
+    expect((await h.service.rewriteDraft({ threadId: "t1" }, reply(mine), "formal")).text).toBe(
+      reply("Thank you.\n\n--\nAnna"),
+    );
+    h.answers.next = { withAnswers: "Thanks, I got them.", added: 1 };
+    expect((await h.service.answerQuestions("t1", reply(mine))).text).toBe(
+      reply("Thanks, I got them.\n\n--\nAnna"),
+    );
   });
 });
 

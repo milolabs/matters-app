@@ -224,6 +224,18 @@ export interface SignInAgainRequest {
   readonly signIn: string;
 }
 
+/**
+ * The account's own signature (ADR 0142): Markdown, at most 2,000 characters; empty takes it away.
+ * The core normalizes and checks it, and says why in words the field can show. Drafts that exist
+ * keep the signature they have.
+ */
+export interface SetSignatureRequest {
+  readonly type: "setSignature";
+  readonly requestId: RequestId;
+  readonly accountId: string;
+  readonly signature: string;
+}
+
 /** The starting point of a new message. Nothing is stored until the first `saveDraft`. */
 export interface PrepareNewRequest {
   readonly type: "prepareNew";
@@ -1187,7 +1199,8 @@ export type BackendRequest =
   | RemoveAccountRequest
   | SyncNowRequest
   | ChangePasswordRequest
-  | SignInAgainRequest;
+  | SignInAgainRequest
+  | SetSignatureRequest;
 
 export interface ListNewestResponse {
   readonly type: "listNewest";
@@ -1882,6 +1895,8 @@ export interface AccountInfo {
   readonly username: string;
   /** An outgoing server is set up. */
   readonly canSend: boolean;
+  /** The person's own signature for mail from it (ADR 0142); absent when there is none. */
+  readonly signature?: string;
   readonly status: SyncStatus;
 }
 
@@ -1935,6 +1950,14 @@ export interface ChangePasswordResponse {
    */
   readonly outgoing: "verified" | "none" | "unchecked";
   readonly outgoingNote?: string;
+}
+
+/** The signature as it was kept, normalized; empty when there is none now. */
+export interface SetSignatureResponse {
+  readonly type: "setSignature";
+  readonly requestId: RequestId;
+  readonly ok: true;
+  readonly signature: string;
 }
 
 /** What *Sign in again* answers (ADR 0133, rule 11): as a new password's answer, never a token. */
@@ -2025,6 +2048,11 @@ export interface PrepareResponse {
    * `messageLimit` event.
    */
   readonly messageLimitBytes: number | null;
+  /**
+   * The account's signature as `content` has it, without its delimiter; empty when it has none
+   * (ADR 0142). The composer keeps it to tell whether the person changed it (rule 5).
+   */
+  readonly signature: string;
   /** A draft already in progress for this thread; the composer opens it instead. */
   readonly existing: Draft | null;
   /** Set when a new reply goes elsewhere than to the sender, for the line above the fields (ADR 0042). */
@@ -2631,6 +2659,7 @@ export type BackendResponse =
   | SyncNowResponse
   | ChangePasswordResponse
   | SignInAgainResponse
+  | SetSignatureResponse
   | ErrorResponse;
 
 /** Pushed by the backend after the store changed; the renderer refetches what it shows. */
