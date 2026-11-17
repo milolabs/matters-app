@@ -154,8 +154,10 @@ Read from the code on 2026-11-16:
    together once the answer came: the sender shown and saved is the new one only from then, so the
    two never disagree. An answer that does not come leaves the sender as it was, with its
    signature, and the composer says so in its line of problems; choosing the account again asks
-   again. Send and Close wait for a sender chosen before them, and once either has begun the
-   sender cannot be changed (the list is disabled), so neither goes with a sender and a signature
+   again. An answer about another account counts as one that did not come: the chosen account
+   was removed meanwhile, and its replacement's signature is not its own. Send and Close wait
+   for a sender chosen before them, and once either has begun the sender cannot be changed (the
+   list is disabled), so neither goes with a sender and a signature
    that were not chosen together. Send stops when the sender it waited for could not be prepared,
    so the person sees which account it would go from. After that the composer is as it was
    before the choice: the next Send goes from the sender shown. The line that says the choice

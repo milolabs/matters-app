@@ -72,6 +72,12 @@ const picked = (name: string, size: number, kind: PickedFile["kind"] = "file"): 
 });
 
 /** A backend that records what the composer asks, in order. */
+/** What `prepareNew` answers about an account, as far as the composer reads it. */
+const prepared = (accountId: string, messageLimitBytes: number | null) => ({
+  content: { accountId },
+  messageLimitBytes,
+});
+
 function fakeBackend(options: { limitBytes?: number | null } = {}) {
   const calls: string[] = [];
   const listeners = new Set<(e: BackendEvent) => void>();
@@ -118,7 +124,9 @@ function fakeBackend(options: { limitBytes?: number | null } = {}) {
     recaptureAttachment: vi.fn(async (_d: string, id: string) =>
       info(`${id}-new`, { name: "a.pdf", size: 5, state: "reading" }),
     ),
-    prepareNew: vi.fn(async () => ({ messageLimitBytes: options.limitBytes ?? null })),
+    prepareNew: vi.fn(async (accountId?: string) =>
+      prepared(accountId ?? "a1", options.limitBytes ?? null),
+    ),
     getDraft: vi.fn(),
   };
   return {
@@ -1189,7 +1197,7 @@ describe("choosing the sender (ADR 0050)", () => {
 
   it("the new account's limit applies, and limit news about the old one no longer does", async () => {
     const t = setup({ limitBytes: 100_000 });
-    t.raw.prepareNew.mockResolvedValueOnce({ messageLimitBytes: 50 });
+    t.raw.prepareNew.mockResolvedValueOnce(prepared("a2", 50));
     t.session.attachPicked([picked("a.pdf", 500)]);
     await later();
     expect(t.session.notice()).toBeNull();
@@ -1212,7 +1220,7 @@ describe("choosing the sender (ADR 0050)", () => {
       ],
     });
     const id = t.session.attachments()[0]?.id ?? "";
-    t.raw.prepareNew.mockResolvedValueOnce({ messageLimitBytes: 10_000 });
+    t.raw.prepareNew.mockResolvedValueOnce(prepared("a2", 10_000));
     await t.session.setSender(other);
     await later();
     expect(t.raw.recaptureAttachment).toHaveBeenCalledWith("d1", id);
@@ -1221,12 +1229,12 @@ describe("choosing the sender (ADR 0050)", () => {
 
   it("the answer about a sender changed again since is ignored", async () => {
     const t = setup({ limitBytes: 1000 });
-    let answerFirst!: (v: { messageLimitBytes: number }) => void;
+    let answerFirst!: (v: ReturnType<typeof prepared>) => void;
     t.raw.prepareNew.mockImplementationOnce(() => new Promise((r) => (answerFirst = r)) as never);
     const first = t.session.setSender(other);
-    t.raw.prepareNew.mockResolvedValueOnce({ messageLimitBytes: 5000 });
+    t.raw.prepareNew.mockResolvedValueOnce(prepared("a3", 5000));
     await t.session.setSender({ id: "a3", address: "third@example.com", displayName: "Third" });
-    answerFirst({ messageLimitBytes: 1 });
+    answerFirst(prepared("a2", 1));
     await first;
     t.session.attachPicked([picked("a.pdf", 500)]);
     await later();
