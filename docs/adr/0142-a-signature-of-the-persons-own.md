@@ -154,8 +154,10 @@ Read from the code on 2026-11-16:
    together once the answer came: the sender shown and saved is the new one only from then, so the
    two never disagree. An answer that does not come leaves the sender as it was, with its
    signature, and the composer says so in its line of problems; choosing the account again asks
-   again. Send and Close wait for a sender chosen before them, and once either has begun the
-   sender cannot be changed (the list is disabled), so neither goes with a sender and a signature
+   again. An answer about another account counts as one that did not come: the chosen account
+   was removed meanwhile, and its replacement's signature is not its own. Send and Close wait
+   for a sender chosen before them, and once either has begun the sender cannot be changed (the
+   list is disabled), so neither goes with a sender and a signature
    that were not chosen together. Send stops when the sender it waited for could not be prepared,
    so the person sees which account it would go from. After that the composer is as it was
    before the choice: the next Send goes from the sender shown. The line that says the choice
@@ -206,10 +208,11 @@ Read from the code on 2026-11-16:
      most of the draft dropped), on the kept text against the person's draft. A `>` line of the
      person's own text (a blockquote above the signature) is theirs: the prompts say to keep the
      draft's own such lines and to write no other, and the answer may have each of them as often
-     as the draft does; any other quoted line is refused as before. A gap in a block of
-     the person's that is put back is their text and counts as kept; a gap that stood only in a
-     block of the model's, one it moved out of the body included, is cut with that block, and the
-     answer is refused for it. Nothing left at all is refused as before.
+     as the draft does; any other quoted line is refused as before. A gap in such a blockquote
+     is the person's like any other and must be kept; a bracket in the app's quote, which the
+     model is not given to write, is never one. A gap in a block of the person's that is put
+     back is their text and counts as kept; a gap that stood only in a block of the model's, one
+     it moved out of the body included, is cut with that block, and the answer is refused for it. Nothing left at all is refused as before.
 
    This holds for a rewrite, for answers and for a text written as asked. The reply the agent
    prepared in the background (ADR 0052), which is put above the signature and the quote, and a new

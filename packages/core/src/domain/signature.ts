@@ -220,23 +220,52 @@ function codeLines(lines: readonly string[], placed: boolean): boolean[] {
     const i = next[p] as number;
     return dashBetween(p, i) || (i < n && (signed[i] as boolean));
   };
+  // The lines below that close a fence, per character, nearest first: one farther down that is no
+  // longer than a nearer one never closes first, so it is dropped, and the lengths grow with the
+  // distance. The line closing a fence is then found by halving, not by reading every line below.
+  const closers: Record<string, { at: number[]; length: number[] }> = {
+    "`": { at: [], length: [] },
+    "~": { at: [], length: [] },
+  };
+  const closeOf = (fence: Fence) => {
+    // Stored farthest first: lengths fall towards the end, the nearest is last.
+    const { at, length } = closers[fence.ch] as { at: number[]; length: number[] };
+    let lo = 0;
+    let hi = at.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if ((length[mid] as number) >= fence.length) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo === 0 ? n : (at[lo - 1] as number);
+  };
+  // The first `-- ` line from line k on with no fence left open under it, or n.
+  const freeDash: number[] = new Array(n + 1).fill(n);
   for (let i = n - 1; i >= 0; i--) {
     const fence = fences[i];
-    if (fence === null || fence === undefined) continue;
-    let j = i + 1;
-    while (j < n && !closes(lines[j] as string, fence)) j++;
-    let closed = j < n;
-    if (closed && dashBetween(i + 1, j) && openFrom(j + 1) > 0 && !signedFrom(j + 1)) {
-      for (let d = i + 1; d < j; d++) {
-        if (lines[d] === SIGNATURE_DELIMITER && openFrom(d + 1) === 0) {
-          closed = false;
-          break;
-        }
+    if (fence !== null && fence !== undefined) {
+      const j = closeOf(fence);
+      let closed = j < n;
+      if (closed && dashBetween(i + 1, j) && openFrom(j + 1) > 0 && !signedFrom(j + 1)) {
+        if ((freeDash[i + 1] as number) < j) closed = false;
       }
+      close[i] = closed ? j : -1;
+      open[i] = closed ? openFrom(j + 1) : 1 + openFrom(i + 1);
+      signed[i] = closed ? signedFrom(j + 1) : signedFrom(i + 1);
     }
-    close[i] = closed ? j : -1;
-    open[i] = closed ? openFrom(j + 1) : 1 + openFrom(i + 1);
-    signed[i] = closed ? signedFrom(j + 1) : signedFrom(i + 1);
+    freeDash[i] =
+      lines[i] === SIGNATURE_DELIMITER && openFrom(i + 1) === 0 ? i : (freeDash[i + 1] as number);
+    const m = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(lines[i] as string);
+    if (m !== null) {
+      const run = m[1] as string;
+      const { at, length } = closers[run[0] as string] as { at: number[]; length: number[] };
+      while (at.length > 0 && (length[length.length - 1] as number) <= run.length) {
+        at.pop();
+        length.pop();
+      }
+      at.push(i);
+      length.push(run.length);
+    }
   }
   const code = lines.map(() => false);
   for (let p = next[0] as number; p < n; ) {
