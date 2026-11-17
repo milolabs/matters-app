@@ -208,10 +208,11 @@ Read from the code on 2026-11-16:
      most of the draft dropped), on the kept text against the person's draft. A `>` line of the
      person's own text (a blockquote above the signature) is theirs: the prompts say to keep the
      draft's own such lines and to write no other, and the answer may have each of them as often
-     as the draft does; any other quoted line is refused as before. A gap in a block of
-     the person's that is put back is their text and counts as kept; a gap that stood only in a
-     block of the model's, one it moved out of the body included, is cut with that block, and the
-     answer is refused for it. Nothing left at all is refused as before.
+     as the draft does; any other quoted line is refused as before. A gap in such a blockquote
+     is the person's like any other and must be kept; a bracket in the app's quote, which the
+     model is not given to write, is never one. A gap in a block of the person's that is put
+     back is their text and counts as kept; a gap that stood only in a block of the model's, one
+     it moved out of the body included, is cut with that block, and the answer is refused for it. Nothing left at all is refused as before.
 
    This holds for a rewrite, for answers and for a text written as asked. The reply the agent
    prepared in the background (ADR 0052), which is put above the signature and the quote, and a new

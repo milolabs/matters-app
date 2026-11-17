@@ -337,6 +337,52 @@ describe("trusting the answers", () => {
     });
   });
 
+  describe("a gap in a blockquote the person wrote is theirs (ADR 0142, rule 4)", () => {
+    // Their blockquote above the signature, then the app's quote with a bracket of Anna's.
+    const draft =
+      "Confirm:\n\n> Pay [amount].\n\n-- \nMe\n\nOn 6 Nov 2026, 10:29, Anna wrote:\n> Send [the offer].";
+    const mine = splitDraft(draft).own;
+
+    it("counts it, and not one in the app's quote", () => {
+      expect(mine).toBe("Confirm:\n\n> Pay [amount].\n");
+      expect(draftGaps(mine)).toEqual(["[amount]"]);
+      // Text that is all theirs, as the reviewer's case has it.
+      expect(draftGaps("Confirm:\n\n> Pay [amount].")).toEqual(["[amount]"]);
+    });
+
+    it("refuses a rewrite that loses it", () => {
+      expect(acceptRewrite({ rewritten: "Confirmed." }, mine)).toEqual({
+        ok: false,
+        reason: "gaps",
+      });
+      expect(acceptRewrite({ rewritten: "Confirmed." }, "Confirm:\n\n> Pay [amount].")).toEqual({
+        ok: false,
+        reason: "gaps",
+      });
+      expect(acceptRewrite({ rewritten: "Please confirm:\n\n> Pay [amount]." }, mine)).toEqual({
+        ok: true,
+        value: "Please confirm:\n\n> Pay [amount].",
+      });
+    });
+
+    it("refuses a text written as asked that loses it", () => {
+      expect(acceptWrite({ written: "Confirmed." }, mine)).toEqual({ ok: false, reason: "gaps" });
+      const written = "Confirm, please:\n\n> Pay [amount].\n\nThanks.";
+      expect(acceptWrite({ written }, mine)).toEqual({ ok: true, value: written });
+    });
+
+    it("refuses answers that lose it", () => {
+      expect(
+        acceptAnswers({ withAnswers: "Confirm: the payment, as you asked.", added: 1 }, mine),
+      ).toEqual({ ok: false, reason: "gaps" });
+      const more = "Confirm:\n\n> Pay [amount].\n\nDelivery on Monday works.";
+      expect(acceptAnswers({ withAnswers: more, added: 1 }, mine)).toEqual({
+        ok: true,
+        value: more,
+      });
+    });
+  });
+
   it("counts what the draft answers and names what it does not", () => {
     expect(
       acceptCheck({

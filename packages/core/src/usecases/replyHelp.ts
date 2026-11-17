@@ -13,7 +13,7 @@
  * A new message has no thread (ADR 0132): a rewrite and a turn that writes as the person asks
  * work without one, by the account the message goes out from.
  */
-import { gaps } from "../domain/draft.ts";
+import { ownTextGaps } from "../domain/draft.ts";
 import { withoutRepeats } from "../domain/quotes.ts";
 import { draftSections, joinSections, keepOwnBlocks, readDraft } from "../domain/signature.ts";
 import {
@@ -83,9 +83,13 @@ export function joinDraft(own: string, quote: string, signature = ""): string {
   return joinSections(own, signature, quote);
 }
 
-/** The gaps of the person's lines, each once, in the order they first appear. */
+/**
+ * The gaps of the person's lines, each once, in the order they first appear. `own` is their part
+ * as `splitDraft` cut it, so the app's quote is not in it; a blockquote they wrote is, and its
+ * gaps count like any other.
+ */
 export function draftGaps(own: string): string[] {
-  return [...new Set(gaps({ subject: "", bodyMarkdown: own }).map((g) => g.token))];
+  return [...new Set(ownTextGaps(own).map((g) => g.token))];
 }
 
 function count(text: string, token: string): number {
