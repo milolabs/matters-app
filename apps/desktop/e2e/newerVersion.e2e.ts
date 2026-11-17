@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { expect, type Running, test } from "./fixtures.ts";
 
 interface Asked {
@@ -110,6 +110,10 @@ async function openSettingsFrom(running: Running, gear: string | RegExp): Promis
   return settings;
 }
 
+/** About's line about the version; the row about the default mail app has a line of its own. */
+const versionLine = (about: Locator) =>
+  about.locator('[role="status"]:not([data-default-mail] [role="status"])');
+
 test("a newer version puts a dot on the gear, and About takes it away", async ({ start }) => {
   const site = await standIn();
   try {
@@ -148,7 +152,7 @@ test("a newer version puts a dot on the gear, and About takes it away", async ({
     const about = settings.getByRole("region", { name: "About" });
     await expect(about.getByRole("heading", { name: "About" })).toBeVisible();
     await expect(about.getByText("Version 0.0.0", { exact: true })).toBeVisible();
-    await expect(about.getByRole("status")).toHaveText(
+    await expect(versionLine(about)).toHaveText(
       `0.1.0-alpha.5 is out. Published on ${publishedDay(PUBLISHED)}.`,
     );
     await expect(about.getByRole("button", { name: "Release notes" })).toBeVisible();
@@ -167,23 +171,23 @@ test("a newer version puts a dot on the gear, and About takes it away", async ({
     await expect(window.locator("[data-newer-dot]")).toHaveCount(0);
     await expect(settings.locator("[data-newer-dot]")).toHaveCount(0);
     // About keeps saying what is out for as long as it is true.
-    await expect(about.getByRole("status")).toHaveText(/0\.1\.0-alpha\.5 is out\./);
+    await expect(versionLine(about)).toHaveText(/0\.1\.0-alpha\.5 is out\./);
 
     // Check now sends the ETag it knows; nothing new comes back, nothing changes.
     await about.getByRole("button", { name: "Check now" }).click();
     await expect.poll(() => site.asked.length).toBe(2);
     expect(site.asked[1]?.headers["if-none-match"]).toBe('"one"');
-    await expect(about.getByRole("status")).toHaveText(/0\.1\.0-alpha\.5 is out\./);
+    await expect(versionLine(about)).toHaveText(/0\.1\.0-alpha\.5 is out\./);
 
     // The newest: the site now offers the version that runs.
     site.serve("v0.0.0", '"two"');
     await about.getByRole("button", { name: "Check now" }).click();
-    await expect(about.getByRole("status")).toHaveText("This is the newest version.");
+    await expect(versionLine(about)).toHaveText("This is the newest version.");
 
     // A failed check is said in Settings only, with when it last worked.
     site.serve("v0.0.0", '"three"', 500);
     await about.getByRole("button", { name: "Check now" }).click();
-    await expect(about.getByRole("status")).toHaveText(
+    await expect(versionLine(about)).toHaveText(
       "Could not check: getmatters.app answered with an error.",
     );
     await expect(
@@ -196,9 +200,7 @@ test("a newer version puts a dot on the gear, and About takes it away", async ({
     // Off: no request at all, also not from the menu item, which then only opens About.
     const before = site.asked.length;
     await about.getByLabel("Check for a newer version").uncheck();
-    await expect(about.getByRole("status")).toHaveText(
-      "Matters does not check for newer versions.",
-    );
+    await expect(versionLine(about)).toHaveText("Matters does not check for newer versions.");
     await expect(about.getByRole("button", { name: "Check now" })).toBeDisabled();
     if (process.platform === "darwin") {
       await running.app.evaluate(({ Menu }) =>
@@ -223,10 +225,10 @@ test("a build that is not packaged and has no stand-in never asks, and says so",
   const settings = await openSettingsFrom(running, "Settings");
   await settings.getByRole("button", { name: "About" }).click();
   const about = settings.getByRole("region", { name: "About" });
-  await expect(about.getByRole("status")).toHaveText(
-    "This build does not check for newer versions.",
-  );
-  await expect(about.getByText("It was not made by the release workflow.")).toBeVisible();
+  await expect(versionLine(about)).toHaveText("This build does not check for newer versions.");
+  await expect(
+    about.getByText("It was not made by the release workflow.", { exact: true }),
+  ).toBeVisible();
   await expect(about.getByLabel("Check for a newer version")).toBeDisabled();
   await expect(about.getByRole("button", { name: "Check now" })).toBeDisabled();
 });
@@ -257,7 +259,7 @@ test("Install downloads only when pressed, stops at a wrong checksum, and can be
     await expect(window.getByRole("listbox", { name: "Messages" })).toBeVisible();
     const settings = await openSettingsFrom(running, "Settings · Matters 0.1.0-alpha.5 is out");
     const about = settings.getByRole("region", { name: "About" });
-    await expect(about.getByRole("status")).toHaveText(/0\.1\.0-alpha\.5 is out\./);
+    await expect(versionLine(about)).toHaveText(/0\.1\.0-alpha\.5 is out\./);
     const downloads = () => site.asked.filter((a) => a.url.startsWith("/download/"));
 
     if (!installsHere) {

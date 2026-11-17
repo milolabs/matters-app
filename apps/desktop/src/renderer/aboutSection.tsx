@@ -1,4 +1,5 @@
 import { createEffect, createSignal, Match, onCleanup, Show, Switch } from "solid-js";
+import { DefaultMailRow } from "./defaultMailRow.tsx";
 import { askRelease, type ReleaseAsk } from "./files.ts";
 import { MattersMark } from "./icons.tsx";
 import {
@@ -26,7 +27,8 @@ const busy = (step: string) => step !== "idle" && step !== "failed";
  * two actions that open the browser, and Install and Restart where this copy can be replaced (ADR
  * 0140): its steps are said here in words, and Cancel stops it while it downloads. An install under
  * way keeps its line and its Cancel even when a check since found no newer version. Main opens the
- * links by name and installs only the version it knows of.
+ * links by name and installs only the version it knows of. Under it, the default mail app (ADR
+ * 0143, rule 2).
  */
 export function AboutSection(props: { release: ReleaseStore }) {
   const info = () => props.release.info();
@@ -225,6 +227,7 @@ export function AboutSection(props: { release: ReleaseStore }) {
                 </button>
               </div>
             </div>
+            <DefaultMailRow />
             <div class="px-5 py-4">
               <p class="m-0 text-[12px] text-secondary">
                 AGPL-3.0-only ·{" "}

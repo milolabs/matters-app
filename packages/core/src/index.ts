@@ -20,6 +20,7 @@ export * from "./domain/imageRules.ts";
 export * from "./domain/install.ts";
 export * from "./domain/mailbox.ts";
 export * from "./domain/mailProviders.ts";
+export * from "./domain/mailtoLink.ts";
 export * from "./domain/messageKey.ts";
 export * from "./domain/move.ts";
 export * from "./domain/notifications.ts";

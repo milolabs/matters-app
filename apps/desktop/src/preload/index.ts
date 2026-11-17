@@ -12,6 +12,7 @@ import {
 } from "./appearanceBridge.ts";
 import { CHANNEL_ERASE_PROGRESS, createEraseBridge } from "./eraseBridge.ts";
 import { createFileBridge } from "./fileBridge.ts";
+import { CHANNEL_MAILTO_WAITING, createMailtoBridge } from "./mailtoBridge.ts";
 import { createNoticeBridge } from "./noticeBridge.ts";
 import { createReceivedBridge } from "./receivedBridge.ts";
 import {
@@ -190,6 +191,18 @@ const release = createReleaseBridge(
 window.addEventListener("message", (event) => release.message(event));
 ipcRenderer.on(CHANNEL_RELEASE_CHANGED, (_event, data: unknown) => release.changed(data));
 ipcRenderer.on(CHANNEL_SETTINGS_SECTION, (_event, data: unknown) => release.section(data));
+
+// `mailto:` links and the default mail app (ADR 0143): the mail window takes the links main kept,
+// one at a time, and hears when one arrived; Settings › About reads and asks for the default.
+const mailto = createMailtoBridge(
+  {
+    invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+    post: (message) => window.postMessage(message, "*"),
+  },
+  window,
+);
+window.addEventListener("message", (event) => mailto.message(event));
+ipcRenderer.on(CHANNEL_MAILTO_WAITING, () => mailto.waiting());
 
 // Browser sign-in (ADR 0133): main opens the browser and keeps the tokens; the page gets a handle.
 const signIn = createSignInBridge(

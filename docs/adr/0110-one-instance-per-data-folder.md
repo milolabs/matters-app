@@ -5,6 +5,8 @@
 - Amends: [0105](0105-the-app-identity-moves-to-matters.md) (the move keeps this start's lock),
   [0107](0107-matters-runs-on-macos-as-its-own-app.md) (the bundle and a dev run no longer both
   open one folder)
+- Amended by: [0143](0143-matters-opens-mailto-links.md) (rule 2: a `mailto:` argument of a second start
+  is forwarded to the first; nothing else of its arguments is read)
 
 ## Context
 

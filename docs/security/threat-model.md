@@ -24,6 +24,7 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
 | **The sender of a message** | choose every byte of a message: headers, HTML, files, names | script, network requests with images off, a false identity that looks verified, a link or file that is not what it shows, instructions to a model |
 | **Someone on the network** | read and change traffic between the app and a mail server | a password, mail in plain text, an accepted bad certificate |
 | **A web page a message links to** | serve anything once you open the link in your browser | anything inside the app: links open in the system browser, never in a Matters window |
+| **A web page or program that hands Matters a `mailto:` link** | once Matters is the default mail app, open a link at any moment, as often as it likes, with any text in it | a file attached, a header set, a link or image in the message that the person did not write, a flood of windows, anything sent: a link only opens a draft, read by fixed limits, for the person to look at ([ADR 0143](../adr/0143-matters-opens-mailto-links.md)) |
 | **A hostile mail server lookup** | answer autoconfig and DNS lookups with false settings | a sign-in over plain text, credentials sent while probing |
 | **A dependency** | ship changed code in a new version | a version we did not choose: versions are pinned in `bun.lock`, and licenses are checked |
 

@@ -1,4 +1,4 @@
-import { withoutSignature } from "@matters/core";
+import { parseMailto, placeSignature, withoutSignature } from "@matters/core";
 import fc from "fast-check";
 import type MarkdownIt from "markdown-it";
 import { describe, expect, it } from "vitest";
@@ -316,6 +316,60 @@ describe("the person's signature (ADR 0142, rule 4)", () => {
 
   it("without a delimiter line nothing changes", () => {
     expect(html("Hi\n\n--\nnot a signature")).not.toContain("matters-signature");
+  });
+});
+
+// A `mailto:` link's body goes into the editor as text (ADR 0143, rule 3): what it renders to must
+// hold no link, image or markup that the person did not write.
+describe("the body of a mailto: link", () => {
+  const sent = (href: string) => {
+    const body = parseMailto(href)?.body ?? "";
+    const out = renderer.render(placeSignature(body, "Anna"));
+    assertInert(out.html);
+    return out;
+  };
+
+  it("makes no image and no hidden link", () => {
+    const out = sent(
+      "mailto:x@example.com?body=%21%5B%5D%28https%3A%2F%2Ftracker.example%2Fp.gif%29%0A" +
+        "%5Byour%20bank%5D%28https%3A%2F%2Fphish.example%29%0A%5Bx%5D%3A%20https%3A%2F%2Fphish.example",
+    );
+    expect(out.html).not.toContain("<img");
+    // A web address still links, to itself and as the text that is seen; nothing else does.
+    const links = [...out.html.matchAll(/<a href="([^"]*)"[^>]*>([^<]*)<\/a>/g)];
+    expect(links).toHaveLength(3);
+    for (const [, href, text] of links) expect(text).toBe(href);
+    expect(out.html).toContain("[your bank](");
+  });
+
+  it("shows raw HTML as text", () => {
+    const out = sent(
+      "mailto:?body=%3Cimg%20src%3Dhttps%3A%2F%2Ftracker.example%2Fp.gif%3E%3Ca%20href%3D%22https%3A%2F%2Fphish.example%22%3Ehi%3C%2Fa%3E",
+    );
+    expect(out.html).not.toContain("<img");
+    expect(out.html).toContain("&lt;img src=");
+  });
+
+  it("links a bare web address only to itself", () => {
+    const out = sent("mailto:?body=see%20https%3A%2F%2Fexample.com%2Fa");
+    expect(out.html).toContain('href="https://example.com/a"');
+    expect(out.html).toContain(">https://example.com/a</a>");
+  });
+
+  it("ends a web address before an escape, so the escape never shows in its link", () => {
+    const out = sent(
+      "mailto:?body=see%20https%3A%2F%2Fexample.com%2F_next%2Fa%20and%20%60a%5B0%5D%60",
+    );
+    expect(out.html).toContain('<a href="https://example.com/"');
+    expect(out.html).toContain(">https://example.com/</a>_next/a and `a[0]`");
+    expect(out.html).not.toContain("\\");
+  });
+
+  it("makes no quote and no second signature", () => {
+    const out = sent("mailto:?body=Hi%0A%3E%20quoted%0A--%20%0AEvil%20Corp");
+    expect(out.html).not.toContain("<blockquote");
+    expect(out.html.match(/matters-signature-mark/g)).toHaveLength(1);
+    expect(out.text).toContain("\\> quoted\n\\-- \nEvil Corp\n\n-- \nAnna");
   });
 });
 

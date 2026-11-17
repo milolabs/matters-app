@@ -860,12 +860,23 @@ export interface ForwardFrom {
   readonly messages: readonly ThreadMessage[];
 }
 
-/** What a new message may open with, from an offer of the agent (ADR 0102). Never saved by itself. */
+/**
+ * What a new message may open with, from an offer of the agent (ADR 0102) or a `mailto:` link (ADR
+ * 0143). Never saved by itself.
+ */
 export interface NewMessagePrefill {
   readonly to: readonly string[];
+  readonly cc?: readonly string[];
+  readonly bcc?: readonly string[];
   readonly subject: string;
   readonly body: string;
 }
+
+/**
+ * How an open went: the composer opened; it could not be prepared (the line of problems says
+ * why); or another composer was opening or open, so nothing was done.
+ */
+export type OpenOutcome = "opened" | "failed" | "busy";
 
 export type OpenComposer = (
   mode: ReplyMode | "new" | "forward",
@@ -873,7 +884,7 @@ export type OpenComposer = (
   threadId?: string,
   forward?: ForwardFrom,
   prefill?: NewMessagePrefill,
-) => Promise<void>;
+) => Promise<OpenOutcome>;
 
 const TITLES = { new: "New message", reply: "Reply", replyAll: "Reply to all", forward: "Forward" };
 
@@ -886,11 +897,12 @@ export function titleOfDraft(draft: Pick<Draft, "forwarded" | "inReplyTo">): str
 export function createComposeStore(backend: Backend, outbox: OutboxStore) {
   const [session, setSession] = createSignal<ComposerSession | null>(null);
   const [problem, setProblem] = createSignal("");
-  let opening = false;
+  // A signal, so what waits for no composer at all (a `mailto:` link) hears an open that failed.
+  const [opening, setOpening] = createSignal(false);
 
   const open: OpenComposer = async (mode, accountId, threadId, forward, prefill) => {
-    if (session() || opening) return;
-    opening = true;
+    if (session() || opening()) return "busy";
+    setOpening(true);
     setProblem("");
     try {
       const prepared =
@@ -919,6 +931,8 @@ export function createComposeStore(backend: Backend, outbox: OutboxStore) {
                 ? {
                     ...prepared.content,
                     to: prefill.to.map((address) => ({ address })),
+                    cc: (prefill.cc ?? []).map((address) => ({ address })),
+                    bcc: (prefill.bcc ?? []).map((address) => ({ address })),
                     subject: prefill.subject,
                     // The agent wrote the words; the code puts the signature under them (ADR 0142,
                     // rule 6), after cutting a block of the model's own, as a reply does.
@@ -937,17 +951,19 @@ export function createComposeStore(backend: Backend, outbox: OutboxStore) {
           () => setSession(null),
         ),
       );
+      return "opened";
     } catch (e) {
       setProblem(e instanceof BackendError ? e.message : "The message could not be started.");
+      return "failed";
     } finally {
-      opening = false;
+      setOpening(false);
     }
   };
 
   /** "Open draft" in the tray: the composer on that draft, with its files. */
   async function openDraft(draftId: string) {
-    if (session() || opening) return;
-    opening = true;
+    if (session() || opening()) return;
+    setOpening(true);
     setProblem("");
     try {
       const existing = await backend.getDraft(draftId);
@@ -972,7 +988,7 @@ export function createComposeStore(backend: Backend, outbox: OutboxStore) {
     } catch (e) {
       setProblem(e instanceof BackendError ? e.message : "The draft could not be opened.");
     } finally {
-      opening = false;
+      setOpening(false);
     }
   }
 
@@ -981,6 +997,8 @@ export function createComposeStore(backend: Backend, outbox: OutboxStore) {
     open,
     openDraft,
     isOpen: () => session() !== null,
+    /** A composer is open, or one is being opened. */
+    isBusy: () => session() !== null || opening(),
     problem,
     clearProblem: () => setProblem(""),
   };

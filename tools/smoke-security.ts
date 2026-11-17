@@ -31,6 +31,7 @@ import {
   TierSummary,
 } from "../packages/testkit/src/corpus.ts";
 import { startImapTestServer } from "./imap-test-server/run.ts";
+import { lanesOf, linkEvents } from "./smoke-security-lanes.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RESULT = "MATTERS_SMOKE_RESULT ";
@@ -118,12 +119,18 @@ interface PageRecord {
   error?: string;
 }
 interface MainEvent {
-  readonly kind: "navigate" | "request" | "open-external";
+  readonly kind: "navigate" | "request" | "open-external" | "compose";
   readonly url?: string;
   readonly href?: string;
   readonly mainFrame?: boolean;
   readonly prevented?: boolean;
   readonly type?: string;
+  /** A `compose` event: the new message a `mailto:` link opens (ADR 0143). */
+  readonly to?: readonly string[];
+  readonly cc?: readonly string[];
+  readonly bcc?: readonly string[];
+  readonly subject?: string;
+  readonly body?: string;
   readonly id: string;
   readonly lane: string;
 }
@@ -162,10 +169,7 @@ const OWN_PAGE =
 
 function measure(c: CorpusCase): Record<string, unknown> {
   const mode = c.tiers.browser?.mode ?? "pipeline";
-  const lanes =
-    mode === "bypass"
-      ? { blocked: "bypass-blocked", images: "bypass-images" }
-      : { blocked: "blocked", images: "images" };
+  const lanes = lanesOf(mode);
   const rec = (lane: string) => records.get(`${c.id}|${lane}`);
   const mine = (lane: "blocked" | "images") =>
     hits.filter((h) => h.id === c.id && h.lane === lanes[lane]);
@@ -196,9 +200,23 @@ function measure(c: CorpusCase): Record<string, unknown> {
         .map((e) => plain(e.url ?? "")),
     ),
   ];
-  const opened = mainEvents
-    .filter((e) => e.kind === "open-external" && e.lane === "blocked")
-    .map((e) => plain(e.href ?? ""));
+  // In the case's own blocked lane: a case put past the pipeline reports in a lane of its own.
+  const links = linkEvents(mainEvents, lanes);
+  const opened = links.opened.map((e) => plain(e.href ?? ""));
+  // A `mailto:` link opens a new message in the app (ADR 0143): what each draft would hold.
+  const composed = links.composed;
+  const DRAFT_KEYS = new Set([
+    "kind",
+    "source",
+    "to",
+    "cc",
+    "bcc",
+    "subject",
+    "body",
+    "id",
+    "lane",
+  ]);
+  const addresses = (e: MainEvent) => [...(e.to ?? []), ...(e.cc ?? []), ...(e.bcc ?? [])];
   const requestsInImages = mainEvents.filter(
     (e) => e.kind === "request" && e.lane === lanes.images,
   ).length;
@@ -213,6 +231,14 @@ function measure(c: CorpusCase): Record<string, unknown> {
     opened,
     openedMailtoWithAttach: opened.some(
       (h) => /^mailto:/i.test(h) && /[?&]attach(?:ment)?=/i.test(h),
+    ),
+    composedFromLinks: composed.length,
+    composedWithAttach: composed.some(
+      (e) =>
+        Object.keys(e).some((k) => !DRAFT_KEYS.has(k)) || /\/etc\/|file:/i.test(JSON.stringify(e)),
+    ),
+    composedWithInjectedHeader: composed.some(
+      (e) => /[\r\n]/.test(e.subject ?? "") || addresses(e).some((a) => /[\s:]/.test(a)),
     ),
     linkWarningCount: blocked?.linkWarnings ?? 0,
     anchorsInFrame: blocked?.anchorsInFrame ?? 0,

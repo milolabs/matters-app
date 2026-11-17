@@ -11,6 +11,25 @@ function createMarkdown() {
   // `html: false`: raw HTML in the source is shown as text, so no user HTML ever enters the output.
   const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographer: false });
   md.linkify.set({ fuzzyLink: false, fuzzyIP: false });
+  // A web address is read from the source as it stands, so it would take a backslash in and stop
+  // at the character the backslash escapes, leaving that character outside the escape: `\]` after
+  // an address would close a link. It ends before its first backslash instead (ADR 0143, rule 3).
+  const matchAtStart = md.linkify.matchAtStart.bind(md.linkify);
+  md.linkify.matchAtStart = (text: string) => {
+    const match = matchAtStart(text);
+    const cut = match?.raw.indexOf("\\") ?? -1;
+    if (match === null || cut < 0) return match;
+    // Nothing left after the scheme: no address at all.
+    if (/:\/*$/.test(match.raw.slice(0, cut))) return null;
+    const drop = match.raw.length - cut;
+    return {
+      ...match,
+      raw: match.raw.slice(0, cut),
+      text: match.text.slice(0, match.text.length - drop),
+      url: match.url.slice(0, match.url.length - drop),
+      lastIndex: match.lastIndex - drop,
+    };
+  };
   md.validateLink = (url) => SAFE_LINK.test(url.trim());
   // No remote or embedded images until attachments exist; the source stays visible instead.
   md.disable("image");

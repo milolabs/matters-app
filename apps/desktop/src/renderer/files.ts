@@ -4,6 +4,8 @@
 import type {
   AppearanceInfo,
   AppearanceMode,
+  DefaultMailInfo,
+  MailtoPrefill,
   MainEraseOverview,
   MainStorageInfo,
   NoticeSystem,
@@ -267,4 +269,46 @@ export function onSettingsSection(listener: (id: string) => void): () => void {
   };
   window.addEventListener("message", onMessage);
   return () => window.removeEventListener("message", onMessage);
+}
+
+/**
+ * The first `mailto:` link that waits in main (ADR 0143), read by core's rules there, with the id
+ * main knows it by; null when none does or the mail is not shown yet. It stays first in main until
+ * `doneMailto` says a composer opened with it.
+ */
+export async function takeMailto(): Promise<{ id: string; link: MailtoPrefill } | null> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: { id: string; link: MailtoPrefill } | null }>(
+    "mattersMailtoAnswer",
+    requestId,
+  );
+  window.postMessage({ mattersMailtoTake: { requestId } }, "*");
+  return (await reply).answer;
+}
+
+/** A composer opened with the link of `id`, or could not; how many links still wait in main. */
+export async function doneMailto(id: string, opened: boolean): Promise<number> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: number }>("mattersMailtoDoneAnswer", requestId);
+  window.postMessage({ mattersMailtoDone: { requestId, id, opened } }, "*");
+  return (await reply).answer;
+}
+
+/** Main says a `mailto:` link waits (ADR 0143). */
+export function onMailtoWaiting(listener: () => void): () => void {
+  const onMessage = (event: MessageEvent) => {
+    const data: unknown = event.data;
+    if (event.source !== window || !isRecord(data) || data.mattersMailtoWaiting !== true) return;
+    listener();
+  };
+  window.addEventListener("message", onMessage);
+  return () => window.removeEventListener("message", onMessage);
+}
+
+/** Whether Matters is the default mail app; `make` is the person's press (ADR 0143, rule 2). */
+export async function askDefaultMail(action: "get" | "make"): Promise<DefaultMailInfo | null> {
+  const requestId = nextRequestId();
+  const reply = answer<{ answer: DefaultMailInfo | null }>("mattersDefaultMailAnswer", requestId);
+  window.postMessage({ mattersDefaultMail: { requestId, action } }, "*");
+  return (await reply).answer;
 }

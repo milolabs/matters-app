@@ -2913,3 +2913,24 @@ export type NoticeToMain =
   | { readonly type: "close"; readonly keys: readonly number[] }
   /** Whether banners are paused, for the app menu (ADR 0108); sent at start and on every change. */
   | { readonly type: "pause"; readonly enabled: boolean; readonly untilMs: number | null };
+
+/** What main says about being the default mail app, to Settings › About (ADR 0143, rule 2). */
+export interface DefaultMailInfo {
+  /**
+   * This build may ask macOS to make it the default: a packaged app. A build that is not packaged
+   * would name the Electron runtime, not Matters, so it never asks.
+   */
+  readonly offered: boolean;
+  /** macOS opens `mailto:` links with this app now; always false when `offered` is false. */
+  readonly isDefault: boolean;
+}
+
+/** A new message a `mailto:` link asks for (ADR 0143): read by core's `parseMailto`, never sent. */
+export interface MailtoPrefill {
+  readonly to: readonly string[];
+  readonly cc: readonly string[];
+  readonly bcc: readonly string[];
+  readonly subject: string;
+  /** Markdown that reads as the link's text. */
+  readonly body: string;
+}

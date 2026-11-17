@@ -39,6 +39,7 @@ import {
   isPermissionPageId,
   isReleaseLink,
   msUntilCheck,
+  parseMailto,
   permissionPageUrl,
   RELEASE_DOWNLOAD_PAGE,
   RELEASE_FILE_URL,
@@ -76,6 +77,12 @@ import {
   CHANNEL_APPEARANCE_COLORS,
 } from "../preload/appearanceBridge.ts";
 import { CHANNEL_DROP, CHANNEL_PASTE, CHANNEL_PICK } from "../preload/fileBridge.ts";
+import {
+  CHANNEL_DEFAULT_MAIL,
+  CHANNEL_MAILTO_DONE,
+  CHANNEL_MAILTO_TAKE,
+  CHANNEL_MAILTO_WAITING,
+} from "../preload/mailtoBridge.ts";
 import { CHANNEL_NOTICE_SYSTEM } from "../preload/noticeBridge.ts";
 import { CHANNEL_RECEIVED } from "../preload/receivedBridge.ts";
 import {
@@ -164,6 +171,16 @@ import {
   ownerVerdict,
 } from "./instanceLock.ts";
 import { linkForSystem } from "./mailto.ts";
+import {
+  createLinkQueue,
+  defaultMailInfo,
+  type LinkSource,
+  linkSummary,
+  type MailtoClient,
+  mailtoArguments,
+  makeDefaultMail,
+  standInMailtoClient,
+} from "./mailtoLinks.ts";
 import { NOTIFICATION_SETTINGS_URL, noticeSystem } from "./noticeSystem.ts";
 import { NoticeShower, noticeFrom, type PauseState, pauseMenu, pauseTarget } from "./notices.ts";
 import { createQuarantine } from "./quarantine.ts";
@@ -265,7 +282,10 @@ function claimDataFolder(): void {
     app.exit(0);
     process.exit(0);
   }
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
+    // A link the second start was given goes to this copy (ADR 0143, rule 5); nothing else of its
+    // arguments is read.
+    for (const href of mailtoArguments(argv)) receiveLink(href, "outside");
     bringForward(mailWindow?.win ?? null, mailWindow?.revealed() ?? false, () => {
       if (process.platform !== "darwin") return;
       app.show();
@@ -288,6 +308,38 @@ const orderRead: EraseOrderRead = identityHelper
   : readEraseOrder(app.getPath("userData"));
 /** Not a normal start: an erase, or a data folder that could not be read. */
 const erasing = orderRead.kind !== "none";
+
+/**
+ * `mailto:` links (ADR 0143): each is read by core's `parseMailto` the moment it arrives and waits
+ * here, at most five, until the mail window has shown its mail and can open a composer. A link
+ * that starts the app comes before ready, so the handler is registered now (rule 5). An erase or
+ * an unreadable data folder opens no message: the links are dropped.
+ */
+const links = createLinkQueue();
+/** The mail window's side, once it exists: it is told that a link waits. */
+let linkArrived: (source: LinkSource) => void = () => {};
+function receiveLink(href: string, source: LinkSource): void {
+  if (identityHelper || erasing) return;
+  // A corpus run records what each link's draft would hold, as it records what would have left
+  // (ADR 0047), whether or not there is room for it: a smoke run never takes one off the queue.
+  if (securityRun) {
+    const read = parseMailto(href);
+    if (read) securityEvent("compose", { source, ...read });
+  }
+  const draft = links.offer(href);
+  if (draft === null) return;
+  // A smoke run says that a link arrived, never what it holds.
+  if (smoke) console.error(linkSummary(draft, source));
+  linkArrived(source);
+}
+if (!identityHelper && !erasing) {
+  app.on("open-url", (event, url) => {
+    event.preventDefault();
+    receiveLink(url, "outside");
+  });
+  // Windows and Linux hand a link that starts the app as an argument.
+  for (const href of mailtoArguments(process.argv.slice(1))) receiveLink(href, "outside");
+}
 startFor(orderRead, {
   none: () => {},
   unreadable: (code) =>
@@ -776,6 +828,21 @@ const installTest: { readonly base: string; readonly folder: string } | null = a
       return { base: base.endsWith("/") ? base : `${base}/`, folder };
     })();
 
+/**
+ * Whether Matters is the default mail app, and asking macOS to make it so (ADR 0143, rule 2). Only
+ * a packaged app asks: a build that is not packaged would register the Electron runtime. A window
+ * test of such a build may use a stand-in that only remembers the press
+ * (`MATTERS_TEST_DEFAULT_MAIL=1`); a packaged app reads no such variable.
+ */
+const mailtoClient: MailtoClient | null = app.isPackaged
+  ? {
+      isDefault: () => app.isDefaultProtocolClient("mailto"),
+      makeDefault: () => app.setAsDefaultProtocolClient("mailto"),
+    }
+  : process.env.MATTERS_TEST_DEFAULT_MAIL === "1"
+    ? standInMailtoClient()
+    : null;
+
 /** What `newer-version.json` holds; read when first needed, after userData is final. */
 function readStoredRelease(): StoredRelease {
   let text: string | null = null;
@@ -1163,6 +1230,7 @@ function startBackend(
     MATTERS_TEST_ANTHROPIC_BASE: anthropicBase,
     MATTERS_TEST_DNS: testDns,
     MATTERS_TEST_RELEASE_URL: _releaseUrl,
+    MATTERS_TEST_DEFAULT_MAIL: _defaultMail,
     ...inherited
   } = process.env;
   trace("backend-fork");
@@ -1490,8 +1558,34 @@ if (!identityHelper && !erasing)
       ipcMain.removeListener("matters:first-screen", onMailShown);
       mailShown = true;
       whenMailShown?.();
+      // Links that came before the mail was shown are opened now, one by one (ADR 0143, rule 5).
+      if (links.size() > 0) linkArrived("mail");
     };
     ipcMain.on("matters:first-screen", onMailShown);
+    // `mailto:` links (ADR 0143, rule 5): the window takes one when it has shown its mail and can
+    // open a composer, never before, so a link that started the app waits for the launch. A link
+    // from outside brings the window forward. A smoke run never opens one: it only says it came.
+    const linksOpen = () => mailShown && !smoke && !win.isDestroyed();
+    linkArrived = (source) => {
+      if (!linksOpen()) return;
+      if (source === "outside") {
+        bringForward(win, boot.revealed(), () => {
+          if (process.platform !== "darwin") return;
+          app.show();
+          app.focus({ steal: true });
+        });
+      }
+      win.webContents.send(CHANNEL_MAILTO_WAITING);
+    };
+    // The first link stays first until the window says a composer opened with it, by the id given
+    // here, or it failed too often: one taken while another composer started, or whose
+    // preparation failed, is offered again (rule 5). Main checks the id against its own.
+    ipcMain.handle(CHANNEL_MAILTO_TAKE, (event) =>
+      event.sender === win.webContents && linksOpen() ? links.next() : null,
+    );
+    ipcMain.handle(CHANNEL_MAILTO_DONE, (event, id: unknown, opened: unknown) =>
+      event.sender === win.webContents && linksOpen() ? links.done(id, opened) : 0,
+    );
     trace("window-created");
     connectToBackend(win, backend);
     // The backend's stage, for the loading screen (ADR 0103, rule 1): a name and two integers.
@@ -1777,6 +1871,14 @@ if (!identityHelper && !erasing)
       openSettings("about");
       void checkRelease();
     };
+    // The default mail app (ADR 0143, rule 2): only Settings asks, and only on the person's press
+    // does main ask macOS. A build that is not packaged has no client and offers nothing.
+    ipcMain.handle(CHANNEL_DEFAULT_MAIL, (event, action: unknown) => {
+      if (!settings || event.sender !== settings.webContents) return null;
+      if (action === "get") return defaultMailInfo(mailtoClient);
+      if (action === "make") return makeDefaultMail(mailtoClient);
+      return null;
+    });
     // Either window may read the state; only the settings window may change it, ask for a check,
     // say About was shown, or open a link, and a link only by name (rule 8): main picks the URL
     // from what it checked, so nothing a page says is opened.
@@ -2009,10 +2111,14 @@ if (!identityHelper && !erasing)
     };
     rebuildMenu();
 
-    // Only web and mail addresses leave the app, and only from our own window.
+    // Only web addresses leave the app, and only from our own window. A mail address opens a new
+    // message here, read by the same rules as a link from outside (ADR 0143, rule 6).
     ipcMain.on("matters:open-link", (event, href: unknown) => {
       if (event.sender !== win.webContents || typeof href !== "string") return;
-      // A mailto is rebuilt first: only its addresses, subject and body go on (ADR 0048).
+      if (/^mailto:/i.test(href.trim())) {
+        receiveLink(href, "mail");
+        return;
+      }
       const target = linkForSystem(href);
       if (target !== null) {
         // A corpus run records what would have been handed to the system, and hands nothing.
