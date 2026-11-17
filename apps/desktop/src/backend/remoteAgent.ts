@@ -159,6 +159,18 @@ export class RemoteAgent implements AgentApi {
     return this.changed(this.host.command({ name: "agentSetWeekShare", percent }));
   }
 
+  saveKey(runtimeId: string, key: string): Promise<AgentStatus> {
+    return this.changed(this.host.command({ name: "agentSaveKey", runtimeId, key }));
+  }
+
+  removeKey(runtimeId: string): Promise<AgentStatus> {
+    return this.changed(this.host.command({ name: "agentRemoveKey", runtimeId }));
+  }
+
+  setKeyReading(runtimeId: string, on: boolean): Promise<AgentStatus> {
+    return this.changed(this.host.command({ name: "agentSetKeyReading", runtimeId, on }));
+  }
+
   setTalkLoop(on: boolean): Promise<AgentStatus> {
     return this.changed(this.host.command({ name: "agentSetTalkLoop", on }));
   }

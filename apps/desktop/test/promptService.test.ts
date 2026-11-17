@@ -902,6 +902,40 @@ describe("a prompt is a filter (ADR 0116)", () => {
     expect(runtime.calls).toHaveLength(spent);
   });
 
+  it("on a runtime billed to the person's key, asks above PROMPT_ASK_ABOVE as a plan does (ADR 0141)", async () => {
+    const runtime = new Responder();
+    runtime.info = { ...runtime.info, plan: undefined, noPlan: true, billed: true };
+    const h = await build(runtime);
+    const n = PROMPT_ASK_ABOVE + 20;
+    for (let i = 0; i < n; i++) {
+      await h.addMail(`t${String(i).padStart(3, "0")}`, ["Please decide by Friday"], {
+        dayOffset: 1 + i,
+        from: `person${i}@example${i}.org`,
+      });
+    }
+    await h.ready();
+    const asked = await h.service.promptRun(PROMPT);
+    expect(asked).toMatchObject({ found: n, read: PROMPT_ASK_ABOVE, ask: true });
+    expect(runtime.of("verdicts").flatMap(subjectsOf)).toHaveLength(PROMPT_ASK_ABOVE);
+  });
+
+  it("on a runtime with no plan and no bill, reads every match without asking (ADR 0119)", async () => {
+    const runtime = new Responder();
+    runtime.info = { ...runtime.info, plan: undefined, noPlan: true, onThisMachine: true };
+    const h = await build(runtime);
+    const n = PROMPT_ASK_ABOVE + 20;
+    for (let i = 0; i < n; i++) {
+      await h.addMail(`t${String(i).padStart(3, "0")}`, ["Please decide by Friday"], {
+        dayOffset: 1 + i,
+        from: `person${i}@example${i}.org`,
+      });
+    }
+    await h.ready();
+    const asked = await h.service.promptRun(PROMPT);
+    expect(asked.ask).toBeUndefined();
+    expect(asked).toMatchObject({ found: n, read: n });
+  });
+
   it("reads up to PROMPT_ASK_ABOVE threads by itself, with no question (rule 4)", async () => {
     const runtime = new Responder();
     const h = await build(runtime);
@@ -1923,5 +1957,23 @@ describe("the effort of a prompt's turns (ADR 0118)", () => {
     await h.service.promptRun('prompt:"invoice to pay"');
     expect(demo.effortsAsked.length).toBeGreaterThan(1);
     expect(demo.effortsAsked.every((e) => e === "low")).toBe(true);
+  });
+});
+
+describe("a prompt on the person's own API key (ADR 0141)", () => {
+  it("says the provider refused the key when a verdict turn is refused, and the runtime shows it (rule 5)", async () => {
+    const runtime = new Responder();
+    runtime.info = { ...runtime.info, plan: undefined, noPlan: true, billed: true };
+    const refusal = "Anthropic refused the key. Check it in the Anthropic Console.";
+    runtime.answer = async () => {
+      throw new AgentRunError("refused", refusal);
+    };
+    const h = await build(runtime);
+    await h.addMail("a", ["Please decide by Friday"]);
+    await h.ready();
+    const result = await h.service.promptRun(PROMPT);
+    expect(result.problem).toBe(refusal);
+    const info = (await h.service.status()).runtimes.find((r) => r.id === "fake")?.info;
+    expect(info).toMatchObject({ status: "keyRefused", problem: refusal });
   });
 });

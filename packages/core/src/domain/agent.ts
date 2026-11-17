@@ -16,6 +16,9 @@ export type AgentRuntimeId = string;
  * - `failed`: the check itself broke; `problem` says how.
  * - `notRunning`: a server on this machine that does not answer (ADR 0119, rule 6).
  * - `noModel`: it answers, but no model that runs here is installed (ADR 0119, rule 6).
+ * - `noKey`: a runtime on the person's own API key, and no key is kept (ADR 0141, rule 5).
+ * - `keyRefused`: the provider refused the key kept; `problem` says why in its class (ADR 0141,
+ *   rule 5): a wrong key, no credit, no access to a model, or rate limited.
  */
 export type AgentRuntimeStatus =
   | "missing"
@@ -24,7 +27,9 @@ export type AgentRuntimeStatus =
   | "ready"
   | "failed"
   | "notRunning"
-  | "noModel";
+  | "noModel"
+  | "noKey"
+  | "keyRefused";
 
 /** One window of a plan's limits. */
 export interface PlanWindow {
@@ -110,6 +115,22 @@ export interface AgentRuntimeInfo {
   /** Mail sent to it stays on this machine (ADR 0119, rule 5): the consent question says so. */
   readonly onThisMachine?: boolean;
   /**
+   * It runs on the person's own API key, and the provider bills every turn to it (ADR 0141, rule
+   * 6). Such a runtime also has no plan (`noPlan`), and work in the background runs on it only
+   * when the person turned that on.
+   */
+  readonly billed?: boolean;
+  /**
+   * When the key it runs on was saved (ADR 0141, rule 4), for what is shown. Never the key itself,
+   * nor any part of it.
+   */
+  readonly keySavedAtMs?: number;
+  /**
+   * The random id the key it runs on was saved with (ADR 0141, rule 5): a test holds only for the
+   * key it names. Not made from the key's text, and not told to a window.
+   */
+  readonly keyId?: string;
+  /**
    * How many turns of a reading may run side by side. Absent: the app's own number. A runtime
    * with no plan always runs one at a time (ADR 0119, rule 7).
    */
@@ -134,10 +155,32 @@ export function levelsFor(
   return runtime.efforts;
 }
 
+/** The longest API key taken (ADR 0141, rule 4). Keys of today are about a hundred characters. */
+export const MAX_API_KEY_CHARS = 512;
+const API_KEY_SHAPE = /^[A-Za-z0-9_\-.:+/=]{16,512}$/;
+
+/**
+ * Why a pasted API key cannot be kept, in a sentence that never repeats it, or null when its shape
+ * is one a provider gives (ADR 0141, rule 4). White space around it is the caller's to trim.
+ * Whether the provider takes it is learnt only by asking the provider.
+ */
+export function apiKeyProblem(key: string): string | null {
+  if (key.length === 0) return "Paste the key first.";
+  if (key.length > MAX_API_KEY_CHARS || !API_KEY_SHAPE.test(key)) {
+    return "That does not look like an API key. Copy it again from the provider's console.";
+  }
+  return null;
+}
+
 /** `P0` what the person asked for; `P1` understanding new mail; `P2` drafts; `P3` reading back. */
 export type AgentPriority = "P0" | "P1" | "P2" | "P3";
 
 export interface AgentBudget {
+  /**
+   * On a runtime billed to the person's key: they let it work in the background (ADR 0141, rule
+   * 6). Absent or false: only what the person asks for runs on it.
+   */
+  readonly keyReading?: boolean;
   /**
    * Share of the plan's week that background work (`P1` to `P3`) may use, in percent. At
    * `NO_WEEK_LIMIT_PERCENT` or above there is no share: background work runs until a window is full.
@@ -159,7 +202,11 @@ export const DEFAULT_AGENT_BUDGET: AgentBudget = {
   usedByUsPercent: 0,
 };
 
-export type MayRunReason = "sessionLimit" | "weekLimit" | "overage" | "budget";
+/**
+ * Why work may not start now. `keyOff`: background work on a runtime billed to the person's key,
+ * which they have not let read in the background (ADR 0141, rule 6).
+ */
+export type MayRunReason = "sessionLimit" | "weekLimit" | "overage" | "budget" | "keyOff";
 
 export type MayRun =
   | { readonly ok: true }
@@ -256,15 +303,22 @@ export function wholeTypesFor(
 
 /**
  * The gate of the plan for the runtime that runs the turn (ADR 0119, rule 7): a runtime with no
- * plan has no windows to keep to, so it always passes; any other is `mayRun`, unchanged.
+ * plan has no windows to keep to, so it always passes; any other is `mayRun`, unchanged. A runtime
+ * billed to the person's key (ADR 0141, rule 6) runs what the person asked for (`P0`), and
+ * background work only when they turned that on (`keyReading`); it has no windows either.
  */
 export function mayRunOn(
-  runtime: Pick<AgentRuntimeInfo, "noPlan"> | null | undefined,
+  runtime: Pick<AgentRuntimeInfo, "noPlan" | "billed"> | null | undefined,
   priority: AgentPriority,
   limits: PlanLimits | undefined,
   budget: AgentBudget,
   nowMs: number,
 ): MayRun {
+  if (runtime?.billed === true) {
+    return priority === "P0" || budget.keyReading === true
+      ? { ok: true }
+      : { ok: false, reason: "keyOff" };
+  }
   if (runtime?.noPlan === true) return { ok: true };
   return mayRun(priority, limits, budget, nowMs);
 }
@@ -1039,6 +1093,11 @@ export interface AgentSettings {
    * rule 2): it is never added again, renamed, edited or deleted. Absent: not yet.
    */
   readonly needsYouAdded?: boolean;
+  /**
+   * The runtimes billed to the person's own key that they let work in the background (ADR 0141,
+   * rule 6). A billed runtime it does not name runs only what the person asks for. Absent: none.
+   */
+  readonly keyReading?: readonly AgentRuntimeId[];
 }
 
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
@@ -1239,6 +1298,7 @@ export function readAgentSettings(raw: unknown): AgentSettings {
     usedWeekResetsAtMs: rawReset,
     models: rawModels,
     efforts: rawEfforts,
+    keyReading: rawKeyReading,
     ...rest
   } = raw as Record<string, unknown>;
   const legacyId = isRuntimeId(rawRuntimeId) ? rawRuntimeId : undefined;
@@ -1278,7 +1338,22 @@ export function readAgentSettings(raw: unknown): AgentSettings {
     kindRuntime,
     choices,
     plans,
+    ...readKeyReading(rawKeyReading),
   });
+}
+
+/** The billed runtimes let read in the background (ADR 0141, rule 6), each once. */
+function readKeyReading(raw: unknown): { keyReading?: readonly AgentRuntimeId[] } {
+  if (!Array.isArray(raw)) return {};
+  return { keyReading: [...new Set(raw.filter(isRuntimeId))] };
+}
+
+/** Whether the person let this runtime, billed to their key, work in the background (rule 6). */
+export function keyReadingOn(
+  settings: Pick<AgentSettings, "keyReading">,
+  runtimeId: AgentRuntimeId | undefined,
+): boolean {
+  return runtimeId !== undefined && (settings.keyReading ?? []).includes(runtimeId);
 }
 
 /** What one patch says of a runtime's plan; `null` clears a field. */
@@ -1293,7 +1368,7 @@ export interface PlanUsePatch {
 export type AgentSettingsPatch = Partial<
   Pick<
     AgentSettings,
-    "enabled" | "weekSharePercent" | "readingPaused" | "talkLoop" | "needsYouAdded"
+    "enabled" | "weekSharePercent" | "readingPaused" | "talkLoop" | "needsYouAdded" | "keyReading"
   >
 > & {
   /** Kinds of work moved to a runtime (ADR 0121, rule 1); a kind left out stays where it is. */
@@ -1458,6 +1533,11 @@ export interface AgentRuntimeRecord {
    */
   readonly model?: string;
   readonly problem?: string;
+  /**
+   * The id of the key the test ran on, for a runtime billed to one (ADR 0141, rule 5). The record
+   * holds only for that key; one without it holds for no key.
+   */
+  readonly keyId?: string;
   readonly testedAtMs: number;
 }
 

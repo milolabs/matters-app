@@ -1483,6 +1483,21 @@ export const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 58,
+    // ADR 0141, rule 5: the test of a runtime billed to a key names the key it ran on, by the
+    // random id the key was saved with (never anything of the key's text). NULL: a record from
+    // before, or of a runtime with no key, which holds for no key. A column, as in 55.
+    sql: "",
+    run: (db) => {
+      const columns = db.prepare("PRAGMA table_info(agent_runtime_records)").all() as {
+        name: string;
+      }[];
+      if (!columns.some((c) => c.name === "key_id")) {
+        db.exec("ALTER TABLE agent_runtime_records ADD COLUMN key_id TEXT");
+      }
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

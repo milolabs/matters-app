@@ -74,6 +74,7 @@ import { AgentUnavailableError, InvalidAgentSettingError } from "./agentApi.ts";
 import { type MailToolsContext, openMailTools } from "./mailTools.ts";
 import { PromptCandidates, type PromptCandidateThread } from "./promptCandidates.ts";
 import { sha256Hex } from "./promptFits.ts";
+import type { KeyTicket } from "./runtimeKeys.ts";
 import { followTrail } from "./talkTrail.ts";
 import type { PoolContext } from "./trailPool.ts";
 
@@ -85,6 +86,9 @@ export { sha256Hex };
 const NO_PROMPT = "There is no prompt in this query.";
 const BUSY = "The assistant is still working on a prompt.";
 const USED_UP = "Your plan's allowance is used up for now. The threads read so far are kept.";
+/** Background reading on a runtime billed to the person's key, which they have not let read. */
+const KEY_OFF =
+  "Reading in the background on your API key is off. Turn it on in Settings › Agents.";
 const FAILED = "The assistant could not read some threads. Try again.";
 const SEARCH_FAILED = "The assistant could not search for this prompt. Try again.";
 const STOPPED = "Stopped.";
@@ -106,26 +110,63 @@ export interface PromptRuntime {
   /** What was last seen of it: how many turns run at once (ADR 0119, rule 7; ADR 0121, rule 7). */
   info(): Pick<
     AgentRuntimeInfo,
-    "noPlan" | "turnsAtOnce" | "modelInputChars" | "tools" | "toolModels" | "onThisMachine"
+    | "noPlan"
+    | "billed"
+    | "turnsAtOnce"
+    | "modelInputChars"
+    | "tools"
+    | "toolModels"
+    | "onThisMachine"
   > | null;
   /** The model of a kind of work on it, refused with a sentence when it no longer lists it. */
   modelOf(kind: AgentWorkKind, s: AgentSettings): string;
   /** The gate of its plan at a priority; open on a runtime with no plan (ADR 0119, rule 7). */
   planGate(priority: AgentPriority, s: AgentSettings): MayRun;
+  /**
+   * Whether a turn at this priority may be sent now on the key of `ticket` (ADR 0141, rules 5 and
+   * 6): `P0` while the key holds; in the background also only while its reading switch was not
+   * turned off since the ticket was taken. Asked with nothing awaited between it and the request.
+   */
+  mayGo(ticket: KeyTicket, priority: AgentPriority): boolean;
+  /**
+   * Writes what turns on the key of `ticket` found only while that key holds as the write begins
+   * (ADR 0141, rule 5). Null: nothing was written.
+   */
+  keep<T>(ticket: KeyTicket, write: () => Promise<T>): Promise<{ readonly value: T } | null>;
+  /** Stores a turn's verdicts the same way, the one way they are stored. False: none stored. */
+  putVerdicts(ticket: KeyTicket, verdicts: readonly PromptVerdict[]): Promise<boolean>;
   /** The windows of its plan as last seen, for what a turn used. */
   limits(s: AgentSettings): PlanLimits | undefined;
-  /** The last gates of a turn the person asked for (`P0`): it is ready, its plan has room. */
-  gate(s: AgentSettings): Promise<void>;
-  /** Records the windows of its plan a turn saw. */
-  noteRun(limits: PlanLimits | undefined, before?: PlanLimits): Promise<void>;
+  /**
+   * The last gates of a turn the person asked for (`P0`): it is ready, its plan has room. Decided
+   * for the key of `ticket`, the run's, taken before them (ADR 0141, rule 5).
+   */
+  gate(s: AgentSettings, ticket: KeyTicket): Promise<void>;
+  /**
+   * After a turn answered: records the windows of its plan it saw, and rejects when the key the
+   * turn ran on is no longer the runtime's (ADR 0141, rule 5), so nothing it found is kept.
+   */
+  afterTurn(ticket: KeyTicket, limits: PlanLimits | undefined, before?: PlanLimits): Promise<void>;
   /** The effort a turn on the model of `kind` sends, or none (ADR 0118, rules 1 and 4). */
   effortOf(kind: AgentWorkKind, s: AgentSettings): AgentEffort | undefined;
-  /** What the person is told when a turn they asked for cannot be done. */
-  askFailure(error: unknown, fallback: string): Error;
+  /**
+   * What the person is told when a turn they asked for cannot be done. What it says of the runtime
+   * (a refused key, signed out) is kept only while the key of `ticket` holds.
+   */
+  askFailure(error: unknown, fallback: string, ticket: KeyTicket): Error;
   /** The accounts that agreed to it (ADR 0121, rule 4). */
   consented(): Promise<ReadonlySet<string>>;
-  /** Aborted when AI is turned off or understanding mail moves: nothing more goes. */
-  stopAll(): AbortSignal;
+  /**
+   * The turns of a run, as it begins: a signal aborted when AI is turned off, understanding mail
+   * moves or the runtime's key changes, and the ticket of the key they run on, taken with it.
+   */
+  begin(): { readonly signal: AbortSignal; readonly ticket: KeyTicket };
+  /**
+   * The turns of a pass in the background, as it begins: as `begin`, and the signal is aborted
+   * too when the background on the runtime stops, the reading switch turned off (ADR 0141, rule
+   * 6). A run the person asked for never runs on it.
+   */
+  beginInBackground(): { readonly signal: AbortSignal; readonly ticket: KeyTicket };
 }
 
 export interface PromptServiceDeps {
@@ -142,7 +183,6 @@ export interface PromptServiceDeps {
     AgentInsightStorePort,
     | "listRules"
     | "getPromptVerdicts"
-    | "putPromptVerdicts"
     | "prunePromptVerdicts"
     | "getPromptSearch"
     | "putPromptSearch"
@@ -202,7 +242,7 @@ interface Running {
 }
 
 /** What the last pass in the background met for a view, when it did not read it to its end. */
-type BackgroundNote = Extract<ReadingWait, { kind: "plan" | "limit" | "failed" }>;
+type BackgroundNote = Extract<ReadingWait, { kind: "plan" | "limit" | "failed" | "keyOff" }>;
 
 /** The counts of a view as last computed, so a window's status read costs no search (rule 3a). */
 interface KnownCounts {
@@ -375,6 +415,9 @@ export class PromptService {
     let rejected = 0;
     let ask = false;
     let gated = false;
+    // Taken before the first wait: a key saved or removed after it stops the run, and nothing
+    // the run learned of the runtime is kept for the new key.
+    const turn = on.begin();
     const gate = async () => {
       if (gated) return;
       // A check of the runtime that takes a moment shows as one (rule 3a); a quick one shows nothing.
@@ -383,9 +426,9 @@ export class PromptService {
         this.progress(mine, false);
       }, GATE_SHOWN_AFTER_MS);
       try {
-        await on.gate(s);
+        await on.gate(s, turn.ticket);
       } catch (error) {
-        throw on.askFailure(error, FAILED);
+        throw on.askFailure(error, FAILED, turn.ticket);
       } finally {
         clearTimeout(shown);
         mine.waiting = undefined;
@@ -402,7 +445,7 @@ export class PromptService {
       await this.joinBackground();
       mine.waiting = undefined;
       await this.prune();
-      const signal = AbortSignal.any([mine.stop.signal, on.stopAll()]);
+      const signal = AbortSignal.any([mine.stop.signal, turn.signal]);
       let search = again
         ? null
         : await this.deps.insights.getPromptSearch(asked.key, asked.filters);
@@ -432,20 +475,25 @@ export class PromptService {
       if (search === null) {
         await gate();
         this.progress(mine, false);
-        const searched = await this.search(asked, s, consented, signal, mine, on);
+        const searched = await this.search(asked, s, consented, signal, mine, on, turn.ticket);
         if (searched.kind === "stopped") stopped = true;
         else if (searched.kind === "problem") problem = searched.problem;
         else {
           // Only a search that ended is kept: a stopped one leaves nothing half-written.
-          search = {
+          const found: PromptSearch = {
             promptKey: asked.key,
             filters: asked.filters,
             queries: searched.queries,
             threadIds: searched.threadIds,
             atMs: this.deps.now(),
           };
-          await this.deps.insights.putPromptSearch(search);
-          candidates = await this.candidatesOf(asked, search, consented);
+          // What the search turns found is kept only for the key they ran on (ADR 0141, rule 5).
+          const kept = await on.keep(turn.ticket, () => this.deps.insights.putPromptSearch(found));
+          if (kept === null) stopped = true;
+          else {
+            search = found;
+            candidates = await this.candidatesOf(asked, found, consented);
+          }
         }
       }
       if (candidates !== null && !stopped && problem === undefined) {
@@ -460,8 +508,10 @@ export class PromptService {
         // one `↵` spends is bounded, and the line says how many are left).
         // Without a limit the same holds for the first `↵` (rule 4): it reads the best
         // `PROMPT_ASK_ABOVE`, so the list fills at once, and asks before the rest.
-        // On a runtime with no plan nothing is asked: reading costs the person nothing.
-        const bounded = asked.limit !== undefined || (!readAll && on.info()?.noPlan !== true);
+        // On a runtime with no plan nothing is asked: reading costs the person nothing. One billed
+        // to the person's key spends money on every turn, so it asks as a plan does (ADR 0141).
+        const free = on.info()?.noPlan === true && on.info()?.billed !== true;
+        const bounded = asked.limit !== undefined || (!readAll && !free);
         const todo =
           bounded && window.todo.length > PROMPT_ASK_ABOVE
             ? window.todo.slice(0, PROMPT_ASK_ABOVE)
@@ -489,9 +539,19 @@ export class PromptService {
                   mine.fits = now.fitting.length;
                   return now.reached;
                 };
-          const outcome = await this.readBatches(todo, asked, s, consented, signal, mine, on, {
-            ...(enough === undefined ? {} : { enough }),
-          });
+          const outcome = await this.readBatches(
+            todo,
+            asked,
+            s,
+            consented,
+            signal,
+            mine,
+            on,
+            turn.ticket,
+            {
+              ...(enough === undefined ? {} : { enough }),
+            },
+          );
           rejected = outcome.rejected;
           problem = outcome.problem;
           stopped = signal.aborted && problem === undefined;
@@ -505,7 +565,10 @@ export class PromptService {
           rejected === 0 &&
           todo.length === window.todo.length
         ) {
-          await this.deps.insights.putPromptSearch({ ...search, readAtMs: startedAt });
+          const read = search;
+          await on.keep(turn.ticket, () =>
+            this.deps.insights.putPromptSearch({ ...read, readAtMs: startedAt }),
+          );
         }
       }
     } finally {
@@ -732,6 +795,7 @@ export class PromptService {
     stop: AbortSignal,
     mine: Running,
     on: PromptRuntime,
+    ticket: KeyTicket,
   ): Promise<Searched> {
     const { settings } = this.deps;
     const runtime = on.runtime;
@@ -765,7 +829,7 @@ export class PromptService {
     const failure = (error: unknown): Searched =>
       stop.aborted
         ? { kind: "stopped" }
-        : { kind: "problem", problem: on.askFailure(error, SEARCH_FAILED).message };
+        : { kind: "problem", problem: on.askFailure(error, SEARCH_FAILED, ticket).message };
     try {
       if (loop !== undefined) {
         const tools = await openMailTools({
@@ -780,6 +844,8 @@ export class PromptService {
         });
         try {
           const before = on.limits(await settings.get());
+          // Only on the key the gate passed for; nothing awaits from here to the request.
+          if (!on.mayGo(ticket, "P0")) return { kind: "stopped" };
           let run: AgentRunResult;
           try {
             run = await loop.call(
@@ -797,7 +863,7 @@ export class PromptService {
             if (stop.aborted || queries.length === 0) return failure(error);
             return { kind: "found", queries: [...queries], threadIds: [...opened] };
           }
-          await on.noteRun(run.limits, before);
+          await on.afterTurn(ticket, run.limits, before);
           if (stop.aborted) return { kind: "stopped" };
           const answer = parseTalkLoop(run.value);
           const { listed, opened, queries } = tools.state;
@@ -816,11 +882,13 @@ export class PromptService {
       };
       const understand = async (request: AgentRequestBody): Promise<unknown> => {
         const before = on.limits(await settings.get());
+        // Only on the key the gate passed for; nothing awaits from here to the request.
+        if (!on.mayGo(ticket, "P0")) throw new AgentUnavailableError(STOPPED);
         const run = await runtime.run(
           { model: on.modelOf("understand", s), ...request, ...withEffort(effort) },
           { signal },
         );
-        await on.noteRun(run.limits, before);
+        await on.afterTurn(ticket, run.limits, before);
         check();
         return run.value;
       };
@@ -874,6 +942,7 @@ export class PromptService {
     signal: AbortSignal,
     mine: Running,
     on: PromptRuntime,
+    ticket: KeyTicket,
     options: BatchOptions = {},
   ): Promise<{
     rejected: number;
@@ -882,7 +951,7 @@ export class PromptService {
     /** A turn was refused for the plan's limit; `untilMs` when the runtime said until when. */
     limited?: { readonly untilMs?: number };
     /** The plan's gate at this priority said no before a turn went (ADR 0051, rule 7). */
-    gated?: Extract<ReadingWait, { kind: "plan" }>;
+    gated?: Extract<ReadingWait, { kind: "plan" | "keyOff" }>;
   }> {
     const { enough, priority = "P0", stopWhen } = options;
     const { insights, settings } = this.deps;
@@ -895,7 +964,7 @@ export class PromptService {
     const answered: string[] = [];
     let problem: string | undefined;
     let limited: { untilMs?: number } | undefined;
-    let gated: Extract<ReadingWait, { kind: "plan" }> | undefined;
+    let gated: Extract<ReadingWait, { kind: "plan" | "keyOff" }> | undefined;
     let turnSeq = 0;
     // The limit is reached: the turns under way finish and are kept, and none more starts.
     let full = false;
@@ -907,7 +976,7 @@ export class PromptService {
     try {
       model = on.modelOf("understand", s);
     } catch (error) {
-      return { rejected: 0, answered: [], problem: on.askFailure(error, FAILED).message };
+      return { rejected: 0, answered: [], problem: on.askFailure(error, FAILED, ticket).message };
     }
 
     const nextBatch = async (): Promise<{ c: Candidate; loaded: LoadedThread }[]> => {
@@ -938,15 +1007,26 @@ export class PromptService {
         const now = await settings.get();
         const gate = on.planGate(priority, now);
         if (!gate.ok) {
-          problem ??= USED_UP;
-          gated ??= {
-            kind: "plan",
-            reason: gate.reason,
-            ...(gate.untilMs === undefined ? {} : { untilMs: gate.untilMs }),
-            ...(on.limits(now) === undefined && on.info()?.noPlan !== true
-              ? { unknown: true as const }
-              : {}),
-          };
+          problem ??= gate.reason === "keyOff" ? KEY_OFF : USED_UP;
+          // A runtime billed to the person's key waits for them to let it read (ADR 0141, rule 6).
+          gated ??=
+            gate.reason === "keyOff"
+              ? { kind: "keyOff" }
+              : {
+                  kind: "plan",
+                  reason: gate.reason,
+                  ...(gate.untilMs === undefined ? {} : { untilMs: gate.untilMs }),
+                  ...(on.limits(now) === undefined && on.info()?.noPlan !== true
+                    ? { unknown: true as const }
+                    : {}),
+                };
+          halt.abort();
+          return;
+        }
+        // The switch was read above, after the ticket: the key it was read for is the key the
+        // turn goes on, and it was not turned off since. Nothing awaits from here to the request
+        // (ADR 0141, rule 6).
+        if (!on.mayGo(ticket, priority)) {
           halt.abort();
           return;
         }
@@ -976,7 +1056,7 @@ export class PromptService {
             { model, ...request, ...withEffort(effort) },
             { signal: turnSignal },
           );
-          await on.noteRun(result.limits, before);
+          await on.afterTurn(ticket, result.limits, before);
           mine.out.delete(turn);
           mine.turns++;
           answered.push(...went.map((b) => b.c.threadId));
@@ -990,7 +1070,8 @@ export class PromptService {
             { promptKey: asked.key, version: PROMPT_VERSION, atMs: this.deps.now() },
           );
           if (accepted === null) rejected++;
-          else await insights.putPromptVerdicts(accepted);
+          // Kept only while the key of the turn holds as they are written (ADR 0141, rule 5).
+          else if (!(await on.putVerdicts(ticket, accepted))) return;
           mine.done += went.length;
           if (
             enough?.(
@@ -1011,10 +1092,13 @@ export class PromptService {
             isAgentRunError(error) &&
             (error.code === "notSignedIn" ||
               error.code === "notPlan" ||
+              error.code === "refused" ||
               error.code === "effortRefused" ||
               error.code === "tooLong")
           ) {
-            problem ??= on.askFailure(error, FAILED).message;
+            // A key the provider refused sets the runtime's state with the adapter's sentence
+            // (ADR 0141, rule 5), as every other turn's refusal does.
+            problem ??= on.askFailure(error, FAILED, ticket).message;
           } else problem ??= FAILED;
           halt.abort();
           return;
@@ -1198,7 +1282,7 @@ export class PromptService {
   nextTryMs(): number | undefined {
     let soonest: number | undefined;
     for (const note of this.notes.values()) {
-      if (note.kind === "failed" || note.untilMs === undefined) continue;
+      if (note.kind === "failed" || note.kind === "keyOff" || note.untilMs === undefined) continue;
       soonest = soonest === undefined ? note.untilMs : Math.min(soonest, note.untilMs);
     }
     return soonest;
@@ -1210,7 +1294,7 @@ export class PromptService {
     const views = (await this.deps.views?.list()) ?? [];
     // One pass reads on one runtime: the one for understanding mail when it starts (ADR 0121, rule 9).
     const on = this.deps.understand();
-    const signal = on.stopAll();
+    const { signal, ticket } = on.beginInBackground();
     const over = () => signal.aborted || this.running !== null || options.stopWhen();
     const seen = new Set<string>();
     for (const view of views) {
@@ -1253,8 +1337,11 @@ export class PromptService {
       const recentSince = startedAt - options.recentDays * DAY_MS;
       const recent = fresh.filter((c) => c.newest.dateMs >= recentSince);
       const older = fresh.filter((c) => c.newest.dateMs < recentSince);
-      // A runtime with no plan spends nothing of the person's: one pass reads it all.
-      const take = on.info()?.noPlan === true ? fresh.length : PROMPT_ASK_ABOVE;
+      // A runtime with no plan spends nothing of the person's: one pass reads it all. One billed to
+      // the person's key spends money on every turn, so a pass takes as much as on a plan (ADR
+      // 0141, rule 6).
+      const take =
+        on.info()?.noPlan === true && on.info()?.billed !== true ? fresh.length : PROMPT_ASK_ABOVE;
       // The new mail first, then the rest of the view: both `P1`, since the person ran this view
       // and reading it to its end is what they asked for (ADR 0117, rule 3).
       const groups: [AgentPriority, readonly Candidate[]][] = [
@@ -1294,10 +1381,20 @@ export class PromptService {
           complete = false;
           break;
         }
-        const outcome = await this.readBatches(todo, asked, s, consented, signal, mine, on, {
-          priority,
-          stopWhen: () => this.running !== null || options.stopWhen(),
-        });
+        const outcome = await this.readBatches(
+          todo,
+          asked,
+          s,
+          consented,
+          signal,
+          mine,
+          on,
+          ticket,
+          {
+            priority,
+            stopWhen: () => this.running !== null || options.stopWhen(),
+          },
+        );
         answered.push(...outcome.answered);
         if (outcome.limited !== undefined && options.onLimit !== undefined) {
           // The plan said no and no window says until when it is enough: nothing more is read
@@ -1334,7 +1431,12 @@ export class PromptService {
         if (first === undefined) break;
         this.tried.delete(first);
       }
-      if (complete) await this.deps.insights.putPromptSearch({ ...search, readAtMs: startedAt });
+      if (complete) {
+        // What the turns read moves the reading on only for the key they ran on (ADR 0141, rule 5).
+        await on.keep(ticket, () =>
+          this.deps.insights.putPromptSearch({ ...search, readAtMs: startedAt }),
+        );
+      }
       // What is left now, for the status of the reading: one read of the verdicts, no search.
       const after = promptWindow(
         ordered,

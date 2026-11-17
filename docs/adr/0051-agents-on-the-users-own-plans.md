@@ -11,6 +11,9 @@
 - Amended by: [0121](0121-a-runtime-for-each-kind-of-work.md) (rule 7: windows, shares and limits per runtime)
 - Amended by: [0131](0131-the-person-sets-the-background-limit.md) (rule 7: the share of the week is
   any whole percent the person sets, or no limit)
+- Amended by: [0141](0141-the-agent-runs-on-the-persons-own-api-key.md) (rule 4: paid use by the
+  turn is a runtime the person adds and chooses, on their own API key; rule 7: a runtime billed to
+  a key runs background work only once the person turns it on)
 
 ## Context
 

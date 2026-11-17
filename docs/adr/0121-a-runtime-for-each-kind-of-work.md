@@ -8,6 +8,8 @@
 - Builds on: [0118](0118-effort-is-set-per-kind-of-work.md), [0120](0120-codex-is-a-runtime.md)
 - Amended by: [0131](0131-the-person-sets-the-background-limit.md) (rule 6: the one share may be no
   limit)
+- Amended by: [0141](0141-the-agent-runs-on-the-persons-own-api-key.md) (rule 9: reading in the
+  background on a runtime billed to a key waits until the person turns it on)
 
 ## Context
 

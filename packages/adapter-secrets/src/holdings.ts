@@ -4,7 +4,8 @@ import type { Holding } from "@matters/core";
 export const VAULT_FILE = "credentials.json";
 
 /**
- * The saved passwords and sign-ins, and the keys that protect them (ADR 0138, rules 2 and 7). They
+ * The saved passwords and sign-ins, the agent's API keys (ADR 0141, rule 4: entries of the same
+ * vault), and the keys that protect them (ADR 0138, rules 2 and 7). They
  * go first: once the vault is gone the key protects nothing, so a key that cannot be deleted is
  * reported, never a reason to stop.
  */

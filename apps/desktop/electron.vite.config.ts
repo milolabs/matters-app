@@ -7,6 +7,7 @@ import solid from "vite-plugin-solid";
 const bundleWorkspace = {
   exclude: [
     "@matters/adapter-autoconfig",
+    "@matters/adapter-anthropic-api",
     "@matters/adapter-claude-code",
     "@matters/adapter-codex",
     "@matters/adapter-compose",

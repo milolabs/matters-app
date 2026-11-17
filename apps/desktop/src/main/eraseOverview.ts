@@ -3,6 +3,7 @@
 // opens; nothing about paths leaves main.
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { AGENT_KEY_PREFIX, VAULT_FILE } from "@matters/adapter-secrets";
 import type { MainEraseOverview } from "@matters/contracts";
 import { HOLDING_GROUPS, type HoldingGroup } from "@matters/core";
 import { type EraseTargets, nodeEraseFs, pathsOf } from "./erase.ts";
@@ -47,5 +48,19 @@ export async function eraseOverview(o: {
     }
     earlier = { bytes: await sizeOf(o.earlierDir), sinceMs };
   }
-  return { groups, earlier };
+  return { groups, earlier, agentKeys: await agentKeysIn(join(o.dataDir, VAULT_FILE)) };
+}
+
+/**
+ * How many API keys of runtimes the vault holds (ADR 0141, rule 4), from the names of its entries:
+ * nothing is decrypted. A vault that cannot be read counts none; the erase removes it whole.
+ */
+async function agentKeysIn(path: string): Promise<number> {
+  try {
+    const vault = JSON.parse(await readFile(path, "utf8")) as { entries?: unknown };
+    if (typeof vault.entries !== "object" || vault.entries === null) return 0;
+    return Object.keys(vault.entries).filter((id) => id.startsWith(AGENT_KEY_PREFIX)).length;
+  } catch {
+    return 0;
+  }
 }

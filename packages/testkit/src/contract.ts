@@ -5819,6 +5819,27 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
       expect((await settings().getRuntimeRecord("ollama"))?.model).toBeUndefined();
     });
 
+    it("keeps the id of the key a runtime was tested on, and none for a record without it (ADR 0141)", async () => {
+      await settings().putRuntimeRecord({
+        runtimeId: "anthropic-api",
+        status: "ready",
+        keyId: "k-1",
+        testedAtMs: 7,
+      });
+      expect(await settings().getRuntimeRecord("anthropic-api")).toEqual({
+        runtimeId: "anthropic-api",
+        status: "ready",
+        keyId: "k-1",
+        testedAtMs: 7,
+      });
+      await settings().putRuntimeRecord({
+        runtimeId: "anthropic-api",
+        status: "ready",
+        testedAtMs: 8,
+      });
+      expect((await settings().getRuntimeRecord("anthropic-api"))?.keyId).toBeUndefined();
+    });
+
     it("keeps what the test of a runtime found, per runtime", async () => {
       expect(await settings().getRuntimeRecord("claude-code")).toBeNull();
       await settings().putRuntimeRecord({

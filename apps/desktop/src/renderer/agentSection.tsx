@@ -307,6 +307,15 @@ export function AgentSection(props: { backend: Backend; accounts: AccountsStore 
                 {...(checkFailed() === null ? {} : { checkFailed: checkFailed() ?? undefined })}
                 onCheck={(id) => void check(id)}
                 onLookAgain={() => void look()}
+                keyActions={(id) => ({
+                  save: async (key) => {
+                    await order.settle(props.backend.agentSaveKey(id, key), setStatus);
+                  },
+                  remove: async () => {
+                    await order.settle(props.backend.agentRemoveKey(id), setStatus);
+                  },
+                })}
+                onKeyReading={(id, on) => void change(props.backend.agentSetKeyReading(id, on))}
               />
             )}
           </Show>
