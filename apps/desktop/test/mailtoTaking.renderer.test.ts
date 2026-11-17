@@ -23,6 +23,9 @@ function rig() {
     once: [] as OpenOutcome[],
     /** While set, the next take waits for it before main answers. */
     takeGate: null as Promise<void> | null,
+    /** While set, the next open, or the next answer about a link, waits for it. */
+    openGate: null as Promise<void> | null,
+    doneGate: null as Promise<void> | null,
   };
   const taker = createLinkTaker({
     take: async () => {
@@ -31,8 +34,16 @@ function rig() {
       if (gate !== null) await gate;
       return queue.next();
     },
-    done: async (id, ok) => queue.done(id, ok),
+    done: async (id, ok) => {
+      const gate = state.doneGate;
+      state.doneGate = null;
+      if (gate !== null) await gate;
+      return queue.done(id, ok);
+    },
     open: async (link: MailtoPrefill) => {
+      const gate = state.openGate;
+      state.openGate = null;
+      if (gate !== null) await gate;
       if (state.busy) return "busy";
       const outcome = state.once.shift() ?? state.outcome;
       if (outcome === "opened") {
@@ -219,4 +230,30 @@ describe("a link leaves main only once its composer opened (ADR 0143, rule 5)", 
     await settle();
     expect(s.opened).toEqual([]);
   });
+
+  for (const during of ["openGate", "doneGate"] as const) {
+    it(`a window that went while ${during === "openGate" ? "the composer was being prepared" : "main was told how it went"} schedules no retry`, async () => {
+      const r = rig();
+      r.queue.offer("mailto:anna@example.org");
+      r.queue.offer("mailto:next@example.org");
+      r.state.outcome = "failed";
+      let answer: () => void = () => {};
+      r.state[during] = new Promise((resolve) => {
+        answer = resolve;
+      });
+      const taking = r.taker.next();
+      // Main answered with the link, and the step after it is under way.
+      await settle();
+      // Something else came meanwhile, and then the window went.
+      void r.taker.next();
+      r.taker.stop();
+      answer();
+      await taking;
+      await settle();
+      expect(r.timers).toEqual([]);
+      expect(r.opened).toEqual([]);
+      // Main still has both: the failed one with one try used, and the one behind it.
+      expect(r.queue.size()).toBe(2);
+    });
+  }
 });
