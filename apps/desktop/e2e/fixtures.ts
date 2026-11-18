@@ -57,6 +57,8 @@ export interface Running {
 export interface StartOptions {
   /** Added to the app's environment, e.g. `{ MATTERS_SEED: "1" }`. */
   readonly env?: Record<string, string>;
+  /** Added after the app's folder on its command line, e.g. a `mailto:` link (ADR 0143). */
+  readonly args?: readonly string[];
 }
 
 interface Fixtures {
@@ -104,7 +106,7 @@ export const test = base.extend<Fixtures>({
       // No `executablePath`: Playwright then starts the `electron` package's binary with its own
       // loader, which holds the app until Playwright is attached, so no window is missed.
       const app = await _electron.launch({
-        args: [...keychainArgs(), appDir],
+        args: [...keychainArgs(), appDir, ...(options.args ?? [])],
         env: {
           ...cleanEnv(),
           MATTERS_DB_PATH: join(dataDir, "matters.db"),

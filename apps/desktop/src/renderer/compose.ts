@@ -12,11 +12,14 @@ import {
   describeBlocker,
   emptyDraftContent,
   encodedMessageBytes,
+  followSignature,
   formatRecipients,
   notifyIfLarge,
   ownWords,
   parseRecipients,
+  placeSignature,
   sendBlockers,
+  withoutSignature,
 } from "@matters/core";
 import { batch, createMemo, createSignal } from "solid-js";
 import {
@@ -69,6 +72,8 @@ export interface ComposerSession {
   readonly sender: () => Pick<DraftContent, "accountId" | "from">;
   /** A reply stays with the account its thread belongs to (ADR 0050). */
   readonly canChangeSender: boolean;
+  /** Send or Close has begun: the sender stays the one it goes with (ADR 0142, rule 5). */
+  readonly senderLocked: () => boolean;
   readonly to: () => string;
   readonly cc: () => string;
   readonly bcc: () => string;
@@ -105,8 +110,15 @@ export interface ComposerSession {
   setView(v: ComposeView): void;
   /** Moves the composer, keeping everything typed (⤢ opens the full composer). */
   setPlacement(p: ComposePlacement): void;
-  /** Sends from this account instead; resolves once its message limit is known and applied. */
-  setSender(account: { id: string; address: string; displayName: string }): Promise<void>;
+  /**
+   * Sends from this account instead, once it is prepared: the sender, its message limit and its
+   * signature change together, so the two never disagree (ADR 0142, rule 5). The signature
+   * follows the account while the person has not changed it: then the text with the new one in
+   * place is the answer, for the editor to show; else null. A preparation that fails leaves the
+   * sender as it was and says so; choosing the account again tries again. Refused once Send or
+   * Close has begun.
+   */
+  setSender(account: { id: string; address: string; displayName: string }): Promise<string | null>;
   /** The system's file dialog, then the chips. */
   pick(): Promise<void>;
   /** Files whose grants main already minted (a pick). */
@@ -131,6 +143,10 @@ export interface ComposerSession {
   dispose(): void;
 }
 
+const SENDER_PROBLEM_END = "could not be chosen as the sender. Try again.";
+/** What the composer says when the account chosen to send from could not be prepared. */
+const senderProblem = (address: string) => `${address} ${SENDER_PROBLEM_END}`;
+
 /** Text of a list of people as a header would show it. */
 const show = (list: DraftContent["to"]) => formatRecipients(list);
 
@@ -152,6 +168,8 @@ export function createComposerSession(
     forward?: ForwardPlan;
     /** The account's message limit; null while unknown. */
     limitBytes?: number | null;
+    /** The account's signature as the text starts with it (ADR 0142); empty or absent for none. */
+    signature?: string;
   },
   onClosed: () => void,
   sink: ProgressSink = progress,
@@ -208,6 +226,16 @@ export function createComposerSession(
   const grantWaits = new Set<Promise<void>>();
   let statusTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // The signature the text was given, so it can follow the sender while untouched (ADR 0142).
+  let inserted = input.signature ?? "";
+  /**
+   * The preparation of the last sender chosen; it says whether that sender is now the one. Send
+   * and Close wait for it: a sender chosen before them is the one they go with.
+   */
+  let senderReady: Promise<boolean> = Promise.resolve(true);
+  /** Which choice of sender is the latest: an answer about an earlier one is not applied. */
+  let senderChoice = 0;
+  const [senderLocked, setSenderLocked] = createSignal(false);
   let touched = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let saving: Promise<void> = Promise.resolve();
@@ -286,7 +314,8 @@ export function createComposerSession(
         batch(() => {
           setDraft(saved);
           setSaveState("saved");
-          setError("");
+          // A saved draft says nothing of a sender that could not be chosen: that line stays.
+          if (!error().endsWith(SENDER_PROBLEM_END)) setError("");
         });
       } catch (e) {
         setSaveState("error");
@@ -546,7 +575,7 @@ export function createComposerSession(
   const unwritten = () =>
     base.forwarded === true &&
     [to(), cc(), bcc()].every((field) => field.trim() === "") &&
-    ownWords(body()) === "" &&
+    ownWords(body(), inserted) === "" &&
     subject() === (start ? base : input.content).subject;
 
   return {
@@ -558,6 +587,7 @@ export function createComposerSession(
     initialBody: base.bodyMarkdown,
     sender,
     canChangeSender,
+    senderLocked,
     to,
     cc,
     bcc,
@@ -608,27 +638,62 @@ export function createComposerSession(
       if (v !== "write") renderPreview();
     },
     async setSender(account) {
-      if (!canChangeSender || account.id === sender().accountId) return;
-      const { accountId, from } = emptyDraftContent(account);
-      setSenderSignal({ accountId, from });
-      // Choosing a sender is not writing: a message nobody wrote in still leaves nothing behind.
-      if (touched || draft() !== null) touch();
-      const limit = await backend
-        .prepareNew(accountId)
-        .then((p) => p.messageLimitBytes)
-        .catch(() => null);
-      if (disposed || sender().accountId !== accountId) return;
-      setLimitBytes(limit);
-      // A file the last account's server refused has no copy; this one may take it.
-      for (const chip of chips()) {
-        if (
-          chip.added &&
-          chip.state === "tooLarge" &&
-          (limit === null || encodedMessageBytes([chip]) <= limit)
-        ) {
-          void this.recapture(chip.id);
-        }
+      if (!canChangeSender || senderLocked()) return null;
+      const choice = ++senderChoice;
+      // The one it goes from already: an answer about another chosen since is not applied.
+      if (account.id === sender().accountId) {
+        senderReady = Promise.resolve(true);
+        return null;
       }
+      const { accountId, from } = emptyDraftContent(account);
+      const following = (async () => {
+        const answer = await backend.prepareNew(accountId).catch(() => null);
+        if (disposed || choice !== senderChoice) return { ok: false, signed: null };
+        // An answer about another account (the chosen one was removed meanwhile, and the backend
+        // fell back to the first) did not prepare this one: its signature and limit are not its own.
+        const prepared = answer?.content.accountId === accountId ? answer : null;
+        if (prepared === null) {
+          // The sender stays the one it was, with its signature; choosing it again tries again.
+          // The composer is as it was before the choice: a Send that waited for it stops, so the
+          // person sees the sender it would go from, and the next goes from the one shown.
+          setError(senderProblem(account.address));
+          senderReady = Promise.resolve(true);
+          return { ok: false, signed: null };
+        }
+        const limit = prepared.messageLimitBytes ?? null;
+        // The signature follows the account only while it is exactly the one put in (rule 5).
+        const next = prepared.signature ?? "";
+        const signed = followSignature(body(), inserted, next);
+        batch(() => {
+          setSenderSignal({ accountId, from });
+          setLimitBytes(limit);
+          // What an earlier choice that failed said no longer holds.
+          if (error().endsWith(SENDER_PROBLEM_END)) setError("");
+          if (signed !== null) {
+            inserted = next;
+            setBodySignal(signed);
+          }
+        });
+        // Choosing a sender is not writing: a message nobody wrote in still leaves nothing behind.
+        if (touched || draft() !== null) touch();
+        if (signed !== null && view() !== "write") renderPreview();
+        // A file the last account's server refused has no copy; this one may take it.
+        for (const chip of chips()) {
+          if (
+            chip.added &&
+            chip.state === "tooLarge" &&
+            (limit === null || encodedMessageBytes([chip]) <= limit)
+          ) {
+            void this.recapture(chip.id);
+          }
+        }
+        return { ok: true, signed };
+      })();
+      senderReady = following.then(
+        (r) => r.ok,
+        () => false,
+      );
+      return following.then((r) => r.signed);
     },
     async pick() {
       attachPicked(await pickFiles());
@@ -699,12 +764,22 @@ export function createComposerSession(
     checkSources,
     flush,
     async send() {
+      // From here the sender is the one this goes with: no other can be chosen while it goes.
+      setSenderLocked(true);
+      // A sender chosen before Send goes, prepared; one that could not be, stops this Send so the
+      // person sees the sender it would have gone from, and says why (ADR 0142, rule 5).
+      if (!(await senderReady)) {
+        setSenderLocked(false);
+        return null;
+      }
+      // Send goes from the sender shown: what an earlier press or choice said no longer holds.
       setError("");
       // The rows first (never the copies: a file still being read does not hold Send back), then
       // the draft with those files in it, then the approval of exactly that version.
       await settleAdds();
       const lost = chips().filter((c) => !c.added);
       if (problems().length > 0 || lost.length > 0) {
+        setSenderLocked(false);
         setError(
           [
             ...problems(),
@@ -718,17 +793,24 @@ export function createComposerSession(
       touched = true;
       await flush();
       const saved = draft();
-      if (!saved || saveState() === "error") return null;
+      if (!saved || saveState() === "error") {
+        setSenderLocked(false);
+        return null;
+      }
       try {
         const op = await backend.requestSend(saved.id);
         await onClosedAfterSend();
         return op;
       } catch (e) {
         setError(e instanceof BackendError ? e.message : "Sending did not start.");
+        setSenderLocked(false);
         return null;
       }
     },
     async close() {
+      // The draft is kept with the sender and signature it has once its preparation is done.
+      setSenderLocked(true);
+      await senderReady;
       await settleAdds();
       // Closing a forward nobody wrote in takes the draft and its copies with it.
       if (unwritten()) return this.discard();
@@ -778,12 +860,23 @@ export interface ForwardFrom {
   readonly messages: readonly ThreadMessage[];
 }
 
-/** What a new message may open with, from an offer of the agent (ADR 0102). Never saved by itself. */
+/**
+ * What a new message may open with, from an offer of the agent (ADR 0102) or a `mailto:` link (ADR
+ * 0143). Never saved by itself.
+ */
 export interface NewMessagePrefill {
   readonly to: readonly string[];
+  readonly cc?: readonly string[];
+  readonly bcc?: readonly string[];
   readonly subject: string;
   readonly body: string;
 }
+
+/**
+ * How an open went: the composer opened; it could not be prepared (the line of problems says
+ * why); or another composer was opening or open, so nothing was done.
+ */
+export type OpenOutcome = "opened" | "failed" | "busy";
 
 export type OpenComposer = (
   mode: ReplyMode | "new" | "forward",
@@ -791,7 +884,7 @@ export type OpenComposer = (
   threadId?: string,
   forward?: ForwardFrom,
   prefill?: NewMessagePrefill,
-) => Promise<void>;
+) => Promise<OpenOutcome>;
 
 const TITLES = { new: "New message", reply: "Reply", replyAll: "Reply to all", forward: "Forward" };
 
@@ -804,11 +897,12 @@ export function titleOfDraft(draft: Pick<Draft, "forwarded" | "inReplyTo">): str
 export function createComposeStore(backend: Backend, outbox: OutboxStore) {
   const [session, setSession] = createSignal<ComposerSession | null>(null);
   const [problem, setProblem] = createSignal("");
-  let opening = false;
+  // A signal, so what waits for no composer at all (a `mailto:` link) hears an open that failed.
+  const [opening, setOpening] = createSignal(false);
 
   const open: OpenComposer = async (mode, accountId, threadId, forward, prefill) => {
-    if (session() || opening) return;
-    opening = true;
+    if (session() || opening()) return "busy";
+    setOpening(true);
     setProblem("");
     try {
       const prepared =
@@ -837,49 +931,64 @@ export function createComposeStore(backend: Backend, outbox: OutboxStore) {
                 ? {
                     ...prepared.content,
                     to: prefill.to.map((address) => ({ address })),
+                    cc: (prefill.cc ?? []).map((address) => ({ address })),
+                    bcc: (prefill.bcc ?? []).map((address) => ({ address })),
                     subject: prefill.subject,
-                    bodyMarkdown: prefill.body,
+                    // The agent wrote the words; the code puts the signature under them (ADR 0142,
+                    // rule 6), after cutting a block of the model's own, as a reply does.
+                    bodyMarkdown: placeSignature(
+                      withoutSignature(prefill.body),
+                      prepared.signature ?? "",
+                    ),
                   }
                 : prepared.content,
             existing: prepared.existing,
             redirect: prepared.redirect ?? null,
             limitBytes: prepared.messageLimitBytes,
+            signature: prepared.signature ?? "",
             ...(plan ? { forward: plan } : {}),
           },
           () => setSession(null),
         ),
       );
+      return "opened";
     } catch (e) {
       setProblem(e instanceof BackendError ? e.message : "The message could not be started.");
+      return "failed";
     } finally {
-      opening = false;
+      setOpening(false);
     }
   };
 
   /** "Open draft" in the tray: the composer on that draft, with its files. */
   async function openDraft(draftId: string) {
-    if (session() || opening) return;
-    opening = true;
+    if (session() || opening()) return;
+    setOpening(true);
     setProblem("");
     try {
       const existing = await backend.getDraft(draftId);
-      // The limit is the account's; asking for a fresh message is the way to learn it.
-      const limitBytes = await backend
-        .prepareNew(existing.accountId)
-        .then((p) => p.messageLimitBytes)
-        .catch(() => null);
+      // The limit is the account's; asking for a fresh message is the way to learn it. Its
+      // signature too: the text follows a new sender only while it still has exactly that one.
+      const fresh = await backend.prepareNew(existing.accountId).catch(() => null);
+      const limitBytes = fresh?.messageLimitBytes ?? null;
       setSession(
         createComposerSession(
           backend,
           outbox,
-          { title: titleOfDraft(existing), content: existing, existing, limitBytes },
+          {
+            title: titleOfDraft(existing),
+            content: existing,
+            existing,
+            limitBytes,
+            signature: fresh?.signature ?? "",
+          },
           () => setSession(null),
         ),
       );
     } catch (e) {
       setProblem(e instanceof BackendError ? e.message : "The draft could not be opened.");
     } finally {
-      opening = false;
+      setOpening(false);
     }
   }
 
@@ -888,6 +997,8 @@ export function createComposeStore(backend: Backend, outbox: OutboxStore) {
     open,
     openDraft,
     isOpen: () => session() !== null,
+    /** A composer is open, or one is being opened. */
+    isBusy: () => session() !== null || opening(),
     problem,
     clearProblem: () => setProblem(""),
   };

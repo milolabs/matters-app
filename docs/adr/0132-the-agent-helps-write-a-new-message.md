@@ -4,6 +4,8 @@
 - Date: 2026-11-13
 - Amends: [0098](0098-the-agent-helps-write-a-reply.md), rule 1 (a rewrite takes a thread or an
   account) and its first addendum (a new message has an agent too)
+- Amended by: [0142](0142-a-signature-of-the-persons-own.md) (the signature is set apart and placed
+  by the code, also under a new message the agent offered)
 
 ## Context
 

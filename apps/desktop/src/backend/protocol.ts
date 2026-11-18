@@ -69,6 +69,8 @@ export type WorkerCommand =
   | { readonly name: "changePassword"; readonly accountId: string; readonly password: string }
   /** A new browser sign-in, verified before it replaces the stored one (ADR 0133, rule 11). */
   | { readonly name: "signInAgain"; readonly accountId: string; readonly signIn: string }
+  /** The account's own signature (ADR 0142); empty takes it away. */
+  | { readonly name: "setSignature"; readonly accountId: string; readonly signature: string }
   | { readonly name: "saveDraft"; readonly id?: string; readonly content: DraftContent }
   | { readonly name: "deleteDraft"; readonly draftId: string }
   | { readonly name: "requestSend"; readonly draftId: string }
@@ -139,6 +141,10 @@ export type WorkerCommand =
       readonly efforts?: Partial<AgentEfforts>;
     }
   | { readonly name: "agentSetWeekShare"; readonly percent: number }
+  // The key goes to the worker, which hands it to main's vault; it is never logged (ADR 0141).
+  | { readonly name: "agentSaveKey"; readonly runtimeId: string; readonly key: string }
+  | { readonly name: "agentRemoveKey"; readonly runtimeId: string }
+  | { readonly name: "agentSetKeyReading"; readonly runtimeId: string; readonly on: boolean }
   | { readonly name: "agentSetTalkLoop"; readonly on: boolean }
   | { readonly name: "agentInspect" }
   | { readonly name: "agentTestRuntime"; readonly runtimeId?: string }
@@ -253,6 +259,8 @@ export interface CommandResults {
   /** Null when there is no such account. */
   readonly changePassword: PasswordChanged | null;
   readonly signInAgain: PasswordChanged | null;
+  /** The signature as kept; null when there is no such account. */
+  readonly setSignature: string | null;
   readonly saveDraft: Draft;
   readonly deleteDraft: boolean;
   readonly requestSend: SendOperation;
@@ -287,6 +295,9 @@ export interface CommandResults {
   readonly agentDisable: AgentStatus;
   readonly agentSetModels: AgentStatus;
   readonly agentSetWeekShare: AgentStatus;
+  readonly agentSaveKey: AgentStatus;
+  readonly agentRemoveKey: AgentStatus;
+  readonly agentSetKeyReading: AgentStatus;
   readonly agentSetTalkLoop: AgentStatus;
   readonly agentInspect: AgentStatus;
   readonly agentTestRuntime: AgentStatus;
@@ -433,4 +444,9 @@ export interface WorkerConfig {
    * passes it only in a dev build. Null: Microsoft Graph.
    */
   readonly graphBase?: string | null;
+  /**
+   * A stand-in for the Anthropic API in a dev build's window tests (ADR 0141, rule 11):
+   * `http://127.0.0.1:<port>`, and the adapter takes nothing else. A release never has it.
+   */
+  readonly anthropicBase?: string | null;
 }

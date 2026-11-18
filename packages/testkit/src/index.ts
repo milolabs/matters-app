@@ -14,3 +14,4 @@ export * from "./fakeViews.ts";
 export * from "./fixtures.ts";
 export * from "./graphServer.ts";
 export * from "./pdf.ts";
+export * from "./runtimeContract.ts";

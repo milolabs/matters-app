@@ -1,5 +1,7 @@
 // What leaves the app for the system's mail program (ADR 0048, RFC 6068 section 4 and 7). Pure, so
-// main and the tests use the same function.
+// main and the tests use the same function. Since ADR 0143 main hands a `mailto:` from a message to
+// core's `parseMailto` and opens a draft in the app instead; this stays the rule for any mail link
+// that would leave.
 
 const NOT_AN_ADDRESS = /[\p{Cc}\s<>"\\?#]/u;
 const LINE_BREAKS = /[\r\n]+/g;

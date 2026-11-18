@@ -224,6 +224,18 @@ export interface SignInAgainRequest {
   readonly signIn: string;
 }
 
+/**
+ * The account's own signature (ADR 0142): Markdown, at most 2,000 characters; empty takes it away.
+ * The core normalizes and checks it, and says why in words the field can show. Drafts that exist
+ * keep the signature they have.
+ */
+export interface SetSignatureRequest {
+  readonly type: "setSignature";
+  readonly requestId: RequestId;
+  readonly accountId: string;
+  readonly signature: string;
+}
+
 /** The starting point of a new message. Nothing is stored until the first `saveDraft`. */
 export interface PrepareNewRequest {
   readonly type: "prepareNew";
@@ -740,6 +752,31 @@ export interface AgentSetWeekShareRequest {
   readonly percent: number;
 }
 
+/**
+ * The person's API key for a runtime billed to it (ADR 0141, rule 4). The only request that
+ * carries a key; no answer ever does, and no answer says more than whether a key is kept.
+ */
+export interface AgentSaveKeyRequest {
+  readonly type: "agentSaveKey";
+  readonly requestId: RequestId;
+  readonly runtimeId: string;
+  readonly key: string;
+}
+
+export interface AgentRemoveKeyRequest {
+  readonly type: "agentRemoveKey";
+  readonly requestId: RequestId;
+  readonly runtimeId: string;
+}
+
+/** Lets a runtime billed to the person's key work in the background (ADR 0141, rule 6). */
+export interface AgentSetKeyReadingRequest {
+  readonly type: "agentSetKeyReading";
+  readonly requestId: RequestId;
+  readonly runtimeId: string;
+  readonly on: boolean;
+}
+
 /** Turns the agent's search in a loop with tools on or off (ADR 0083). */
 export interface AgentSetTalkLoopRequest {
   readonly type: "agentSetTalkLoop";
@@ -1069,6 +1106,9 @@ export type BackendRequest =
   | AgentDisableRequest
   | AgentSetModelsRequest
   | AgentSetWeekShareRequest
+  | AgentSaveKeyRequest
+  | AgentRemoveKeyRequest
+  | AgentSetKeyReadingRequest
   | AgentSetTalkLoopRequest
   | AgentInspectRequest
   | AgentTestRuntimeRequest
@@ -1159,7 +1199,8 @@ export type BackendRequest =
   | RemoveAccountRequest
   | SyncNowRequest
   | ChangePasswordRequest
-  | SignInAgainRequest;
+  | SignInAgainRequest
+  | SetSignatureRequest;
 
 export interface ListNewestResponse {
   readonly type: "listNewest";
@@ -1637,6 +1678,30 @@ export interface ReleaseInfo {
   readonly checkedMs: number | null;
   /** Why the last check failed, in one phrase (rule 12); null when it worked or none was made. */
   readonly failure: string | null;
+  /** Installing the newer version when the person asks (ADR 0140). */
+  readonly install: ReleaseInstall;
+}
+
+/** Where an install stands (ADR 0140, rule 5). */
+export type ReleaseInstallStep =
+  | "idle"
+  | "downloading"
+  | "checking"
+  | "installing"
+  | "restarting"
+  | "failed";
+
+/** What About shows of installing the newer version (ADR 0140): words, never a path. */
+export interface ReleaseInstall {
+  /** About offers Install: a newer version is known and this copy can be replaced (rule 2). */
+  readonly offered: boolean;
+  /** Why this copy cannot install it, in one phrase; null when it can or nothing is newer. */
+  readonly cannot: string | null;
+  readonly step: ReleaseInstallStep;
+  /** The line for the step ("Downloading …", "… Nothing was installed."); null when idle. */
+  readonly line: string | null;
+  /** Whether the build record was checked, said once the checks passed. */
+  readonly note: string | null;
 }
 
 /** What main measures for Settings › Storage: sizes per kind of folder, never paths (ADR 0089). */
@@ -1664,6 +1729,11 @@ export type HoldingBytes = Readonly<
  */
 export interface MainEraseOverview {
   readonly groups: HoldingBytes;
+  /**
+   * How many API keys of runtimes the vault keeps (ADR 0141, rule 4), counted without decrypting.
+   * They go with the saved passwords. Absent: none, or not counted.
+   */
+  readonly agentKeys?: number;
   readonly earlier: { readonly bytes: number; readonly sinceMs: number | null } | null;
 }
 
@@ -1825,6 +1895,8 @@ export interface AccountInfo {
   readonly username: string;
   /** An outgoing server is set up. */
   readonly canSend: boolean;
+  /** The person's own signature for mail from it (ADR 0142); absent when there is none. */
+  readonly signature?: string;
   readonly status: SyncStatus;
 }
 
@@ -1878,6 +1950,14 @@ export interface ChangePasswordResponse {
    */
   readonly outgoing: "verified" | "none" | "unchecked";
   readonly outgoingNote?: string;
+}
+
+/** The signature as it was kept, normalized; empty when there is none now. */
+export interface SetSignatureResponse {
+  readonly type: "setSignature";
+  readonly requestId: RequestId;
+  readonly ok: true;
+  readonly signature: string;
 }
 
 /** What *Sign in again* answers (ADR 0133, rule 11): as a new password's answer, never a token. */
@@ -1968,6 +2048,11 @@ export interface PrepareResponse {
    * `messageLimit` event.
    */
   readonly messageLimitBytes: number | null;
+  /**
+   * The account's signature as `content` has it, without its delimiter; empty when it has none
+   * (ADR 0142). The composer keeps it to tell whether the person changed it (rule 5).
+   */
+  readonly signature: string;
   /** A draft already in progress for this thread; the composer opens it instead. */
   readonly existing: Draft | null;
   /** Set when a new reply goes elsewhere than to the sender, for the line above the fields (ADR 0042). */
@@ -2205,6 +2290,9 @@ export interface AgentStatusResponse {
     | "agentRevokeConsent"
     | "agentSetModels"
     | "agentSetWeekShare"
+    | "agentSaveKey"
+    | "agentRemoveKey"
+    | "agentSetKeyReading"
     | "agentSetTalkLoop"
     | "agentInspect"
     | "agentPauseReading"
@@ -2571,6 +2659,7 @@ export type BackendResponse =
   | SyncNowResponse
   | ChangePasswordResponse
   | SignInAgainResponse
+  | SetSignatureResponse
   | ErrorResponse;
 
 /** Pushed by the backend after the store changed; the renderer refetches what it shows. */
@@ -2824,3 +2913,24 @@ export type NoticeToMain =
   | { readonly type: "close"; readonly keys: readonly number[] }
   /** Whether banners are paused, for the app menu (ADR 0108); sent at start and on every change. */
   | { readonly type: "pause"; readonly enabled: boolean; readonly untilMs: number | null };
+
+/** What main says about being the default mail app, to Settings › About (ADR 0143, rule 2). */
+export interface DefaultMailInfo {
+  /**
+   * This build may ask macOS to make it the default: a packaged app. A build that is not packaged
+   * would name the Electron runtime, not Matters, so it never asks.
+   */
+  readonly offered: boolean;
+  /** macOS opens `mailto:` links with this app now; always false when `offered` is false. */
+  readonly isDefault: boolean;
+}
+
+/** A new message a `mailto:` link asks for (ADR 0143): read by core's `parseMailto`, never sent. */
+export interface MailtoPrefill {
+  readonly to: readonly string[];
+  readonly cc: readonly string[];
+  readonly bcc: readonly string[];
+  readonly subject: string;
+  /** Markdown that reads as the link's text. */
+  readonly body: string;
+}

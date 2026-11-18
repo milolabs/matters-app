@@ -1304,6 +1304,14 @@ export class InMemoryAccountStore implements AccountStorePort, Snapshottable {
     const { messageLimitBytes: _old, ...rest } = account;
     this.accounts.set(accountId, bytes === null ? rest : { ...rest, messageLimitBytes: bytes });
   }
+
+  async setSignature(accountId: string, signature: string): Promise<boolean> {
+    const account = this.accounts.get(accountId);
+    if (!account) return false;
+    const { signature: _old, ...rest } = account;
+    this.accounts.set(accountId, signature === "" ? rest : { ...rest, signature });
+    return true;
+  }
 }
 
 /** A vault in memory that can pretend to be unusable, like `safeStorage` without a keyring. */

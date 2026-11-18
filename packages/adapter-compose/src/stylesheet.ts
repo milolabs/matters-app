@@ -18,4 +18,7 @@ body { margin: 0; padding: 0; }
 .matters-body h2 { font-size: 17px; }
 .matters-body h3 { font-size: 15px; }
 .matters-body hr { border: 0; border-top: 1px solid #c9c9c4; margin: 16px 0; }
+.matters-body .matters-signature { margin: 0 0 12px 0; color: #6e6e73; font-size: 13px; }
+.matters-body .matters-signature p { margin: 0 0 6px 0; }
+.matters-body .matters-signature p.matters-signature-mark { margin: 0; }
 `;

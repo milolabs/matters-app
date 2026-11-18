@@ -1,7 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { Credential, CredentialAvailability, CredentialPort } from "@matters/core";
+import type {
+  AgentKey,
+  AgentKeyVaultPort,
+  Credential,
+  CredentialAvailability,
+  CredentialPort,
+} from "@matters/core";
 import { CredentialsUnavailableError, SignInEndedError } from "@matters/core";
 
 /** What protects the secrets: the operating system's keychain through Electron's `safeStorage`. */
@@ -38,6 +44,27 @@ function isVaultFile(value: unknown): value is VaultFile {
  * only. When the encryptor is not available `set` and `get` refuse with a clear error instead
  * of falling back to anything weaker; `delete` always works.
  */
+/** The vault entry of a runtime's API key (ADR 0141, rule 4): never an account's id (`acc-…`). */
+export const AGENT_KEY_PREFIX = "agent-key:";
+const RUNTIME_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/** The vault entry of a runtime's key; throws for an id that is not a runtime's. */
+export function agentKeyEntry(runtimeId: string): string {
+  if (!RUNTIME_ID.test(runtimeId)) throw new Error("Not a runtime");
+  return `${AGENT_KEY_PREFIX}${runtimeId}`;
+}
+
+/** A kept key of a known shape, or null: what is read back or crosses a process is checked. */
+export function parseAgentKey(v: unknown): AgentKey | null {
+  const r = v as { kind?: unknown; key?: unknown; savedAtMs?: unknown; id?: unknown } | null;
+  if (typeof r !== "object" || r === null) return null;
+  if (typeof r.key !== "string" || r.key.length === 0 || r.key.length > 512) return null;
+  if (typeof r.savedAtMs !== "number" || !Number.isFinite(r.savedAtMs)) return null;
+  // A key kept before ids were made has none: no test holds for it until it is tested again.
+  const id = typeof r.id === "string" && r.id.length > 0 && r.id.length <= 64 ? r.id : undefined;
+  return { key: r.key, savedAtMs: r.savedAtMs, ...(id === undefined ? {} : { id }) };
+}
+
 export class EncryptedFileCredentialStore implements CredentialPort {
   private readonly path: string;
   private readonly encryptor: Encryptor;
@@ -53,6 +80,7 @@ export class EncryptedFileCredentialStore implements CredentialPort {
   }
 
   get(accountId: string): Promise<Credential | null> {
+    if (accountId.startsWith(AGENT_KEY_PREFIX)) return Promise.resolve(null);
     return this.exclusive(async () => {
       const file = await this.read();
       const blob = file.entries[accountId];
@@ -73,10 +101,71 @@ export class EncryptedFileCredentialStore implements CredentialPort {
   }
 
   set(accountId: string, credential: Credential): Promise<void> {
+    if (accountId.startsWith(AGENT_KEY_PREFIX)) return Promise.reject(new Error("Not an account"));
     return this.exclusive(async () => {
       await this.requireAvailable();
       await this.write(await this.read(), accountId, credential);
     });
+  }
+
+  // --- The API keys of runtimes billed to them (ADR 0141, rule 4), beside the passwords ---
+
+  /** `AgentKeyVaultPort.get`: the kept key of a runtime, or null. */
+  async getKey(runtimeId: string): Promise<AgentKey | null> {
+    const entry = agentKeyEntry(runtimeId);
+    return this.exclusive(async () => {
+      const file = await this.read();
+      const blob = file.entries[entry];
+      if (blob === undefined) return null;
+      await this.requireAvailable();
+      let decrypted: Awaited<ReturnType<Encryptor["decrypt"]>>;
+      try {
+        decrypted = await this.encryptor.decrypt(Buffer.from(blob, "base64"));
+      } catch {
+        throw new CredentialsUnavailableError(
+          "The saved key can no longer be decrypted. Paste it again.",
+        );
+      }
+      let key: AgentKey | null = null;
+      try {
+        key = parseAgentKey(JSON.parse(decrypted.text));
+      } catch {
+        key = null;
+      }
+      if (key !== null && decrypted.reencrypt) await this.write(file, entry, key);
+      return key;
+    });
+  }
+
+  async setKey(runtimeId: string, key: AgentKey): Promise<void> {
+    const entry = agentKeyEntry(runtimeId);
+    const kept = parseAgentKey(key);
+    if (kept === null) throw new Error("Not a key");
+    return this.exclusive(async () => {
+      await this.requireAvailable();
+      await this.write(await this.read(), entry, kept);
+    });
+  }
+
+  async deleteKey(runtimeId: string): Promise<void> {
+    await this.delete(agentKeyEntry(runtimeId));
+  }
+
+  /** How many keys of runtimes are kept, read without decrypting (the erase review, ADR 0138). */
+  countKeys(): Promise<number> {
+    return this.exclusive(async () => {
+      const file = await this.read();
+      return Object.keys(file.entries).filter((id) => id.startsWith(AGENT_KEY_PREFIX)).length;
+    });
+  }
+
+  /** The vault as an `AgentKeyVaultPort`, for code that knows only the port. */
+  keys(): AgentKeyVaultPort {
+    return {
+      get: (runtimeId) => this.getKey(runtimeId),
+      set: (runtimeId, key) => this.setKey(runtimeId, key),
+      delete: (runtimeId) => this.deleteKey(runtimeId),
+    };
   }
 
   /**
@@ -124,7 +213,11 @@ export class EncryptedFileCredentialStore implements CredentialPort {
     if (!state.available) throw new CredentialsUnavailableError(state.reason);
   }
 
-  private async write(file: VaultFile, accountId: string, credential: Credential): Promise<void> {
+  private async write(
+    file: VaultFile,
+    accountId: string,
+    credential: Credential | AgentKey,
+  ): Promise<void> {
     const encrypted = await this.encryptor.encrypt(JSON.stringify(credential));
     await this.save({
       version: 1,

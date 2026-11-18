@@ -14,6 +14,7 @@ const noAccounts: BackendDeps["accounts"] = {
   syncNow: async () => false,
   changePassword: async () => null,
   signInAgain: async () => null,
+  setSignature: async () => null,
 };
 
 function baseDeps(received?: BackendDeps["received"]) {

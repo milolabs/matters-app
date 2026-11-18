@@ -3089,6 +3089,25 @@ export function describeAccountStoreContract(name: string, factory: Factory<Acco
       expect((await accounts().get("acc2"))?.messageLimitBytes).toBe(99);
     });
 
+    it("keeps the person's signature, takes it away when empty, and removes it with the account (ADR 0142)", async () => {
+      await accounts().add(stored());
+      expect((await accounts().get("acc1"))?.signature).toBeUndefined();
+      const signature = "Anna Kowalska\n**Matters** · [matters.example](https://matters.example)";
+      expect(await accounts().setSignature("acc1", signature)).toBe(true);
+      expect(await accounts().get("acc1")).toEqual(stored({ signature }));
+      expect((await accounts().list())[0]?.signature).toBe(signature);
+      expect(await accounts().setSignature("acc1", "")).toBe(true);
+      expect(await accounts().get("acc1")).toEqual(stored());
+      // An unknown account is told, not made.
+      expect(await accounts().setSignature("nope", "x")).toBe(false);
+      expect(await accounts().list()).toHaveLength(1);
+      // Added with one, and gone with the account.
+      await accounts().add(stored({ id: "acc2", address: "x@example.com", signature: "X" }));
+      expect((await accounts().get("acc2"))?.signature).toBe("X");
+      expect(await accounts().remove("acc2")).toBe(true);
+      expect(await accounts().get("acc2")).toBeNull();
+    });
+
     it("removes an account once", async () => {
       await accounts().add(stored());
       expect(await accounts().remove("acc1")).toBe(true);
@@ -5817,6 +5836,27 @@ export function describeAgentSettingsContract(name: string, factory: Factory<Age
       });
       await settings().putRuntimeRecord({ runtimeId: "ollama", status: "failed", testedAtMs: 8 });
       expect((await settings().getRuntimeRecord("ollama"))?.model).toBeUndefined();
+    });
+
+    it("keeps the id of the key a runtime was tested on, and none for a record without it (ADR 0141)", async () => {
+      await settings().putRuntimeRecord({
+        runtimeId: "anthropic-api",
+        status: "ready",
+        keyId: "k-1",
+        testedAtMs: 7,
+      });
+      expect(await settings().getRuntimeRecord("anthropic-api")).toEqual({
+        runtimeId: "anthropic-api",
+        status: "ready",
+        keyId: "k-1",
+        testedAtMs: 7,
+      });
+      await settings().putRuntimeRecord({
+        runtimeId: "anthropic-api",
+        status: "ready",
+        testedAtMs: 8,
+      });
+      expect((await settings().getRuntimeRecord("anthropic-api"))?.keyId).toBeUndefined();
     });
 
     it("keeps what the test of a runtime found, per runtime", async () => {

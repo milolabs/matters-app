@@ -1,18 +1,18 @@
+import { FORWARD_MARK } from "./appQuote.ts";
 import type { DraftContent } from "./draft.ts";
 import type { HtmlKind, Message, Participant } from "./entities.ts";
 import { isHiddenMailbox } from "./mailbox.ts";
 import { escapeAddress, escapeMarkdown } from "./markdownEscape.ts";
 import { formatMessageDate, quoteLines } from "./reply.ts";
+import { draftSections, signatureBlock } from "./signature.ts";
 
+export { FORWARD_MARK } from "./appQuote.ts";
 export { escapeMarkdown } from "./markdownEscape.ts";
 
 /**
  * Forwarding (ADR 0045). A forward is a new conversation: it quotes one message, has no recipients
  * yet and carries no threading headers.
  */
-
-/** The line that opens the quote, and so ends what the person wrote above it. */
-export const FORWARD_MARK = "> Forwarded message";
 
 /**
  * One `Fwd:` in front, whatever chain of `Fwd:`, `FW:`, `PD:` and `WG:` was there (rule 3). `Re:`
@@ -92,12 +92,21 @@ export function messageToForward(
 
 /**
  * What the person wrote: the body above the quote. Editing inside the quote does not count, and
- * neither does a quote that was deleted down to nothing (rule 13).
+ * neither does a quote that was deleted down to nothing (rule 13). The account's signature as it
+ * was put in is the app's, not the person's words (ADR 0142); once changed, it counts.
+ *
+ * The forwarded part is found as `draftSections` finds a quote, so a `> Forwarded message` line the
+ * person wrote above their signature, or one inside a code block, does not end their words. Once
+ * the mark itself is gone, everything counts as written.
  */
-export function ownWords(body: string): string {
-  const lines = body.replace(/\r\n?/g, "\n").split("\n");
-  const at = lines.indexOf(FORWARD_MARK);
-  return (at === -1 ? lines : lines.slice(0, at)).join("\n").trim();
+export function ownWords(body: string, signature = ""): string {
+  const text = body.replace(/\r\n?/g, "\n");
+  const block = signatureBlock(signature);
+  const { own, signature: signed, quote } = draftSections(text);
+  if (quote.split("\n", 1)[0] !== FORWARD_MARK) {
+    return (block === "" ? text : text.replace(block, "")).trim();
+  }
+  return (signed === block ? own : `${own}\n${signed}`).trim();
 }
 
 /** What the composer needs to know of the forwarded message to say what is not carried. */

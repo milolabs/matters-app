@@ -1,4 +1,5 @@
 import type { ComposeRendererPort, RenderedMessage } from "@matters/core";
+import { draftSections, SIGNATURE_DELIMITER } from "@matters/core";
 import juice from "juice";
 import MarkdownIt from "markdown-it";
 import { MAIL_CSS } from "./stylesheet.ts";
@@ -10,6 +11,25 @@ function createMarkdown() {
   // `html: false`: raw HTML in the source is shown as text, so no user HTML ever enters the output.
   const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographer: false });
   md.linkify.set({ fuzzyLink: false, fuzzyIP: false });
+  // A web address is read from the source as it stands, so it would take a backslash in and stop
+  // at the character the backslash escapes, leaving that character outside the escape: `\]` after
+  // an address would close a link. It ends before its first backslash instead (ADR 0143, rule 3).
+  const matchAtStart = md.linkify.matchAtStart.bind(md.linkify);
+  md.linkify.matchAtStart = (text: string) => {
+    const match = matchAtStart(text);
+    const cut = match?.raw.indexOf("\\") ?? -1;
+    if (match === null || cut < 0) return match;
+    // Nothing left after the scheme: no address at all.
+    if (/:\/*$/.test(match.raw.slice(0, cut))) return null;
+    const drop = match.raw.length - cut;
+    return {
+      ...match,
+      raw: match.raw.slice(0, cut),
+      text: match.text.slice(0, match.text.length - drop),
+      url: match.url.slice(0, match.url.length - drop),
+      lastIndex: match.lastIndex - drop,
+    };
+  };
   md.validateLink = (url) => SAFE_LINK.test(url.trim());
   // No remote or embedded images until attachments exist; the source stays visible instead.
   md.disable("image");
@@ -38,11 +58,40 @@ export class MarkdownComposeRenderer implements ComposeRendererPort {
   private readonly md = createMarkdown();
 
   render(markdown: string): RenderedMessage {
-    const body = this.md.render(markdown);
+    const body = this.body(markdown);
     const page =
       '<!doctype html><html><head><meta charset="utf-8"></head>' +
       `<body><div class="matters-body">${body}</div></body></html>`;
     const html = juice.inlineContent(page, MAIL_CSS, juiceOptions);
     return { html, text: markdown };
+  }
+
+  /**
+   * The HTML of the text. A signature (ADR 0142, rule 4) is rendered apart from the lines around
+   * it, so a delimiter right under a line of text never makes that line a heading (`-` under a
+   * paragraph is Markdown's other way of writing one), and the signature's own lines never run
+   * into the person's. Its delimiter is a line of its own, as text: never an `<hr>`, never a list
+   * item. The text part keeps the line exactly, its trailing space included. The parts are one
+   * message: a link defined in one (`[site]: https://…`) is a link where another uses it, so
+   * every part's definitions are read first, into one environment for this message only.
+   *
+   * The parts are where the core reads them (`draftSections`), the quote rendered apart too.
+   * Within a part Markdown reads its own fences: a fence the person left open is code to the end
+   * of their part (the core reads it as text), never into the signature or the quote.
+   */
+  private body(markdown: string): string {
+    const { own, signature, quote } = draftSections(markdown);
+    if (signature === "" && quote === "") return this.md.render(markdown);
+    const lines = signature === "" ? "" : signature.slice(SIGNATURE_DELIMITER.length + 1);
+    const env = {};
+    for (const part of [own, lines, quote]) this.md.parse(part, env);
+    const block =
+      signature === ""
+        ? ""
+        : '<div class="matters-signature">' +
+          `<p class="matters-signature-mark">${SIGNATURE_DELIMITER}</p>` +
+          this.md.render(lines, env) +
+          "</div>";
+    return this.md.render(own, env) + block + this.md.render(quote, env);
   }
 }

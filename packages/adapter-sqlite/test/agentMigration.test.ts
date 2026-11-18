@@ -25,8 +25,8 @@ afterEach(() => {
 
 describe("upgrade from schema 22 (ADR 0051, 0052)", () => {
   it("is the latest, after the forward migration", () => {
-    expect(MIGRATIONS.map((m) => m.version).slice(-5)).toEqual([53, 54, 55, 56, 57]);
-    expect(LATEST_SCHEMA_VERSION).toBe(57);
+    expect(MIGRATIONS.map((m) => m.version).slice(-5)).toEqual([55, 56, 57, 58, 59]);
+    expect(LATEST_SCHEMA_VERSION).toBe(59);
   });
 
   it("keeps the mail with the flag not known, adds the agent tables empty, and learns the flag on a later upsert", async () => {

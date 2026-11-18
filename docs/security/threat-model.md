@@ -13,6 +13,7 @@ problem is in [SECURITY.md](../../SECURITY.md).
 | Who you are to others | what the app sends in your name: only what you approved |
 | Your attention | what a message is allowed to look like, and what a view shows you |
 | Your AI plan | sign-in stays with the runtime's own program; Matters never sees a token |
+| Your AI API key | in the same encrypted vault as the passwords; sent only to the provider's fixed host, never shown again, never in a log ([ADR 0141](../adr/0141-the-agent-runs-on-the-persons-own-api-key.md)) |
 
 Matters has no server. Nothing here is copied to us, and there is no telemetry.
 
@@ -23,6 +24,7 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
 | **The sender of a message** | choose every byte of a message: headers, HTML, files, names | script, network requests with images off, a false identity that looks verified, a link or file that is not what it shows, instructions to a model |
 | **Someone on the network** | read and change traffic between the app and a mail server | a password, mail in plain text, an accepted bad certificate |
 | **A web page a message links to** | serve anything once you open the link in your browser | anything inside the app: links open in the system browser, never in a Matters window |
+| **A web page or program that hands Matters a `mailto:` link** | once Matters is the default mail app, open a link at any moment, as often as it likes, with any text in it | a file attached, a header set, a link or image in the message that the person did not write, a flood of windows, anything sent: a link only opens a draft, read by fixed limits, for the person to look at ([ADR 0143](../adr/0143-matters-opens-mailto-links.md)) |
 | **A hostile mail server lookup** | answer autoconfig and DNS lookups with false settings | a sign-in over plain text, credentials sent while probing |
 | **A dependency** | ship changed code in a new version | a version we did not choose: versions are pinned in `bun.lock`, and licenses are checked |
 
@@ -32,7 +34,8 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
   database, which Matters does not encrypt, and can ask the keychain as you can.
 - **Your mail provider.** It has your mail already.
 - **The AI runtime you chose.** A runtime on a plan receives the text you agreed to send to it, and
-  its provider's privacy settings apply. A model on your computer (Ollama) keeps mail on it.
+  its provider's privacy settings apply. So does a runtime on your own API key, which also bills
+  your key for every turn. A model on your computer (Ollama) keeps mail on it.
 - **A hostile IMAP server over a valid TLS session.** Malformed responses from a server you signed in
   to are not in the corpus yet.
 
@@ -52,6 +55,9 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
 5. **Passwords stay away from the window.** They are encrypted and decrypted in the main process,
    through the keychain, and handed only to the backend process that signs in to the mail server.
    A stored password is never given back to the window, and never reaches the logs or a model.
+   An API key for the agent is kept the same way; the window learns only that one is kept, and
+   the key goes nowhere but in a header to the provider's fixed host
+   ([ADR 0141](../adr/0141-the-agent-runs-on-the-persons-own-api-key.md)).
 6. **A model is behind code.** Instructions are fixed text, mail goes in as data, hidden text is left
    out, an answer must match a schema, and a quote must occur in the message it names. Each turn runs
    with the runtime's own tools off, and AI is off for an account until you turn it on
@@ -63,11 +69,16 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
    for one small file to learn whether a newer version is out: a `GET` with no cookie, no
    identifier and not the version it runs; the comparison is made on the Mac. The site's host
    (GitHub Pages) sees the address the request comes from, at each start and once a day. The file
-   is not trusted: whoever could change the site could make the app say a version is out, but not
-   install anything, and the only links it can send you to are the project's release pages. The
+   is not trusted: whoever could change the site could make the app say a version is out, but the
+   only links it can send you to are the project's release pages, and the only thing Install can
+   fetch is a release of this repository on GitHub. The
    check can be turned off in Settings › About, and then nothing is asked
    ([ADR 0137](../adr/0137-the-app-says-when-a-newer-version-is-out.md),
-   [standards.md, A6](standards.md#a6-the-electron-checklist)).
+   [standards.md, A6](standards.md#a6-the-electron-checklist)). Installing the newer version
+   happens only when you press Install and Restart: it downloads that release from the project's
+   releases on GitHub and checks it as the installer does (the checksum always, the build record
+   when `gh` is installed, the app's signature seal) before anything is replaced
+   ([ADR 0140](../adr/0140-the-app-installs-a-newer-version-when-asked.md)).
 
 ## How we know
 
@@ -90,9 +101,11 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
   signed ad hoc and not notarized, and a published one is offered on the site
   ([ADR 0129](../adr/0129-the-site-offers-pre-releases.md)): macOS does not vouch for them, and
   the build attestation is the only proof of where one comes from. A release build says when a
-  newer version is out ([ADR 0137](../adr/0137-the-app-says-when-a-newer-version-is-out.md)), but
-  it installs nothing: the download opens in the browser, and the four alphas published before
-  that are never told.
+  newer version is out ([ADR 0137](../adr/0137-the-app-says-when-a-newer-version-is-out.md)) and
+  installs it when the person asks, with the checks of the installer
+  ([ADR 0140](../adr/0140-the-app-installs-a-newer-version-when-asked.md)); the whole install of
+  a real release has not been run end to end yet, and the alphas published before these are never
+  told.
 - **An independent audit.** Nobody outside the project has reviewed the code yet.
 - **OAuth sign-in, PGP and S/MIME** are not built
   ([standards.md, Part C](standards.md#part-c-out-of-scope-for-now)).

@@ -119,8 +119,8 @@ export function RuntimeStep(props: {
       <div class="flex flex-col gap-2.5">
         <h1 class={props.headline}>Who should work on your mail?</h1>
         <p class={body}>
-          Use what you already pay for, or a model that runs on this Mac. Pick one. Nothing has been
-          sent anywhere yet.
+          Use what you already pay for, a model that runs on this Mac, or your own API key. Pick
+          one. Nothing has been sent anywhere yet.
         </p>
       </div>
       <Show
@@ -140,6 +140,10 @@ export function RuntimeStep(props: {
             onChoose={(id) => void choose(id)}
             onCheck={() => void check()}
             onLookAgain={() => void look()}
+            keyActions={(id) => ({
+              save: async (key) => take(await props.backend.agentSaveKey(id, key)),
+              remove: async () => take(await props.backend.agentRemoveKey(id)),
+            })}
           />
         )}
       </Show>

@@ -4,10 +4,19 @@
 // and once more with the walls tested alone. A canary HTTP server on 127.0.0.1 counts every request
 // that reaches it, and the app's main process reports every navigation, network request and link
 // handed to the system (a dev-only spy, `MATTERS_SMOKE_MODE=security`). Each check of the manifest
-// is then judged by the ratchet. Needs Docker and `electron-vite build` first; the root
+// is then judged by the ratchet. A second, short start on the demo mailbox knows of a newer
+// version and is never told to install it. Needs Docker and `electron-vite build` first; the root
 // `smoke:security` script does both.
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -22,6 +31,7 @@ import {
   TierSummary,
 } from "../packages/testkit/src/corpus.ts";
 import { startImapTestServer } from "./imap-test-server/run.ts";
+import { lanesOf, linkEvents } from "./smoke-security-lanes.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RESULT = "MATTERS_SMOKE_RESULT ";
@@ -43,6 +53,17 @@ const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
   "base64",
 );
+/** What the canary answers for release.json: a newer version, with its downloads. */
+const NEWER = "v0.1.0-alpha.5";
+const NEWER_RELEASE = {
+  repo: "milolabs/matters-app",
+  version: NEWER,
+  date: "2026-11-14T08:00:00Z",
+  url: `https://github.com/milolabs/matters-app/releases/download/${NEWER}/Matters-arm64.dmg`,
+  notes: `https://github.com/milolabs/matters-app/releases/tag/${NEWER}`,
+  stage: "alpha",
+  stars: 0,
+};
 const canary = createServer((req: IncomingMessage, res) => {
   const url = new URL(req.url ?? "/", "http://canary");
   const match = /^\/__c\/([^/]+)(\/.*)?$/.exec(url.pathname);
@@ -53,7 +74,10 @@ const canary = createServer((req: IncomingMessage, res) => {
     dest,
     lane: currentLane,
   });
-  if (dest === "image" || /\.png$/.test(url.pathname)) {
+  if (url.pathname === "/__release/release.json") {
+    // The site's file, naming a version newer than any build that is not packaged (0.0.0).
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(NEWER_RELEASE));
+  } else if (dest === "image" || /\.png$/.test(url.pathname)) {
     res.writeHead(200, { "content-type": "image/png" }).end(PNG);
   } else res.writeHead(200, { "content-type": "text/plain" }).end("canary");
 });
@@ -95,12 +119,18 @@ interface PageRecord {
   error?: string;
 }
 interface MainEvent {
-  readonly kind: "navigate" | "request" | "open-external";
+  readonly kind: "navigate" | "request" | "open-external" | "compose";
   readonly url?: string;
   readonly href?: string;
   readonly mainFrame?: boolean;
   readonly prevented?: boolean;
   readonly type?: string;
+  /** A `compose` event: the new message a `mailto:` link opens (ADR 0143). */
+  readonly to?: readonly string[];
+  readonly cc?: readonly string[];
+  readonly bcc?: readonly string[];
+  readonly subject?: string;
+  readonly body?: string;
   readonly id: string;
   readonly lane: string;
 }
@@ -139,10 +169,7 @@ const OWN_PAGE =
 
 function measure(c: CorpusCase): Record<string, unknown> {
   const mode = c.tiers.browser?.mode ?? "pipeline";
-  const lanes =
-    mode === "bypass"
-      ? { blocked: "bypass-blocked", images: "bypass-images" }
-      : { blocked: "blocked", images: "images" };
+  const lanes = lanesOf(mode);
   const rec = (lane: string) => records.get(`${c.id}|${lane}`);
   const mine = (lane: "blocked" | "images") =>
     hits.filter((h) => h.id === c.id && h.lane === lanes[lane]);
@@ -173,9 +200,23 @@ function measure(c: CorpusCase): Record<string, unknown> {
         .map((e) => plain(e.url ?? "")),
     ),
   ];
-  const opened = mainEvents
-    .filter((e) => e.kind === "open-external" && e.lane === "blocked")
-    .map((e) => plain(e.href ?? ""));
+  // In the case's own blocked lane: a case put past the pipeline reports in a lane of its own.
+  const links = linkEvents(mainEvents, lanes);
+  const opened = links.opened.map((e) => plain(e.href ?? ""));
+  // A `mailto:` link opens a new message in the app (ADR 0143): what each draft would hold.
+  const composed = links.composed;
+  const DRAFT_KEYS = new Set([
+    "kind",
+    "source",
+    "to",
+    "cc",
+    "bcc",
+    "subject",
+    "body",
+    "id",
+    "lane",
+  ]);
+  const addresses = (e: MainEvent) => [...(e.to ?? []), ...(e.cc ?? []), ...(e.bcc ?? [])];
   const requestsInImages = mainEvents.filter(
     (e) => e.kind === "request" && e.lane === lanes.images,
   ).length;
@@ -190,6 +231,14 @@ function measure(c: CorpusCase): Record<string, unknown> {
     opened,
     openedMailtoWithAttach: opened.some(
       (h) => /^mailto:/i.test(h) && /[?&]attach(?:ment)?=/i.test(h),
+    ),
+    composedFromLinks: composed.length,
+    composedWithAttach: composed.some(
+      (e) =>
+        Object.keys(e).some((k) => !DRAFT_KEYS.has(k)) || /\/etc\/|file:/i.test(JSON.stringify(e)),
+    ),
+    composedWithInjectedHeader: composed.some(
+      (e) => /[\r\n]/.test(e.subject ?? "") || addresses(e).some((a) => /[\s:]/.test(a)),
     ),
     linkWarningCount: blocked?.linkWarnings ?? 0,
     anchorsInFrame: blocked?.anchorsInFrame ?? 0,
@@ -229,6 +278,12 @@ try {
   // the canary for it, and nothing may leave for the site.
   mkdirSync(join(dir, "userData"), { recursive: true });
   writeFileSync(join(dir, "userData", "newer-version.json"), JSON.stringify({ enabled: false }));
+  // ADR 0140, rule 7: installing is pointed at the canary too, with a stand-in folder of apps.
+  // Nobody presses Install in this run, so no download may leave, for the canary or for GitHub.
+  mkdirSync(join(dir, "apps", "Matters.app"), { recursive: true });
+  // ADR 0141, rule 9: the runtime on the person's own API key is pointed at the canary too, and a
+  // made-up key sits in the environment. No key is saved and AI is off, so nothing may leave for
+  // the provider, the canary or the real host: the environment is never read.
   const { ELECTRON_RUN_AS_NODE: _drop, MATTERS_SEED: _seed, ...env } = process.env;
   const child = spawn(process.execPath, [join(root, "apps/desktop")], {
     env: {
@@ -249,6 +304,10 @@ try {
       }),
       MATTERS_TEST_PASSWORD: server.password,
       MATTERS_TEST_RELEASE_URL: `http://${ORIGIN}/__release/release.json`,
+      MATTERS_TEST_INSTALL_URL: `http://${ORIGIN}/__install/`,
+      MATTERS_TEST_INSTALL_DIR: join(dir, "apps"),
+      MATTERS_TEST_ANTHROPIC_BASE: `http://${ORIGIN}`,
+      ANTHROPIC_API_KEY: "sk-ant-smoke-0000000000000000000000000000-made-up",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -345,6 +404,134 @@ try {
         .map((e) => e.url)
         .join(", ")}`,
     );
+
+  // ---- installing a newer version, never pressed (ADR 0140, rules 1 and 7) ----
+  const installHits = hits.filter((h) => h.path.startsWith("/__install")).length;
+  const installRequests = events.filter(
+    (e) =>
+      e.kind === "request" &&
+      (/^https?:\/\/github\.com\/milolabs\/matters-app\/releases\/download\//i.test(e.url ?? "") ||
+        /^https?:\/\/release-assets\.githubusercontent\.com(?:[:/]|$)/i.test(e.url ?? "") ||
+        (e.url ?? "").includes("/__install")),
+  );
+  if (installHits > 0)
+    failures.push(`install: nobody pressed Install, yet the canary was asked ${installHits} times`);
+  if (installRequests.length > 0)
+    failures.push(
+      `install: nobody pressed Install, yet main saw downloads: ${installRequests
+        .map((e) => e.url)
+        .join(", ")}`,
+    );
+
+  // ---- the agent on the person's own API key, with no key saved (ADR 0141, rule 9) ----
+  const keyHits = hits.filter((h) => h.id === "?" && h.path.startsWith("/v1/")).length;
+  const keyRequests = events.filter(
+    (e) =>
+      e.kind === "request" &&
+      /^https?:\/\/(?:[^/]*\.)?(?:anthropic\.com|openai\.com)(?:[:/]|$)/i.test(e.url ?? ""),
+  );
+  if (keyHits > 0)
+    failures.push(`api key: no key was saved, yet the canary was asked ${keyHits} times`);
+  if (keyRequests.length > 0)
+    failures.push(
+      `api key: no key was saved, yet main saw requests for a provider: ${keyRequests
+        .map((e) => e.url)
+        .join(", ")}`,
+    );
+
+  // ---- a newer version known, Install never pressed (ADR 0140, rules 1 and 7) ----
+  // The run above has the check off, so no newer version is known there: it cannot tell "not
+  // pressed" from "nothing to install". This start has the check on (no state file yet), the
+  // canary's release.json names a newer version, and the demo mailbox, so no corpus. It is stopped
+  // once the check was answered and a while has passed; the check must have run, and kept the
+  // newer version, for "nothing left" to mean anything.
+  const newerDir = join(dir, "newer");
+  mkdirSync(join(newerDir, "userData"), { recursive: true });
+  mkdirSync(join(newerDir, "apps", "Matters.app"), { recursive: true });
+  marker = { id: "newer-known", lane: "newer-known" };
+  currentLane = "newer-known";
+  const releaseAsked = () =>
+    hits.filter((h) => h.lane === "newer-known" && h.path.startsWith("/__release")).length;
+  const second = spawn(process.execPath, [join(root, "apps/desktop")], {
+    env: {
+      ...env,
+      MATTERS_SMOKE: "1",
+      MATTERS_SMOKE_MODE: "security",
+      MATTERS_SMOKE_TIMEOUT_MS: "120000",
+      MATTERS_SEED: "1",
+      MATTERS_DB_PATH: join(newerDir, "matters.db"),
+      MATTERS_USER_DATA: join(newerDir, "userData"),
+      MATTERS_TEST_RELEASE_URL: `http://${ORIGIN}/__release/release.json`,
+      MATTERS_TEST_INSTALL_URL: `http://${ORIGIN}/__install/`,
+      MATTERS_TEST_INSTALL_DIR: join(newerDir, "apps"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let secondLog = "";
+  let secondPending = "";
+  const secondFeed = (d: Buffer) => {
+    const text = d.toString();
+    secondLog += text;
+    secondPending += text;
+    const parts = secondPending.split("\n");
+    secondPending = parts.pop() ?? "";
+    // Only main's events: the page's corpus signals belong to the run above.
+    for (const part of parts) if (part.startsWith(EVENT)) onLine(part);
+  };
+  second.stdout.on("data", secondFeed);
+  second.stderr.on("data", secondFeed);
+  const secondClosed = new Promise<number | null>((r) => second.on("close", r));
+  const askedBy = Date.now() + 90_000;
+  while (releaseAsked() === 0 && second.exitCode === null && Date.now() < askedBy)
+    await new Promise((r) => setTimeout(r, 250));
+  // Long enough for an install that started by itself to have asked for its first file.
+  if (releaseAsked() > 0) await new Promise((r) => setTimeout(r, 5_000));
+  second.kill("SIGTERM");
+  const secondKiller = setTimeout(() => second.kill("SIGKILL"), 15_000);
+  await secondClosed;
+  clearTimeout(secondKiller);
+  let keptVersion: unknown = null;
+  try {
+    const kept = JSON.parse(
+      readFileSync(join(newerDir, "userData", "newer-version.json"), "utf8"),
+    ) as { answer?: { version?: unknown } | null };
+    keptVersion = kept.answer?.version ?? null;
+  } catch {
+    // Not written: the check did not keep an answer.
+  }
+  const newerEvents = events.filter((e) => e.lane === "newer-known" && e.kind === "request");
+  // Controls: the canary was asked, main's spy saw it, and what came back was kept.
+  if (releaseAsked() === 0)
+    failures.push(
+      `newer known: control: the check was on, yet the canary was never asked for release.json (exit ${second.exitCode})\n${secondLog.split("\n").slice(-20).join("\n")}`,
+    );
+  if (!newerEvents.some((e) => (e.url ?? "").includes("/__release/release.json")))
+    failures.push("newer known: control: main's spy did not see the request for release.json");
+  if (keptVersion !== NEWER.replace(/^v/, ""))
+    failures.push(`newer known: control: the newer version was not kept (${String(keptVersion)})`);
+  const newerInstallHits = hits.filter(
+    (h) => h.lane === "newer-known" && h.path.startsWith("/__install"),
+  );
+  const newerInstallRequests = newerEvents.filter(
+    (e) =>
+      /^https?:\/\/github\.com\/milolabs\/matters-app\/releases\/download\//i.test(e.url ?? "") ||
+      /^https?:\/\/release-assets\.githubusercontent\.com(?:[:/]|$)/i.test(e.url ?? "") ||
+      (e.url ?? "").includes("/__install"),
+  );
+  if (newerInstallHits.length > 0)
+    failures.push(
+      `newer known: nobody pressed Install, yet the canary was asked for ${newerInstallHits
+        .map((h) => h.path)
+        .join(", ")}`,
+    );
+  if (newerInstallRequests.length > 0)
+    failures.push(
+      `newer known: nobody pressed Install, yet main saw downloads: ${newerInstallRequests
+        .map((e) => e.url)
+        .join(", ")}`,
+    );
+  if (readdirSync(join(newerDir, "apps")).join(",") !== "Matters.app")
+    failures.push("newer known: the stand-in folder of apps changed");
 
   // ---- judge every check ----
   const summary = new TierSummary("browser");

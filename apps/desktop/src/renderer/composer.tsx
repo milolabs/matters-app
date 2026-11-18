@@ -3,7 +3,7 @@ import { describeLargeNotice } from "@matters/core";
 import { createEffect, createSignal, For, onCleanup, onMount, Show, untrack } from "solid-js";
 import { AgentButton, AgentNote, CheckLine } from "./agentHelp.tsx";
 import type { ComposerSession } from "./compose.ts";
-import { type EditorApi, MarkdownEditor } from "./editor.tsx";
+import { type EditorApi, MarkdownEditor, showText } from "./editor.tsx";
 import { fullDate } from "./format.ts";
 import { ChevronDownIcon, CloseIcon, EyeIcon, NarrowIcon } from "./icons.tsx";
 import { isAttachShortcut } from "./keys.ts";
@@ -201,9 +201,23 @@ export function Composer(props: {
                     aria-label="From"
                     data-from
                     class="h-[30px] w-full min-w-0 appearance-none truncate rounded-[6px] bg-transparent pr-8 text-[13px] outline-none hover:bg-fill focus-visible:bg-fill"
+                    disabled={s().senderLocked()}
                     onChange={(e) => {
-                      const account = props.accounts.find((a) => a.id === e.currentTarget.value);
-                      if (account) void s().setSender(account);
+                      const select = e.currentTarget;
+                      const account = props.accounts.find((a) => a.id === select.value);
+                      // The signature may follow the account (ADR 0142, rule 5): the editor shows it.
+                      if (account) {
+                        void s()
+                          .setSender(account)
+                          .then((text) => {
+                            const view = editorApi?.view;
+                            if (text !== null && view) showText(view, text);
+                            // The sender changes only once it is prepared: one that could not be
+                            // leaves the list on the one this still goes from, unless another was
+                            // chosen since.
+                            if (select.value === account.id) select.value = s().sender().accountId;
+                          });
+                      }
                     }}
                   >
                     <For each={props.accounts}>

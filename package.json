@@ -19,7 +19,7 @@
     "check:boundaries": "ELECTRON_RUN_AS_NODE=1 electron tools/check-boundaries.ts",
     "test:imap": "ELECTRON_RUN_AS_NODE=1 electron tools/imap-test-server/run.ts -- ./node_modules/.bin/electron ./node_modules/vitest/vitest.mjs run --no-file-parallelism packages/adapter-imap/test/integration apps/desktop/test/integration",
     "test:e2e": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && playwright install ffmpeg && ELECTRON_RUN_AS_NODE=1 electron tools/imap-test-server/run.ts -- playwright test -c apps/desktop/e2e/playwright.config.ts",
-    "test:e2e:demo": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && playwright install ffmpeg && playwright test -c apps/desktop/e2e/playwright.config.ts demo browserSignIn graphSetup",
+    "test:e2e:demo": "cd apps/desktop && ./node_modules/.bin/electron-vite build && cd ../.. && playwright install ffmpeg && playwright test -c apps/desktop/e2e/playwright.config.ts demo browserSignIn graphSetup apiKey mailto",
     "sync:imap": "ELECTRON_RUN_AS_NODE=1 electron tools/sync-imap.ts",
     "dev:desktop": "cd apps/desktop && ./node_modules/.bin/electron-vite dev",
     "dev:desktop:demo": "cd apps/desktop && MATTERS_SEED=1 ./node_modules/.bin/electron-vite dev",

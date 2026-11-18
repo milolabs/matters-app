@@ -29,6 +29,11 @@ interface StoredAccountFields {
    * Absent while unknown; a connection refreshes it.
    */
   readonly messageLimitBytes?: number;
+  /**
+   * The person's own signature for mail from this account (ADR 0142), Markdown, normalized and at
+   * most `SIGNATURE_MAX_CHARS`. Absent when there is none, the default.
+   */
+  readonly signature?: string;
   readonly createdAtMs: number;
 }
 

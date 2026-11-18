@@ -267,9 +267,9 @@ export interface ForwardWindow {
 
 /**
  * A second start on this data folder brings the mail window forward. Before the window's first
- * reveal it does nothing: the window shows itself when the mail is in it (ADR 0103). What the second
- * start was given (its argv, its working directory) is not read: the app opens no files or links
- * from the command line.
+ * reveal it does nothing: the window shows itself when the mail is in it (ADR 0103). Of what the
+ * second start was given, only its `mailto:` arguments are read, by the caller (ADR 0143); the app
+ * opens no files from the command line.
  */
 export function bringForward(
   win: ForwardWindow | null,

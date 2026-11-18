@@ -9,6 +9,7 @@ import type {
   AgentWorkKind,
 } from "@matters/core";
 import {
+  keyReadingOn,
   kindInfo,
   kindsOn,
   kindTakesMail,
@@ -19,6 +20,7 @@ import {
 } from "@matters/core";
 import { createSignal, For, Index, type JSX, Show } from "solid-js";
 import {
+  billedLine,
   consentText,
   customShare,
   effortOptions,
@@ -39,8 +41,10 @@ import type { Backend } from "./client.ts";
 import { field, pill, pillPrimary } from "./ui.ts";
 
 // The pieces that first run and Settings share when they talk about agents (ADR 0051, 0052). The
-// app never starts a sign-in and never asks for a credential: where a program is not ready, it
-// says what to run in Terminal and looks again when asked.
+// app never starts a sign-in and never asks for a plan's credential: where a program is not ready,
+// it says what to run in Terminal and looks again when asked. A runtime on the person's own API
+// key takes the key in a password field, and from then on the window only learns that a key is
+// kept (ADR 0141, rule 4).
 
 /** The kinds of work, in the order and with the words the person sees. */
 export const WORK: readonly { key: AgentWorkKind; label: string; hint: string }[] = [
@@ -101,6 +105,122 @@ export function CopyCommand(props: { command: string }) {
   );
 }
 
+/** What a card does with the person's API key (ADR 0141, rule 4). */
+export interface KeyActions {
+  /** Keeps the key; rejects with a sentence of ours, which never repeats it. */
+  readonly save: (key: string) => Promise<void>;
+  readonly remove: () => Promise<void>;
+}
+
+/**
+ * The key of a runtime billed to it: a password field and Save while none is kept, or the
+ * provider refused it, or the person replaces it; Replace and Remove once one is kept. What was
+ * typed is cleared the moment it is sent, and never shown again.
+ */
+function KeyField(props: { runtime: AgentRuntimeInfo; actions: KeyActions }) {
+  const [replacing, setReplacing] = createSignal(false);
+  const [busy, setBusy] = createSignal(false);
+  const [problem, setProblem] = createSignal("");
+  let input: HTMLInputElement | undefined;
+  const kept = () => props.runtime.status !== "noKey";
+  const open = () => !kept() || props.runtime.status === "keyRefused" || replacing();
+  async function save() {
+    const typed = input?.value ?? "";
+    if (input !== undefined) input.value = "";
+    setBusy(true);
+    setProblem("");
+    try {
+      await props.actions.save(typed);
+      setReplacing(false);
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : "The key could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function remove() {
+    setBusy(true);
+    setProblem("");
+    try {
+      await props.actions.remove();
+      setReplacing(false);
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : "The key could not be removed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div class="flex flex-col gap-2 pl-[17px]" data-key={props.runtime.id}>
+      <Show when={open()}>
+        <form
+          class="flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save();
+          }}
+        >
+          <input
+            ref={(el) => {
+              input = el;
+            }}
+            type="password"
+            autocomplete="off"
+            spellcheck={false}
+            class={field}
+            placeholder="API key"
+            aria-label={`API key for ${props.runtime.name}`}
+            disabled={busy()}
+            data-key-input
+          />
+          <button type="submit" class={pill} disabled={busy()} data-key-save>
+            {busy() ? "Saving…" : "Save key"}
+          </button>
+          <Show when={replacing()}>
+            <button
+              type="button"
+              class={pill}
+              disabled={busy()}
+              onClick={() => setReplacing(false)}
+            >
+              Cancel
+            </button>
+          </Show>
+        </form>
+      </Show>
+      <Show when={kept() && !replacing()}>
+        <div class="flex items-center gap-2">
+          <Show when={props.runtime.status !== "keyRefused"}>
+            <button
+              type="button"
+              class={pill}
+              disabled={busy()}
+              data-key-replace
+              onClick={() => setReplacing(true)}
+            >
+              Replace key
+            </button>
+          </Show>
+          <button
+            type="button"
+            class={pill}
+            disabled={busy()}
+            data-key-remove
+            onClick={() => void remove()}
+          >
+            Remove key
+          </button>
+        </div>
+      </Show>
+      <Show when={problem() !== ""}>
+        <p role="alert" class="text-[12.5px] leading-[1.5] text-late" data-key-problem>
+          {problem()}
+        </p>
+      </Show>
+    </div>
+  );
+}
+
 /** One runtime: a dot, its name, plan and status, its windows, and what to do when it is not ready. */
 export function RuntimeCard(props: {
   runtime: AgentRuntimeInfo;
@@ -110,6 +230,8 @@ export function RuntimeCard(props: {
   windows?: boolean;
   /** What it does, under its state: `Used for writing`. */
   usedFor?: string;
+  /** For a runtime billed to the person's key: what its key field does (ADR 0141, rule 4). */
+  keyActions?: KeyActions;
   onCheck: () => void;
   onLookAgain: () => void;
 }) {
@@ -130,7 +252,9 @@ export function RuntimeCard(props: {
               r().status === "missing" ||
               r().status === "failed" ||
               r().status === "notRunning" ||
-              r().status === "noModel",
+              r().status === "noModel" ||
+              r().status === "noKey" ||
+              r().status === "keyRefused",
           }}
         />
         <div class="min-w-0 flex-1">
@@ -144,6 +268,11 @@ export function RuntimeCard(props: {
             {statusWords(r())}
             <Show when={props.usedFor}>{(used) => <span data-runtime-used> · {used()}</span>}</Show>
           </p>
+          <Show when={r().billed === true}>
+            <p class="text-[12px] text-secondary" data-billed-line>
+              {billedLine(r())}
+            </p>
+          </Show>
         </div>
         <Show when={r().status === "found" || r().status === "failed"}>
           <button
@@ -223,7 +352,14 @@ export function RuntimeCard(props: {
           </div>
         </div>
       </Show>
-      <Show when={r().status === "notRunning" || r().status === "noModel"}>
+      <Show
+        when={
+          r().status === "notRunning" ||
+          r().status === "noModel" ||
+          r().status === "noKey" ||
+          r().status === "keyRefused"
+        }
+      >
         <div class="flex flex-col gap-2 pl-[17px] text-[12.5px] leading-[1.5] text-mid">
           <p data-runtime-problem>
             <WithCode text={r().problem ?? `${r().name} cannot be used now. Look again later.`} />
@@ -234,6 +370,9 @@ export function RuntimeCard(props: {
             </button>
           </div>
         </div>
+      </Show>
+      <Show when={r().billed === true ? props.keyActions : undefined}>
+        {(actions) => <KeyField runtime={r()} actions={actions()} />}
       </Show>
       <Show when={r().status === "failed" || props.checkFailed}>
         <p role="alert" class="pl-[17px] text-[12.5px] leading-[1.5] text-late">
@@ -257,6 +396,8 @@ export function RuntimeChoice(props: {
   onChoose: (runtimeId: string) => void;
   onCheck: () => void;
   onLookAgain: () => void;
+  /** The key field of a runtime billed to the person's key (ADR 0141, rule 4). */
+  keyActions?: (runtimeId: string) => KeyActions;
 }) {
   const chosen = () => props.status.settings.kindRuntime.understand;
   return (
@@ -317,6 +458,9 @@ export function RuntimeChoice(props: {
                     runtime={info()}
                     checking={props.checking}
                     {...(props.checkFailed === undefined ? {} : { checkFailed: props.checkFailed })}
+                    {...(props.keyActions === undefined
+                      ? {}
+                      : { keyActions: props.keyActions(entry.id) })}
                     onCheck={props.onCheck}
                     onLookAgain={props.onLookAgain}
                   />
@@ -343,6 +487,13 @@ export function RuntimeList(props: {
   checkFailed?: { readonly runtimeId: string; readonly problem: string };
   onCheck: (runtimeId: string) => void;
   onLookAgain: () => void;
+  /** The key field of a runtime billed to the person's key (ADR 0141, rule 4). */
+  keyActions?: (runtimeId: string) => KeyActions;
+  /**
+   * Lets a runtime billed to the person's key read in the background (ADR 0141, rule 6). Absent:
+   * not offered (first run, where nothing reads yet).
+   */
+  onKeyReading?: (runtimeId: string, on: boolean) => void;
 }) {
   const inUse = () => runtimesInUse(props.status.settings);
   return (
@@ -381,10 +532,39 @@ export function RuntimeList(props: {
                     : {})}
                   windows={inUse().includes(entry.id)}
                   usedFor={usedForLine(props.status, entry.id)}
+                  {...(props.keyActions === undefined
+                    ? {}
+                    : { keyActions: props.keyActions(entry.id) })}
                   onCheck={() => props.onCheck(entry.id)}
                   onLookAgain={props.onLookAgain}
                 />
               )}
+            </Show>
+            <Show
+              when={
+                props.onKeyReading !== undefined &&
+                entry.info?.billed === true &&
+                entry.info.status !== "noKey"
+              }
+            >
+              <label
+                class="mt-2 flex cursor-default items-start gap-2.5 pl-[17px] text-[13px]"
+                data-key-reading={entry.id}
+              >
+                <input
+                  type="checkbox"
+                  class="mt-0.5"
+                  checked={keyReadingOn(props.status.settings, entry.id)}
+                  onChange={(e) => props.onKeyReading?.(entry.id, e.currentTarget.checked)}
+                />
+                <span>
+                  Read in the background
+                  <span class="block text-[12px] text-secondary">
+                    Views with a prompt read new mail on this key as it comes, a batch at a time.
+                    Off, only what you ask for runs on it.
+                  </span>
+                </span>
+              </label>
             </Show>
           </div>
         )}
@@ -395,7 +575,9 @@ export function RuntimeList(props: {
 
 /** What is not connected yet, said plainly and not clickable. */
 export function NotYet() {
-  const items = [{ name: "Others", detail: "API keys, your own endpoint, other agents." }];
+  const items = [
+    { name: "Others", detail: "Other API providers, your own endpoint, other agents." },
+  ];
   return (
     <div class="flex flex-col gap-2">
       <p class="text-[12px] font-semibold text-secondary">Not connected yet</p>

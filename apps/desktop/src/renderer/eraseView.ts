@@ -20,7 +20,7 @@ export const GROUP_COPY: readonly {
   {
     id: "mail",
     label: "Mail and the search index",
-    detail: "Messages, drafts, and mail waiting to be sent",
+    detail: "Messages, drafts, your signatures, and mail waiting to be sent",
   },
   {
     id: "files",
@@ -64,16 +64,19 @@ export function reviewRows(
   const bytes = (id: GroupId) => db.groups[id] + (main?.groups[id] ?? 0);
   return GROUP_COPY.map((g) => {
     if (g.id === "signIns") {
+      // The API keys of the agent's runtimes are kept with the passwords (ADR 0141, rule 4).
+      const keys = main?.agentKeys ?? 0;
+      const apiKeys = keys === 0 ? "" : ` and ${plural(keys, "API key", "API keys")} for the agent`;
       return {
         ...g,
-        detail: `For ${plural(db.accounts, "account", "accounts")}, and the key that protects them in the Keychain`,
+        detail: `For ${plural(db.accounts, "account", "accounts")}${apiKeys}, and the key that protects them in the Keychain`,
         amount: plural(db.accounts, "account", "accounts"),
       };
     }
     if (g.id === "mail") {
       return {
         ...g,
-        detail: `${plural(db.messages, "message", "messages")}, drafts, and mail waiting to be sent`,
+        detail: `${plural(db.messages, "message", "messages")}, drafts, your signatures, and mail waiting to be sent`,
         amount: storageSize(bytes(g.id)),
       };
     }

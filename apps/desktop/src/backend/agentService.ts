@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 // Agents in the sync worker (ADR 0051, rule 10). Everything here is injected, so a test
 // runs it over `FakeAgentRuntime` and the in-memory stores. Nothing logs mail text, subjects or
 // addresses: errors carry fixed sentences only.
@@ -12,6 +13,7 @@ import type {
   AgentFile,
   AgentInsightStorePort,
   AgentInstruction,
+  AgentKeyVaultPort,
   AgentModels,
   AgentPriority,
   AgentRequestBody,
@@ -19,6 +21,7 @@ import type {
   AgentRunResult,
   AgentRuntimeInfo,
   AgentRuntimePort,
+  AgentRuntimeRecord,
   AgentSettings,
   AgentSettingsPort,
   AgentStatus,
@@ -82,6 +85,7 @@ import {
   acceptWrite,
   actMatches,
   addNeedsYouView,
+  apiKeyProblem,
   buildAnswerQuestionsRequest,
   buildCheckReplyRequest,
   buildFillGapsRequest,
@@ -96,6 +100,7 @@ import {
   buildTalkTitleRequest,
   buildThemeRequest,
   buildWriteRequest,
+  CredentialsUnavailableError,
   choicesOn,
   clean,
   countQuery,
@@ -109,6 +114,7 @@ import {
   isAutomatedSender,
   isEmptyQuery,
   joinDraft,
+  keyReadingOn,
   kindsOn,
   kindTakesMail,
   lastFromThem,
@@ -160,6 +166,7 @@ import {
   wholeTypesFor,
   withEffort,
   withFiles,
+  withoutSignature,
 } from "@matters/core";
 import {
   type AgentApi,
@@ -185,8 +192,18 @@ import {
 } from "./agentReads.ts";
 import { type MailToolsState, openMailTools, type ReadFileRecord } from "./mailTools.ts";
 import { type PromptRuntime, PromptService } from "./promptService.ts";
+import { type KeyTicket, RuntimeKeys } from "./runtimeKeys.ts";
 import { followTrail, type TrailResult } from "./talkTrail.ts";
 import { THEME_FORMAT } from "./themeFormat.ts";
+
+/** A turn as it begins: what stops it, and the key it runs on (ADR 0141, rule 5). */
+interface Turn {
+  readonly signal: AbortSignal;
+  readonly ticket: KeyTicket;
+}
+
+/** The queue of the list of reading switches, apart from every runtime's own: no runtime's id. */
+const READING_LIST = "\u0000reading";
 
 /** Threads with activity in this many days are read before older ones (`P1`, else `P3`). */
 export const RECENT_DAYS = 2;
@@ -236,6 +253,11 @@ export interface AgentServiceDeps {
    * on the runtime of its kind of work (ADR 0121, rules 1 and 3); a kind with none runs nothing.
    */
   readonly runtimes: readonly AgentRuntime[];
+  /**
+   * The API keys of the runtimes billed to them (ADR 0141, rule 4), in main's vault. The service
+   * only saves and removes them; the runtime's adapter reads its own. Absent: no key can be kept.
+   */
+  readonly keys?: AgentKeyVaultPort;
   readonly store: Pick<
     MessageStorePort,
     | "listThreadsSince"
@@ -413,6 +435,13 @@ function withInput(inputChars: number | undefined): { readonly inputChars?: numb
   return inputChars === undefined ? {} : { inputChars };
 }
 
+/** What a window is told of a runtime: the id of its key is for the test record only. */
+function shownInfo(info: AgentRuntimeInfo): AgentRuntimeInfo {
+  if (info.keyId === undefined) return info;
+  const { keyId: _keyId, ...shown } = info;
+  return shown;
+}
+
 /** A runtime the person can do something with now: it is there, and nothing waits on them. */
 function usable(info: AgentRuntimeInfo | null): boolean {
   const status = info?.status;
@@ -421,7 +450,9 @@ function usable(info: AgentRuntimeInfo | null): boolean {
     status !== "signedOut" &&
     status !== "missing" &&
     status !== "notRunning" &&
-    status !== "noModel"
+    status !== "noModel" &&
+    status !== "noKey" &&
+    status !== "keyRefused"
   );
 }
 
@@ -429,6 +460,8 @@ export class AgentService implements AgentApi {
   private readonly deps: AgentServiceDeps;
   /** What was last seen of each runtime, by id (ADR 0119, rule 2). */
   private readonly infos = new Map<string, AgentRuntimeInfo>();
+  /** The ticket of the look, test or turn whose finding of each runtime is shown. */
+  private readonly infoTickets = new Map<string, KeyTicket>();
   /** The runtime of each kind of work, as last read; every read of the settings keeps it. */
   private kinds: KindRuntimes = {};
   private progress: ReadingProgress = { state: "off", reason: "disabled" };
@@ -443,6 +476,12 @@ export class AgentService implements AgentApi {
   private abort = new AbortController();
   /** Stops the work of one kind, when the kind moves to another runtime (ADR 0121, rule 3). */
   private readonly kindAborts = new Map<AgentWorkKind, AbortController>();
+  /**
+   * The key of each runtime billed to one (ADR 0141, rules 4 to 6): its commands one at a time,
+   * the ticket of the key a turn, a look or a test began on, and the stop of the turns that run on
+   * it, whatever chose the runtime: the kind's runtime or a talk's own choice.
+   */
+  private readonly runtimeKeys = new RuntimeKeys();
   /** The talk turns running, one per thread, each with its own way to be stopped. */
   private readonly talking = new Map<string, AbortController>();
   /** The turn across all mail that is running, if any: one at a time (ADR 0064, rule 7). */
@@ -462,7 +501,15 @@ export class AgentService implements AgentApi {
    */
   private limitHeld: { untilMs?: number } | null = null;
   /** The test of each runtime, so it never runs twice at once. */
-  private readonly testing = new Map<string, Promise<AgentRuntimeInfo>>();
+  private readonly testing = new Map<
+    string,
+    {
+      readonly ticket: KeyTicket;
+      readonly test: Promise<AgentRuntimeInfo>;
+      /** A test no press of the person's started, which goes only while the switch allows it. */
+      readonly background: boolean;
+    }
+  >();
   /** The theme turn that is running, if any: one at a time (ADR 0134, rule 15). */
   private makingTheme: AbortController | null = null;
 
@@ -531,19 +578,117 @@ export class AgentService implements AgentApi {
     return id === "" ? null : (this.infos.get(id) ?? null);
   }
 
-  private setInfo(id: string, info: AgentRuntimeInfo): AgentRuntimeInfo {
-    if (id !== "") this.infos.set(id, info);
-    return info;
+  /**
+   * What a look, a test or a turn found of a runtime, shown only while the key it began on is the
+   * runtime's key (ADR 0141, rule 5). Gives what is shown now.
+   */
+  private setInfo(ticket: KeyTicket, info: AgentRuntimeInfo): AgentRuntimeInfo {
+    const id = ticket.runtimeId;
+    if (id === "") return info;
+    if (this.runtimeKeys.holds(ticket)) {
+      this.infos.set(id, info);
+      this.infoTickets.set(id, ticket);
+    }
+    return this.infos.get(id) ?? info;
   }
 
-  /** A signal that stops a turn of this kind: AI off, a consent gone, or the kind moved. */
-  private signalOf(kind: AgentWorkKind): AbortSignal {
+  /**
+   * What is shown of the runtime of `ticket`, only when it was found on that key and the key
+   * holds: what was found on a key before says nothing of it (ADR 0141, rule 5).
+   */
+  private infoFor(ticket: KeyTicket): AgentRuntimeInfo | null {
+    const found = this.infoTickets.get(ticket.runtimeId);
+    if (found === undefined || !this.runtimeKeys.holds(ticket) || !this.runtimeKeys.holds(found)) {
+      return null;
+    }
+    return this.infoOf(ticket.runtimeId);
+  }
+
+  /**
+   * That a runtime waits for the person to sign in or to be on the plan, or no longer does (null),
+   * as a look, a test or a turn found it: kept only while the key it began on holds.
+   */
+  private block(ticket: KeyTicket, reason: "signedOut" | "notPlan" | null): void {
+    const id = ticket.runtimeId;
+    if (id === "" || !this.runtimeKeys.holds(ticket)) return;
+    if (reason === null) this.blocked.delete(id);
+    else this.blocked.set(id, reason);
+  }
+
+  /** The test a runtime passed or failed, stored only while the key it ran on holds. */
+  private async putRecord(ticket: KeyTicket, record: AgentRuntimeRecord): Promise<void> {
+    if (!this.runtimeKeys.holds(ticket)) return;
+    await this.deps.settings.putRuntimeRecord(record);
+  }
+
+  /**
+   * Stores what a turn found (a rule, an instruction, a talk entry, prepared work, a closing, a
+   * talk's name) only while the key it began on is the runtime's key, checked as the write begins,
+   * after every wait (ADR 0141, rule 5). Else nothing is stored, and the turn says it stopped.
+   */
+  private async stored<T>(ticket: KeyTicket, write: () => Promise<T>): Promise<T> {
+    const kept = await this.runtimeKeys.keep(ticket, write);
+    if (kept === null) throw new AgentUnavailableError("Stopped.");
+    return kept.value;
+  }
+
+  /**
+   * What a turn hands back to a window (help with a reply, a theme): only while the key it began
+   * on holds, after the last wait, the ledger's included (ADR 0141, rule 5).
+   */
+  private handed<T>(ticket: KeyTicket, value: T): T {
+    if (!this.runtimeKeys.holds(ticket)) throw new AgentUnavailableError("Stopped.");
+    return value;
+  }
+
+  /**
+   * A signal that stops a turn of this kind on this runtime: AI off, a consent gone, the kind
+   * moved, or the runtime's key removed or replaced.
+   */
+  private signalOf(kind: AgentWorkKind, runtimeId: string): AbortSignal {
     let mine = this.kindAborts.get(kind);
     if (mine === undefined) {
       mine = new AbortController();
       this.kindAborts.set(kind, mine);
     }
-    return AbortSignal.any([this.abort.signal, mine.signal]);
+    return AbortSignal.any([
+      this.abort.signal,
+      mine.signal,
+      this.runtimeKeys.stopSignal(runtimeId),
+    ]);
+  }
+
+  /**
+   * A turn of this kind on this runtime, as it begins: what stops it, and the ticket of the key it
+   * runs on, taken at the same moment, so a new key both stops it and makes its ticket stale.
+   */
+  private turnOf(kind: AgentWorkKind, runtimeId: string): Turn {
+    return { signal: this.signalOf(kind, runtimeId), ticket: this.runtimeKeys.ticket(runtimeId) };
+  }
+
+  /**
+   * A turn no press of the person's started (ADR 0141, rule 6): what stops a turn of its kind,
+   * and the stop of the background on its runtime too, taken with its ticket, so turning the
+   * reading switch off stops it even once it is sent. Only such turns run on that stop.
+   */
+  private backgroundTurnOf(kind: AgentWorkKind, runtimeId: string): Turn {
+    return {
+      signal: AbortSignal.any([
+        this.signalOf(kind, runtimeId),
+        this.runtimeKeys.backgroundSignal(runtimeId),
+      ]),
+      ticket: this.runtimeKeys.ticket(runtimeId),
+    };
+  }
+
+  /**
+   * A request of a turn the person asked for goes only on the key its gate passed for: asked with
+   * nothing awaited between it and the request (ADR 0141, rule 5).
+   */
+  private goes(turn: Turn): void {
+    if (turn.signal.aborted || !this.runtimeKeys.holds(turn.ticket)) {
+      throw new AgentUnavailableError("Stopped.");
+    }
   }
 
   /**
@@ -599,7 +744,11 @@ export class AgentService implements AgentApi {
       this.infoOf(runtimeId),
       priority,
       plan.limits,
-      { weekSharePercent: s.weekSharePercent, usedByUsPercent: plan.usedByUsPercent },
+      {
+        weekSharePercent: s.weekSharePercent,
+        usedByUsPercent: plan.usedByUsPercent,
+        keyReading: keyReadingOn(s, runtimeId),
+      },
       this.now,
     );
   }
@@ -624,9 +773,18 @@ export class AgentService implements AgentApi {
       info: () => this.infoOf(id),
       modelOf,
       planGate: (priority, s) => this.planGate(id, priority, s),
+      mayGo: (ticket, priority) =>
+        priority === "P0"
+          ? this.runtimeKeys.holds(ticket)
+          : this.runtimeKeys.mayGoInBackground(ticket),
+      keep: (ticket, write) => this.runtimeKeys.keep(ticket, write),
+      putVerdicts: async (ticket, verdicts) =>
+        (await this.runtimeKeys.keep(ticket, () =>
+          this.deps.insights.putPromptVerdicts(verdicts),
+        )) !== null,
       limits: (s) => this.limitsOf(id, s),
-      gate: (s) => this.gateRuntime(runtime, s),
-      noteRun: (limits, before) => this.noteRun(id, limits, before),
+      gate: (s, ticket) => this.gateRuntime(runtime, s, ticket),
+      afterTurn: (ticket, limits, before) => this.afterTurn(ticket, limits, before),
       effortOf: (kind, s) => {
         try {
           return this.effortOn(kind, s, runtime, modelOf(kind, s));
@@ -634,9 +792,10 @@ export class AgentService implements AgentApi {
           return undefined;
         }
       },
-      askFailure: (error, fallback) => this.askFailure(error, fallback, id),
+      askFailure: (error, fallback, ticket) => this.askFailure(error, fallback, ticket),
       consented: () => consentedAccounts(this.deps, id === "" ? undefined : id),
-      stopAll: () => this.signalOf("understand"),
+      begin: () => this.turnOf("understand", id),
+      beginInBackground: () => this.backgroundTurnOf("understand", id),
     };
   }
 
@@ -678,7 +837,38 @@ export class AgentService implements AgentApi {
    * are kept for its plan. Looking sends no mail and spends nothing.
    */
   private async inspectOne(runtime: AgentRuntime): Promise<AgentRuntimeInfo> {
-    if (runtime === NO_RUNTIME) return NO_INFO;
+    return (await this.lookOnce(runtime)).info;
+  }
+
+  /**
+   * A look, with the ticket of the key it was shown for. A look that began on the key before one
+   * saved or removed while it ran says what the key before was: it is not shown for the new one,
+   * and the runtime is looked at again (ADR 0141, rule 5). Looks run at once, so the one that
+   * ends last is not always the one of the key now.
+   */
+  private async lookOnce(
+    runtime: AgentRuntime,
+  ): Promise<{ info: AgentRuntimeInfo; ticket: KeyTicket }> {
+    if (runtime === NO_RUNTIME) return { info: NO_INFO, ticket: this.runtimeKeys.ticket("") };
+    for (;;) {
+      const ticket = this.runtimeKeys.ticket(runtime.id);
+      const info = await this.lookAt(runtime);
+      if (!this.runtimeKeys.holds(ticket)) {
+        // A key being saved or removed: the runtime is looked at again once that has ended.
+        await this.runtimeKeys.quiet(runtime.id);
+        continue;
+      }
+      this.setInfo(ticket, info);
+      if (info.noPlan !== true && info.limits !== undefined) {
+        // None of a change since the last seen is counted as ours, since no turn of ours ran.
+        await this.noteRun(ticket, info.limits);
+      }
+      return { info: this.infoOf(runtime.id) ?? info, ticket };
+    }
+  }
+
+  /** What one runtime says now, with what its last test found, not yet shown. */
+  private async lookAt(runtime: AgentRuntime): Promise<AgentRuntimeInfo> {
     const { settings } = this.deps;
     let info = await runtime.inspect();
     // Whether the search in a loop can run here is the port's to say (ADR 0083; ADR 0119, rule 10).
@@ -693,7 +883,18 @@ export class AgentService implements AgentApi {
     // chosen now.
     const model = this.testModel(runtime.id, s, info);
     const sameModel = record?.model === undefined || record.model === model;
-    if (info.status === "found" && record !== null && record.plan === info.plan && sameModel) {
+    // A test holds for the key it ran on and no other, by the id the key was saved with: not by
+    // time, which two saves in one millisecond or a clock set back would get wrong (ADR 0141,
+    // rule 5). A record that names no key holds for no key.
+    const sameKey =
+      info.billed !== true || (info.keyId !== undefined && record?.keyId === info.keyId);
+    if (
+      info.status === "found" &&
+      record !== null &&
+      record.plan === info.plan &&
+      sameModel &&
+      sameKey
+    ) {
       // The same plan and model passed the test before: the program is not asked to prove it again.
       info =
         record.status === "ready"
@@ -704,21 +905,17 @@ export class AgentService implements AgentApi {
               problem: record.problem ?? "The last check of the assistant failed.",
             };
     }
-    this.setInfo(runtime.id, info);
-    if (info.noPlan !== true && info.limits !== undefined) {
-      // None of a change since the last seen is counted as ours, since no turn of ours ran.
-      await this.noteRun(runtime.id, info.limits);
-    }
-    return this.infoOf(runtime.id) ?? info;
+    return info;
   }
 
   /** Looks at one runtime and notes whether it waits for the person to sign in. */
   private async inspectRuntime(runtime: AgentRuntime): Promise<AgentRuntimeInfo> {
     if (runtime === NO_RUNTIME) return NO_INFO;
-    const info = await this.inspectOne(runtime);
-    if (info.status === "signedOut") {
-      this.blocked.set(runtime.id, this.blocked.get(runtime.id) ?? "signedOut");
-    } else this.blocked.delete(runtime.id);
+    const { info, ticket } = await this.lookOnce(runtime);
+    this.block(
+      ticket,
+      info.status === "signedOut" ? (this.blocked.get(runtime.id) ?? "signedOut") : null,
+    );
     return info;
   }
 
@@ -791,11 +988,22 @@ export class AgentService implements AgentApi {
     if (runtimes.some((r) => r === NO_RUNTIME)) {
       throw new InvalidAgentSettingError("That assistant is not available.");
     }
-    const reading = this.runtimeFor("understand", s);
+    return this.testRuntimes(runtimes);
+  }
+
+  /**
+   * The tests of these runtimes, with the reading's state while they run. With `background`, the
+   * one runtime's test no press of the person's asked for, on that ticket (ADR 0141, rule 6).
+   */
+  private async testRuntimes(
+    runtimes: readonly AgentRuntime[],
+    background?: KeyTicket,
+  ): Promise<AgentStatus> {
+    const reading = this.runtimeFor("understand", await this.deps.settings.get());
     const withReading = runtimes.includes(reading);
     const wasOff = withReading && (this.progress.state === "off" || this.waitingOnRuntime());
     if (wasOff) this.setProgress({ state: "checking" });
-    for (const runtime of runtimes) await this.sharedTest(runtime);
+    for (const runtime of runtimes) await this.sharedTest(runtime, background);
     if (wasOff) {
       if (this.infoOf(reading.id)?.status === "ready") this.startNow();
       else this.setProgress(this.offProgress());
@@ -804,14 +1012,31 @@ export class AgentService implements AgentApi {
     return this.status();
   }
 
-  /** The test, once at a time per runtime: a press of Check during a pass waits for its test. */
-  private sharedTest(runtime: AgentRuntime): Promise<AgentRuntimeInfo> {
-    const running = this.testing.get(runtime.id);
-    if (running !== undefined) return running;
-    const test = this.runTest(runtime).finally(() => {
-      this.testing.delete(runtime.id);
+  /**
+   * The test, once at a time per runtime: a press of Check during a pass waits for its test. A
+   * test that runs on a key no longer kept is not waited for: it keeps nothing, and the key now is
+   * tested by itself (ADR 0141, rule 5). With `background`, no press of the person's started it:
+   * the ticket was taken before the reading switch was read, and it is sent only while the switch
+   * and the key still allow it (rule 6).
+   */
+  private async sharedTest(
+    runtime: AgentRuntime,
+    background?: KeyTicket,
+  ): Promise<AgentRuntimeInfo> {
+    for (;;) {
+      const running = this.testing.get(runtime.id);
+      if (running === undefined || !this.runtimeKeys.holds(running.ticket)) break;
+      if (background !== undefined || !running.background) return running.test;
+      // A test the person asked for does not stand on one that goes only while the reading switch
+      // stays on (ADR 0141, rule 6): it waits for it, and tests the key itself when that one did not.
+      const info = await running.test.catch(() => null);
+      if (info !== null && info.status !== "found") return info;
+    }
+    const ticket = background ?? this.runtimeKeys.ticket(runtime.id);
+    const test = this.runTest(runtime, ticket, background !== undefined).finally(() => {
+      if (this.testing.get(runtime.id)?.test === test) this.testing.delete(runtime.id);
     });
-    this.testing.set(runtime.id, test);
+    this.testing.set(runtime.id, { ticket, test, background: background !== undefined });
     return test;
   }
 
@@ -833,18 +1058,37 @@ export class AgentService implements AgentApi {
     return null;
   }
 
-  private async runTest(runtime: AgentRuntime): Promise<AgentRuntimeInfo> {
-    const { settings, clock } = this.deps;
+  private async runTest(
+    runtime: AgentRuntime,
+    ticket: KeyTicket,
+    background: boolean,
+  ): Promise<AgentRuntimeInfo> {
+    const { clock } = this.deps;
+    // The key the test runs on: one saved or removed while it runs stops it, and makes what it
+    // found one of the key before, which is not kept (ADR 0141, rule 5). Not a kind of work: its
+    // stop is AI off or the key, and in the background the stop of the background too (rule 6).
+    const signal = AbortSignal.any([
+      this.abort.signal,
+      this.runtimeKeys.stopSignal(runtime.id),
+      ...(background ? [this.runtimeKeys.backgroundSignal(runtime.id)] : []),
+    ]);
     const info = await this.inspectRuntime(runtime);
     if (info.status !== "found" && info.status !== "ready" && info.status !== "failed") return info;
-    this.blocked.delete(runtime.id);
-    const settingsNow = await settings.get();
+    this.block(ticket, null);
+    const settingsNow = await this.deps.settings.get();
     // A model the runtime no longer lists waits for the person to pick another (ADR 0119, rule 4).
     const model = this.testModel(runtime.id, settingsNow, info);
+    // A key saved or removed during the look: no billed turn goes for a test that keeps nothing. In
+    // the background, nor once the switch was turned off (rule 6). Nothing awaits from here to the
+    // request.
+    const goes = background
+      ? this.runtimeKeys.mayGoInBackground(ticket)
+      : this.runtimeKeys.holds(ticket);
+    if (!goes) return this.infoOf(runtime.id) ?? info;
     if (model === null) {
       const kind = kindsOn(settingsNow, runtime.id)[0] ?? "understand";
       const gone = choicesOn(settingsNow, runtime.id).models[kind];
-      return this.setInfo(runtime.id, {
+      return this.setInfo(ticket, {
         ...info,
         status: "failed",
         problem: modelGone(runtime.name, gone, kind),
@@ -866,9 +1110,9 @@ export class AgentService implements AgentApi {
       // Not a kind of work: the test stays at `low`, when the runtime takes it (ADR 0118, rule 6).
       const run = await runtime.run(
         { model, ...request, ...withEffort(resolveEffort("low", levelsFor(info, model))) },
-        { signal: this.abort.signal },
+        { signal },
       );
-      await this.noteRun(runtime.id, run.limits);
+      await this.afterTurn(ticket, run.limits);
       const verdicts = acceptVerdicts(
         run.value,
         [{ threadId: "test", lastMessageKey: 1, thread: TEST_THREAD }],
@@ -878,9 +1122,15 @@ export class AgentService implements AgentApi {
       if (verdicts?.some((v) => v.quote !== undefined) === true) status = "ready";
       else problem = "The assistant answered, but not in the form the app needs.";
     } catch (error) {
+      // A test in the background stopped with the background keeps nothing: it says nothing of
+      // the key, and a press of Check tests the key itself (rule 6).
+      if (background && signal.aborted && !this.runtimeKeys.mayGoInBackground(ticket)) {
+        return this.infoOf(runtime.id) ?? info;
+      }
+      // What is kept of the answer goes through the ticket: a test on the key before keeps none.
       if (isAgentRunError(error) && (error.code === "notSignedIn" || error.code === "notPlan")) {
-        this.blocked.set(runtime.id, error.code === "notPlan" ? "notPlan" : "signedOut");
-        return this.setInfo(runtime.id, {
+        this.block(ticket, error.code === "notPlan" ? "notPlan" : "signedOut");
+        return this.setInfo(ticket, {
           ...info,
           status: "signedOut",
           problem:
@@ -889,21 +1139,29 @@ export class AgentService implements AgentApi {
               : "Not signed in. Sign in with the assistant's own program, then check again.",
         });
       }
+      if (isAgentRunError(error) && error.code === "refused" && info.billed === true) {
+        // The provider refused the key: a sentence of the adapter's, with no words of theirs
+        // (ADR 0141, rule 5). It is not kept as a test: the next look asks the provider again.
+        return this.setInfo(ticket, { ...info, status: "keyRefused", problem: error.message });
+      }
       problem =
         isAgentRunError(error) && error.code === "badAnswer"
           ? "The assistant answered, but not in the form the app needs."
           : "The check of the assistant did not finish.";
     }
-    await settings.putRuntimeRecord({
+    await this.putRecord(ticket, {
       runtimeId: runtime.id,
       status: status === "ready" ? "ready" : "failed",
       ...(info.plan === undefined ? {} : { plan: info.plan }),
       model,
       ...(problem === undefined ? {} : { problem }),
+      ...(info.keyId === undefined ? {} : { keyId: info.keyId }),
       testedAtMs: clock.now(),
     });
+    // A key saved while the record was written: the record names the key before, and holds for
+    // no other; what is shown is the new key's.
     const { problem: _old, ...rest } = this.infoOf(runtime.id) ?? info;
-    return this.setInfo(runtime.id, {
+    return this.setInfo(ticket, {
       ...rest,
       status,
       ...(problem === undefined ? {} : { problem }),
@@ -918,14 +1176,18 @@ export class AgentService implements AgentApi {
    * runtime's plan is not touched.
    */
   private async noteRun(
-    runtimeId: string,
+    ticket: KeyTicket,
     limits: PlanLimits | undefined,
     before?: PlanLimits,
   ): Promise<void> {
+    const runtimeId = ticket.runtimeId;
     // A runtime with no plan has no windows: nothing is recorded (ADR 0119, rule 7).
     if (limits === undefined || runtimeId === "" || this.infoOf(runtimeId)?.noPlan === true) return;
     const { settings } = this.deps;
-    const current = planUseOf(await settings.get(), runtimeId);
+    const s = await settings.get();
+    // What a turn on the key before saw is not the new key's (ADR 0141, rule 5).
+    if (!this.runtimeKeys.holds(ticket)) return;
+    const current = planUseOf(s, runtimeId);
     let used = current.usedByUsPercent;
     const reset = limits.week?.resetsAtMs;
     if (current.usedWeekResetsAtMs !== undefined && reset !== current.usedWeekResetsAtMs) used = 0;
@@ -942,6 +1204,20 @@ export class AgentService implements AgentApi {
         ...(reset === undefined ? {} : { usedWeekResetsAtMs: reset }),
       },
     });
+  }
+
+  /**
+   * After a turn answered: the windows it saw, then the go-ahead for what it found, which is kept
+   * only while the key it ran on is the runtime's key (ADR 0141, rule 5). A key saved or removed
+   * meanwhile stopped the turn: it says so, and nothing it found is kept.
+   */
+  private async afterTurn(
+    ticket: KeyTicket,
+    limits: PlanLimits | undefined,
+    before?: PlanLimits,
+  ): Promise<void> {
+    await this.noteRun(ticket, limits, before);
+    if (!this.runtimeKeys.holds(ticket)) throw new AgentUnavailableError("Stopped.");
   }
 
   /** A week we count in is over: start counting again, before a gate looks at the number. */
@@ -1165,9 +1441,24 @@ export class AgentService implements AgentApi {
       const runtime = this.runtimeById(id);
       if (runtime === NO_RUNTIME || this.blocked.has(id)) continue;
       if (!this.testsAlone(id, s, consents)) continue;
+      // The ticket first: whether the test may go is read for this key (ADR 0141, rule 6).
+      const ticket = this.runtimeKeys.ticket(id);
       if (this.infoOf(id) === null) await this.inspectRuntime(runtime).catch(() => {});
-      if (this.infoOf(id)?.status === "found") await this.sharedTest(runtime).catch(() => {});
+      if (this.infoOf(id)?.status !== "found") continue;
+      if (!(await this.testsInBackground(id))) continue;
+      await this.sharedTest(runtime, ticket).catch(() => {});
     }
+  }
+
+  /**
+   * Whether a runtime may be tested with no press of the person's: always, except one billed to
+   * the person's key while its reading in the background is off. The test is a billed turn, and
+   * with the switch off nothing billed goes in the background (ADR 0141, rule 6): that key is
+   * tested when the person presses Check, or with the first thing they ask for on it.
+   */
+  private async testsInBackground(runtimeId: string): Promise<boolean> {
+    if (this.infoOf(runtimeId)?.billed !== true) return true;
+    return keyReadingOn(await this.deps.settings.get(), runtimeId);
   }
 
   /**
@@ -1219,11 +1510,24 @@ export class AgentService implements AgentApi {
     const info = this.infoOf(runtime.id);
     if (info === null || info.status === "found") this.setProgress({ state: "checking" });
     if (info === null) await this.inspectRuntime(runtime);
-    // The person agreed, so the test with a made-up message may run by itself (ADR 0051, rule 5).
+    // The person agreed, so the test with a made-up message may run by itself (ADR 0051, rule 5),
+    // except on a key whose reading in the background is off (ADR 0141, rule 6).
     await this.testInUse(first);
     const waitsNow = this.blocked.get(runtime.id);
     if (waitsNow !== undefined) {
       this.pause(runtime.id, waitsNow);
+      return;
+    }
+    // On a runtime billed to the person's key, nothing is read in the background until they
+    // turn that on (ADR 0141, rule 6), the test of a key not checked yet included: what they ask
+    // for still runs. A key that is neither ready nor waiting for its check says its own state.
+    const reader = this.infoOf(runtime.id);
+    if (
+      reader?.billed === true &&
+      (reader.status === "ready" || reader.status === "found") &&
+      !keyReadingOn(await this.currentSettings(), runtime.id)
+    ) {
+      this.setProgress({ state: "off", reason: "keyOff" });
       return;
     }
     if (this.infoOf(runtime.id)?.status !== "ready") {
@@ -1294,6 +1598,7 @@ export class AgentService implements AgentApi {
     model: string,
     guidance: PreparedGuidance | undefined,
     effort: AgentEffort | undefined,
+    turn: Turn,
   ): Promise<PrepareResult> {
     const { insights, settings } = this.deps;
     const consented = await consentedAccounts(this.deps, runtime.id);
@@ -1311,12 +1616,13 @@ export class AgentService implements AgentApi {
       this.roomFor(runtime, model),
     );
     const before = this.limitsOf(runtime.id, await settings.get());
+    this.goes(turn);
     try {
       const run = await runtime.run(
         { model, ...request, ...withEffort(effort) },
-        { signal: this.signalOf("write") },
+        { signal: turn.signal },
       );
-      await this.noteRun(runtime.id, run.limits, before);
+      await this.afterTurn(turn.ticket, run.limits, before);
       const answer = parsePreparedAnswer(run.value);
       // The schema asks; this decides. `closed` needs the person's own words; a direction chosen
       // from the ones offered is not enough, since a model wrote those after reading the mail.
@@ -1331,6 +1637,7 @@ export class AgentService implements AgentApi {
       }
       if (answer.kind === "closed") {
         await this.recordClosing(
+          turn.ticket,
           threadId,
           lastMessageKey,
           answer.reason,
@@ -1340,7 +1647,7 @@ export class AgentService implements AgentApi {
         return { kind: "closed", reason: answer.reason };
       }
       const work = workOf(answer);
-      await this.storePrepared(threadId, lastMessageKey, work);
+      await this.storePrepared(turn.ticket, threadId, lastMessageKey, work);
       return work;
     } finally {
       // What was sent is counted whether or not it worked: counts only, no text.
@@ -1359,9 +1666,11 @@ export class AgentService implements AgentApi {
 
   /**
    * A closing the person's own words asked for (ADR 0054): kept in the journal with an Undo, and
-   * counted toward a rule for its sender (ADR 0058, rule 4).
+   * counted toward a rule for its sender (ADR 0058, rule 4). Only while the key of the turn that
+   * closed it holds (ADR 0141, rule 5).
    */
   private async recordClosing(
+    ticket: KeyTicket,
     threadId: string,
     lastMessageKey: number,
     reason: string,
@@ -1369,33 +1678,37 @@ export class AgentService implements AgentApi {
     words: string,
   ): Promise<void> {
     const senderAddress = await this.senderOf(threadId);
-    await this.deps.insights.recordFeedback(
-      {
-        threadId,
-        lastMessageKey,
-        senderAddress,
-        kind: "closed",
-        atMs: this.now,
-        reason,
-        outcome: "done",
-      },
-      {
-        actor: "agent",
-        headline,
-        words: words.slice(0, MAX_GUIDANCE_CHARS),
-      },
+    await this.stored(ticket, () =>
+      this.deps.insights.recordFeedback(
+        {
+          threadId,
+          lastMessageKey,
+          senderAddress,
+          kind: "closed",
+          atMs: this.now,
+          reason,
+          outcome: "done",
+        },
+        {
+          actor: "agent",
+          headline,
+          words: words.slice(0, MAX_GUIDANCE_CHARS),
+        },
+      ),
     );
     this.deps.onChanged();
   }
 
+  /** Prepared work, kept only while the key of the turn that prepared it holds (ADR 0141, rule 5). */
   private async storePrepared(
+    ticket: KeyTicket,
     threadId: string,
     lastMessageKey: number,
     work: PreparedWork,
   ): Promise<void> {
-    await this.deps.insights.putPrepared([
-      { threadId, lastMessageKey, work, preparedAtMs: this.now },
-    ]);
+    await this.stored(ticket, () =>
+      this.deps.insights.putPrepared([{ threadId, lastMessageKey, work, preparedAtMs: this.now }]),
+    );
     this.deps.onChanged();
   }
 
@@ -1448,10 +1761,11 @@ export class AgentService implements AgentApi {
         const info = this.infoOf(r.id);
         // A runtime on a plan carries the windows kept for it (ADR 0121, rule 6).
         const limits = info?.noPlan === true ? undefined : planUseOf(after, r.id).limits;
+        const told = info === null ? null : shownInfo(info);
         return {
           id: r.id,
           name: r.name,
-          info: info === null || limits === undefined ? info : { ...info, limits },
+          info: told === null || limits === undefined ? told : { ...told, limits },
         };
       }),
       unlisted: unlistedKinds(after, (id) => this.infoOf(id)),
@@ -1608,7 +1922,12 @@ export class AgentService implements AgentApi {
     return this.status();
   }
 
-  /** Stops every turn of these kinds, and the pass when it is one of them. */
+  /**
+   * Stops every turn of these kinds, the person's too, and the pass when it is one of them: only
+   * for what takes the ground from under a turn, the kind moved to another runtime or the key it
+   * runs on gone (ADR 0141, rule 6). The background alone stops with
+   * `RuntimeKeys.stopBackground`.
+   */
   private async stopKinds(kinds: readonly AgentWorkKind[]): Promise<void> {
     for (const kind of kinds) {
       this.kindAborts.get(kind)?.abort();
@@ -1729,8 +2048,10 @@ export class AgentService implements AgentApi {
     const before = Object.fromEntries(
       Object.keys(change).map((id) => [id, this.testModel(id, current, { models: [] })]),
     );
-    // The model or effort for understanding mail changed: the turns of the old choice stop, and
-    // the reading goes on at once on the new one (ADR 0117, rule 3a), with no ↵ and no sync.
+    // The model or effort for understanding mail changed: the turns of the old choice in the
+    // background stop, and the reading goes on at once on the new one (ADR 0117, rule 3a), with
+    // no ↵ and no sync. A run the person asked for finishes on the choice it began on: what it
+    // read on it is read, and an answer already billed is not thrown away (ADR 0141, rule 6).
     const reader = current.kindRuntime.understand;
     const was = reader === undefined ? undefined : choicesOn(current, reader);
     const understandChanged =
@@ -1738,7 +2059,12 @@ export class AgentService implements AgentApi {
       was !== undefined &&
       ((models.understand !== undefined && models.understand !== was.models.understand) ||
         (efforts.understand !== undefined && efforts.understand !== was.efforts.understand));
-    if (understandChanged) await this.stopKinds(["understand"]);
+    if (understandChanged && reader !== undefined) {
+      this.runtimeKeys.stopBackground(reader);
+      this.cancelKick?.();
+      this.cancelKick = null;
+      await this.pass?.catch(() => {});
+    }
     const next = await this.deps.settings.update({ choices: change });
     // The test is for a model (ADR 0119): a runtime whose model for the test changed is not checked
     // yet. With AI on and an account agreed to it, it is tested by itself, with the made-up message.
@@ -1747,15 +2073,19 @@ export class AgentService implements AgentApi {
         continue;
       }
       const runtime = this.runtimeById(id);
+      // No press of the person's asks for this test: its ticket comes before the switch is read
+      // (ADR 0141, rule 6).
+      const ticket = this.runtimeKeys.ticket(id);
       const info = await this.inspectRuntime(runtime);
       if (
         info.status === "found" &&
         next.enabled &&
         runtimesInUse(next).includes(id) &&
-        this.testsAlone(id, next, await this.deps.settings.listConsents())
+        this.testsAlone(id, next, await this.deps.settings.listConsents()) &&
+        (await this.testsInBackground(id))
       ) {
         // Once the new choice passed its check, the reading starts on it at once.
-        void this.testRuntime(id)
+        void this.testRuntimes([runtime], ticket)
           .then(() => {
             if (understandChanged && id === reader) this.startNow();
           })
@@ -1778,6 +2108,170 @@ export class AgentService implements AgentApi {
     return this.status();
   }
 
+  // --- AgentApi: the person's own API key (ADR 0141) ---
+
+  /** A runtime billed to the person's key, by id; refused for any other. */
+  private async keyedRuntime(runtimeId: string): Promise<AgentRuntime> {
+    const runtime = this.runtimeById(runtimeId);
+    if (runtime === NO_RUNTIME || this.deps.keys === undefined) {
+      throw new InvalidAgentSettingError("That assistant is not available.");
+    }
+    // What it is is the runtime's to say: one not looked at yet is looked at first.
+    const info = this.infoOf(runtime.id) ?? (await this.inspectOne(runtime).catch(() => null));
+    if (info?.billed !== true) {
+      throw new InvalidAgentSettingError("That assistant does not take an API key.");
+    }
+    return runtime;
+  }
+
+  /**
+   * The runtime has a new key, or none: every turn, look and test on the key before stops, and
+   * nothing it found is kept (ADR 0141, rules 4 and 5); the pass stops when it reads there. Once
+   * before the vault is written, and once more as its write ends (`change`), so what began before
+   * or while it was written holds for neither key.
+   */
+  private async nextKey(runtimeId: string): Promise<void> {
+    this.runtimeKeys.next(runtimeId);
+    await this.stopKinds(kindsOn(await this.deps.settings.get(), runtimeId));
+  }
+
+  /**
+   * Keeps the key the person pasted for a runtime, in the vault as a mail password is kept (rule
+   * 4), replacing one kept before, and looks at the runtime with it: the provider lists its models
+   * or refuses the key. Nothing is sent but that look, and the key is not tested yet (rule 5). The
+   * answer, as every answer to a window, says only whether a key is kept. One at a time with the
+   * other commands of the runtime's key.
+   */
+  saveKey(runtimeId: string, key: string): Promise<AgentStatus> {
+    return this.runtimeKeys.serial(runtimeId, () => this.saveKeyNow(runtimeId, key));
+  }
+
+  private async saveKeyNow(runtimeId: string, key: string): Promise<AgentStatus> {
+    const runtime = await this.keyedRuntime(runtimeId);
+    const keys = this.deps.keys as AgentKeyVaultPort;
+    const trimmed = typeof key === "string" ? key.trim() : "";
+    const problem = apiKeyProblem(trimmed);
+    if (problem !== null) throw new InvalidAgentSettingError(problem);
+    // A saved key is a new key, the same text saved again too: nothing reads on it in the
+    // background until the person turns that on for it (rule 6). That is undone first, so a key
+    // is never kept with the switch of the one before: if it cannot be, nothing new is kept. No
+    // press of the switch runs until this command has ended.
+    let s: AgentSettings;
+    try {
+      s = await this.setReading(runtime.id, false);
+    } catch {
+      throw new InvalidAgentSettingError("The key could not be saved. Try again.");
+    }
+    // Turns that run on the old key stop: nothing new goes on it, and nothing they find is kept
+    // for this one. A test that ran on it is not kept either; its stored record names the old
+    // key's id. A look or a test that began while the vault was written may have read the key
+    // before: its ticket holds for neither key.
+    await this.nextKey(runtime.id);
+    await this.runtimeKeys.change(runtime.id, async () => {
+      try {
+        await keys.set(runtime.id, { key: trimmed, savedAtMs: this.now, id: randomUUID() });
+      } catch (error) {
+        // The vault's reasons never hold the key; a refusal there says why secrets cannot be kept.
+        throw new InvalidAgentSettingError(
+          error instanceof CredentialsUnavailableError
+            ? error.message
+            : "The key could not be saved. Try again.",
+        );
+      }
+    });
+    this.blocked.delete(runtime.id);
+    await this.inspectRuntime(runtime).catch(() => {});
+    this.deps.onChanged();
+    if (s.enabled) this.kick();
+    return this.status();
+  }
+
+  /**
+   * Removes the key of a runtime (rule 4). Its turns stop; every account's consent to it is taken
+   * back, with a line in the ledger, and it no longer reads in the background: a key added later
+   * is agreed to again. The kinds of work on it stay there and wait (no fallback). One at a time
+   * with the other commands of the runtime's key.
+   */
+  removeKey(runtimeId: string): Promise<AgentStatus> {
+    return this.runtimeKeys.serial(runtimeId, () => this.removeKeyNow(runtimeId));
+  }
+
+  private async removeKeyNow(runtimeId: string): Promise<AgentStatus> {
+    const runtime = await this.keyedRuntime(runtimeId);
+    const keys = this.deps.keys as AgentKeyVaultPort;
+    const { settings, insights } = this.deps;
+    await this.nextKey(runtime.id);
+    // A look or a test that began while the vault was written may have read the key.
+    await this.runtimeKeys.change(runtime.id, () => keys.delete(runtime.id));
+    const had = (await settings.listConsents()).filter((c) => c.runtimeId === runtime.id);
+    for (const c of had) await settings.revokeConsent(c.accountId, c.runtimeId);
+    if (had.length > 0) {
+      await insights.appendLedger(
+        had.map((c) => ({
+          atMs: this.now,
+          runtimeId: c.runtimeId,
+          accountId: c.accountId,
+          purpose: "revoke" as const,
+          threads: 0,
+        })),
+      );
+    }
+    await this.setReading(runtime.id, false);
+    await this.inspectRuntime(runtime).catch(() => {});
+    this.deps.onChanged();
+    this.kick();
+    return this.status();
+  }
+
+  /**
+   * Lets a runtime billed to the person's key work in the background, or stops it (rule 6). Off,
+   * which is where it starts, only what the person asks for runs on it. One at a time with the
+   * other commands of the runtime's key: a press during a save or a removal runs once that has
+   * ended, for the key then kept, and reads the settings as they are then.
+   */
+  setKeyReading(runtimeId: string, on: boolean): Promise<AgentStatus> {
+    return this.runtimeKeys.serial(runtimeId, () => this.setKeyReadingNow(runtimeId, on));
+  }
+
+  private async setKeyReadingNow(runtimeId: string, on: boolean): Promise<AgentStatus> {
+    const runtime = await this.keyedRuntime(runtimeId);
+    // The switch governs only what the background starts (rule 6). Turned off, the background on
+    // this runtime stops, a turn of it already sent too, by the stop of `setReading`; a turn the
+    // person asked for goes on, and so does its signal, the kind's. Turned on, nothing stops.
+    const was = keyReadingOn(await this.deps.settings.get(), runtime.id);
+    const s = await this.setReading(runtime.id, on === true);
+    if (was && on !== true && s.kindRuntime.understand === runtime.id) {
+      // The pass that read on it has ended before the switch answers off; the next one says why
+      // it waits.
+      await this.pass?.catch(() => {});
+      if (s.enabled) this.kick();
+    }
+    this.deps.onChanged();
+    if (on === true && s.enabled) this.startNow();
+    return this.status();
+  }
+
+  /**
+   * Writes one runtime's reading switch into the list of them all. The list is shared by every
+   * runtime, whose commands run at once, so each change of it reads and writes it alone. Turned
+   * off, no background work whose ticket was taken before goes, nor one taken while it is written,
+   * though it read the switch still on (rule 6).
+   */
+  private setReading(runtimeId: string, on: boolean): Promise<AgentSettings> {
+    return this.runtimeKeys.serial(READING_LIST, async () => {
+      const s = await this.deps.settings.get();
+      if (keyReadingOn(s, runtimeId) === on) return s;
+      const others = (s.keyReading ?? []).filter((id) => id !== runtimeId);
+      if (on) return this.deps.settings.update({ keyReading: [...others, runtimeId] });
+      this.runtimeKeys.readingOff(runtimeId);
+      try {
+        return await this.deps.settings.update({ keyReading: others });
+      } finally {
+        this.runtimeKeys.readingOff(runtimeId);
+      }
+    });
+  }
+
   async setTalkLoop(on: boolean): Promise<AgentStatus> {
     await this.deps.settings.update({ talkLoop: on === true });
     this.deps.onChanged();
@@ -1789,16 +2283,16 @@ export class AgentService implements AgentApi {
   /**
    * The gates of a turn of `kind` the person asked for about a thread (ADR 0063), in order: AI on,
    * the thread exists, its account agreed to the runtime of the turn (ADR 0121, rule 4), that
-   * runtime ready, its plan has room. Gives the settings and the runtime; the one turn works from
-   * the thread alone.
+   * runtime ready, its plan has room. Gives the settings, the runtime and the turn the gates
+   * passed for; the one turn works from the thread alone.
    */
   private async gateForAsk(threadId: string, kind: AgentWorkKind, runtime?: AgentRuntime) {
-    const { s, on } = await this.gateOn(kind, runtime);
+    const { s, on, turn } = await this.gateOn(kind, runtime);
     const view = await this.deps.store.getThread(threadId, { visibleOnly: true });
     if (view === null) throw new ThingNotFoundError();
     const accountId = view.thread.accountId;
-    await this.gateAccount(accountId, on, s);
-    return { s, accountId, runtime: on };
+    await this.gateAccount(accountId, on, s, turn);
+    return { s, accountId, runtime: on, turn };
   }
 
   /**
@@ -1806,9 +2300,9 @@ export class AgentService implements AgentApi {
    * account the message goes out from instead of a thread's account.
    */
   private async gateForAccount(accountId: string, kind: AgentWorkKind) {
-    const { s, on } = await this.gateOn(kind);
-    await this.gateAccount(accountId, on, s);
-    return { s, accountId, runtime: on };
+    const { s, on, turn } = await this.gateOn(kind);
+    await this.gateAccount(accountId, on, s, turn);
+    return { s, accountId, runtime: on, turn };
   }
 
   /** The gates of help with a message: by its thread when it answers one, else by its account. */
@@ -1818,35 +2312,46 @@ export class AgentService implements AgentApi {
       : this.gateForAccount(about.accountId, kind);
   }
 
-  /** The first gates of a turn the person asked for: AI on, and a runtime for the work. */
+  /**
+   * The first gates of a turn the person asked for: AI on, and a runtime for the work. The turn is
+   * taken as soon as the runtime is known, before any gate after it waits, so every gate is about
+   * the key of that turn and the turn goes on no other (ADR 0141, rule 5).
+   */
   private async gateOn(kind: AgentWorkKind, runtime?: AgentRuntime) {
     const s = await this.currentSettings();
     const on = runtime ?? this.runtimeFor(kind, s);
     if (!s.enabled) throw new AgentUnavailableError(NOT_READY);
     if (on === NO_RUNTIME) throw new AgentUnavailableError(NOT_READY);
-    return { s, on };
+    return { s, on, turn: this.turnOf(kind, on.id) };
   }
 
   /** The account agreed to the runtime (ADR 0121, rule 4), then the runtime's own gates. */
-  private async gateAccount(accountId: string, on: AgentRuntime, s: AgentSettings) {
+  private async gateAccount(accountId: string, on: AgentRuntime, s: AgentSettings, turn: Turn) {
     if (!(await consentedAccounts(this.deps, on.id)).has(accountId)) {
       throw new AgentUnavailableError(noConsent(on));
     }
-    await this.gateRuntime(on, s);
+    await this.gateRuntime(on, s, turn.ticket);
   }
 
   /**
    * The last gates of a turn the person asked for: the runtime is ready and its plan has room. A
    * runtime not tested yet is tested first, with the made-up message only: the person agreed to it
-   * and asked for this turn.
+   * and asked for this turn. Each is decided for the key of `ticket`, the turn's, taken before
+   * the gates: what was found on a key before is not looked at, and a key saved or removed while
+   * they wait stops the turn (ADR 0141, rule 5).
    */
-  private async gateRuntime(runtime: AgentRuntime, s: AgentSettings): Promise<void> {
+  private async gateRuntime(
+    runtime: AgentRuntime,
+    s: AgentSettings,
+    ticket: KeyTicket,
+  ): Promise<void> {
     if (runtime === NO_RUNTIME) throw new AgentUnavailableError(NOT_READY);
-    if (this.infoOf(runtime.id) === null) await this.inspectRuntime(runtime);
-    if (this.infoOf(runtime.id)?.status === "found" && !this.blocked.has(runtime.id)) {
+    if (this.infoFor(ticket) === null) await this.inspectRuntime(runtime);
+    if (this.infoFor(ticket)?.status === "found" && !this.blocked.has(runtime.id)) {
       await this.sharedTest(runtime);
     }
-    if (this.infoOf(runtime.id)?.status !== "ready") {
+    if (!this.runtimeKeys.holds(ticket)) throw new AgentUnavailableError("Stopped.");
+    if (this.infoFor(ticket)?.status !== "ready") {
       throw new AgentUnavailableError(notReady(runtime));
     }
     if (!this.planGate(runtime.id, "P0", s).ok) throw new AgentUnavailableError(USED_UP);
@@ -1877,19 +2382,32 @@ export class AgentService implements AgentApi {
     return { runtime, model: choice.model };
   }
 
-  /** What the person is told when a turn they asked for fails; the error is not shown as it is. */
-  private askFailure(error: unknown, fallback: string, runtimeId: string): Error {
+  /**
+   * What the person is told when a turn they asked for fails; the error is not shown as it is.
+   * What it says of the runtime (signed out, a refused key) is kept only while the key of `ticket`,
+   * taken when the turn began, is the runtime's key (ADR 0141, rule 5).
+   */
+  private askFailure(error: unknown, fallback: string, ticket: KeyTicket): Error {
     if (error instanceof AgentUnavailableError || error instanceof ThingNotFoundError) return error;
     if (error instanceof InvalidAgentSettingError) return error;
     if (isAgentRunError(error) && (error.code === "notSignedIn" || error.code === "notPlan")) {
-      if (runtimeId !== "") {
-        this.blocked.set(runtimeId, error.code === "notPlan" ? "notPlan" : "signedOut");
-      }
+      this.block(ticket, error.code === "notPlan" ? "notPlan" : "signedOut");
       return new AgentUnavailableError(
         "The assistant is signed out or not using your plan. Check it in Settings.",
       );
     }
     if (isAgentRunError(error) && error.code === "limit") return new AgentUnavailableError(USED_UP);
+    // The provider refused the person's key (ADR 0141, rule 5): the adapter's sentence says why
+    // in its class, and Settings shows the same until the key is looked at again.
+    if (isAgentRunError(error) && error.code === "refused") {
+      const info = this.infoOf(ticket.runtimeId);
+      // A refusal of the key before says nothing of the key now.
+      if (info?.billed === true && this.runtimeKeys.holds(ticket)) {
+        this.setInfo(ticket, { ...info, status: "keyRefused", problem: error.message });
+        this.deps.onChanged();
+      }
+      return new AgentUnavailableError(error.message);
+    }
     // The model does not take the effort set for this work: said as the runtime said it, which
     // is a sentence of the adapter's naming the model and the level (ADR 0118, rule 5).
     if (isAgentRunError(error) && error.code === "effortRefused") {
@@ -1903,7 +2421,7 @@ export class AgentService implements AgentApi {
   }
 
   async prepare(threadId: string, guidance?: PreparedGuidance): Promise<PrepareResult> {
-    const { s, runtime } = await this.gateForAsk(threadId, "write");
+    const { s, runtime, turn } = await this.gateForAsk(threadId, "write");
     try {
       const model = this.modelFor("write", s, runtime);
       return await this.prepareFor(
@@ -1914,9 +2432,10 @@ export class AgentService implements AgentApi {
           ? guidance
           : undefined,
         this.effortOn("write", s, runtime, model),
+        turn,
       );
     } catch (error) {
-      throw this.askFailure(error, "The assistant could not prepare this. Try again.", runtime.id);
+      throw this.askFailure(error, "The assistant could not prepare this. Try again.", turn.ticket);
     }
   }
 
@@ -1962,6 +2481,7 @@ export class AgentService implements AgentApi {
    * worked; `threads` is 0 when no mail went (a rewrite gets only the person's lines).
    */
   private async helpTurn(
+    turn: Turn,
     runtime: AgentRuntime,
     accountId: string,
     threads: number,
@@ -1970,6 +2490,10 @@ export class AgentService implements AgentApi {
   ): Promise<unknown> {
     const { insights, settings } = this.deps;
     const before = this.limitsOf(runtime.id, await settings.get());
+    // The turn its gate passed for, handed down: a key saved since stops it here, before anything
+    // went, so no line in the ledger.
+    this.goes(turn);
+    let value: unknown;
     try {
       const result = await runtime.run(
         {
@@ -1977,12 +2501,12 @@ export class AgentService implements AgentApi {
           ...run.request,
           ...withEffort(run.effort),
         },
-        { signal: this.signalOf("write") },
+        { signal: turn.signal },
       );
-      await this.noteRun(runtime.id, result.limits, before);
-      return result.value;
+      await this.afterTurn(turn.ticket, result.limits, before);
+      value = result.value;
     } catch (error) {
-      throw this.askFailure(error, failed, runtime.id);
+      throw this.askFailure(error, failed, turn.ticket);
     } finally {
       await insights.appendLedger([
         {
@@ -1995,6 +2519,8 @@ export class AgentService implements AgentApi {
         },
       ]);
     }
+    // After the ledger's wait too: the answer of the key before is not handed back.
+    return this.handed(turn.ticket, value);
   }
 
   async rewriteDraft(about: DraftFor, text: string, how: RewriteHow): Promise<{ text: string }> {
@@ -2002,13 +2528,14 @@ export class AgentService implements AgentApi {
       throw new InvalidAgentSettingError("The draft can be made shorter, formal or English.");
     }
     const parts = this.ownLines(text, true);
-    const { s, accountId, runtime } = await this.gateForDraft(about, "write");
+    const { s, accountId, runtime, turn } = await this.gateForDraft(about, "write");
     const standing = {
       list: await this.deps.insights.listInstructions(),
       threadId: threadOf(about),
     };
     const model = this.writeModel(s, runtime);
     const value = await this.helpTurn(
+      turn,
       runtime,
       accountId,
       0,
@@ -2021,7 +2548,7 @@ export class AgentService implements AgentApi {
     );
     const got = acceptRewrite(value, parts.own);
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
-    return { text: joinDraft(got.value, parts.quote) };
+    return { text: joinDraft(got.value, parts.quote, parts.signature) };
   }
 
   async writeDraft(
@@ -2036,7 +2563,7 @@ export class AgentService implements AgentApi {
       throw new InvalidAgentSettingError("That is too long to ask the agent. Say it shorter.");
     }
     const parts = this.ownLines(text, false);
-    const { s, accountId, runtime } = await this.gateForDraft(about, "write");
+    const { s, accountId, runtime, turn } = await this.gateForDraft(about, "write");
     const threadId = threadOf(about);
     const model = this.writeModel(s, runtime);
     // Only a reply sends its thread with it; a new message sends no mail.
@@ -2051,6 +2578,7 @@ export class AgentService implements AgentApi {
           };
     const standing = { list: await this.deps.insights.listInstructions(), threadId };
     const value = await this.helpTurn(
+      turn,
       runtime,
       accountId,
       thread === undefined ? 0 : 1,
@@ -2071,7 +2599,10 @@ export class AgentService implements AgentApi {
     );
     const got = acceptWrite(value, parts.own, subject);
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
-    return { text: got.value === parts.own.trim() ? text : joinDraft(got.value, parts.quote) };
+    return {
+      text:
+        got.value === parts.own.trim() ? text : joinDraft(got.value, parts.quote, parts.signature),
+    };
   }
 
   // --- A theme from a description (ADR 0134, rules 12 to 15) ---
@@ -2102,12 +2633,13 @@ export class AgentService implements AgentApi {
     // The kind's stop, also taken before the gates: moving the kind to another runtime while they
     // wait aborts this one and stores a new one, and the turn must not then run on the runtime the
     // person moved it from (rule 15).
-    const stop = AbortSignal.any([this.signalOf("appearance"), mine.signal]);
-    let runtimeId = "";
+    let stop = AbortSignal.any([this.signalOf("appearance", ""), mine.signal]);
+    let ticket = this.runtimeKeys.ticket("");
     try {
-      const { s, on } = await this.gateOn("appearance");
-      runtimeId = on.id;
-      await this.gateRuntime(on, s);
+      const { s, on, turn } = await this.gateOn("appearance");
+      ticket = turn.ticket;
+      stop = AbortSignal.any([stop, turn.signal]);
+      await this.gateRuntime(on, s, ticket);
       const model = this.modelFor("appearance", s, on);
       const effort = this.effortOn("appearance", s, on, model);
       const request = buildThemeRequest(
@@ -2118,13 +2650,14 @@ export class AgentService implements AgentApi {
         },
         THEME_FORMAT,
       );
+      const before = this.limitsOf(on.id, await this.deps.settings.get());
       // Stopped before anything left: no turn, so no line in the ledger.
       if (stop.aborted) throw new AgentUnavailableError("Stopped.");
-      const before = this.limitsOf(on.id, await this.deps.settings.get());
+      this.goes(turn);
       let value: unknown;
       try {
         const run = await on.run({ model, ...request, ...withEffort(effort) }, { signal: stop });
-        await this.noteRun(on.id, run.limits, before);
+        await this.afterTurn(ticket, run.limits, before);
         value = run.value;
       } finally {
         // Counted whether or not it worked; no account and no thread went (rule 15).
@@ -2142,10 +2675,10 @@ export class AgentService implements AgentApi {
       if (stop.aborted) throw new AgentUnavailableError("Stopped.");
       const text = themeTextOf(value, THEME_FORMAT);
       if (text === null) throw new AgentUnavailableError(NOT_A_THEME);
-      return { text };
+      return { text: this.handed(ticket, text) };
     } catch (error) {
       if (stop.aborted) throw new AgentUnavailableError("Stopped.");
-      throw this.askFailure(error, THEME_FAILED, runtimeId);
+      throw this.askFailure(error, THEME_FAILED, ticket);
     } finally {
       this.makingTheme = null;
     }
@@ -2157,7 +2690,7 @@ export class AgentService implements AgentApi {
     missing: readonly string[] = [],
   ): Promise<{ text: string }> {
     const parts = this.ownLines(text, false);
-    const { s, accountId, runtime } = await this.gateForAsk(threadId, "write");
+    const { s, accountId, runtime, turn } = await this.gateForAsk(threadId, "write");
     const thread = await this.helpThread(threadId, runtime);
     const last = lastFromThem(thread);
     // Nobody else wrote, or a list or a program did: there is nothing to answer, and no turn.
@@ -2165,6 +2698,7 @@ export class AgentService implements AgentApi {
     const standing = { list: await this.deps.insights.listInstructions(), threadId };
     const model = this.writeModel(s, runtime);
     const value = await this.helpTurn(
+      turn,
       runtime,
       accountId,
       1,
@@ -2185,12 +2719,14 @@ export class AgentService implements AgentApi {
     );
     const got = acceptAnswers(value, parts.own);
     if (!got.ok) throw new AgentUnavailableError(helpRefused(got.reason));
-    return { text: got.value === parts.own ? text : joinDraft(got.value, parts.quote) };
+    return {
+      text: got.value === parts.own ? text : joinDraft(got.value, parts.quote, parts.signature),
+    };
   }
 
   async checkReply(threadId: string, text: string): Promise<ReplyCheck> {
     const parts = this.ownLines(text, false);
-    const { s, accountId, runtime } = await this.gateForAsk(threadId, "write");
+    const { s, accountId, runtime, turn } = await this.gateForAsk(threadId, "write");
     const last = lastFromThem(await this.helpThread(threadId, runtime));
     // Mail from a list or a program asks nothing of the person (ADR 0098 addendum): no turn.
     if (last === null || last.text === "" || last.message.automated === true) {
@@ -2198,6 +2734,7 @@ export class AgentService implements AgentApi {
     }
     const model = this.readingModel(s, runtime);
     const value = await this.helpTurn(
+      turn,
       runtime,
       accountId,
       1,
@@ -2215,13 +2752,14 @@ export class AgentService implements AgentApi {
 
   async fillGaps(threadId: string, text: string): Promise<readonly GapSuggestion[]> {
     const parts = this.ownLines(text, false);
-    const { s, accountId, runtime } = await this.gateForAsk(threadId, "write");
+    const { s, accountId, runtime, turn } = await this.gateForAsk(threadId, "write");
     const tokens = draftGaps(parts.own).slice(0, MAX_GAPS);
     // No gap to fill: no turn.
     if (tokens.length === 0) return [];
     const thread = await this.helpThread(threadId, runtime);
     const model = this.readingModel(s, runtime);
     const value = await this.helpTurn(
+      turn,
       runtime,
       accountId,
       1,
@@ -2262,13 +2800,17 @@ export class AgentService implements AgentApi {
     // Taken before the first wait, so a second call cannot slip in during the gates.
     const mine = new AbortController();
     this.talking.set(threadId, mine);
-    let runtimeId = "";
+    let ticket = this.runtimeKeys.ticket("");
     try {
       const first = this.talkOn("write", await this.currentSettings(), choice);
-      runtimeId = first.runtime.id;
-      const { s } = await this.gateForAsk(threadId, "write", first.runtime);
-      // Once the runtime is looked at, its model is checked against what it lists now.
+      // The gates may look at the runtime and test it: what they find there they keep themselves.
+      ticket = this.runtimeKeys.ticket(first.runtime.id);
+      const { s, turn } = await this.gateForAsk(threadId, "write", first.runtime);
+      ticket = turn.ticket;
+      // Once the runtime is looked at, its model is checked against what it lists now. The turn
+      // goes on the runtime its gates passed for, or on none.
       const picked = this.talkOn("write", s, choice);
+      if (picked.runtime !== first.runtime) throw new AgentUnavailableError("Stopped.");
       return await this.talkNow(
         threadId,
         typed,
@@ -2276,12 +2818,13 @@ export class AgentService implements AgentApi {
         picked.model,
         this.effortOn("write", s, picked.runtime, picked.model),
         mine.signal,
+        turn,
       );
     } catch (error) {
       if (mine.signal.aborted && !(error instanceof ThingNotFoundError)) {
         throw new AgentUnavailableError("Stopped.");
       }
-      throw this.askFailure(error, TALK_FAILED, runtimeId);
+      throw this.askFailure(error, TALK_FAILED, ticket);
     } finally {
       this.talking.delete(threadId);
     }
@@ -2295,6 +2838,7 @@ export class AgentService implements AgentApi {
     model: string,
     effort: AgentEffort | undefined,
     stop: AbortSignal,
+    turn: Turn,
   ): Promise<TalkResult> {
     const { insights, settings } = this.deps;
     const consented = await consentedAccounts(this.deps, runtime.id);
@@ -2313,16 +2857,17 @@ export class AgentService implements AgentApi {
       open?.kind === "needs" ? open : null,
       this.roomFor(runtime, model),
     );
+    const before = this.limitsOf(runtime.id, await settings.get());
     // Stopped before anything left: no mail went, so no line in the ledger.
     if (stop.aborted) throw new AgentUnavailableError("Stopped.");
-    const before = this.limitsOf(runtime.id, await settings.get());
+    this.goes(turn);
     try {
       // The service's own signal still cuts the turn short when AI is turned off or consent goes.
       const run = await runtime.run(
         { model, ...request, ...withEffort(effort) },
-        { signal: AbortSignal.any([this.signalOf("write"), stop]) },
+        { signal: AbortSignal.any([turn.signal, stop]) },
       );
-      await this.noteRun(runtime.id, run.limits, before);
+      await this.afterTurn(turn.ticket, run.limits, before);
       if (stop.aborted) throw new AgentUnavailableError("Stopped.");
       const answer = parseTalkAnswer(run.value);
       const quotes =
@@ -2345,6 +2890,7 @@ export class AgentService implements AgentApi {
       } else if (answer.kind === "closed") {
         // The person's words are there, since a blank ask is refused; mail cannot ask for this.
         await this.recordClosing(
+          turn.ticket,
           threadId,
           lastMessageKey,
           answer.reason,
@@ -2353,10 +2899,12 @@ export class AgentService implements AgentApi {
         );
         reply = { ...agent, kind: "closed", text: answer.reason };
       } else {
-        await this.storePrepared(threadId, lastMessageKey, workOf(answer));
+        await this.storePrepared(turn.ticket, threadId, lastMessageKey, workOf(answer));
         reply = { ...agent, kind: answer.kind === "draft" ? "draft" : "question", text: "" };
       }
-      const entries = await insights.appendTalk([{ ...from, role: "you", text: words }, reply]);
+      const entries = await this.stored(turn.ticket, () =>
+        insights.appendTalk([{ ...from, role: "you", text: words }, reply]),
+      );
       this.deps.onChanged();
       return { entries };
     } finally {
@@ -2464,6 +3012,7 @@ export class AgentService implements AgentApi {
         if (reason === "signedOut") return { kind: "signedOut" };
         if (reason === "runtime")
           return { kind: "runtime", ...(problem === undefined ? {} : { problem }) };
+        if (reason === "keyOff") return { kind: "keyOff" };
         return undefined;
       default:
         // The person's pause holds even while the progress says nothing of it.
@@ -2543,31 +3092,33 @@ export class AgentService implements AgentApi {
     // Taken before the first wait, so a second call cannot slip in during the gates.
     const mine = new AbortController();
     this.talkingAll = mine;
-    let runtimeId = "";
+    let ticket = this.runtimeKeys.ticket("");
     try {
       const s = await this.currentSettings();
       if (!s.enabled) throw new AgentUnavailableError(NOT_READY);
       // Questions run on the runtime for questions, or on the one chosen in this talk (ADR 0121,
       // rules 1 and 8), with the accounts that agreed to it (rule 4).
       const { runtime } = this.talkOn("answer", s, choice);
-      runtimeId = runtime.id;
+      // The turn is taken before the gates, which are decided for its key (ADR 0141, rule 5).
+      const turn = this.turnOf("answer", runtime.id);
+      ticket = turn.ticket;
       if ((await consentedAccounts(this.deps, runtime.id)).size === 0) {
         throw new AgentUnavailableError(noAccount(runtime));
       }
-      await this.gateRuntime(runtime, s);
+      await this.gateRuntime(runtime, s, ticket);
       // Once the runtime is looked at, its model is checked against what it lists now.
       const { model } = this.talkOn("answer", s, choice);
       // The talk it is asked in; one that is gone, or none, is started now (ADR 0086).
       const known = talkId === null ? null : await this.deps.insights.getTalk(talkId);
       const talk = known ?? (await this.deps.insights.createTalk(this.now));
       this.talkingAllIn = talk.id;
-      const result = await this.talkAllNow(typed, s, mine.signal, talk.id, runtime, model);
+      const result = await this.talkAllNow(typed, s, mine.signal, talk.id, runtime, model, turn);
       const named = await this.deps.insights.getTalk(talk.id);
       if (named !== null) void this.nameTalkSoon(named);
       return { ...result, talkId: talk.id };
     } catch (error) {
       if (mine.signal.aborted) throw new AgentUnavailableError("Stopped.");
-      throw this.askFailure(error, TALK_FAILED, runtimeId);
+      throw this.askFailure(error, TALK_FAILED, ticket);
     } finally {
       this.talkingAll = null;
       this.talkingAllIn = null;
@@ -2585,9 +3136,13 @@ export class AgentService implements AgentApi {
     const tries = this.titleTries.get(talk.id) ?? 0;
     if (tries >= MAX_TITLE_TRIES) return;
     try {
+      // Background work: the ticket of the key is taken before the settings it decides from are
+      // read, so the reading switch it reads is that key's (ADR 0141, rule 6).
+      const runtime = this.runtimeFor("titles", await this.deps.settings.get());
+      if (runtime === NO_RUNTIME) return;
+      const turn = this.backgroundTurnOf("titles", runtime.id);
       const s = await this.currentSettings();
-      const runtime = this.runtimeFor("titles", s);
-      if (!s.enabled || runtime === NO_RUNTIME) return;
+      if (!s.enabled || s.kindRuntime.titles !== runtime.id) return;
       if (s.models.titles === TITLES_OFF) return;
       // Only on the runtime for titles, ready, and agreed to by some account (ADR 0121, rule 3).
       if (this.infoOf(runtime.id)?.status !== "ready") return;
@@ -2604,6 +3159,9 @@ export class AgentService implements AgentApi {
         .flatMap((e) => (e.role === "you" ? [e.text] : []))
         .slice(0, TALK_TITLE_QUESTIONS);
       if (questions.length === 0) return;
+      // Sent only while the key holds and its switch was not turned off since; nothing awaits from
+      // here to the request.
+      if (!this.runtimeKeys.mayGoInBackground(turn.ticket)) return;
       this.titleTries.set(talk.id, tries + 1);
       const model = s.models.titles;
       const run = await runtime.run(
@@ -2612,12 +3170,15 @@ export class AgentService implements AgentApi {
           ...buildTalkTitleRequest(questions),
           ...withEffort(this.effortOn("titles", s, runtime, model)),
         },
-        { signal: this.signalOf("titles") },
+        { signal: turn.signal },
       );
-      await this.noteRun(runtime.id, run.limits, this.limitsOf(runtime.id, s));
+      await this.afterTurn(turn.ticket, run.limits, this.limitsOf(runtime.id, s));
       const title = parseTalkTitleAnswer(run.value);
       if (title === null) return;
-      if (await this.deps.insights.nameTalk(talk.id, title, "model")) this.deps.onChanged();
+      const named = await this.stored(turn.ticket, () =>
+        this.deps.insights.nameTalk(talk.id, title, "model"),
+      );
+      if (named) this.deps.onChanged();
     } catch {
       // The first question stays the name.
     }
@@ -2638,6 +3199,7 @@ export class AgentService implements AgentApi {
     talkId: number,
     runtime: AgentRuntime,
     answerModel: string,
+    turn: Turn,
   ): Promise<TalkResult> {
     const { insights, settings } = this.deps;
     const startedAt = performance.now();
@@ -2656,7 +3218,7 @@ export class AgentService implements AgentApi {
         : undefined;
     const cap = loop === undefined ? TALK_TIME_CAP_MS : TALK_LOOP_TIME_CAP_MS;
     const over = () => performance.now() - startedAt > cap;
-    const signal = AbortSignal.any([this.signalOf("answer"), stop, AbortSignal.timeout(cap)]);
+    const signal = AbortSignal.any([turn.signal, stop, AbortSignal.timeout(cap)]);
     const check = () => {
       if (stop.aborted) throw new AgentUnavailableError("Stopped.");
     };
@@ -2674,25 +3236,27 @@ export class AgentService implements AgentApi {
       used?: TalkLoopUse,
     ): Promise<TalkResult> => {
       const atMs = this.now;
-      const entries = await insights.appendTalk([
-        { threadId: null, talkId, atMs, role: "you", text: words },
-        {
-          threadId: null,
-          talkId,
-          atMs,
-          role: "agent",
-          kind: "found",
-          text: NOTHING_FOUND,
-          quotes: [],
-          runtimeName: runtime.name,
-          model,
-          threads: 0,
-          query,
-          hits: [],
-          ...(carryOver === undefined ? {} : { carry: carryOver }),
-          ...(used === undefined ? {} : { loop: used }),
-        },
-      ]);
+      const entries = await this.stored(turn.ticket, () =>
+        insights.appendTalk([
+          { threadId: null, talkId, atMs, role: "you", text: words },
+          {
+            threadId: null,
+            talkId,
+            atMs,
+            role: "agent",
+            kind: "found",
+            text: NOTHING_FOUND,
+            quotes: [],
+            runtimeName: runtime.name,
+            model,
+            threads: 0,
+            query,
+            hits: [],
+            ...(carryOver === undefined ? {} : { carry: carryOver }),
+            ...(used === undefined ? {} : { loop: used }),
+          },
+        ]),
+      );
       this.deps.onChanged();
       return { entries };
     };
@@ -2704,11 +3268,12 @@ export class AgentService implements AgentApi {
     /** One turn of the understanding model: counted against the plan, stopped by Stop. */
     const understand = async (request: AgentRequestBody): Promise<unknown> => {
       const before = this.limitsOf(runtime.id, await settings.get());
+      this.goes(turn);
       const run = await runtime.run(
         { model: modelOf("understand"), ...request, ...withEffort(efforts.understand) },
         { signal },
       );
-      await this.noteRun(runtime.id, run.limits, before);
+      await this.afterTurn(turn.ticket, run.limits, before);
       check();
       return run.value;
     };
@@ -2799,6 +3364,7 @@ export class AgentService implements AgentApi {
       });
       try {
         const before = this.limitsOf(runtime.id, await settings.get());
+        this.goes(turn);
         let run: AgentRunResult;
         try {
           run = await withTools.call(
@@ -2844,7 +3410,7 @@ export class AgentService implements AgentApi {
             facts: tools.state.facts,
           };
         }
-        await this.noteRun(runtime.id, run.limits, before);
+        await this.afterTurn(turn.ticket, run.limits, before);
         check();
         const answer = parseTalkLoop(run.value);
         const { listed, opened, queries } = tools.state;
@@ -2893,30 +3459,32 @@ export class AgentService implements AgentApi {
      */
     const offersOnly = async (): Promise<TalkResult> => {
       const atMs = this.now;
-      const entries = await insights.appendTalk([
-        { threadId: null, talkId, atMs, role: "you", text: words },
-        {
-          threadId: null,
-          talkId,
-          atMs,
-          role: "agent",
-          kind: "found",
-          text: OFFERS_ONLY,
-          quotes: [],
-          runtimeName: runtime.name,
-          model: modelOf("write"),
-          threads: 0,
-          query: trail.firstQuery,
-          hits: [],
-          carry: {
-            hypothesis: trail.hypothesis,
-            threadIds: [],
-            queries: trail.queries.slice(0, MAX_CARRY_QUERIES),
+      const entries = await this.stored(turn.ticket, () =>
+        insights.appendTalk([
+          { threadId: null, talkId, atMs, role: "you", text: words },
+          {
+            threadId: null,
+            talkId,
+            atMs,
+            role: "agent",
+            kind: "found",
+            text: OFFERS_ONLY,
+            quotes: [],
+            runtimeName: runtime.name,
+            model: modelOf("write"),
+            threads: 0,
+            query: trail.firstQuery,
+            hits: [],
+            carry: {
+              hypothesis: trail.hypothesis,
+              threadIds: [],
+              queries: trail.queries.slice(0, MAX_CARRY_QUERIES),
+            },
+            ...(trail.loop === undefined ? {} : { loop: trail.loop }),
+            ...kept,
           },
-          ...(trail.loop === undefined ? {} : { loop: trail.loop }),
-          ...kept,
-        },
-      ]);
+        ]),
+      );
       this.deps.onChanged();
       return { entries };
     };
@@ -2980,8 +3548,10 @@ export class AgentService implements AgentApi {
     );
     check();
     if (sent.length > 0) this.deps.onTalkStep?.(trail.firstQuery, sent.length);
+    const answerBefore = this.limitsOf(runtime.id, await settings.get());
+    // Nothing went yet: a key saved since stops the turn with no line in the ledger.
+    this.goes(turn);
     try {
-      const answerBefore = this.limitsOf(runtime.id, await settings.get());
       const run = await runtime.run(
         {
           model: answerModel,
@@ -2991,7 +3561,7 @@ export class AgentService implements AgentApi {
         },
         { signal },
       );
-      await this.noteRun(runtime.id, run.limits, answerBefore);
+      await this.afterTurn(turn.ticket, run.limits, answerBefore);
       check();
       const answer = parseTalkAllAnswer(run.value);
       const accepted =
@@ -3025,30 +3595,32 @@ export class AgentService implements AgentApi {
         quotes.push(...item.quotes.map((q) => ({ ...q, threadId: one.threadId })));
       }
       const atMs = this.now;
-      const entries = await insights.appendTalk([
-        { threadId: null, talkId, atMs, role: "you", text: words },
-        {
-          threadId: null,
-          talkId,
-          atMs,
-          role: "agent",
-          kind: "found",
-          text: answer.text,
-          quotes,
-          runtimeName: runtime.name,
-          model: answerModel,
-          threads: sent.length,
-          query: trail.firstQuery,
-          hits,
-          carry: {
-            hypothesis: trail.hypothesis,
-            threadIds: sent.map((l) => l.threadId).slice(0, MAX_CARRY_THREADS),
-            queries: trail.queries.slice(0, MAX_CARRY_QUERIES),
+      const entries = await this.stored(turn.ticket, () =>
+        insights.appendTalk([
+          { threadId: null, talkId, atMs, role: "you", text: words },
+          {
+            threadId: null,
+            talkId,
+            atMs,
+            role: "agent",
+            kind: "found",
+            text: answer.text,
+            quotes,
+            runtimeName: runtime.name,
+            model: answerModel,
+            threads: sent.length,
+            query: trail.firstQuery,
+            hits,
+            carry: {
+              hypothesis: trail.hypothesis,
+              threadIds: sent.map((l) => l.threadId).slice(0, MAX_CARRY_THREADS),
+              queries: trail.queries.slice(0, MAX_CARRY_QUERIES),
+            },
+            ...(trail.loop === undefined ? {} : { loop: trail.loop }),
+            ...kept,
           },
-          ...(trail.loop === undefined ? {} : { loop: trail.loop }),
-          ...kept,
-        },
-      ]);
+        ]),
+      );
       this.deps.onChanged();
       return { entries };
     } finally {
@@ -3213,10 +3785,14 @@ export class AgentService implements AgentApi {
     const typed = typeof words === "string" ? words.trim().slice(0, MAX_GUIDANCE_CHARS) : "";
     if (typed === "") return none;
     const { insights } = this.deps;
+    // Background work on the runtime for understanding mail, on its model (ADR 0121, rule 1). The
+    // ticket of its key is taken before the settings it decides from are read, so the reading
+    // switch it reads is that key's (ADR 0141, rule 6).
+    const runtime = this.runtimeFor("understand", await this.deps.settings.get());
+    if (runtime === NO_RUNTIME) return none;
+    const turn = this.backgroundTurnOf("understand", runtime.id);
     const s = await this.currentSettings();
-    // Background work on the runtime for understanding mail, on its model (ADR 0121, rule 1).
-    const runtime = this.runtimeFor("understand", s);
-    if (!s.enabled || runtime === NO_RUNTIME) return none;
+    if (!s.enabled || s.kindRuntime.understand !== runtime.id) return none;
     if (this.infoOf(runtime.id) === null) await this.inspectRuntime(runtime);
     const info = this.infoOf(runtime.id);
     if (info?.status !== "ready") return none;
@@ -3230,12 +3806,15 @@ export class AgentService implements AgentApi {
     let answer: ReturnType<typeof parseRememberAnswer> = null;
     // Not a kind of work: it stays at `low`, when the runtime takes it (ADR 0118, rule 6).
     const effort = resolveEffort("low", levelsFor(info, s.models.understand));
+    // Sent only while the key holds and its switch was not turned off since; nothing awaits from
+    // here to the request.
+    if (!this.runtimeKeys.mayGoInBackground(turn.ticket)) return none;
     try {
       const run = await runtime.run(
         { model: s.models.understand, ...buildRememberRequest(typed), ...withEffort(effort) },
-        { signal: this.signalOf("understand") },
+        { signal: turn.signal },
       );
-      await this.noteRun(runtime.id, run.limits, this.limitsOf(runtime.id, s));
+      await this.afterTurn(turn.ticket, run.limits, this.limitsOf(runtime.id, s));
       answer = parseRememberAnswer(run.value);
     } catch {
       answer = null;
@@ -3254,6 +3833,9 @@ export class AgentService implements AgentApi {
     }
     if (answer === null || answer.items.length === 0) return none;
 
+    // Each item is stored only while the key of the turn holds as it is written, after the reads
+    // below (ADR 0141, rule 5); the turn is counted above whether or not.
+    const keep = <T>(write: () => Promise<T>) => this.runtimeKeys.keep(turn.ticket, write);
     const items: RememberResult["items"][number][] = [];
     const active = await insights.listInstructions();
     const rules = await insights.listRules();
@@ -3265,11 +3847,14 @@ export class AgentService implements AgentApi {
         const address = normalizeRuleSubject("sender", otherSenderAddress(view.messages, own));
         if (address === null || own.has(address)) continue;
         if (rules.some((r) => r.scope === "sender" && r.subject === address)) continue;
-        const rule = await insights.addRule(
-          { scope: "sender", subject: address, action: "noReply", actor: "agent", words: typed },
-          this.now,
+        const rule = await keep(() =>
+          insights.addRule(
+            { scope: "sender", subject: address, action: "noReply", actor: "agent", words: typed },
+            this.now,
+          ),
         );
-        items.push({ kind: "rule", rule });
+        if (rule === null) break;
+        items.push({ kind: "rule", rule: rule.value });
         continue;
       }
       const text = (item.text ?? "").trim().slice(0, MAX_INSTRUCTION_CHARS);
@@ -3282,17 +3867,21 @@ export class AgentService implements AgentApi {
         if (general >= MAX_INSTRUCTIONS) continue;
         general++;
       }
-      const instruction = await insights.addInstruction(
-        {
-          scope: item.scope,
-          text,
-          ...(here === undefined ? {} : { threadId: here }),
-          actor: "agent",
-          words: typed,
-        },
-        this.now,
+      const scope = item.scope;
+      const instruction = await keep(() =>
+        insights.addInstruction(
+          {
+            scope,
+            text,
+            ...(here === undefined ? {} : { threadId: here }),
+            actor: "agent",
+            words: typed,
+          },
+          this.now,
+        ),
       );
-      items.push({ kind: "instruction", instruction });
+      if (instruction === null) break;
+      items.push({ kind: "instruction", instruction: instruction.value });
     }
     if (items.length > 0) {
       this.deps.onChanged();
@@ -3353,6 +3942,12 @@ export class AgentService implements AgentApi {
     if (typeof body !== "string" || body.trim() === "" || body.length > MAX_DRAFT_CHARS) {
       throw new InvalidAgentSettingError("The reply is empty or too long.");
     }
+    // The words are all the agent's, so every signature block in them goes (ADR 0142, rule 6). A
+    // body that was only a block is empty once cut, and makes no draft, as a helper's answer that
+    // is empty once kept is refused. A `>` line the model wrote (a line it answers) stays in the
+    // reply's own part: the quote is only the app's, under the signature (rule 4).
+    const words = withoutSignature(body.replace(/\r\n?/g, "\n"));
+    if (words.trim() === "") throw new InvalidAgentSettingError("The reply is empty or too long.");
     // The reply rules of the composer (ADR 0020, 0042) decide who it goes to and what it quotes.
     const prepared = await prepareReplyDraft(
       {
@@ -3367,9 +3962,13 @@ export class AgentService implements AgentApi {
     if (prepared === null) throw new ThingNotFoundError("There is no message to reply to");
     // A draft the person already started is theirs: the composer opens it, nothing is overwritten.
     if (prepared.existing !== null) return { draftId: prepared.existing.id, existing: true };
+    // The agent's words above the account's signature and the quote, as the composer starts a
+    // reply.
+    const start = splitDraft(prepared.content.bodyMarkdown);
+    const joined = joinDraft(words, start.quote, start.signature);
     const draft = await this.deps.saveDraft({
       ...prepared.content,
-      bodyMarkdown: `${body.replace(/\r\n?/g, "\n").trimEnd()}${prepared.content.bodyMarkdown === "" ? "\n" : prepared.content.bodyMarkdown}`,
+      bodyMarkdown: start.quote === "" && start.signature === "" ? `${joined}\n` : joined,
     });
     return { draftId: draft.id, existing: false };
   }

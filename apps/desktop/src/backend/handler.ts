@@ -76,6 +76,7 @@ import {
   type RegistrableDomainFn,
   type RewriteHow,
   readNotificationPrefs,
+  SIGNATURE_MAX_CHARS,
   searchFiles,
   searchMessages,
   suggestPeople,
@@ -102,6 +103,11 @@ export interface AccountsApi {
    * then replaces the stored one. Null when there is no such account.
    */
   signInAgain(accountId: string, signIn: string): Promise<PasswordChanged | null>;
+  /**
+   * Keeps the account's signature (ADR 0142), normalized and checked by the core; empty takes it
+   * away. The signature as kept, or null when there is no such account.
+   */
+  setSignature(accountId: string, signature: string): Promise<string | null>;
 }
 
 /**
@@ -668,6 +674,21 @@ function parseAgentRequest(
       return typeof raw.percent === "number" && Number.isFinite(raw.percent)
         ? { type, requestId, percent: raw.percent }
         : "percent must be a number";
+    // A key's own shape is the service's to judge, with a sentence that never repeats it.
+    case "agentSaveKey":
+      return shortString(raw.runtimeId, 100) &&
+        typeof raw.key === "string" &&
+        raw.key.length <= 2048
+        ? { type, requestId, runtimeId: raw.runtimeId, key: raw.key }
+        : "runtimeId and key must be strings";
+    case "agentRemoveKey":
+      return shortString(raw.runtimeId, 100)
+        ? { type, requestId, runtimeId: raw.runtimeId }
+        : "runtimeId must be a string";
+    case "agentSetKeyReading":
+      return shortString(raw.runtimeId, 100) && typeof raw.on === "boolean"
+        ? { type, requestId, runtimeId: raw.runtimeId, on: raw.on }
+        : "runtimeId must be a string and on true or false";
     case "agentSetTalkLoop":
       return typeof raw.on === "boolean"
         ? { type, requestId, on: raw.on }
@@ -1326,6 +1347,16 @@ function parseRequest(raw: unknown): BackendRequest | string {
         typeof raw.password === "string"
         ? { type, requestId, accountId: raw.accountId, password: raw.password }
         : "accountId and password are required";
+    case "setSignature":
+      // Its length and lines are checked in the core, which says so in words the field can show;
+      // this only refuses what no field could have sent.
+      return typeof raw.accountId === "string" &&
+        raw.accountId !== "" &&
+        raw.accountId.length <= 200 &&
+        typeof raw.signature === "string" &&
+        raw.signature.length <= SIGNATURE_MAX_CHARS * 4
+        ? { type, requestId, accountId: raw.accountId, signature: raw.signature }
+        : "accountId and signature are required";
     case "signInAgain":
       // Only a handle of the shape main gives (ADR 0133, rule 6), never another account's id.
       return typeof raw.accountId === "string" &&
@@ -1365,6 +1396,7 @@ function errorCodeOf(error: unknown): ErrorCode {
   if (name === "UnknownGrantError") return "invalidRequest";
   if (name === "InvalidViewError") return "invalidView";
   if (name === "InvalidImageRuleError") return "invalidRequest";
+  if (name === "InvalidSignatureError") return "invalidRequest";
   if (name === "ViewNotFoundError") return "notFound";
   if (name === "DraftNotFoundError" || name === "NoAccountError") return "notFound";
   if (name === "AccountNotFoundError") return "notFound";
@@ -1707,13 +1739,23 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           ? { type: "signInAgain", requestId, ok: true, ...changed }
           : { type: "error", requestId, ok: false, code: "notFound", message: "no such account" };
       }
+      case "setSignature": {
+        const signature = await deps.accounts.setSignature(request.accountId, request.signature);
+        return signature === null
+          ? { type: "error", requestId, ok: false, code: "notFound", message: "no such account" }
+          : { type: "setSignature", requestId, ok: true, signature };
+      }
       case "prepareNew": {
-        const content = await prepareNewMessage({ accounts: deps.accountStore }, request.accountId);
+        const { content, signature } = await prepareNewMessage(
+          { accounts: deps.accountStore },
+          request.accountId,
+        );
         return {
           type: "prepareNew",
           requestId,
           ok: true,
           content,
+          signature,
           existing: null,
           redirect: null,
           messageLimitBytes: await messageLimit(deps, content.accountId),
@@ -1752,6 +1794,7 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
               requestId,
               ok: true,
               content: prepared.content,
+              signature: prepared.signature,
               existing: null,
               redirect: null,
               forwardedKey: prepared.messageKey,
@@ -1952,6 +1995,27 @@ export async function handle(deps: BackendDeps, raw: unknown): Promise<BackendRe
           requestId,
           ok: true,
           status: await needAgent(deps).setWeekShare(request.percent),
+        };
+      case "agentSaveKey":
+        return {
+          type: "agentSaveKey",
+          requestId,
+          ok: true,
+          status: await needAgent(deps).saveKey(request.runtimeId, request.key),
+        };
+      case "agentRemoveKey":
+        return {
+          type: "agentRemoveKey",
+          requestId,
+          ok: true,
+          status: await needAgent(deps).removeKey(request.runtimeId),
+        };
+      case "agentSetKeyReading":
+        return {
+          type: "agentSetKeyReading",
+          requestId,
+          ok: true,
+          status: await needAgent(deps).setKeyReading(request.runtimeId, request.on),
         };
       case "agentSetTalkLoop":
         return {

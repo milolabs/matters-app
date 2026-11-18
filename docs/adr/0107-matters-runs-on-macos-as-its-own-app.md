@@ -3,7 +3,8 @@
 - Status: Accepted
 - Date: 2026-11-10
 - Amended by: [0108](0108-banners-act-and-leave.md) (Settings says what is known: the stock runtime
-  shows no banners, the bundle needs the person's yes)
+  shows no banners, the bundle needs the person's yes),
+  [0143](0143-matters-opens-mailto-links.md) (the bundle declares the `mailto` scheme)
 
 ## Context
 

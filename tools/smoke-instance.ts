@@ -3,6 +3,8 @@
 // the root `smoke:instance` script does both).
 //
 // 1. A second start on the same userData leaves at once with 0 and its stderr line; the first runs on.
+//    It is given a `mailto:` link, which reaches the first copy (ADR 0143, rule 5): the first says
+//    so on stderr, with counts only.
 // 2. A start on another userData with the same database (`MATTERS_DB_PATH`) is refused with 1.
 // 3. The first copy is killed (-9): its owner file stays, and the next start takes it over and runs.
 // 4. A quit by signal (SIGTERM goes through before-quit and will-quit, as Cmd+Q does) removes the
@@ -27,9 +29,9 @@ interface Started {
   readonly exited: Promise<{ code: number | null; signal: NodeJS.Signals | null; ms: number }>;
 }
 
-function start(userData: string, dbPath: string): Started {
+function start(userData: string, dbPath: string, args: readonly string[] = []): Started {
   const { ELECTRON_RUN_AS_NODE: _drop, ...inherited } = process.env;
-  const child = spawn(process.execPath, [join(root, "apps/desktop")], {
+  const child = spawn(process.execPath, [join(root, "apps/desktop"), ...args], {
     env: {
       ...inherited,
       MATTERS_SMOKE: "1",
@@ -116,7 +118,7 @@ try {
   if (!up) throw new Error(`the first copy did not come up:\n${first.log()}`);
 
   // 1. Same userData, same database.
-  const second = start(userData, dbPath);
+  const second = start(userData, dbPath, ["mailto:ola@example.test?subject=Hi&attach=/etc/hosts"]);
   running.push(second);
   const s = await Promise.race([second.exited, sleep(QUICK_EXIT_MS).then(() => null)]);
   report.sameFolder = s;
@@ -129,6 +131,19 @@ try {
     if (second.log().includes("matters-backend:"))
       failures.push("same folder: the second start started a backend");
   }
+  const forwarded = await until(
+    () =>
+      first
+        .log()
+        .includes(
+          "matters-mailto: a link from outside waits (to 1, cc 0, bcc 0, subject 2, body 0)",
+        ),
+    5_000,
+  );
+  report.linkForwarded = forwarded;
+  if (!forwarded) failures.push("same folder: the mailto: link did not reach the first copy");
+  if (second.log().includes("matters-mailto:"))
+    failures.push("same folder: the second start kept the link itself");
   if (!alive(first)) failures.push("same folder: the first copy stopped");
   if (ownerPid(dbPath) !== first.child.pid)
     failures.push("same folder: the owner file changed hands");

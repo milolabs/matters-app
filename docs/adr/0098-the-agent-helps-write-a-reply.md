@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-11-09
+- Amended by: [0142](0142-a-signature-of-the-persons-own.md) (the person's signature is set apart
+  like the quote and never goes to the model; the prompts say the app adds it)
 
 ## Context
 

@@ -13,6 +13,25 @@ import { passwordRejected, signInEnded } from "./newPassword.ts";
 import { NewPasswordForm, SignInAgainForm } from "./newPasswordForm.tsx";
 import { accountShare, removalNotice } from "./removal.ts";
 import { Setup } from "./setup.tsx";
+import {
+  closeSignatureField,
+  NO_PENDING_SIGNATURES,
+  NO_SAVED_SIGNATURES,
+  NO_SIGNATURE_FAILURES,
+  NO_SIGNATURE_FIELD,
+  openSignatureField,
+  type PendingSignatures,
+  recordSavedSignature,
+  type SavedSignatures,
+  type SignatureFailures,
+  type SignatureFields,
+  savedSignatureField,
+  signatureSaveEnded,
+  signatureSaveStarted,
+  signaturesCaughtUp,
+  typeInSignatureField,
+} from "./signatureFields.ts";
+import { SignatureForm } from "./signatureForm.tsx";
 import { mainSignIn, type SignInClient } from "./signIn.ts";
 import { describeStatus } from "./status.ts";
 import { count, storageSize } from "./storageView.ts";
@@ -30,6 +49,8 @@ const smallPrimary =
  * at once (ADR 0113); any other refused sign-in shows its reason and next step instead (ADR 0114).
  * An account on servers that take only a browser sign-in has *Sign in again* in the password
  * form's place, under the same key, and it opens by itself when the sign-in has ended (ADR 0133).
+ * The account's own signature is edited in its row too (ADR 0142); while its field has the focus,
+ * the letters are text, not the section's keys.
  */
 export function AccountsSection(props: {
   backend: Backend;
@@ -70,6 +91,22 @@ export function AccountsSection(props: {
   const [asked, setAsked] = createSignal<ReadonlySet<string>>(new Set());
   const [dismissed, setDismissed] = createSignal<ReadonlySet<string>>(new Set());
   const [saved, setSaved] = createSignal<Readonly<Record<string, string>>>({});
+  // The account whose signature field is open (ADR 0142), one at a time, and what is typed in it.
+  const [signatureFields, setSignatureFields] = createSignal<SignatureFields>(NO_SIGNATURE_FIELD);
+  const signing = () => signatureFields().open;
+  const closeSignature = (id: string) => setSignatureFields((f) => closeSignatureField(f, id));
+  // What each account's last save that succeeded left in the store, until the list shows it.
+  const [savedSignatures, setSavedSignatures] = createSignal<SavedSignatures>(NO_SAVED_SIGNATURES);
+  createEffect(() => {
+    const accounts = props.accounts.accounts();
+    setSavedSignatures((s) => signaturesCaughtUp(s, accounts));
+  });
+  // The saves still on their way and why the last one failed, per account: a field closed while
+  // its save goes and opened again shows it saving, and its Save waits.
+  const [pendingSignatures, setPendingSignatures] =
+    createSignal<PendingSignatures>(NO_PENDING_SIGNATURES);
+  const [signatureFailures, setSignatureFailures] =
+    createSignal<SignatureFailures>(NO_SIGNATURE_FAILURES);
   const byBrowser = (id: string) => {
     const account = props.accounts.accounts().find((a) => a.id === id);
     return account !== undefined && providerOf(account) !== undefined;
@@ -140,6 +177,21 @@ export function AccountsSection(props: {
       e.preventDefault();
       return;
     }
+    const inSignature =
+      e.target instanceof HTMLElement ? e.target.closest("[data-signature]") !== null : false;
+    if (e.key === "Escape" && inSignature) {
+      // The editor closes the field itself; from the form's buttons it closes here. The window
+      // stays.
+      e.preventDefault();
+      const target = e.target as HTMLElement;
+      const form = target.closest<HTMLElement>("[data-signature]");
+      if (target.closest(".cm-editor") === null && form?.dataset.signature) {
+        closeSignature(form.dataset.signature);
+      }
+      return;
+    }
+    // The signature's editor is text: its letters are not the section's keys.
+    if (inSignature) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
@@ -290,6 +342,17 @@ export function AccountsSection(props: {
                           : "no encryption"}
                     </Show>
                   </div>
+                  <Show when={signing() !== account.id && account.signature}>
+                    {(signature) => (
+                      <p
+                        data-signature-line
+                        class="truncate text-[12px] text-secondary"
+                        title={signature()}
+                      >
+                        Signature: {signature().split("\n")[0]}
+                      </p>
+                    )}
+                  </Show>
                   <Show when={saved()[account.id]}>
                     {(note) => (
                       <p class="mt-1 text-[12px] text-secondary" role="status">
@@ -350,6 +413,43 @@ export function AccountsSection(props: {
                       )}
                     </Show>
                   </Show>
+                  <Show when={signing() === account.id && confirming() !== account.id}>
+                    <SignatureForm
+                      backend={props.backend}
+                      account={account}
+                      typed={signatureFields().typed[account.id]}
+                      onType={(text) =>
+                        setSignatureFields((f) => typeInSignatureField(f, account.id, text))
+                      }
+                      onClose={() => closeSignature(account.id)}
+                      saved={savedSignatures()}
+                      pending={pendingSignatures()}
+                      failure={signatureFailures()[account.id]}
+                      onSaving={(submitted, order) => {
+                        setPendingSignatures((p) =>
+                          signatureSaveStarted(p, account.id, submitted, order),
+                        );
+                        setSignatureFailures(({ [account.id]: _, ...rest }) => rest);
+                      }}
+                      onFailed={(failure, order) => {
+                        setPendingSignatures((p) => signatureSaveEnded(p, account.id, order));
+                        setSignatureFailures((all) => ({ ...all, [account.id]: failure }));
+                      }}
+                      onSaved={(note, submitted, signature, order) => {
+                        setPendingSignatures((p) => signatureSaveEnded(p, account.id, order));
+                        // What the store holds now, before the list is read again: a Save of other
+                        // text in the meantime is never taken for unchanged.
+                        setSavedSignatures((s) =>
+                          recordSavedSignature(s, account.id, signature, order),
+                        );
+                        // This account's field only: another may have been opened meanwhile. It
+                        // stays open when it holds text typed after the save was pressed.
+                        setSignatureFields((f) => savedSignatureField(f, account.id, submitted));
+                        setSaved((all) => ({ ...all, [account.id]: note }));
+                        void props.accounts.refresh();
+                      }}
+                    />
+                  </Show>
                   <Show
                     when={confirming() === account.id}
                     fallback={
@@ -380,6 +480,18 @@ export function AccountsSection(props: {
                             >
                               p
                             </span>
+                          </button>
+                        </Show>
+                        <Show when={signing() !== account.id}>
+                          <button
+                            type="button"
+                            class={small}
+                            onClick={() => {
+                              setSaved(({ [account.id]: _, ...rest }) => rest);
+                              setSignatureFields(openSignatureField(account.id));
+                            }}
+                          >
+                            Signature
                           </button>
                         </Show>
                         <button

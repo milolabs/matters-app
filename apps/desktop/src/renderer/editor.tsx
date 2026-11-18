@@ -11,6 +11,30 @@ export interface EditorApi {
 }
 
 /**
+ * Puts `text` in the editor as the one change between what it shows and `text`, so the caret and
+ * the lines around the change stay where they are (the signature that follows the sender, ADR
+ * 0142). Nothing happens when the two are the same.
+ */
+export function showText(view: EditorView, text: string): void {
+  const doc = view.state.doc.toString();
+  if (doc === text) return;
+  let from = 0;
+  while (from < doc.length && from < text.length && doc[from] === text[from]) from++;
+  let end = 0;
+  while (
+    end < doc.length - from &&
+    end < text.length - from &&
+    doc[doc.length - 1 - end] === text[text.length - 1 - end]
+  ) {
+    end++;
+  }
+  view.dispatch({
+    changes: { from, to: doc.length - end, insert: text.slice(from, text.length - end) },
+    userEvent: "input.signature",
+  });
+}
+
+/**
  * The Markdown editor (CodeMirror 6). It lives in a shadow root: CodeMirror then adds its styles
  * as constructed stylesheets instead of `<style>` elements, which the page's strict
  * `style-src 'self'` would block. The text lives in the editor; `onChange` reports it after

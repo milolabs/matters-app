@@ -117,6 +117,7 @@ describe("prepareReply (ADR 0042)", () => {
         syncNow: async () => false,
         changePassword: async () => null,
         signInAgain: async () => null,
+        setSignature: async () => null,
       },
     } satisfies BackendDeps;
     const ask = () =>

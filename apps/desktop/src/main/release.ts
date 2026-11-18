@@ -2,15 +2,22 @@
 // with the switch, the last answer and its ETag, and the version About was last shown with. Pure,
 // as appearance.ts is: main reads the file and makes the request, hands what it got here, and
 // writes and tells every window what comes back. The rules themselves are in packages/core.
-import type { ReleaseInfo, ReleaseNewer } from "@matters/contracts";
+import type { ReleaseInfo, ReleaseInstall, ReleaseNewer } from "@matters/contracts";
 import {
+  INSTALL_IDLE,
+  type InstallPlace,
+  type InstallState,
+  installLine,
+  installNote,
   isNewerVersion,
   isPreRelease,
   isReleaseLink,
+  mayInstall,
   type OfferedRelease,
   parseVersion,
   RELEASE_DOWNLOAD_PAGE,
   readReleaseFile,
+  refusalPhrase,
   releaseActions,
   releaseDot,
   versionText,
@@ -211,12 +218,46 @@ export function runningStage(running: string): string | null {
       : null;
 }
 
+/** What main knows of installing (ADR 0140): where this copy is, and the install's step. */
+export interface InstallView {
+  /** Whether this copy can be replaced (rule 2); null until Settings first opened. */
+  readonly place: InstallPlace | null;
+  readonly state: InstallState;
+}
+
+export const NO_INSTALL: InstallView = { place: null, state: INSTALL_IDLE };
+
+/**
+ * What About shows of installing (rule 5). Install is offered for a newer version a release has,
+ * when this copy can be replaced; otherwise About says in one phrase why not. An install under way
+ * is said whatever the check found since.
+ */
+export function installInfo(
+  view: InstallView,
+  newer: OfferedRelease | null,
+  running: string,
+): ReleaseInstall {
+  const can = newer !== null && view.place?.ok === true && mayInstall(newer.version, running);
+  const cannot =
+    newer === null || view.place === null || can
+      ? null
+      : refusalPhrase(view.place.ok ? "version" : view.place.why);
+  return {
+    offered: can,
+    cannot,
+    step: view.state.step,
+    line: installLine(view.state),
+    note: installNote(view.state),
+  };
+}
+
 /** Everything About and the gear show, from main's state. */
 export function releaseInfo(
   stored: StoredRelease,
   running: string,
   asks: boolean,
   checking: boolean,
+  install: InstallView = NO_INSTALL,
 ): ReleaseInfo {
   const shown = versionOrNull(running) ?? running.slice(0, 64);
   const on = asks && stored.enabled;
@@ -242,6 +283,7 @@ export function releaseInfo(
     dot: newer !== null && releaseDot(newer.version, stored.seen),
     checkedMs: on ? stored.checkedMs : null,
     failure: on && stored.failure !== null ? FAILURE_PHRASES[stored.failure] : null,
+    install: installInfo(install, newer, running),
   };
 }
 

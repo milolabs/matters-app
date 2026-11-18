@@ -80,6 +80,7 @@ import type {
   SendActionResponse,
   SetImageRuleResponse,
   SetSeenResponse,
+  SetSignatureResponse,
   SignInAgainResponse,
   SortRankedResponse,
   StorageReport,
@@ -247,6 +248,8 @@ export interface Backend {
    * the servers before it replaces the stored one.
    */
   signInAgain(accountId: string, signIn: string): Promise<SignInAgainResponse>;
+  /** Keeps the account's own signature (ADR 0142); resolves with it as kept. */
+  setSignature(accountId: string, signature: string): Promise<string>;
   /** Starting points of a message; nothing is stored until the first `saveDraft`. */
   prepareNew(accountId?: string): Promise<PrepareResponse>;
   prepareReply(threadId: string, mode: ReplyMode): Promise<PrepareResponse>;
@@ -341,6 +344,10 @@ export interface Backend {
     efforts?: Partial<AgentEfforts>,
   ): Promise<AgentStatus>;
   agentSetWeekShare(percent: number): Promise<AgentStatus>;
+  /** The person's API key for a runtime billed to it (ADR 0141); the answer never holds it. */
+  agentSaveKey(runtimeId: string, key: string): Promise<AgentStatus>;
+  agentRemoveKey(runtimeId: string): Promise<AgentStatus>;
+  agentSetKeyReading(runtimeId: string, on: boolean): Promise<AgentStatus>;
   agentSetTalkLoop(on: boolean): Promise<AgentStatus>;
   /** Moves kinds of work to a runtime (ADR 0121, rule 1); sends nothing and agrees to nothing. */
   agentSetKindRuntime(kinds: readonly AgentWorkKind[], runtimeId: string): Promise<AgentStatus>;
@@ -575,6 +582,9 @@ export function createBackend(port: MessagePort): Backend {
       request<ChangePasswordResponse>({ type: "changePassword", accountId, password }),
     signInAgain: (accountId, signIn) =>
       request<SignInAgainResponse>({ type: "signInAgain", accountId, signIn }),
+    setSignature: async (accountId, signature) =>
+      (await request<SetSignatureResponse>({ type: "setSignature", accountId, signature }))
+        .signature,
     prepareNew: (accountId) =>
       request<PrepareResponse>({ type: "prepareNew", ...(accountId ? { accountId } : {}) }),
     prepareReply: (threadId, mode) =>
@@ -702,6 +712,12 @@ export function createBackend(port: MessagePort): Backend {
       ).status,
     agentSetWeekShare: async (percent) =>
       (await request<AgentStatusResponse>({ type: "agentSetWeekShare", percent })).status,
+    agentSaveKey: async (runtimeId, key) =>
+      (await request<AgentStatusResponse>({ type: "agentSaveKey", runtimeId, key })).status,
+    agentRemoveKey: async (runtimeId) =>
+      (await request<AgentStatusResponse>({ type: "agentRemoveKey", runtimeId })).status,
+    agentSetKeyReading: async (runtimeId, on) =>
+      (await request<AgentStatusResponse>({ type: "agentSetKeyReading", runtimeId, on })).status,
     agentSetTalkLoop: async (on) =>
       (await request<AgentStatusResponse>({ type: "agentSetTalkLoop", on })).status,
     agentSetKindRuntime: async (kinds, runtimeId) =>

@@ -1483,6 +1483,41 @@ export const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 58,
+    // ADR 0142, rule 7: the person's own signature, kept with the account's other settings, so the
+    // composer reads it with the account it already reads and removing the account removes it.
+    // NULL is none, the default; a signature is at most 2,000 characters (checked in the core).
+    // Like 57, it can run again on a database that has it.
+    sql: "",
+    run: (db) => {
+      const columns = db.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
+      if (!columns.some((c) => c.name === "signature")) {
+        db.exec("ALTER TABLE accounts ADD COLUMN signature TEXT");
+      }
+    },
+  },
+  {
+    version: 59,
+    // ADR 0141, rule 5: the test of a runtime billed to a key names the key it ran on, by the
+    // random id the key was saved with (never anything of the key's text). NULL: a record from
+    // before, or of a runtime with no key, which holds for no key. A column, as in 55.
+    // The two columns came on branches of their own, each as 58: a database that took the key's
+    // column as 58 has no signature yet, so this adds whichever of the two is missing.
+    sql: "",
+    run: (db) => {
+      const records = db.prepare("PRAGMA table_info(agent_runtime_records)").all() as {
+        name: string;
+      }[];
+      if (!records.some((c) => c.name === "key_id")) {
+        db.exec("ALTER TABLE agent_runtime_records ADD COLUMN key_id TEXT");
+      }
+      const accounts = db.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
+      if (!accounts.some((c) => c.name === "signature")) {
+        db.exec("ALTER TABLE accounts ADD COLUMN signature TEXT");
+      }
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

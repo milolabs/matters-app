@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { parentPort, Worker, workerData } from "node:worker_threads";
+import { ANTHROPIC_API_ID, AnthropicApiRuntime } from "@matters/adapter-anthropic-api";
 import { AutoconfigDiscovery } from "@matters/adapter-autoconfig";
 import { ClaudeCodeRuntime } from "@matters/adapter-claude-code";
 import { CodexRuntime } from "@matters/adapter-codex";
@@ -18,7 +19,7 @@ import { OllamaRuntime } from "@matters/adapter-ollama";
 import { registrableDomain } from "@matters/adapter-publicsuffix";
 import { NodemailerComposer, NodemailerSubmit } from "@matters/adapter-smtp";
 import { createSqliteStorage } from "@matters/adapter-sqlite";
-import type { StoredAccount, TransportSecurity } from "@matters/core";
+import type { AgentKeyVaultPort, StoredAccount, TransportSecurity } from "@matters/core";
 import { agentEnv } from "./agentEnv.ts";
 import { databaseCompaction } from "./compaction.ts";
 import { DemoAgentRuntime } from "./demoAgent.ts";
@@ -117,6 +118,19 @@ await startSyncRuntime({
           new CodexRuntime({ env: agentEnv() }),
           new OllamaRuntime(),
         ],
+    // A runtime on the person's own API key (ADR 0141), after the plans and this machine (rule
+    // 1). Its key is read from main's vault for each request, never from the environment. A
+    // seeded demo run has it only in a window test of a dev build, pointed at a stand-in.
+    ...(config.seed && !config.anthropicBase
+      ? {}
+      : {
+          keyed: (keys: AgentKeyVaultPort) => [
+            new AnthropicApiRuntime({
+              key: () => keys.get(ANTHROPIC_API_ID),
+              ...(config.anthropicBase ? { baseUrl: config.anthropicBase } : {}),
+            }),
+          ],
+        }),
     visibleText,
   },
   seed: config.seed,

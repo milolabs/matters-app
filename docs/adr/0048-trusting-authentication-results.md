@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-11-05
 - Refines: [0037](0037-remembering-image-choices.md), [0024](0024-rendering-mail-html.md), [0045](0045-forwarding.md), [0047](0047-hostile-mail-corpus.md)
+- Amended by: [0143](0143-matters-opens-mailto-links.md) (section 3, rule 3: a `mailto:` in a
+  message opens a draft in Matters, read by core's `parseMailto`, instead of going to the system)
 
 ## Context
 

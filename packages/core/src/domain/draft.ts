@@ -188,18 +188,29 @@ function ownLines(body: string): string {
     .join("\n");
 }
 
-/** Placeholders the writer left for information still missing. */
-export function gaps(content: Pick<DraftContent, "subject" | "bodyMarkdown">): Gap[] {
+function placeholders(where: Gap["where"], value: string): Gap[] {
   const found: Gap[] = [];
-  for (const [where, value] of [
-    ["subject", content.subject],
-    ["body", ownLines(content.bodyMarkdown)],
-  ] as const) {
-    for (const m of value.matchAll(PLACEHOLDER)) {
-      if (!BRACKETED_LINK.test(m[0])) found.push({ where, token: m[0] });
-    }
+  for (const m of value.matchAll(PLACEHOLDER)) {
+    if (!BRACKETED_LINK.test(m[0])) found.push({ where, token: m[0] });
   }
   return found;
+}
+
+/** Placeholders the writer left for information still missing. */
+export function gaps(content: Pick<DraftContent, "subject" | "bodyMarkdown">): Gap[] {
+  return [
+    ...placeholders("subject", content.subject),
+    ...placeholders("body", ownLines(content.bodyMarkdown)),
+  ];
+}
+
+/**
+ * Placeholders in text that is all the writer's own: the person's part of a draft as
+ * `draftSections` splits it, above the signature and the app's quote. Every line counts, a `>`
+ * line too: there it is a blockquote they wrote (ADR 0142, rule 4), and its gaps are theirs.
+ */
+export function ownTextGaps(text: string): Gap[] {
+  return placeholders("body", text.replace(/\r\n?/g, "\n"));
 }
 
 export type SendBlocker =

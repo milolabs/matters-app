@@ -216,6 +216,7 @@ describe("adding over Graph, as the window asks (ADR 0136, rules 2, 3, 13)", () 
         syncNow: async () => false,
         changePassword: async () => null,
         signInAgain: async () => null,
+        setSignature: async () => null,
       },
     } satisfies BackendDeps;
     return { added, call: (raw: object) => handle(deps, { requestId: "r", ...raw }) };

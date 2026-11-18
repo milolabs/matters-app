@@ -21,6 +21,7 @@ import {
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
+import { readDraft, sectionStarts } from "@matters/core";
 
 /** A value the agent found for a placeholder, and where it found it. */
 export interface GapSuggestion {
@@ -31,29 +32,28 @@ export interface GapSuggestion {
 
 // --- Where the quote starts ---
 
-const ATTRIBUTION = /wrote:\s*$|napisał(a)?:\s*$/i;
-
 /**
- * Where the quoted message starts: the first line of the trailing run of `>` lines (and empty
- * lines), or the attribution line just above it. Null when the text ends with no quote.
+ * Where the quoted message starts, as the core splits a draft (`sectionStarts`, ADR 0142, rule 4):
+ * the app's own quote, under the signature or at its "On … wrote:" line. A `>` line of the
+ * person's own is their text and never folds. Null when the draft has no quote.
  */
 export function quoteStart(text: string): number | null {
-  const lines = text.split("\n");
-  let k = lines.length;
-  while (k > 0) {
-    const line = lines[k - 1] as string;
-    if (line.trim() === "" || /^\s*>/.test(line)) k--;
-    else break;
-  }
-  // The run must hold at least one quoted line.
-  if (!lines.slice(k).some((l) => /^\s*>/.test(l))) return null;
-  while (k < lines.length && (lines[k] as string).trim() === "") k++;
-  let first = k;
-  const above = lines[k - 1];
-  if (above !== undefined && ATTRIBUTION.test(above)) first = k - 1;
-  let offset = 0;
-  for (let i = 0; i < first; i++) offset += (lines[i] as string).length + 1;
-  return offset;
+  return sectionStarts(text).quote;
+}
+
+/**
+ * Where the person's signature starts (ADR 0142): its delimiter line, as the core splits a draft
+ * (`draftSections`), so what reads as the signature here is what is sent as one. Null when there
+ * is none.
+ */
+export function signatureStart(text: string): number | null {
+  return sectionStarts(text).signature;
+}
+
+/** Where the person's own lines end: at the signature, else at the quote, as the core splits it. */
+function ownEnd(text: string): number {
+  const at = sectionStarts(text);
+  return at.signature ?? at.quote ?? text.length;
 }
 
 // --- Folding the quote ---
@@ -101,6 +101,7 @@ class QuoteWidget extends WidgetType {
 }
 
 function quoteDecorations(state: EditorState): DecorationSet {
+  // The core's quote, so a blockquote of the person's own is never folded away.
   const at = quoteStart(state.doc.toString());
   if (at === null) return Decoration.none;
   const folded = state.field(quoteFolded);
@@ -145,6 +146,7 @@ const gap = mark("cm-md-gap");
 const quoteLine = Decoration.line({ class: "cm-md-quote" });
 const listLine = Decoration.line({ class: "cm-md-list" });
 const headLine = Decoration.line({ class: "cm-md-head" });
+const signatureLine = Decoration.line({ class: "cm-md-signature" });
 
 // Inline patterns, in the order they are tried; each gives the syntax parts and the text part.
 const INLINE: readonly { re: RegExp; open: number; close: number; deco: Decoration }[] = [
@@ -214,10 +216,13 @@ export const suggestionsField = StateField.define<readonly GapSuggestion[]>({
   },
 });
 
-/** Puts a suggested value in place of its placeholder, everywhere the placeholder is written. */
+/**
+ * Puts a suggested value in place of its placeholder, everywhere the person's own lines write it:
+ * not in the signature, nor in the quote, which the agent did not fill (ADR 0142).
+ */
 export function acceptSuggestion(view: EditorView, s: GapSuggestion): boolean {
   const text = view.state.doc.toString();
-  const end = quoteStart(text) ?? text.length;
+  const end = ownEnd(text);
   const changes: { from: number; to: number; insert: string }[] = [];
   let at = text.indexOf(s.token);
   while (at !== -1 && at < end) {
@@ -268,24 +273,34 @@ class SuggestionWidget extends WidgetType {
 
 function buildLook(view: EditorView): DecorationSet {
   const state = view.state;
-  const text = state.doc.toString();
-  const end = quoteStart(text) ?? text.length;
+  // The draft as the core reads it (ADR 0142, rule 4): what each line is, and where the signature
+  // and the quote start. The signature reads quieter than the words, as it is sent: from its
+  // delimiter to the quote. The quote is not marked here; it folds.
+  const { kinds, signatureAt, quoteAt } = readDraft(state.doc.toString());
+  const own = signatureAt < 0 ? quoteAt : signatureAt;
   const suggestions = state.field(suggestionsField);
   const ranges: Range[] = [];
   for (const { from, to } of view.visibleRanges) {
     let pos = from;
     while (pos <= to) {
       const line = state.doc.lineAt(pos);
-      if (line.from >= end) break;
-      if (/^\s*>/.test(line.text)) ranges.push({ from: line.from, to: line.from, deco: quoteLine });
+      const n = line.number - 1;
+      if (n >= quoteAt) break;
+      if (signatureAt >= 0 && n >= signatureAt) {
+        ranges.push({ from: line.from, to: line.from, deco: signatureLine });
+      }
+      const kind = kinds[n];
+      if (kind === "quoted") ranges.push({ from: line.from, to: line.from, deco: quoteLine });
       else {
-        if (/^\s*([-*+]|\d+[.)])\s/.test(line.text)) {
+        // A line in a code block is no list item and no heading.
+        if (kind !== "code" && /^\s*([-*+]|\d+[.)])\s/.test(line.text)) {
           ranges.push({ from: line.from, to: line.from, deco: listLine });
         }
-        if (/^#{1,6}\s/.test(line.text))
+        if (kind !== "code" && /^#{1,6}\s/.test(line.text))
           ranges.push({ from: line.from, to: line.from, deco: headLine });
         ranges.push(...lineRanges(line.text, line.from));
-        for (const s of suggestions) {
+        // A suggestion is offered where taking it changes something: in the person's own lines.
+        for (const s of n < own ? suggestions : []) {
           let at = line.text.indexOf(s.token);
           while (at !== -1) {
             const after = line.from + at + s.token.length;
@@ -420,10 +435,9 @@ export function clearFormatting(view: EditorView): boolean {
 
 const rangeOf = (anchor: number, head: number) => EditorSelection.range(anchor, head);
 
-/** The writer's own lines, above the quote. */
+/** The writer's own lines, above the signature and the quote (ADR 0142). */
 export function ownText(doc: string): string {
-  const at = quoteStart(doc);
-  return at === null ? doc : doc.slice(0, at);
+  return doc.slice(0, ownEnd(doc));
 }
 
 export const liveTheme = EditorView.theme({
@@ -441,6 +455,7 @@ export const liveTheme = EditorView.theme({
   ".cm-md-quote": { color: "var(--secondary)", borderLeft: "2px solid var(--hairline)" },
   ".cm-md-list": { paddingLeft: "6px !important" },
   ".cm-md-head": { fontWeight: "600", fontSize: "16px" },
+  ".cm-md-signature": { color: "var(--secondary)" },
   ".cm-quote-line": { padding: "4px 2px 8px" },
   ".cm-quote-toggle": {
     height: "20px",
