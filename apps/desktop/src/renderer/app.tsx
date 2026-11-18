@@ -43,12 +43,17 @@ import { releaseBoot } from "./bootScreen.ts";
 import type { Backend } from "./client.ts";
 import type { ComposeStore } from "./compose.ts";
 import { DropOverlay } from "./dropOverlay.tsx";
+import { emlLetters, emlProgressText } from "./emlSave.ts";
 import { type DropTarget, installFileDrop } from "./fileDrop.ts";
 import {
+  askEml,
   doneMailto,
+  type EmlProgressInfo,
   onDropped,
+  onEmlEvents,
   onMailtoWaiting,
   onPrintAsked,
+  stopEml,
   takeMailto,
   tellPrintAvailable,
 } from "./files.ts";
@@ -685,6 +690,29 @@ function Mail(props: Stores) {
     );
   }
   onCleanup(onPrintAsked(printOpen));
+
+  // Save as .eml… (ADR 0145, rules 1 and 5): every letter of the open thread, as the server has
+  // it, beside Print… and Save as PDF… and on the same terms. Main asks where; while it saves, the
+  // line under the window says how far and has Stop. What could not be saved is said there in one
+  // phrase, as a print's failure is.
+  const [emlProgress, setEmlProgress] = createSignal<EmlProgressInfo | null>(null);
+  const [emlProblem, setEmlProblem] = createSignal("");
+  createEffect(
+    on(
+      () => store.thread()?.thread.id,
+      () => setEmlProblem(""),
+      { defer: true },
+    ),
+  );
+  function saveEml() {
+    const open = store.thread();
+    if (!open || !printable() || emlProgress() !== null) return;
+    setEmlProblem("");
+    void askEml(emlLetters(open.messages)).then((result) =>
+      setEmlProblem(result.kind === "done" ? (result.problem ?? "") : ""),
+    );
+  }
+  onCleanup(onEmlEvents({ ask: saveEml, progress: setEmlProgress }));
 
   function toList() {
     store.setZone("list");
@@ -1459,6 +1487,7 @@ function Mail(props: Stores) {
                   matches={matches}
                   replying={(threadId) => inlineReply()?.base.threadId === threadId}
                   onPrint={printOpen}
+                  onSaveEml={saveEml}
                   reply={() => (
                     <Show when={inlineReply()}>
                       {(session) => (
@@ -1528,6 +1557,33 @@ function Mail(props: Stores) {
       <Show when={compose.problem() !== ""}>
         <p class="border-t border-hairline px-3.5 py-2 text-[12.5px] text-late" role="alert">
           {compose.problem()}
+        </p>
+      </Show>
+      <Show when={emlProgress()}>
+        {(progress) => (
+          <div
+            data-eml-progress
+            class="flex items-center gap-3 border-t border-hairline px-3.5 py-2 text-[12.5px] text-secondary"
+            role="status"
+          >
+            <span class="min-w-0 flex-1 truncate tabular-nums">{emlProgressText(progress())}</span>
+            <button
+              type="button"
+              class="cursor-default rounded-[6px] px-1.5 font-medium text-ink hover:bg-fill"
+              onClick={() => stopEml()}
+            >
+              Stop
+            </button>
+          </div>
+        )}
+      </Show>
+      <Show when={emlProblem() !== ""}>
+        <p
+          data-eml-problem
+          class="border-t border-hairline px-3.5 py-2 text-[12.5px] text-late"
+          role="alert"
+        >
+          {emlProblem()}
         </p>
       </Show>
       <Show when={printProblem() !== ""}>
@@ -2207,6 +2263,8 @@ function ThreadView(props: {
   reply: () => JSX.Element;
   /** Print… and Save as PDF… for the open thread (ADR 0144, rule 1). */
   onPrint: (action: PrintAction) => void;
+  /** Save as .eml… for the open thread (ADR 0145, rule 1). */
+  onSaveEml: () => void;
 }) {
   const open = createMemo(() => props.store.thread());
   const more = createMenuAnchor();
@@ -2392,6 +2450,17 @@ function ThreadView(props: {
                         >
                           <SavePageIcon />
                           <span class="ml-2 flex-1">Save as PDF…</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            more.close(true);
+                            props.onSaveEml();
+                          }}
+                        >
+                          <SavePageIcon />
+                          <span class="ml-2 flex-1">Save as .eml…</span>
                         </button>
                       </PopMenu>
                     )}

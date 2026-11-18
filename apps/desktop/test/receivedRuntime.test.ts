@@ -27,6 +27,7 @@ import type {
   MessageLocation,
   PartDownload,
   ReceivedFilesPort,
+  SourceDownload,
   StoredAccount,
 } from "@matters/core";
 import { approve, newSendOperation } from "@matters/core";
@@ -91,6 +92,10 @@ class SteppedServer implements MailAttachmentPort {
 
   put(uid: number, partId: string, ...chunks: Uint8Array[]): void {
     this.parts.set(`${uid}/${partId}`, chunks);
+  }
+
+  async source(): Promise<SourceDownload> {
+    return { kind: "gone" };
   }
 
   /** Lets one waiting chunk through. */

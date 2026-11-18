@@ -8,6 +8,7 @@ import type {
   MessageLocation,
   PartDownload,
   Participant,
+  SourceDownload,
   StoredAccount,
 } from "@matters/core";
 import { safeFileName } from "@matters/core";
@@ -170,7 +171,10 @@ export class DemoMail {
 
   connection(): DownloadConnection {
     return {
-      attachments: { download: (location, partId) => this.download(location, partId) },
+      attachments: {
+        download: (location, partId) => this.download(location, partId),
+        source: (location, signal) => this.source(location, signal),
+      },
       close: async () => {},
     };
   }
@@ -179,6 +183,69 @@ export class DemoMail {
     const message = DEMO_MESSAGES.find((m) => m.uid === location.uid);
     // Part 1 is the text of the letter; the files follow it.
     return message?.files[Number(partId) - FIRST_FILE_PART];
+  }
+
+  /**
+   * A demo message as a server would hand it over (ADR 0145): headers, the text, and each file in
+   * base64, made the same way every time. Only the messages above have one; the rest of the demo
+   * mailbox is not on any server, so it is `gone`. A message with a large file arrives slowly
+   * enough to be stopped.
+   */
+  private async source(location: MessageLocation, signal?: AbortSignal): Promise<SourceDownload> {
+    const message = DEMO_MESSAGES.find((m) => m.uid === location.uid);
+    if (!message || location.accountId !== DEMO_ACCOUNT_ID) return { kind: "gone" };
+    const slow = message.files.some((f) => f.size >= SLOW_FROM);
+    const encoder = new TextEncoder();
+    const boundary = `demo-${message.uid}`;
+    const word = (text: string) => `=?UTF-8?B?${Buffer.from(text, "utf8").toString("base64")}?=`;
+    const head = [
+      `From: ${word(message.from.name ?? "")} <${message.from.address}>`,
+      "To: Ty <ty@demo.invalid>",
+      `Subject: ${word(message.subject)}`,
+      "Date: Mon, 16 Nov 2026 09:00:00 +0100",
+      `Message-ID: <demo-${message.uid}@demo.invalid>`,
+      "MIME-Version: 1.0",
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: 8bit",
+      "",
+      message.text,
+      "",
+    ].join("\r\n");
+    return {
+      kind: "found",
+      content: (async function* () {
+        yield encoder.encode(head);
+        for (const [index, file] of message.files.entries()) {
+          yield encoder.encode(
+            [
+              `--${boundary}`,
+              `Content-Type: ${file.mimeType}`,
+              "Content-Transfer-Encoding: base64",
+              `Content-Disposition: attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+              "",
+              "",
+            ].join("\r\n"),
+          );
+          const seed = location.uid + FIRST_FILE_PART + index;
+          // 57 bytes make one line of 76; a piece of whole lines needs no carry between pieces.
+          const piece = 57 * 2048;
+          for (let offset = 0; offset < file.size; offset += piece) {
+            signal?.throwIfAborted();
+            const bytes = new Uint8Array(Math.min(piece, file.size - offset));
+            fill(bytes, offset, seed);
+            const text = Buffer.from(bytes).toString("base64");
+            const lines: string[] = [];
+            for (let at = 0; at < text.length; at += 76) lines.push(text.slice(at, at + 76));
+            if (slow) await sleep(SLOW_CHUNK_MS);
+            yield encoder.encode(`${lines.join("\r\n")}\r\n`);
+          }
+        }
+        yield encoder.encode(`--${boundary}--\r\n`);
+      })(),
+    };
   }
 
   private async download(location: MessageLocation, partId: string): Promise<PartDownload> {

@@ -152,3 +152,4 @@ Format: copy [`template.md`](template.md).
 | [0142](0142-a-signature-of-the-persons-own.md) | A signature of the person's own, per account (amends 0020, 0045, 0098, 0132, 0138; builds on 0011, 0012, 0036, 0100, 0101) | Accepted |
 | [0143](0143-matters-opens-mailto-links.md) | Matters opens `mailto:` links, and can be the default mail app (amends 0048, 0107, 0110, 0137; builds on 0012, 0020, 0036, 0101, 0103, 0105, 0142) | Accepted |
 | [0144](0144-print-a-thread-or-save-it-as-a-pdf.md) | Print a thread, or save it as a PDF (amends 0024; builds on 0012, 0036, 0037, 0043, 0047, 0056, 0078, 0079, 0085, 0097, 0099, 0134) | Accepted |
+| [0145](0145-save-a-message-as-a-file-and-back-up-what-matters-keeps.md) | Save a message as a file, and back up and restore what Matters keeps (amends 0089, 0110, 0113, 0138, 0144; builds on 0006, 0012, 0041, 0043, 0136) | Accepted |

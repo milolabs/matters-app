@@ -11,7 +11,7 @@ import { AutoconfigDiscovery } from "@matters/adapter-autoconfig";
 import { ClaudeCodeRuntime } from "@matters/adapter-claude-code";
 import { CodexRuntime } from "@matters/adapter-codex";
 import { MarkdownComposeRenderer } from "@matters/adapter-compose";
-import { createReceivedFiles } from "@matters/adapter-files";
+import { createReceivedFiles, createSourceFiles } from "@matters/adapter-files";
 import { GraphConnector, GraphSubmitter, RefusedTokens } from "@matters/adapter-graph";
 import { ImapConnector } from "@matters/adapter-imap";
 import { PostalMimeParser, visibleText } from "@matters/adapter-mime";
@@ -103,6 +103,7 @@ await startSyncRuntime({
       }),
   }),
   received: createReceivedFiles(config.receivedDir),
+  sources: createSourceFiles(),
   // The demo's downloads have no server to ask; a real database never has this.
   ...(config.seed ? { demo: new DemoMail() } : {}),
   agent: {

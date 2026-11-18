@@ -207,6 +207,50 @@ export class GraphClient {
     return new Uint8Array(await this.read(() => response.arrayBuffer()));
   }
 
+  /**
+   * The answer's bytes as they arrive, for a body too large to hold (ADR 0145, rule 2); null for
+   * a `404`. A body that breaks off ends the stream with `GraphUnreachableError`. `size` is the
+   * answer's length when it says one.
+   */
+  async stream(
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly content: AsyncIterable<Uint8Array>; readonly size?: number } | null> {
+    const response = await this.send(path, signal === undefined ? {} : { signal });
+    if (response.status === 404) {
+      await response.body?.cancel().catch(() => {});
+      return null;
+    }
+    if (!response.ok) {
+      const text = await this.read(() => response.text()).catch(() => "");
+      let body: unknown = null;
+      try {
+        body = JSON.parse(text);
+      } catch {}
+      throw this.failure(response, body);
+    }
+    const body = response.body;
+    const length = Number(response.headers.get("content-length"));
+    const read = <T>(f: () => Promise<T>) => this.read(f);
+    async function* chunks(): AsyncGenerator<Uint8Array> {
+      if (body === null) return;
+      const reader = body.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await read(() => reader.read());
+          if (done) return;
+          yield value;
+        }
+      } finally {
+        await reader.cancel().catch(() => {});
+      }
+    }
+    return {
+      content: chunks(),
+      ...(Number.isSafeInteger(length) && length > 0 ? { size: length } : {}),
+    };
+  }
+
   /** Turns an answer that is not a success into the error rule 11 names. */
   failure(response: { status: number; headers: Headers }, body: unknown): Error {
     const status = response.status;

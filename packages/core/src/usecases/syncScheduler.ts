@@ -1,10 +1,6 @@
 import type { StoredAccount } from "../domain/accounts.ts";
 import type { Label } from "../domain/entities.ts";
-import {
-  CredentialsUnavailableError,
-  type MailErrorKind,
-  mailErrorKind,
-} from "../domain/errors.ts";
+import { CredentialMissingError, type MailErrorKind, mailErrorKind } from "../domain/errors.ts";
 import { type FailureDetail, failureDetailOf, refusalIsTemporary } from "../domain/signIn.ts";
 import type {
   AccountStorePort,
@@ -346,7 +342,7 @@ export class SyncScheduler {
 
   private async targetOf(rt: Runtime): Promise<MailTarget> {
     const credential = await this.deps.credentials.get(rt.account.id);
-    if (!credential) throw new CredentialsUnavailableError("The saved password is missing");
+    if (!credential) throw new CredentialMissingError();
     return incomingTarget(rt.account, credential);
   }
 

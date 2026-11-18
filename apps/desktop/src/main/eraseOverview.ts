@@ -9,6 +9,7 @@ import { HOLDING_GROUPS, type HoldingGroup } from "@matters/core";
 import { type EraseTargets, nodeEraseFs, pathsOf } from "./erase.ts";
 import { ALL_HOLDINGS } from "./holdings.ts";
 import { MARKER } from "./identityMigration.ts";
+import { listSetAside, readPending } from "./restore.ts";
 import { sizeOf } from "./storageUsage.ts";
 
 export async function eraseOverview(o: {
@@ -48,7 +49,14 @@ export async function eraseOverview(o: {
     }
     earlier = { bytes: await sizeOf(o.earlierDir), sinceMs };
   }
-  return { groups, earlier, agentKeys: await agentKeysIn(join(o.dataDir, VAULT_FILE)) };
+  const setAside = (await listSetAside(o.databasePath)).length;
+  const pending = (await readPending(o.databasePath)) !== null;
+  return {
+    groups,
+    earlier,
+    agentKeys: await agentKeysIn(join(o.dataDir, VAULT_FILE)),
+    ...(setAside > 0 || pending ? { restores: { setAside, pending } } : {}),
+  };
 }
 
 /**

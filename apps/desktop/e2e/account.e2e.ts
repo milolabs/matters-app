@@ -1,6 +1,8 @@
 // Work on a real account, checked on the servers rather than on the screen alone: a message sent
 // reaches the SMTP server, and a message read or archived is read or archived on the IMAP server.
 // Against the Dovecot test server (needs Docker) and an SMTP server in this process.
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import PostalMime from "postal-mime";
 import { mail } from "../../../packages/adapter-imap/test/support/mail.ts";
 import { addAccountOnFirstRun } from "./addAccount.ts";
@@ -78,4 +80,32 @@ test("reading and archiving reach the IMAP server", async ({ mailbox, start }) =
     .toEqual([true]);
   const inbox = await mailbox.admin.messages("INBOX");
   expect(inbox.map((m) => m.source.includes("Do przeczytania"))).toEqual([true]);
+});
+
+test("Save as .eml… writes the message as the IMAP server has it, byte for byte", async ({
+  mailbox,
+  start,
+  dataDir,
+}) => {
+  await mailbox.admin.append("INBOX", mail({ id: "eml-0", subject: "Do zapisania" }));
+  const saved = join(dataDir, "saved");
+  mkdirSync(saved);
+  // The save dialog's stand-in of a dev build (ADR 0145): the file goes to this folder.
+  const { window } = await start({ env: { MATTERS_TEST_SAVE_DIR: saved } });
+  await addAccountOnFirstRun(window, mailbox);
+  const list = window.getByRole("listbox", { name: "Messages" });
+  await list.getByRole("option", { name: /Do zapisania/ }).click({ timeout: 60_000 });
+  const thread = window.getByRole("region", { name: "Thread" });
+  await expect(thread.getByRole("heading", { level: 2 })).toHaveText("Do zapisania");
+  await thread.getByRole("button", { name: "More actions" }).click();
+  await window.getByRole("menuitem", { name: /Save as \.eml/ }).click();
+
+  await expect.poll(() => readdirSync(saved), { timeout: SERVER_TIMEOUT }).toHaveLength(1);
+  const [name] = readdirSync(saved);
+  expect(name).toMatch(/^Do zapisania \d{4}-\d{2}-\d{2}\.eml$/);
+  const inbox = await mailbox.admin.messages("INBOX");
+  const onServer = inbox.find((m) => m.source.includes("Do zapisania"))?.source;
+  expect(onServer).toBeDefined();
+  expect(readFileSync(join(saved, name as string)).equals(onServer as Buffer)).toBe(true);
+  await expect(window.locator("[data-eml-problem]")).toHaveCount(0);
 });

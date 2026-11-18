@@ -9,6 +9,7 @@ problem is in [SECURITY.md](../../SECURITY.md).
 | What | Where it is |
 | --- | --- |
 | The mail itself, and its attachments | a SQLite database and files on your computer |
+| A backup you make | one file where you chose, mode 0600, not encrypted ([ADR 0145](../adr/0145-save-a-message-as-a-file-and-back-up-what-matters-keeps.md)) |
 | Passwords of mail accounts | encrypted through the operating system's keychain (Electron `safeStorage`) |
 | Who you are to others | what the app sends in your name: only what you approved |
 | Your attention | what a message is allowed to look like, and what a view shows you |
@@ -26,6 +27,7 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
 | **A web page a message links to** | serve anything once you open the link in your browser | anything inside the app: links open in the system browser, never in a Matters window |
 | **A web page or program that hands Matters a `mailto:` link** | once Matters is the default mail app, open a link at any moment, as often as it likes, with any text in it | a file attached, a header set, a link or image in the message that the person did not write, a flood of windows, anything sent: a link only opens a draft, read by fixed limits, for the person to look at ([ADR 0143](../adr/0143-matters-opens-mailto-links.md)) |
 | **A hostile mail server lookup** | answer autoconfig and DNS lookups with false settings | a sign-in over plain text, credentials sent while probing |
+| **Whoever made a backup file** | hand the person a database file to restore, with any bytes in it | a trigger, view or table of its own inside our database, a password of this Mac sent to their server, mail sent again by the restore ([ADR 0145](../adr/0145-save-a-message-as-a-file-and-back-up-what-matters-keeps.md)) |
 | **A dependency** | ship changed code in a new version | a version we did not choose: versions are pinned in `bun.lock`, and licenses are checked |
 
 ## Who we do not defend against
@@ -50,7 +52,9 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
    Printing a thread or saving it as a PDF uses the same frames in a hidden window of its own,
    loads only the images the reader shows, and asks a message's styles the screen's questions, so
    paper cannot say what the screen did not; the file goes only where you chose
-   ([ADR 0144](../adr/0144-print-a-thread-or-save-it-as-a-pdf.md)).
+   ([ADR 0144](../adr/0144-print-a-thread-or-save-it-as-a-pdf.md)). A message saved as a file is the
+   server's bytes, written privately where you chose and never opened by Matters
+   ([ADR 0145](../adr/0145-save-a-message-as-a-file-and-back-up-what-matters-keeps.md)).
 3. **TLS before anything.** Certificates are validated by name and chain, with no click-through; no
    credential is sent before TLS; plain text needs an explicit opt-in
    ([standards.md, A1](standards.md#a1-connecting-to-the-server)).

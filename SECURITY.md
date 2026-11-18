@@ -58,7 +58,8 @@ These are the walls. A way around any of them is a security problem:
 ## What is not a security problem by itself
 
 - Someone who already controls your user account on the computer can read your mail: the local
-  database is not encrypted by Matters. Use the disk encryption of your system.
+  database is not encrypted by Matters. Use the disk encryption of your system. A backup made in
+  Settings › Storage is not encrypted either: anyone who can read the file can read the mail.
 - A message that fits a view's prompt by its own words shows up in that view. The limit on this is
   described in [ADR 0116](docs/adr/0116-a-prompt-is-a-filter.md).
 - What a mail provider or an AI provider does with data once it has it. Their terms apply.

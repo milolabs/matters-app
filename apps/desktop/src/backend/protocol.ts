@@ -42,6 +42,7 @@ import type {
   ReplyCheck,
   RewriteHow,
   SavedView,
+  SaveSourceOutcome,
   SendOperation,
   SetSeenResult,
   SortRanked,
@@ -104,6 +105,15 @@ export type WorkerCommand =
   | { readonly name: "recaptureAttachment"; readonly draftId: string; readonly id: string }
   | { readonly name: "probeMessageLimit"; readonly accountId: string }
   | { readonly name: "fetchReceived"; readonly messageKey: number; readonly partId: string }
+  /** Main's only (ADR 0145): `target` is a path from main's dialog, never from a page. */
+  | {
+      readonly name: "saveSource";
+      readonly job: string;
+      readonly messageKey: number;
+      readonly target: string;
+      readonly overwrite: boolean;
+    }
+  | { readonly name: "stopSource"; readonly job: string }
   | { readonly name: "createView"; readonly viewName: string; readonly query: string }
   | { readonly name: "updateViewQuery"; readonly id: string; readonly query: string }
   | { readonly name: "renameView"; readonly id: string; readonly viewName: string }
@@ -272,6 +282,8 @@ export interface CommandResults {
   readonly recaptureAttachment: AttachmentInfo | null;
   readonly probeMessageLimit: number | null;
   readonly fetchReceived: FetchOutcome;
+  readonly saveSource: SaveSourceOutcome;
+  readonly stopSource: null;
   readonly createView: SavedView;
   readonly updateViewQuery: SavedView;
   readonly renameView: SavedView;
@@ -396,6 +408,13 @@ export type FromWorker =
       readonly type: "receivedProgress";
       readonly messageKey: number;
       readonly partId: string;
+      readonly bytes: number;
+      readonly totalBytes: number;
+    }
+  /** A message being saved as a file (ADR 0145, rule 5): throttled, for main, never stored. */
+  | {
+      readonly type: "sourceProgress";
+      readonly job: string;
       readonly bytes: number;
       readonly totalBytes: number;
     }

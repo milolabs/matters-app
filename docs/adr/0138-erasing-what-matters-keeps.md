@@ -12,7 +12,8 @@
   [0133](0133-microsoft-mail-signs-in-through-the-browser.md),
   [0134](0134-appearance-a-mode-and-themes-that-are-data.md)
 - Amended by: [0142](0142-a-signature-of-the-persons-own.md) (the review names signatures with the
-  mail; they go with the account's row)
+  mail; they go with the account's row), [0145](0145-save-a-message-as-a-file-and-back-up-what-matters-keeps.md) (a holding more: the
+  `restore` folder beside the database, with a waiting restore and set-aside databases)
 
 ## Context
 

@@ -8,6 +8,7 @@ import { SECRETS_HOLDINGS } from "@matters/adapter-secrets/holdings";
 import { SQLITE_FILE_HOLDINGS } from "@matters/adapter-sqlite/holdings";
 import { type Holding, type HoldingGroup, holdingsOf } from "@matters/core";
 import { RELEASE_STATE_FILE } from "./release.ts";
+import { RESTORE_FOLDER } from "./restore.ts";
 
 /** The erase order (ADR 0138, rule 3): in the data folder, gone last. */
 export const ERASE_ORDER_FILE = "erase-order.json";
@@ -86,6 +87,14 @@ export const DESKTOP_HOLDINGS: readonly Holding[] = [
     group: "settings",
     step: "settings",
     place: { kind: "besideDatabase", name: "notifications-state.json" },
+  },
+  // Restores from a backup (ADR 0145): the one waiting for the next start, the databases a restore
+  // set aside, the accounts it holds back. Beside the database, so the swap is renames; it is mail.
+  {
+    id: "desktop.restore",
+    group: "mail",
+    step: "database",
+    place: { kind: "besideDatabase", name: RESTORE_FOLDER },
   },
   // Chromium's storage goes with the caches (rule 3); what it holds is settings.
   ...CHROMIUM_STORAGE.map((name) =>

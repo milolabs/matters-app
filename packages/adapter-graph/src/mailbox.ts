@@ -14,6 +14,7 @@ import type {
   SentCopy,
   SentFolderPort,
   SentMatch,
+  SourceDownload,
 } from "@matters/core";
 import { type GraphClient, odataString } from "./client.ts";
 import { GraphRequestError } from "./errors.ts";
@@ -224,6 +225,23 @@ export class GraphAttachments implements MailAttachmentPort {
     if (part === undefined) return { kind: "gone" };
     const bytes = decodePart(raw, part);
     return { kind: "found", content: slices(bytes, signal) };
+  }
+
+  /**
+   * The message's MIME as Microsoft Graph gives it (`$value`, ADR 0145, rule 2), streamed as it
+   * arrives. Exchange keeps a message in its own form and writes the MIME when asked, so these are
+   * the bytes the service gives for the message, which may differ from the bytes that arrived.
+   * Reading `$value` does not mark the message as read.
+   */
+  async source(location: MessageLocation, signal?: AbortSignal): Promise<SourceDownload> {
+    if (location.itemId === undefined) return { kind: "gone" };
+    const found = await this.client.stream(`${messagePath(location.itemId)}/$value`, signal);
+    if (found === null) return { kind: "gone" };
+    return {
+      kind: "found",
+      content: found.content,
+      ...(found.size === undefined ? {} : { size: found.size }),
+    };
   }
 }
 
