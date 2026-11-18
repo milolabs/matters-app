@@ -17,7 +17,7 @@
     },
     "apps/desktop": {
       "name": "@matters/desktop",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.6",
       "dependencies": {
         "@matters/adapter-anthropic-api": "workspace:*",
         "@matters/adapter-autoconfig": "workspace:*",
