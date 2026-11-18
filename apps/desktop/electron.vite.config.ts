@@ -49,7 +49,14 @@ export default defineConfig(({ command }) => ({
     build: {
       externalizeDeps: bundleWorkspace,
       // A sandboxed preload cannot be an ES module.
-      rollupOptions: { output: { format: "cjs", entryFileNames: "[name].cjs" } },
+      rollupOptions: {
+        input: {
+          index: resolve(import.meta.dirname, "src/preload/index.ts"),
+          // The print view's hidden window (ADR 0144): a preload of its own that exposes nothing.
+          print: resolve(import.meta.dirname, "src/preload/print.ts"),
+        },
+        output: { format: "cjs", entryFileNames: "[name].cjs" },
+      },
     },
   },
   renderer: {
@@ -72,6 +79,8 @@ export default defineConfig(({ command }) => ({
           // A message as sent, with images blocked or allowed (ADR 0024).
           mail: resolve(import.meta.dirname, "src/renderer/mail.html"),
           "mail-images": resolve(import.meta.dirname, "src/renderer/mail-images.html"),
+          // The print view of a thread, in a hidden window (ADR 0144).
+          print: resolve(import.meta.dirname, "src/renderer/print.html"),
         },
       },
     },

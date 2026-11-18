@@ -21,7 +21,7 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
 
 | Who | What they can do | What they must not get |
 | --- | --- | --- |
-| **The sender of a message** | choose every byte of a message: headers, HTML, files, names | script, network requests with images off, a false identity that looks verified, a link or file that is not what it shows, instructions to a model |
+| **The sender of a message** | choose every byte of a message: headers, HTML, files, names | script, network requests with images off, a false identity that looks verified, a link or file that is not what it shows, a printout or PDF that says something else than the screen, instructions to a model |
 | **Someone on the network** | read and change traffic between the app and a mail server | a password, mail in plain text, an accepted bad certificate |
 | **A web page a message links to** | serve anything once you open the link in your browser | anything inside the app: links open in the system browser, never in a Matters window |
 | **A web page or program that hands Matters a `mailto:` link** | once Matters is the default mail app, open a link at any moment, as often as it likes, with any text in it | a file attached, a header set, a link or image in the message that the person did not write, a flood of windows, anything sent: a link only opens a draft, read by fixed limits, for the person to look at ([ADR 0143](../adr/0143-matters-opens-mailto-links.md)) |
@@ -47,6 +47,10 @@ Matters has no server. Nothing here is copied to us, and there is no telemetry.
 2. **A message is a frame without script.** Mail HTML is sanitized and shown in a sandboxed frame
    with its own content security policy. Remote images load only by a rule you set
    ([ADR 0024](../adr/0024-rendering-mail-html.md), [ADR 0037](../adr/0037-remembering-image-choices.md)).
+   Printing a thread or saving it as a PDF uses the same frames in a hidden window of its own,
+   loads only the images the reader shows, and asks a message's styles the screen's questions, so
+   paper cannot say what the screen did not; the file goes only where you chose
+   ([ADR 0144](../adr/0144-print-a-thread-or-save-it-as-a-pdf.md)).
 3. **TLS before anything.** Certificates are validated by name and chain, with no click-through; no
    credential is sent before TLS; plain text needs an explicit opt-in
    ([standards.md, A1](standards.md#a1-connecting-to-the-server)).

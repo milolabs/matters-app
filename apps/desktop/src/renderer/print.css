@@ -1,0 +1,87 @@
+/* The print view (ADR 0144, rule 2): always light, black on white, whatever the app's theme; no
+   app chrome. The reader's type: the subject in the serif at 22 px, the sender at 15, the rest at
+   12, a letter's text in the serif at 15. Page margins and the page's header and footer are the
+   print settings'. */
+:root {
+  color-scheme: light;
+  --font-sans: -apple-system, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
+  --font-serif: ui-serif, "New York", "Iowan Old Style", Georgia, serif;
+}
+html {
+  background: #fff;
+  color: #000;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+body {
+  margin: 0;
+  font: 12px / 1.45 var(--font-sans);
+}
+h1 {
+  margin: 0 0 16px;
+  font: 600 22px / 1.25 var(--font-serif);
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.letter {
+  padding: 14px 0 16px;
+  border-top: 1px solid #c8c8cc;
+}
+.head {
+  margin: 0 0 8px;
+}
+.head > div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  column-gap: 8px;
+}
+.head dt {
+  color: #555;
+}
+.head dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.head > div:first-child dd {
+  font-size: 15px;
+  font-weight: 600;
+}
+.badge,
+.note {
+  margin: 0 0 8px;
+  color: #555;
+}
+.words {
+  font: 15px / 1.6 var(--font-serif);
+}
+.words p {
+  margin: 0 0 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.words .signature {
+  font: 12px / 1.45 var(--font-sans);
+  color: #555;
+}
+.words .folded {
+  font: 11px / 1.45 var(--font-sans);
+  color: #555;
+}
+.mail iframe {
+  display: block;
+  width: 100%;
+  height: 0;
+  border: 0;
+  background: #fff;
+  color-scheme: light;
+}
+.files {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  color: #333;
+}
+.files li::before {
+  content: "Attachment: ";
+  color: #555;
+}

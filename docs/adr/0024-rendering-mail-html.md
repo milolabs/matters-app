@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-11-04
-- Amended by: [0085](0085-mail-in-the-dark-theme.md) (designed mail in the dark theme: the sender's theme first, recolored only as a fallback), [0094](0094-a-message-opens-as-sent.md) (every message with HTML opens as the original)
+- Amended by: [0085](0085-mail-in-the-dark-theme.md) (designed mail in the dark theme: the sender's theme first, recolored only as a fallback), [0094](0094-a-message-opens-as-sent.md) (every message with HTML opens as the original), [0144](0144-print-a-thread-or-save-it-as-a-pdf.md) (the sanitizer rewrites what a message's styles ask about the medium; the frame is also the print view's)
 
 ## Context
 

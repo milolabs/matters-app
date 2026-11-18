@@ -13,6 +13,7 @@ import { HEAD_HEIGHT, layoutList, ROW_HEIGHT } from "./listLayout.ts";
 import { LIST_DEFAULT, LIST_MAX, LIST_MIN } from "./listWidth.ts";
 import { MAIL_FRAME_SANDBOX, MailFrame } from "./mailFrame.tsx";
 import { sanitizeMail } from "./mailHtml.ts";
+import { printInFlight } from "./printing.ts";
 import type { MailStore } from "./store.ts";
 import type { ViewsStore } from "./views.ts";
 
@@ -1873,7 +1874,14 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 interface SecurityRecord {
   readonly id: string;
-  readonly lane: "blocked" | "images" | "bypass-blocked" | "bypass-images" | "control";
+  readonly lane:
+    | "blocked"
+    | "images"
+    | "bypass-blocked"
+    | "bypass-images"
+    | "control"
+    | "print-blocked"
+    | "print-images";
   readonly openMs?: number;
   /** The message ran a script: `parent.__pwned` was set. */
   readonly scriptRan: boolean;
@@ -1890,6 +1898,10 @@ interface SecurityRecord {
   /** Links followed, and how many of them asked "this link goes somewhere else" first. */
   readonly linksFollowed?: number;
   readonly linkWarnings?: number;
+  /** The words of the frame as the reader draws them (`innerText`: what CSS hides is not in it). */
+  readonly screenText?: string;
+  /** How Save as PDF… ended, in a print lane (ADR 0144). */
+  readonly printAnswer?: string;
   readonly error?: string;
 }
 
@@ -2027,6 +2039,9 @@ export async function runSecuritySmoke(
             (b) => b.textContent?.trim() === "Show images",
           ) ?? false;
         record.senderText = senderOf(entry.key);
+        // `innerText`, not `textContent`: what the message's CSS hides is not on screen.
+        // biome-ignore lint/performance/useDomNodeTextContent: the drawn words are the measure
+        record.screenText = (doc?.body?.innerText ?? "").replace(/\s+/g, " ").slice(0, 4000);
         const thread = store.thread();
         const message = thread?.messages.find((m) => m.key === entry.key);
         record.attachments = (message?.attachments ?? [])
@@ -2050,11 +2065,64 @@ export async function runSecuritySmoke(
     for (const entry of entries) await lane(entry, "blocked");
     await sleep(1200);
 
+    // Pass 1b: Save as PDF… for each message with images off (ADR 0144, rule 3). The thread is
+    // opened first in a lane of its own that nothing measures, so the print lane holds only what
+    // making the PDF asked for. Main writes the file where the run says and reports it.
+    async function printLane(entry: { id: string; key: number }, which: "blocked" | "images") {
+      send("begin", { id: entry.id, lane: `print-${which}-open` });
+      await sleep(100);
+      try {
+        await open(entry.key, true);
+      } catch {
+        // The print lane says what went wrong.
+      }
+      await sleep(600);
+      resetPwned();
+      const lane = which === "blocked" ? "print-blocked" : "print-images";
+      send("begin", { id: entry.id, lane });
+      await sleep(100);
+      const record: { -readonly [K in keyof SecurityRecord]: SecurityRecord[K] } = {
+        id: entry.id,
+        lane,
+        scriptRan: false,
+        cspViolations: 0,
+      };
+      try {
+        const more = articleOf(entry.key)?.querySelector<HTMLButtonElement>(
+          'button[aria-label="More actions"]',
+        );
+        if (!more) throw new Error("no More actions in the reader");
+        more.click();
+        await frame();
+        const item = [...document.querySelectorAll<HTMLButtonElement>("[role=menuitem]")].find(
+          (b) => b.textContent?.includes("Save as PDF"),
+        );
+        if (!item) throw new Error("no Save as PDF… in the menu");
+        item.click();
+        const run = printInFlight();
+        if (!run) throw new Error("Save as PDF… started nothing");
+        record.printAnswer = (await run).kind;
+        record.scriptRan = Boolean(pwned());
+      } catch (error) {
+        record.error = error instanceof Error ? error.message : String(error);
+      }
+      send("end", record);
+      // The driver copies the file when main reports it, before the next one takes its name.
+      await sleep(300);
+    }
+    send("phase", { name: "print-blocked" });
+    for (const entry of entries) await printLane(entry, "blocked");
+    await sleep(1200);
+
     // Pass 2: the reader always allows images from the sender of the HTML messages (the real rule).
     send("phase", { name: "images" });
     const sender = "sender@example.org";
     await backend.setImageRule({ scope: "address", value: sender, decision: "allow" });
     for (const entry of entries.filter((e) => e.from === sender)) await lane(entry, "images");
+    await sleep(1200);
+    // Pass 2b: Save as PDF… with those images allowed: it may load what the reader loaded, no more.
+    send("phase", { name: "print-images" });
+    for (const entry of entries.filter((e) => e.from === sender)) await printLane(entry, "images");
     await sleep(1200);
 
     // Pass 3: the walls on their own. The message's HTML goes into the frame as sent, past the

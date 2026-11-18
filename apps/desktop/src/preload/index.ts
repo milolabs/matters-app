@@ -4,6 +4,7 @@ import type { ThemeSets } from "@matters/contracts";
 import { ipcRenderer, webUtils } from "electron";
 import { readBootReport } from "../backend/bootStage.ts";
 import { readThemeSets } from "../main/appearance.ts";
+import { CHANNEL_PRINT_ASK } from "../main/printShapes.ts";
 import {
   applyThemeColors,
   CHANNEL_APPEARANCE_CHANGED,
@@ -14,6 +15,7 @@ import { CHANNEL_ERASE_PROGRESS, createEraseBridge } from "./eraseBridge.ts";
 import { createFileBridge } from "./fileBridge.ts";
 import { CHANNEL_MAILTO_WAITING, createMailtoBridge } from "./mailtoBridge.ts";
 import { createNoticeBridge } from "./noticeBridge.ts";
+import { createPrintBridge } from "./printBridge.ts";
 import { createReceivedBridge } from "./receivedBridge.ts";
 import {
   CHANNEL_RELEASE_CHANGED,
@@ -203,6 +205,19 @@ const mailto = createMailtoBridge(
 );
 window.addEventListener("message", (event) => mailto.message(event));
 ipcRenderer.on(CHANNEL_MAILTO_WAITING, () => mailto.waiting());
+
+// Printing the open thread, or saving it as a PDF (ADR 0144): the page sends the thread it built
+// and hears when the app menu asks.
+const printing = createPrintBridge(
+  {
+    invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+    send: (channel, ...args) => ipcRenderer.send(channel, ...args),
+    post: (message) => window.postMessage(message, "*"),
+  },
+  window,
+);
+window.addEventListener("message", (event) => printing.message(event));
+ipcRenderer.on(CHANNEL_PRINT_ASK, (_event, action: unknown) => printing.ask(action));
 
 // Browser sign-in (ADR 0133): main opens the browser and keeps the tokens; the page gets a handle.
 const signIn = createSignInBridge(

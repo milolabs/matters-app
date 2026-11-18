@@ -1,6 +1,7 @@
 import { createEffect, createSignal, For, on, onCleanup, onMount } from "solid-js";
 import { cssStringContent, type TextNode, visibleLinkText } from "./links.ts";
 import { listDragging } from "./listDivider.tsx";
+import { fitMailFrame } from "./mailFit.ts";
 
 export interface MailLink {
   readonly text: string;
@@ -57,12 +58,7 @@ export function MailFrame(props: {
 
   /** Wide layouts shrink to the pane, as they would on a phone; the height follows the content. */
   function fit(doc: Document) {
-    const root = doc.documentElement;
-    root.style.zoom = "1";
-    const width = frame.clientWidth;
-    const needed = root.scrollWidth;
-    if (needed > width && width > 0) root.style.zoom = String(width / needed);
-    frame.style.height = `${Math.ceil(root.getBoundingClientRect().height)}px`;
+    fitMailFrame(frame, doc);
     measureLinks(doc);
   }
 

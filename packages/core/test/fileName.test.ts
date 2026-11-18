@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isRunnableFile, MAX_FILE_NAME_BYTES, nameFromType, safeFileName } from "../src/index.ts";
+import {
+  isRunnableFile,
+  MAX_FILE_NAME_BYTES,
+  nameFromType,
+  pdfFileName,
+  safeFileName,
+} from "../src/index.ts";
 import { QUICK_MS, timed } from "./support.ts";
 
 const bytes = (text: string) => new TextEncoder().encode(text).byteLength;
@@ -422,5 +428,46 @@ describe("long runs of dots and white space", () => {
     expect(result).toBe(false);
     expect(ms).toBeLessThan(QUICK_MS);
     expect(isRunnableFile(`a.exe${". \t".repeat(1000)}`)).toBe(true);
+  });
+});
+
+describe("pdfFileName (ADR 0144, rule 5)", () => {
+  it("names the file by the subject and the day, with the extension .pdf", () => {
+    expect(pdfFileName("Lunch on Friday", "2026-11-16")).toBe("Lunch on Friday 2026-11-16.pdf");
+  });
+
+  it("writes no path separator, control or format character, and is never hidden", () => {
+    const name = pdfFileName("../../.ssh/key\u0000‮exe.\r\nx", "2026-11-16");
+    expect(name).not.toMatch(/[/\\\p{Cc}\p{Cf}]/u);
+    expect(name.startsWith(".")).toBe(false);
+    expect(name.endsWith(" 2026-11-16.pdf")).toBe(true);
+  });
+
+  it("keeps .pdf whatever the subject ends with", () => {
+    expect(pdfFileName("invoice.exe", "2026-11-16")).toBe("invoice.exe 2026-11-16.pdf");
+    expect(pdfFileName("report.", "")).toBe("report.pdf");
+    expect(pdfFileName("a.html", "")).toBe("a.html.pdf");
+  });
+
+  it("names a subject with nothing left Message, and leaves out a day that is not one", () => {
+    expect(pdfFileName("", "2026-11-16")).toBe("Message 2026-11-16.pdf");
+    expect(pdfFileName("‮\u0007 ..", "")).toBe("Message.pdf");
+    expect(pdfFileName("Hi", "16/11/2026")).toBe("Hi.pdf");
+    expect(pdfFileName("Hi", "2026-11-16/../x")).toBe("Hi.pdf");
+  });
+
+  it("stays within the length limit, never cutting a character", () => {
+    const name = pdfFileName("ź".repeat(400), "2026-11-16");
+    expect(bytes(name)).toBeLessThanOrEqual(MAX_FILE_NAME_BYTES);
+    expect(name.endsWith(" 2026-11-16.pdf")).toBe(true);
+    expect(wellFormed(name)).toBe(true);
+    const long = pdfFileName("😀".repeat(300), "");
+    expect(bytes(long)).toBeLessThanOrEqual(MAX_FILE_NAME_BYTES);
+    expect(long.endsWith(".pdf")).toBe(true);
+    expect(wellFormed(long)).toBe(true);
+  });
+
+  it("gives a Windows device name an underscore", () => {
+    expect(pdfFileName("CON", "")).toBe("_CON.pdf");
   });
 });

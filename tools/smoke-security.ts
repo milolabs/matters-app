@@ -5,8 +5,10 @@
 // that reaches it, and the app's main process reports every navigation, network request and link
 // handed to the system (a dev-only spy, `MATTERS_SMOKE_MODE=security`). Each check of the manifest
 // is then judged by the ratchet. A second, short start on the demo mailbox knows of a newer
-// version and is never told to install it. Needs Docker and `electron-vite build` first; the root
-// `smoke:security` script does both.
+// version and is never told to install it. Each message is also saved as a PDF through the reader's
+// Save as PDF… (ADR 0144), with images off and with them allowed: making it may ask the network for
+// nothing the reader did not, run nothing and go nowhere, and the PDF says what the screen said.
+// Needs Docker and `electron-vite build` first; the root `smoke:security` script does both.
 import { spawn } from "node:child_process";
 import {
   appendFileSync,
@@ -21,6 +23,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { extractFileText } from "../packages/adapter-filetext/src/index.ts";
 import { Admin } from "../packages/adapter-imap/test/support/admin.ts";
 import {
   type Check,
@@ -112,6 +115,8 @@ interface PageRecord {
   senderText?: string;
   attachments?: string[];
   framePage?: string;
+  screenText?: string;
+  printAnswer?: string;
   anchorsInFrame?: number;
   forbiddenElements?: number;
   linksFollowed?: number;
@@ -119,7 +124,7 @@ interface PageRecord {
   error?: string;
 }
 interface MainEvent {
-  readonly kind: "navigate" | "request" | "open-external" | "compose";
+  readonly kind: "navigate" | "request" | "open-external" | "compose" | "print";
   readonly url?: string;
   readonly href?: string;
   readonly mainFrame?: boolean;
@@ -131,11 +136,18 @@ interface MainEvent {
   readonly bcc?: readonly string[];
   readonly subject?: string;
   readonly body?: string;
+  /** A `print` event (ADR 0144): how it ended, whether anything ran in the print view, the file. */
+  readonly action?: string;
+  readonly answer?: string;
+  readonly scriptRan?: boolean;
+  readonly path?: string;
   readonly id: string;
   readonly lane: string;
 }
 const records = new Map<string, PageRecord>(); // `${id}|${lane}`
 const events: MainEvent[] = [];
+/** The PDFs main wrote, copied the moment it said so: every case has the same subject. */
+const pdfs = new Map<string, Buffer>(); // `${id}|${lane}`
 let marker = { id: "", lane: "" };
 let ready = 0;
 const errorsSeen: string[] = [];
@@ -158,6 +170,13 @@ function onLine(line: string): void {
     const event = { ...d, id: marker.id, lane: marker.lane } as unknown as MainEvent;
     void last;
     events.push(event);
+    if (event.kind === "print" && event.path) {
+      try {
+        pdfs.set(`${event.id}|${event.lane}`, readFileSync(event.path));
+      } catch {
+        // Not there: the print checks below say so.
+      }
+    }
   } else if (/^renderer (?:error|warning):/.test(line)) errorsSeen.push(line.slice(0, 240));
 }
 
@@ -165,7 +184,10 @@ function onLine(line: string): void {
 const plain = (u: string) =>
   u.replace(new RegExp(`https?://${ORIGIN.replace(".", "\\.")}/__c/[^/]+`, "g"), "CANARY");
 const OWN_PAGE =
-  /\/out\/renderer\/(?:index|mail|mail-images|preview|settings)\.html(?:[?#]|$)|^about:/;
+  /\/out\/renderer\/(?:index|mail|mail-images|preview|print|settings)\.html(?:[?#]|$)|^about:/;
+
+/** The text of each case's PDF made with images off, as one line. */
+const printedTexts = new Map<string, string>();
 
 function measure(c: CorpusCase): Record<string, unknown> {
   const mode = c.tiers.browser?.mode ?? "pipeline";
@@ -251,6 +273,8 @@ function measure(c: CorpusCase): Record<string, unknown> {
     noticeShown: blocked?.noticeShown ?? false,
     attachmentStrip: blocked?.attachments ?? [],
     senderText: blocked?.senderText ?? "",
+    screenText: records.get(`${c.id}|blocked`)?.screenText ?? "",
+    printedText: printedTexts.get(c.id) ?? "",
     canaryQuerySeen: hits.some((h) => h.id === c.id && h.path.includes("SECRET-MARKER")),
     opensWithinMs: (blocked?.openMs ?? 1e9) < 4000 && (images?.openMs ?? 0) < 4000,
     spyAgreesWithCanary: requestsInImages === hitsImages.length,
@@ -285,6 +309,8 @@ try {
   // made-up key sits in the environment. No key is saved and AI is off, so nothing may leave for
   // the provider, the canary or the real host: the environment is never read.
   const { ELECTRON_RUN_AS_NODE: _drop, MATTERS_SEED: _seed, ...env } = process.env;
+  const pdfDir = join(dir, "pdf");
+  mkdirSync(pdfDir, { recursive: true });
   const child = spawn(process.execPath, [join(root, "apps/desktop")], {
     env: {
       ...env,
@@ -308,6 +334,8 @@ try {
       MATTERS_TEST_INSTALL_DIR: join(dir, "apps"),
       MATTERS_TEST_ANTHROPIC_BASE: `http://${ORIGIN}`,
       ANTHROPIC_API_KEY: "sk-ant-smoke-0000000000000000000000000000-made-up",
+      // ADR 0144: Save as PDF… writes here without the dialog.
+      MATTERS_TEST_SAVE_DIR: pdfDir,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -532,6 +560,89 @@ try {
     );
   if (readdirSync(join(newerDir, "apps")).join(",") !== "Matters.app")
     failures.push("newer known: the stand-in folder of apps changed");
+
+  // ---- Save as PDF… (ADR 0144, rule 3) ----
+  // Making the PDF may ask the canary for nothing the reader did not ask for in the same state
+  // (images off, then allowed), may run nothing and may go nowhere. Every message must give a PDF,
+  // or none of that means anything.
+  const pathsIn = (id: string, lane: string, image?: boolean) =>
+    new Set(
+      hits
+        .filter((h) => h.id === id && h.lane === lane)
+        .filter((h) => image === undefined || (h.dest === "image") === image)
+        .map((h) => h.path),
+    );
+  let printed = 0;
+  let printHits = 0;
+  for (const c of cases) {
+    const lanes: [string, string][] = [["print-blocked", "blocked"]];
+    if (records.has(`${c.id}|print-images`)) lanes.push(["print-images", "images"]);
+    for (const [lane, readerLane] of lanes) {
+      const record = records.get(`${c.id}|${lane}`);
+      const event = events.find((e) => e.kind === "print" && e.id === c.id && e.lane === lane);
+      if (!record || record.error || record.printAnswer !== "done" || event?.answer !== "done") {
+        failures.push(
+          `print: ${c.id} (${lane}): no PDF was made (${record?.error ?? record?.printAnswer ?? "no record"}; main: ${event?.answer ?? "nothing"})`,
+        );
+        continue;
+      }
+      printed++;
+      if (event.scriptRan || record.scriptRan)
+        failures.push(`print: ${c.id} (${lane}): something in the message ran in the print view`);
+      const mine = hits.filter((h) => h.id === c.id && h.lane === lane);
+      printHits += mine.length;
+      if (mine.some((h) => h.path.startsWith("/xss")))
+        failures.push(`print: ${c.id} (${lane}): a script's request reached the canary`);
+      // Images only where the reader loaded them; anything else only where the reader asked too.
+      const allowedImages = pathsIn(c.id, readerLane, true);
+      const allowedOther = pathsIn(c.id, readerLane, false);
+      const extra = mine.filter((h) =>
+        h.dest === "image" ? !allowedImages.has(h.path) : !allowedOther.has(h.path),
+      );
+      if (extra.length > 0)
+        failures.push(
+          `print: ${c.id} (${lane}): the canary saw requests the reader did not make: ${extra
+            .map((h) => `${h.dest} ${h.path}`)
+            .join(", ")}`,
+        );
+      const went = events.filter(
+        (e) =>
+          e.id === c.id &&
+          e.lane === lane &&
+          e.kind === "navigate" &&
+          !e.prevented &&
+          !OWN_PAGE.test(e.url ?? ""),
+      );
+      if (went.length > 0)
+        failures.push(
+          `print: ${c.id} (${lane}): navigations were allowed: ${went.map((e) => plain(e.url ?? "")).join(", ")}`,
+        );
+      if (lane === "print-blocked") {
+        const bytes = pdfs.get(`${c.id}|${lane}`);
+        if (bytes?.subarray(0, 5).toString("latin1") !== "%PDF-") {
+          failures.push(`print: ${c.id}: the file main wrote is not a PDF`);
+          continue;
+        }
+        const file = join(pdfDir, `${c.id}.pdf`);
+        writeFileSync(file, bytes as Buffer);
+        const text = await extractFileText(file, "pdf");
+        printedTexts.set(c.id, text.text.replace(/\s+/g, " "));
+      }
+    }
+  }
+  // Control: the request spy in main sees the print view's requests too (they share a session).
+  const printLanes = new Set(["print-blocked", "print-images"]);
+  const printSpy = events.filter((e) => e.kind === "request" && printLanes.has(e.lane)).length;
+  const printCanary = hits.filter((h) => printLanes.has(h.lane)).length;
+  if (printSpy !== printCanary)
+    failures.push(
+      `print: control: main's request spy saw ${printSpy} requests while printing where the canary saw ${printCanary}`,
+    );
+  if (!printedTexts.get("html-control-instrumentation"))
+    failures.push("print: control: the control message's PDF has no text that could be read");
+  console.log(
+    `print: ${printed} PDFs made; the canary saw ${printHits} requests while they were made (${printCanary} in the print lanes, ${printSpy} seen by main)`,
+  );
 
   // ---- judge every check ----
   const summary = new TierSummary("browser");

@@ -2896,6 +2896,153 @@ export type ReceivedAnswer =
       readonly reason: "runnable" | "quarantine" | "unsupported" | "invalid";
     };
 
+/** What the page asks main to do with the thread open in the reader (ADR 0144, rule 1). */
+export type PrintAction = "print" | "pdf";
+
+/** A piece of a letter's text as the reader shows it before anything is unfolded (ADR 0144, rule 2). */
+export type PrintTextPart =
+  /** Words as written. */
+  | { readonly kind: "text"; readonly text: string }
+  /** A short signature, quiet under the words. */
+  | { readonly kind: "signature"; readonly text: string }
+  /** What the reader folds: a quote or a long signature, named and not printed. */
+  | { readonly kind: "folded"; readonly text: string };
+
+/**
+ * The body of a letter: its HTML with what the reader decided about it, or its text. The HTML is
+ * `sanitizeMail` output in the mail window, where a style sheet's questions about the screen are
+ * answered by the reader's; the print page does not trust it as markup: it sanitizes it again
+ * with the same `sanitizeMail`, right before it fills the letter's frame, and shows its light
+ * view, as the reader's frame does in the light theme.
+ */
+export type PrintBody =
+  | {
+      readonly kind: "html";
+      /** Sanitized in the mail window, and again in the print page before it is shown. */
+      readonly html: string;
+      /** The frame is the page with images allowed: the reader allowed them for this message. */
+      readonly images: boolean;
+    }
+  | { readonly kind: "text"; readonly parts: readonly PrintTextPart[] };
+
+/**
+ * One letter on paper. Every field is text the print page puts in as text, never as markup; only
+ * `body.html` is markup, and it goes, sanitized in the page, into a sandboxed frame like the
+ * reader's.
+ */
+export interface PrintLetter {
+  readonly from: string;
+  readonly to: string;
+  /** Empty when nobody was in Cc. */
+  readonly cc: string;
+  readonly date: string;
+  readonly subject: string;
+  /** "Not verified · domain" or "Verified · domain", as the reader's header says (ADR 0078, 0079). */
+  readonly badge: string;
+  /**
+   * The reader's line about blocked images, for a letter with HTML whose images the reader does
+   * not show; else empty. The print page prints it only when the letter, sanitized there, asks
+   * for images from the network.
+   */
+  readonly note: string;
+  readonly body: PrintBody;
+  /** Name and size of each listed file, `invoice.pdf · 120 KB`: listed, never printed. */
+  readonly attachments: readonly string[];
+}
+
+/** The thread on paper (ADR 0144, rule 2). */
+export interface PrintDocument {
+  /** The thread's subject: the page's title, the PDF's only metadata, and the file's name. */
+  readonly title: string;
+  /** The day of the newest letter, `YYYY-MM-DD` in the person's time, for the file's name. */
+  readonly day: string;
+  readonly letters: readonly PrintLetter[];
+}
+
+// ---- The thread on paper, as it crosses (ADR 0144) -------------------------------------------
+// The mail window's preload, main and the print page each read the thread with these, before they
+// use it: only types and lengths, so no side can be handed a value of another shape or an
+// unbounded one. Nothing here is a rule about mail.
+
+const isPrintRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** A thread longer than this is not printed: the reader would not show it either. */
+export const MAX_PRINT_LETTERS = 500;
+/** A line of a header (a long Cc) or a title. */
+const MAX_LINE = 20_000;
+/** The words of one piece of a letter's text. */
+const MAX_TEXT = 1_000_000;
+const MAX_PARTS = 5_000;
+const MAX_FILES = 1_000;
+/** One letter's HTML as the message has it: the corpus has a 1.5 MB message (ADR 0047). */
+const MAX_HTML = 16_000_000;
+/** All letters' HTML together. */
+const MAX_TOTAL_HTML = 64_000_000;
+
+const isLine = (v: unknown): v is string => typeof v === "string" && v.length <= MAX_LINE;
+
+function readPart(v: unknown): PrintTextPart | null {
+  if (!isPrintRecord(v) || typeof v.text !== "string" || v.text.length > MAX_TEXT) return null;
+  if (v.kind !== "text" && v.kind !== "signature" && v.kind !== "folded") return null;
+  return { kind: v.kind, text: v.text };
+}
+
+function readBody(v: unknown): PrintBody | null {
+  if (!isPrintRecord(v)) return null;
+  if (v.kind === "html") {
+    if (typeof v.html !== "string" || v.html.length > MAX_HTML) return null;
+    if (typeof v.images !== "boolean") return null;
+    return { kind: "html", html: v.html, images: v.images };
+  }
+  if (v.kind !== "text" || !Array.isArray(v.parts) || v.parts.length > MAX_PARTS) return null;
+  const parts = v.parts.map(readPart);
+  return parts.every((p) => p !== null) ? { kind: "text", parts: parts as PrintTextPart[] } : null;
+}
+
+function readLetter(v: unknown): PrintLetter | null {
+  if (!isPrintRecord(v)) return null;
+  const { from, to, cc, date, subject, badge, note, attachments } = v;
+  if (![from, to, cc, date, subject, badge, note].every(isLine)) return null;
+  if (!Array.isArray(attachments) || attachments.length > MAX_FILES) return null;
+  if (!attachments.every(isLine)) return null;
+  const body = readBody(v.body);
+  if (body === null) return null;
+  return {
+    from: from as string,
+    to: to as string,
+    cc: cc as string,
+    date: date as string,
+    subject: subject as string,
+    badge: badge as string,
+    note: note as string,
+    body,
+    attachments: [...(attachments as string[])],
+  };
+}
+
+/** The thread as it crosses from the page; null for anything of another shape or too large. */
+export function readPrintDocument(v: unknown): PrintDocument | null {
+  if (!isPrintRecord(v) || !isLine(v.title) || typeof v.day !== "string" || v.day.length > 10) {
+    return null;
+  }
+  if (!Array.isArray(v.letters) || v.letters.length === 0) return null;
+  if (v.letters.length > MAX_PRINT_LETTERS) return null;
+  const letters = v.letters.map(readLetter);
+  if (!letters.every((l) => l !== null)) return null;
+  let html = 0;
+  for (const l of letters as PrintLetter[]) if (l.body.kind === "html") html += l.body.html.length;
+  if (html > MAX_TOTAL_HTML) return null;
+  return { title: v.title, day: v.day, letters: letters as PrintLetter[] };
+}
+
+/** How a print or a save ended. `busy`: another one was still being made, and this one was not. */
+export type PrintAnswer =
+  | { readonly kind: "done" }
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "busy" }
+  | { readonly kind: "failed" };
+
 /**
  * What the router tells main on main's own line (ADR 0071, rule 8): banners to show and the text
  * of the badge. Main shows them and decides nothing but whether its window is in front.

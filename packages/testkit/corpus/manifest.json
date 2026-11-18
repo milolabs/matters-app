@@ -2185,6 +2185,165 @@
       }
     },
     {
+      "id": "html-print-reveals-hidden-text",
+      "category": "html",
+      "title": "Text only paper shows: @media print, a print style sheet, @page",
+      "sources": [
+        "CSS Media Queries 4 (media types, the update feature)",
+        "CSS Paged Media 3 (@page and its margin boxes)",
+        "ADR 0144 (paper says what the screen said)"
+      ],
+      "attacks": "A different IBAN that only a printout or a saved PDF shows: a print block, a <style media=print>, an escaped @media print, (update: none) and @page margin text. The reader and the PDF must show the screen's IBAN and none of the paper-only text.",
+      "file": "html/html-print-reveals-hidden-text.eml",
+      "tiers": {
+        "node": {
+          "checks": [
+            {
+              "name": "htmlPresent",
+              "ideal": true
+            }
+          ]
+        },
+        "browser": {
+          "checks": [
+            {
+              "name": "blockedHits",
+              "ideal": 0
+            },
+            {
+              "name": "blockedScripts",
+              "ideal": false
+            },
+            {
+              "name": "imagesNonImageHits",
+              "ideal": 0
+            },
+            {
+              "name": "imagesScripts",
+              "ideal": false
+            },
+            {
+              "name": "navigationsAllowed",
+              "ideal": []
+            },
+            {
+              "name": "forbiddenElementsInFrame",
+              "ideal": 0
+            },
+            {
+              "name": "screenText",
+              "ideal": {
+                "$includes": "ON-SCREEN Pay to IBAN DE00 1111"
+              }
+            },
+            {
+              "name": "screenText",
+              "ideal": {
+                "$notIncludes": "PAPER-ONLY"
+              }
+            },
+            {
+              "name": "printedText",
+              "ideal": {
+                "$includes": "ON-SCREEN Pay to IBAN DE00 1111"
+              }
+            },
+            {
+              "name": "printedText",
+              "ideal": {
+                "$notIncludes": "PAPER-ONLY"
+              }
+            },
+            {
+              "name": "printedText",
+              "ideal": {
+                "$notIncludes": "DE99"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "html-print-hides-shown-text",
+      "category": "html",
+      "title": "Text paper leaves out: @media print hides, @media screen and not print show",
+      "sources": [
+        "CSS Media Queries 4 (media types, not)",
+        "ADR 0144 (paper says what the screen said)"
+      ],
+      "attacks": "An amount and an IBAN the screen shows and a printout or a saved PDF would leave out: hidden by @media print or a print style sheet, shown only by @media screen or @media not print.",
+      "file": "html/html-print-hides-shown-text.eml",
+      "tiers": {
+        "node": {
+          "checks": [
+            {
+              "name": "htmlPresent",
+              "ideal": true
+            }
+          ]
+        },
+        "browser": {
+          "checks": [
+            {
+              "name": "blockedHits",
+              "ideal": 0
+            },
+            {
+              "name": "blockedScripts",
+              "ideal": false
+            },
+            {
+              "name": "imagesNonImageHits",
+              "ideal": 0
+            },
+            {
+              "name": "imagesScripts",
+              "ideal": false
+            },
+            {
+              "name": "navigationsAllowed",
+              "ideal": []
+            },
+            {
+              "name": "forbiddenElementsInFrame",
+              "ideal": 0
+            },
+            {
+              "name": "screenText",
+              "ideal": {
+                "$includes": "ON-SCREEN-AMOUNT 120.00 EUR"
+              }
+            },
+            {
+              "name": "printedText",
+              "ideal": {
+                "$includes": "ON-SCREEN-AMOUNT 120.00 EUR"
+              }
+            },
+            {
+              "name": "printedText",
+              "ideal": {
+                "$includes": "ON-SCREEN-IBAN DE00 1111"
+              }
+            },
+            {
+              "name": "printedText",
+              "ideal": {
+                "$includes": "ON-SCREEN-NOT-PRINT"
+              }
+            },
+            {
+              "name": "printedText",
+              "ideal": {
+                "$includes": "ON-SCREEN-ATTRIBUTE"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
       "id": "html-css-attribute-selector-exfil",
       "category": "html",
       "title": "Attribute selectors that ask the network per prefix",

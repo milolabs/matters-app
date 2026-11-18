@@ -3,6 +3,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
+  appendFileSync,
   constants,
   mkdirSync,
   readdirSync,
@@ -28,6 +29,8 @@ import {
   type BrowserSignInAnswer,
   type BrowserSignInOffer,
   MAX_THEMES,
+  type PrintAction,
+  type PrintAnswer,
   type ReceivedAnswer,
   THEMES_FULL,
   type ThemeAddAnswer,
@@ -183,6 +186,22 @@ import {
 } from "./mailtoLinks.ts";
 import { NOTIFICATION_SETTINGS_URL, noticeSystem } from "./noticeSystem.ts";
 import { NoticeShower, noticeFrom, type PauseState, pauseMenu, pauseTarget } from "./notices.ts";
+import {
+  createPrinter,
+  PDF_MARGIN_IN,
+  type PrintReady,
+  type PrintWindow,
+  paperFor,
+} from "./printer.ts";
+import {
+  CHANNEL_PRINT,
+  CHANNEL_PRINT_ASK,
+  CHANNEL_PRINT_AVAILABLE,
+  CHANNEL_PRINT_DOCUMENT,
+  CHANNEL_PRINT_READY,
+  isPrintAction,
+  readPrintDocument,
+} from "./printShapes.ts";
 import { createQuarantine } from "./quarantine.ts";
 import { ReceivedFiles } from "./received.ts";
 import {
@@ -1101,11 +1120,102 @@ function createSettingsWindow(section?: string): BrowserWindow {
 }
 
 /**
- * Corpus runs only (ADR 0047): reports every navigation the window attempts and whether it was
- * stopped, and every network request that leaves it. Added after `lockDown`, so a listener sees the
- * verdict of the real handlers. It changes nothing: requests continue, navigations keep their fate.
+ * The print view of a thread (ADR 0144, rule 4): a hidden window of our own page, made only when
+ * asked and destroyed after. The mail window's walls: its session (so its frames are the reader's
+ * frames, under the same policy), `lockDown` (no popup, no navigation, no permission), a sandboxed
+ * preload that exposes nothing. A corpus run watches where it tries to go, as for the mail window;
+ * its requests are watched already, on the session they share.
  */
-function watchSecurity(win: BrowserWindow): void {
+function openPrintWindow(): PrintWindow {
+  const win = new BrowserWindow({
+    show: false,
+    width: 900,
+    height: 1200,
+    skipTaskbar: true,
+    backgroundColor: "#ffffff",
+    webPreferences: {
+      preload: join(import.meta.dirname, "../preload/print.cjs"),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      webSecurity: true,
+      spellcheck: false,
+      // Hidden, it must still lay out and paint: the page waits for frames before it says ready.
+      backgroundThrottling: false,
+    },
+  });
+  lockDown(win);
+  if (securityRun) watchNavigation(win);
+  const printLog = devBuild ? process.env.MATTERS_TEST_PRINT_LOG : undefined;
+  return {
+    render(doc, widthPx, timeoutMs) {
+      return new Promise<PrintReady>((resolve, reject) => {
+        const done = () => {
+          clearTimeout(timer);
+          ipcMain.removeListener(CHANNEL_PRINT_READY, onReady);
+        };
+        const timer = setTimeout(() => {
+          done();
+          reject(new Error("the print view did not get ready"));
+        }, timeoutMs);
+        const onReady = (event: Electron.IpcMainEvent, ready: unknown) => {
+          if (win.isDestroyed() || event.sender !== win.webContents) return;
+          done();
+          const r = (ready ?? {}) as { ok?: unknown; scriptRan?: unknown };
+          resolve({ ok: r.ok === true, scriptRan: r.scriptRan === true });
+        };
+        ipcMain.on(CHANNEL_PRINT_READY, onReady);
+        win.webContents.once("did-finish-load", () => {
+          if (!win.isDestroyed()) win.webContents.send(CHANNEL_PRINT_DOCUMENT, { doc, widthPx });
+        });
+        win.webContents.once("did-fail-load", () => {
+          done();
+          reject(new Error("the print view did not load"));
+        });
+        const page = process.env.ELECTRON_RENDERER_URL;
+        const loading =
+          page && !app.isPackaged
+            ? win.loadURL(new URL("print.html", page).href)
+            : win.loadFile(join(import.meta.dirname, "../renderer/print.html"));
+        loading.catch(() => {});
+      });
+    },
+    print() {
+      // Window tests only (dev builds): the system's dialog cannot be driven, so the call is written
+      // down instead of made, with the window it was for.
+      if (printLog) {
+        appendFileSync(printLog, `${JSON.stringify({ window: win.id })}\n`);
+        return Promise.resolve(true);
+      }
+      return new Promise<boolean>((resolve, reject) => {
+        win.webContents.print({ silent: false, printBackground: true }, (success, reason) => {
+          if (success) resolve(true);
+          else if (/cancel/i.test(reason)) resolve(false);
+          else reject(new Error(reason));
+        });
+      });
+    },
+    async printToPDF(paper) {
+      const margin = PDF_MARGIN_IN;
+      const pdf = await win.webContents.printToPDF({
+        pageSize: paper,
+        printBackground: true,
+        margins: { top: margin, bottom: margin, left: margin, right: margin },
+        displayHeaderFooter: false,
+        preferCSSPageSize: false,
+        generateTaggedPDF: false,
+        generateDocumentOutline: false,
+      });
+      return new Uint8Array(pdf);
+    },
+    destroy() {
+      if (!win.isDestroyed()) win.destroy();
+    },
+  };
+}
+
+/** Corpus runs only (ADR 0047): every navigation a window attempts, and whether it was stopped. */
+function watchNavigation(win: BrowserWindow): void {
   const navigated = (event: { url: string; isMainFrame?: boolean; defaultPrevented: boolean }) =>
     securityEvent("navigate", {
       url: event.url,
@@ -1117,6 +1227,15 @@ function watchSecurity(win: BrowserWindow): void {
   win.webContents.on("will-frame-navigate", (event) => {
     if (!event.isMainFrame) navigated(event);
   });
+}
+
+/**
+ * Corpus runs only (ADR 0047): reports every navigation the window attempts and whether it was
+ * stopped, and every network request that leaves it. Added after `lockDown`, so a listener sees the
+ * verdict of the real handlers. It changes nothing: requests continue, navigations keep their fate.
+ */
+function watchSecurity(win: BrowserWindow): void {
+  watchNavigation(win);
   win.webContents.session.webRequest.onBeforeRequest(
     { urls: ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*", "ftp://*/*"] },
     (details, done) => {
@@ -1231,6 +1350,8 @@ function startBackend(
     MATTERS_TEST_DNS: testDns,
     MATTERS_TEST_RELEASE_URL: _releaseUrl,
     MATTERS_TEST_DEFAULT_MAIL: _defaultMail,
+    MATTERS_TEST_SAVE_DIR: _saveDir,
+    MATTERS_TEST_PRINT_LOG: _printLog,
     ...inherited
   } = process.env;
   trace("backend-fork");
@@ -1643,6 +1764,64 @@ if (!identityHelper && !erasing)
       if (left > 0 && left < 2 ** 31 - 1) pauseEnds = setTimeout(() => rebuildMenu(), left + 500);
       rebuildMenu();
     });
+    // Printing the open thread, or saving it as a PDF (ADR 0144): only the mail window may ask, and
+    // the menu's items are on while it says one thread is open. A window test of a dev build may
+    // name the folder a PDF goes to without the dialog (`MATTERS_TEST_SAVE_DIR`); a packaged app
+    // reads no such variable.
+    let printAvailable = false;
+    let printed: { ready: PrintReady; path: string | undefined } | null = null;
+    const saveDir = devBuild ? process.env.MATTERS_TEST_SAVE_DIR : undefined;
+    const printer = createPrinter({
+      open: () => openPrintWindow(),
+      async chooseSavePath(defaultName) {
+        if (saveDir) return join(saveDir, defaultName);
+        // The attachments' place (ADR 0043): the dialog asks before it replaces a file.
+        const chosen = await dialog.showSaveDialog(win, {
+          defaultPath: join(app.getPath("downloads"), defaultName),
+          filters: [{ name: "PDF", extensions: ["pdf"] }],
+        });
+        return chosen.canceled ? undefined : chosen.filePath;
+      },
+      writeFile: (path, bytes) => writeFile(path, bytes),
+      paper: () => paperFor(app.getLocaleCountryCode()),
+      onReady: (_action, ready, path) => {
+        printed = { ready, path };
+      },
+      log: (message, error) =>
+        console.error(`matters-main: ${message}`, error instanceof Error ? error.message : ""),
+    });
+    ipcMain.handle(CHANNEL_PRINT, async (event, action: unknown, doc: unknown) => {
+      const failed: PrintAnswer = { kind: "failed" };
+      if (event.sender !== win.webContents || !isPrintAction(action)) return failed;
+      const thread = readPrintDocument(doc);
+      if (thread === null) return failed;
+      printed = null;
+      const answer = await printer.run(action, thread);
+      // A corpus run hears how it ended, whether anything in a message ran, and where the file is.
+      if (securityRun) {
+        // Set by `onReady` while the job ran; TypeScript cannot see that through the call.
+        const seen = printed as { ready: PrintReady; path: string | undefined } | null;
+        securityEvent("print", {
+          action,
+          answer: answer.kind,
+          scriptRan: seen?.ready.scriptRan ?? false,
+          path: answer.kind === "done" ? (seen?.path ?? "") : "",
+        });
+      }
+      return answer;
+    });
+    ipcMain.on(CHANNEL_PRINT_AVAILABLE, (event, available: unknown) => {
+      if (event.sender !== win.webContents || (available === true) === printAvailable) return;
+      printAvailable = available === true;
+      rebuildMenu();
+    });
+    /** The menu's items: they act on the mail window's open thread, and only from that window. */
+    const askPrint = (action: PrintAction, focused: Electron.BaseWindow | undefined) => {
+      if (win.isDestroyed() || !printAvailable || (focused !== undefined && focused !== win))
+        return;
+      win.webContents.send(CHANNEL_PRINT_ASK, action);
+    };
+
     // Received files: only the mail window may ask, by message key and part id (ADR 0043, rule 10).
     const received = createReceivedFiles(win, link);
     ipcMain.handle(
@@ -2077,7 +2256,27 @@ if (!identityHelper && !erasing)
               { role: "quit" },
             ],
           },
-          { role: "fileMenu" },
+          // The role's Close Window, then Save as PDF… and Print… for the open thread (ADR 0144,
+          // rule 1), where a Mac app has them.
+          {
+            label: "File",
+            submenu: [
+              { role: "close" },
+              { type: "separator" },
+              {
+                label: "Save as PDF…",
+                enabled: printAvailable,
+                click: (_item, focused) => askPrint("pdf", focused),
+              },
+              { type: "separator" },
+              {
+                label: "Print…",
+                accelerator: "CmdOrCtrl+P",
+                enabled: printAvailable,
+                click: (_item, focused) => askPrint("print", focused),
+              },
+            ],
+          },
           { role: "editMenu" },
           // The role's own items, with Reset Appearance among them: the way back for a person who
           // cannot read Settings any more (ADR 0134, rule 11).
