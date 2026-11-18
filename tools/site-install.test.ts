@@ -61,7 +61,9 @@ case "$name" in
     if [ "\${TEST_FAIL:-}" = swap ] && [[ "$1" = */.Matters.app.installing ]]; then exit 1; fi
     if [ "\${TEST_FAIL:-}" = signal ] && [[ "$1" = */.Matters.app.installing ]]; then kill -TERM "$PPID"; exit 1; fi
     /bin/mv "$@" ;;
-  open) : ;;
+  open)
+    # Which build is at the path it was given: the old one, the new one, or none.
+    printf 'open-build %s\\n' "$(cat "$1/build" 2>/dev/null || echo none)" >> "$FIXTURE/calls" ;;
 esac
 `;
 
@@ -72,6 +74,8 @@ const version = "0.1.0-alpha.5";
 const image = `Matters-${version}-arm64.dmg`;
 const calls = () =>
   existsSync(join(root, "calls")) ? readFileSync(join(root, "calls"), "utf8") : "";
+const lines = () => calls().split("\n");
+const curls = () => lines().filter((line) => line.startsWith("curl "));
 const oldApp = () => {
   mkdirSync(join(dest, "Matters.app"), { recursive: true });
   writeFileSync(join(dest, "Matters.app", "build"), "old");
@@ -199,14 +203,23 @@ describe("the one-line installer (ADR 0139)", { timeout: 30_000 }, () => {
     },
   );
 
-  // Known production defect: grep -E validates each line independently. Keep the intended
-  // rejection visible without changing the installer in this tests-only task.
-  it.fails("rejects a version containing a valid line followed by extra newline content", () => {
+  // Known defect: grep -E checks each line on its own, so a version with a valid first line and
+  // more after a newline passes the check. The intended behaviour is to refuse it. This test pins
+  // what happens today: the version reaches the image address, and only the missing download
+  // stops the run. When the check is fixed, expect "not a version" and no curl call here instead.
+  it("lets a version with a newline past the check (known defect)", () => {
     env.MATTERS_VERSION = "1.2.3\nother";
     const result = run();
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("not a version");
-    expect(calls()).not.toContain("curl ");
+    expect(result.stderr).not.toContain("not a version");
+    expect(result.stderr).toContain("could not download");
+    expect(calls()).toContain(
+      "https://github.com/milolabs/matters-app/releases/download/v1.2.3\nother/Matters-1.2.3\nother-arm64.dmg",
+    );
+    expect(calls()).not.toContain("hdiutil attach");
+    clean();
   });
 
   it("refuses a site with no release", () => {
@@ -216,18 +229,27 @@ describe("the one-line installer (ADR 0139)", { timeout: 30_000 }, () => {
     clean();
   });
 
-  it.each(["release.json", image, "SHA256SUMS.txt", `${image}.intoto.jsonl`])(
-    "preserves the existing app when downloading %s fails",
-    (file) => {
-      oldApp();
-      writeFileSync(join(root, "bin/gh"), stub, { mode: 0o755 });
-      env.TEST_FETCH_FAIL = file;
-      expect(run().status).toBe(1);
-      expect(build()).toBe("old");
-      expect(calls()).not.toContain("hdiutil attach");
-      clean();
-    },
-  );
+  it.each([
+    ["release.json", "could not read https://getmatters.app/release.json"],
+    [
+      image,
+      `could not download https://github.com/milolabs/matters-app/releases/download/v${version}/${image}`,
+    ],
+    ["SHA256SUMS.txt", "could not download the checksums"],
+    [`${image}.intoto.jsonl`, "could not download the build record"],
+  ])("preserves the existing app when downloading %s fails", (file, message) => {
+    oldApp();
+    writeFileSync(join(root, "bin/gh"), stub, { mode: 0o755 });
+    env.TEST_FETCH_FAIL = file;
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(message);
+    // The run stopped at this file, not at an earlier one.
+    expect(curls().at(-1)).toMatch(new RegExp(`/${file.replaceAll(".", "\\.")}$`));
+    expect(build()).toBe("old");
+    expect(calls()).not.toContain("hdiutil attach");
+    clean();
+  });
 
   it.each(["missing", "corrupt"])("refuses a %s checksum before mounting", (kind) => {
     oldApp();
@@ -265,12 +287,28 @@ describe("the one-line installer (ADR 0139)", { timeout: 30_000 }, () => {
     clean();
   });
 
+  it("still refuses a corrupt image when provenance is skipped", () => {
+    oldApp();
+    writeFileSync(join(root, "bin/gh"), stub, { mode: 0o755 });
+    writeFileSync(join(root, "release", image), "tampered image");
+    env.MATTERS_NO_ATTESTATION = "1";
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("does not match its checksum");
+    expect(build()).toBe("old");
+    expect(calls()).not.toContain("hdiutil attach");
+    expect(calls()).not.toMatch(/^gh /m);
+    clean();
+  });
+
   it.each(["attestation", "mount", "missing-app", "copy", "signature", "swap", "signal"])(
     "keeps the previous installation and releases the lock on %s failure",
     (failure) => {
       oldApp();
       writeFileSync(join(root, "bin/gh"), stub, { mode: 0o755 });
       env.TEST_FAIL = failure;
+      // Without the opt-out, so "not opened" comes from the failure itself.
+      delete env.MATTERS_NO_OPEN;
       const result = run();
       expect(result.status).toBe(failure === "signal" ? 130 : 1);
       expect(build()).toBe("old");
@@ -287,6 +325,9 @@ describe("the one-line installer (ADR 0139)", { timeout: 30_000 }, () => {
     expect(build()).toBe("new");
     expect(result.stdout).toContain("It replaced the Matters");
     expect(calls()).toContain(`open ${dest}/Matters.app`);
+    // What was at that path when it was opened: the new build, not the old one.
+    expect(calls()).toContain("open-build new");
+    expect(calls()).not.toContain("open-build old");
     clean();
   });
 
@@ -320,13 +361,25 @@ describe("the one-line installer (ADR 0139)", { timeout: 30_000 }, () => {
     env.TEST_FETCH_FAIL = "release.json";
     expect(run().status).toBe(1);
     expect(build()).toBe("old");
+    // The old app went back before the download was tried.
+    const restore = lines().indexOf(`mv ${dest}/.Matters.app.previous ${dest}/Matters.app`);
+    const download = lines().findIndex((line) =>
+      line.endsWith("https://getmatters.app/release.json"),
+    );
+    expect(restore).toBeGreaterThanOrEqual(0);
+    expect(download).toBeGreaterThan(restore);
     clean();
   });
 
   it("retries unmounting with force if the normal detach fails", () => {
     env.TEST_FAIL = "detach";
     expect(run().status).toBe(0);
-    expect(calls()).toMatch(/hdiutil detach .* -force -quiet/);
+    const volume = calls().match(/^hdiutil attach .* -mountpoint (\S+)$/m)?.[1];
+    expect(volume).toBeDefined();
+    expect(lines().filter((line) => line.startsWith("hdiutil detach "))).toEqual([
+      `hdiutil detach ${volume} -quiet`,
+      `hdiutil detach ${volume} -force -quiet`,
+    ]);
     clean();
   });
 
