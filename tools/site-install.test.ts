@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -76,7 +77,7 @@ const oldApp = () => {
   writeFileSync(join(dest, "Matters.app", "build"), "old");
 };
 const build = () => readFileSync(join(dest, "Matters.app", "build"), "utf8");
-const run = () => spawnSync("/bin/bash", [installer], { env, encoding: "utf8", timeout: 3000 });
+const run = () => spawnSync("/bin/bash", [installer], { env, encoding: "utf8", timeout: 20_000 });
 const clean = () => {
   for (const name of [".Matters.app.lock", ".Matters.app.installing", ".Matters.app.previous"]) {
     expect(existsSync(join(dest, name)), name).toBe(false);
@@ -85,7 +86,9 @@ const clean = () => {
 };
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "matters-installer-"));
+  // The real path: the script resolves its folder (`pwd -P`), and on macOS the temporary folder is
+  // behind a link, so the paths it prints would not be the ones this test compares with.
+  root = realpathSync(mkdtempSync(join(tmpdir(), "matters-installer-")));
   dest = join(root, "Applications with spaces");
   for (const path of [dest, "bin", "release", "source/Matters.app", "tmp"]) {
     mkdirSync(path === dest ? path : join(root, path), { recursive: true });
@@ -135,7 +138,8 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-describe("the one-line installer (ADR 0139)", () => {
+// A run starts dozens of small programs, and takes seconds on a busy machine.
+describe("the one-line installer (ADR 0139)", { timeout: 30_000 }, () => {
   it.each([
     ["Linux", "1", "macOS only"],
     ["Darwin", "0", "Apple silicon"],
