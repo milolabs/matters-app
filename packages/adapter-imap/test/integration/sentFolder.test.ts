@@ -72,8 +72,10 @@ describe.skipIf(!enabled)("Sent folder on Dovecot", () => {
     const imap = await box.connect();
     try {
       const copy = await imap.sent.append(ACCOUNT, raw("s3"));
+      // The server's own copy is found where it is, as an appended one is recorded (ADR 0092).
       expect(await imap.sent.findByMessageId(ACCOUNT, "<s3@example.pl>")).toEqual({
         providerId: copy.providerId,
+        location: copy.location,
       });
       expect(await imap.sent.findByMessageId(ACCOUNT, "<nobody@example.pl>")).toBeNull();
     } finally {

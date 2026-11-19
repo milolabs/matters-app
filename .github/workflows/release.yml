@@ -234,7 +234,7 @@ jobs:
           cat > "$RUNNER_TEMP/notes.md" <<EOF
           **An alpha: an early build, to try and to report on.** This build is not signed with a Developer ID and not
           notarized by Apple, so macOS will refuse to open it until you allow it. Apple Silicon only.
-          There are no updates: a newer alpha is a new download.
+          Nothing updates by itself: Settings › About says when a newer alpha is out and installs it when you ask.
 
           **Install it in one line**, in Terminal:
 
