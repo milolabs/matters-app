@@ -8,11 +8,11 @@
   },
   "dependencies": {
     "@matters/core": "workspace:*",
-    "nodemailer": "10.3.1"
+    "nodemailer": "10.5.0"
   },
   "devDependencies": {
     "@types/smtp-server": "3.5.13",
     "@matters/adapter-mime": "workspace:*",
-    "smtp-server": "3.21.3"
+    "smtp-server": "3.21.4"
   }
 }
