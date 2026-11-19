@@ -1989,10 +1989,12 @@ export async function runSecuritySmoke(
     }
 
     // The sender alone: its name, address and badges. The line under it has the recipients, where
-    // the reader rightly reads "You".
+    // the reader rightly reads "You". A letter with no sender's line is an error, not an empty
+    // text: a check that the text does not hold a word would pass on nothing.
     const senderOf = (key: number) => {
       const line = articleOf(key)?.querySelector("[data-sender-name]")?.parentElement;
-      return (line?.textContent ?? "").slice(0, 300);
+      if (!line) throw new Error("the open letter has no sender's line");
+      return (line.textContent ?? "").slice(0, 300);
     };
 
     async function lane(entry: { id: string; key: number }, which: "blocked" | "images") {
