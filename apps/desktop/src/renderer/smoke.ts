@@ -1988,11 +1988,12 @@ export async function runSecuritySmoke(
       return { followed, warned };
     }
 
-    // The sender alone: the same line goes on to the recipients, where the reader rightly reads "You".
-    const senderOf = (key: number) =>
-      (articleOf(key)?.querySelector("section")?.firstElementChild?.textContent ?? "")
-        .split("→")[0]
-        ?.slice(0, 300) ?? "";
+    // The sender alone: its name, address and badges. The line under it has the recipients, where
+    // the reader rightly reads "You".
+    const senderOf = (key: number) => {
+      const line = articleOf(key)?.querySelector("[data-sender-name]")?.parentElement;
+      return (line?.textContent ?? "").slice(0, 300);
+    };
 
     async function lane(entry: { id: string; key: number }, which: "blocked" | "images") {
       resetPwned();

@@ -12,8 +12,10 @@ on:
 permissions:
   contents: read
 
+# Called from a release, `github.workflow` is the caller's name, so a release's checks and the
+# checks of a push to main are two groups and do not cancel each other.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
