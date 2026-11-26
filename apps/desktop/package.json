@@ -27,27 +27,27 @@
     "@matters/core": "workspace:*",
     "@matters/testkit": "workspace:*",
     "fflate": "0.8.3",
-    "imapflow": "2.10.2",
-    "juice": "12.2.1",
+    "imapflow": "2.12.1",
+    "juice": "12.2.6",
     "markdown-it": "15.0.3",
-    "nodemailer": "10.3.1",
+    "nodemailer": "10.6.0",
     "pdfjs-dist": "6.5.438",
-    "postal-mime": "4.2.0"
+    "postal-mime": "4.2.1"
   },
   "devDependencies": {
     "@codemirror/commands": "6.11.1",
     "@codemirror/lang-markdown": "6.5.2",
     "@codemirror/state": "6.7.6",
     "@codemirror/view": "6.43.15",
-    "@tailwindcss/vite": "4.3.4",
+    "@tailwindcss/vite": "4.3.5",
     "@tanstack/solid-virtual": "3.13.53",
     "@types/smtp-server": "3.5.13",
-    "dompurify": "3.4.17",
+    "dompurify": "3.4.18",
     "electron-vite": "6.0.0",
-    "smtp-server": "3.21.3",
+    "smtp-server": "3.21.6",
     "solid-js": "1.9.18",
-    "tailwindcss": "4.3.4",
-    "vite": "8.3.6",
-    "vite-plugin-solid": "2.11.15"
+    "tailwindcss": "4.3.5",
+    "vite": "8.3.8",
+    "vite-plugin-solid": "2.11.17"
   }
 }
