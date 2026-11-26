@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@matters/core": "workspace:*",
-    "juice": "12.2.1",
+    "juice": "12.2.6",
     "markdown-it": "15.0.3"
   },
   "devDependencies": {

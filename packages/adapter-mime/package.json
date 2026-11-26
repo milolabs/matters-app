@@ -9,7 +9,7 @@
   "dependencies": {
     "@matters/core": "workspace:*",
     "entities": "9.0.0",
-    "postal-mime": "4.2.0"
+    "postal-mime": "4.2.1"
   },
   "devDependencies": {
     "@matters/adapter-publicsuffix": "workspace:*"
